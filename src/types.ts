@@ -6,12 +6,20 @@ export interface AgentProfile {
   id: string;
   name: string;
   launch: LaunchKind;
-  /** 人类可读的连接描述，例如 "fedora · hermes acp" */
   detail: string;
   connected: boolean;
-  /** 由 initialize 握手得到；未接线时为 null */
   agentName?: string | null;
   protocolVersion?: number | null;
+}
+
+/** 群聊里的「玩家」= 一个 agent profile + 一个独立 session */
+export interface Player {
+  id: string;
+  name: string;
+  handle: string;
+  color: string;
+  profileId: string;
+  busy: boolean;
 }
 
 export interface SessionSummary {
@@ -20,26 +28,62 @@ export interface SessionSummary {
   cwd: string;
   updatedAt: string;
   group: "今天" | "昨天" | "更早";
+  /** 这个会话里有哪些玩家 */
+  playerIds: string[];
 }
 
-export type ToolKind = "read" | "edit" | "execute" | "search" | "other";
-export type ToolStatus = "pending" | "running" | "ok" | "error";
+/* ---------- 过程（不再进聊天流） ---------- */
+export type ActivityKind =
+  | "thinking"
+  | "read"
+  | "edit"
+  | "execute"
+  | "search"
+  | "plan"
+  | "permission";
 
-export interface ToolCall {
+export type ActivityStatus = "running" | "ok" | "error";
+
+export interface Activity {
   id: string;
+  playerId: string;
+  kind: ActivityKind;
   title: string;
-  kind: ToolKind;
-  status: ToolStatus;
   detail?: string;
   meta?: string;
+  status: ActivityStatus;
+  at: string;
 }
 
+/* ---------- 聊天流：只留「人对人的话」 ---------- */
 export type Message =
-  | { id: string; role: "user"; kind: "text"; text: string; at: string }
-  | { id: string; role: "agent"; kind: "text"; text: string; at: string; streaming?: boolean }
-  | { id: string; role: "agent"; kind: "thinking"; text: string; at: string }
-  | { id: string; role: "agent"; kind: "tool_call"; call: ToolCall; at: string }
-  | { id: string; role: "system"; kind: "notice"; text: string; at: string };
+  | { id: string; role: "user"; text: string; at: string; quoted?: QuotedRef }
+  | { id: string; role: "player"; playerId: string; text: string; at: string; streaming?: boolean }
+  | { id: string; role: "system"; text: string; at: string };
+
+/** 「加入对话」带进来的引用（PR / issue / 文件） */
+export interface QuotedRef {
+  kind: "pr" | "issue" | "file";
+  label: string;
+  detail?: string;
+}
+
+/* ---------- Git / 权限 ---------- */
+export interface GithubPR {
+  number: number;
+  title: string;
+  author: string;
+  head: string;
+  base: string;
+  state: "open" | "draft" | "merged" | "closed";
+  comments: number;
+  additions: number;
+  deletions: number;
+  files: number;
+  checks: "pending" | "passing" | "failing";
+  updatedAt: string;
+  body: string;
+}
 
 export interface PermissionOption {
   id: string;
@@ -49,16 +93,15 @@ export interface PermissionOption {
 
 export interface PermissionRequest {
   id: string;
+  playerId: string;
   title: string;
   detail: string;
   meta?: string;
   options: PermissionOption[];
 }
 
-export interface SessionState {
-  sessionId: string | null;
-  cwd: string;
-  messages: Message[];
-  pending: PermissionRequest | null;
-  busy: boolean;
+/* ---------- 设置 ---------- */
+export interface ThreadSettings {
+  /** @ 玩家时附带最近 N 条群聊记录，默认 5 */
+  contextMessages: number;
 }

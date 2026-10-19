@@ -1,7 +1,10 @@
 import type {
+  Activity,
   AgentProfile,
+  GithubPR,
   Message,
   PermissionRequest,
+  Player,
   SessionSummary,
 } from "@/types";
 
@@ -26,6 +29,12 @@ export const profiles: AgentProfile[] = [
   },
 ];
 
+export const players: Player[] = [
+  { id: "pl-claude", name: "Claude", handle: "claude", color: "#c0a3ff", profileId: "p-hermes-wsl", busy: true },
+  { id: "pl-hermes", name: "Hermes", handle: "hermes", color: "#6fe0c9", profileId: "p-hermes-wsl", busy: false },
+  { id: "pl-codex", name: "Codex", handle: "codex", color: "#f0b46a", profileId: "p-local-mock", busy: false },
+];
+
 export const sessions: SessionSummary[] = [
   {
     id: "s-1",
@@ -33,6 +42,7 @@ export const sessions: SessionSummary[] = [
     cwd: "/home/jerry/source/sincearc",
     updatedAt: "刚刚",
     group: "今天",
+    playerIds: ["pl-claude", "pl-hermes"],
   },
   {
     id: "s-2",
@@ -40,6 +50,7 @@ export const sessions: SessionSummary[] = [
     cwd: "/home/jerry/source/sincearc",
     updatedAt: "12 分钟前",
     group: "今天",
+    playerIds: ["pl-hermes"],
   },
   {
     id: "s-3",
@@ -47,6 +58,7 @@ export const sessions: SessionSummary[] = [
     cwd: "/home/jerry/source/sincearc/src-tauri",
     updatedAt: "昨天",
     group: "昨天",
+    playerIds: ["pl-claude", "pl-codex"],
   },
   {
     id: "s-4",
@@ -54,6 +66,7 @@ export const sessions: SessionSummary[] = [
     cwd: "/home/jerry/source/sincearc",
     updatedAt: "10 月 17 日",
     group: "更早",
+    playerIds: ["pl-hermes"],
   },
 ];
 
@@ -61,87 +74,84 @@ export const messages: Message[] = [
   {
     id: "m-1",
     role: "user",
-    kind: "text",
-    text: "看一下 src-tauri/src/acp/launch.rs，把 WSL 那条链路补上 setsid，并在关窗时杀掉进程组。",
+    text: "@claude 看一下 src-tauri/src/acp/launch.rs，把 WSL 那条链路补上 setsid，并在关窗时杀掉进程组。",
     at: "21:04",
   },
-  {
-    id: "m-2",
-    role: "agent",
-    kind: "thinking",
-    text: "先确认现在 spawn 的形状：wsl.exe 作为 relay 会吞掉信号，直接 kill 只会杀掉 relay，WSL 里的 agent 会变成孤儿。需要拿到真实 pid。",
-    at: "21:04",
-  },
-  {
-    id: "m-3",
-    role: "agent",
-    kind: "tool_call",
-    at: "21:05",
-    call: {
-      id: "tc-1",
-      title: "读取 launch.rs",
-      kind: "read",
-      status: "ok",
-      meta: "96 行",
-      detail:
-        "src-tauri/src/acp/launch.rs\n\npub fn spawn(profile: &AgentProfile, cwd: &Path) -> Result<Child> {\n    let mut cmd = match profile.launch {\n        Launch::Local => Command::new(&profile.program),\n        Launch::Wsl { distro, shell } => { ... }\n    };\n}",
-    },
-  },
-  {
-    id: "m-4",
-    role: "agent",
-    kind: "tool_call",
-    at: "21:05",
-    call: {
-      id: "tc-2",
-      title: "运行 cargo check",
-      kind: "execute",
-      status: "running",
-      meta: "进行中",
-      detail: "cargo check -p sincearc --all-targets",
-    },
-  },
-  {
-    id: "m-5",
-    role: "agent",
-    kind: "tool_call",
-    at: "21:06",
-    call: {
-      id: "tc-3",
-      title: "修改 launch.rs",
-      kind: "edit",
-      status: "pending",
-      meta: "+18 −4",
-      detail:
-        "--- a/src-tauri/src/acp/launch.rs\n+++ b/src-tauri/src/acp/launch.rs\n@@ -41,6 +41,10 @@\n-    let child = cmd.spawn()?;\n+    let child = cmd\n+        .arg(profile.program.as_str())\n+        .spawn()?;\n+    // 记录 pid，关窗时 killpg",
-    },
-  },
-  {
-    id: "m-6",
-    role: "user",
-    kind: "text",
-    text: "顺便把 stderr 单独接到 debug 面板，别跟 stdout 混。",
-    at: "21:07",
-  },
-  {
-    id: "m-7",
-    role: "agent",
-    kind: "text",
-    streaming: true,
-    at: "21:07",
-    text: "明白。stdout 只留给 JSON-RPC，stderr 我另外开一条 tokio::io::BufReader，按行推到 acp://stderr 事件里，界面上做成一个可折叠的日志抽屉。这样 agent 起不来的时候能直接看到它最后几行抱怨，而不是对着一个转圈的界面猜。",
-  },
+  { id: "m-2", role: "player", playerId: "pl-claude", text: "看完了。现在 `kill_on_drop` 只杀 `wsl.exe` 这个 relay，WSL 里的 agent 会变成孤儿。\n\n我加一个 `setsid` 包装并把 pid 记在 `AgentProcess` 上，关窗时走 `killpg`；另外 stderr 单独接了，失败时能看到 agent 自己的抱怨。", at: "21:05" },
+  { id: "m-3", role: "user", text: "@hermes 你觉得这个 pid 记在哪一层合适？", at: "21:06" },
+  { id: "m-4", role: "player", playerId: "pl-hermes", text: "记在 `AgentProcess` 上，别放全局表。一个玩家一个进程，进程没了 pid 也就没意义了；放全局反而要多一套清理逻辑。", at: "21:06" },
+  { id: "m-5", role: "system", text: "Claude 正在修改 launch.rs", at: "21:07" },
+  { id: "m-6", role: "player", playerId: "pl-claude", text: "改好了，+18 −4。顺带把 `--cd` 挪到 `zsh -lc` 之前——位置不对时 wsl 会把参数当成命令的一部分。", at: "21:08", streaming: true },
+];
+
+export const activities: Activity[] = [
+  { id: "a-1", playerId: "pl-claude", kind: "thinking", title: "先确认 spawn 的形状", detail: "wsl.exe 是 relay，直接 kill 只会杀 relay…", status: "ok", at: "21:04" },
+  { id: "a-2", playerId: "pl-claude", kind: "read", title: "读取 launch.rs", detail: "src-tauri/src/acp/launch.rs", meta: "96 行", status: "ok", at: "21:04" },
+  { id: "a-3", playerId: "pl-claude", kind: "search", title: "搜索 kill_on_drop", meta: "3 处", status: "ok", at: "21:05" },
+  { id: "a-4", playerId: "pl-claude", kind: "edit", title: "修改 launch.rs", detail: "+18 −4", status: "ok", at: "21:05" },
+  { id: "a-5", playerId: "pl-claude", kind: "execute", title: "cargo check --all-targets", meta: "exit 0", status: "ok", at: "21:06" },
+  { id: "a-6", playerId: "pl-hermes", kind: "thinking", title: "对比三种存放位置", status: "ok", at: "21:06" },
+  { id: "a-7", playerId: "pl-claude", kind: "read", title: "读取 launch.rs", meta: "96 行", status: "ok", at: "21:08" },
+  { id: "a-8", playerId: "pl-claude", kind: "edit", title: "修改 launch.rs", detail: "+18 −4", status: "running", at: "21:08" },
 ];
 
 export const pendingPermission: PermissionRequest = {
   id: "perm-1",
+  playerId: "pl-claude",
   title: "允许修改文件？",
-  detail:
-    "agent 想要写入 /home/jerry/source/sincearc/src-tauri/src/acp/launch.rs，改动 +18 −4 行。",
-  meta: "tool_call_update · edit",
+  detail: "想要写入 /home/jerry/source/sincearc/src-tauri/src/acp/launch.rs，改动 +18 −4 行。",
+  meta: "fs/write_text_file",
   options: [
     { id: "allow", label: "允许一次", tone: "allow" },
     { id: "always", label: "本项目总是允许", tone: "always" },
     { id: "reject", label: "拒绝", tone: "reject" },
   ],
 };
+
+export const prs: GithubPR[] = [
+  {
+    number: 188,
+    title: "KAN-134 门禁分级：任务级与回归级",
+    author: "wangsyiiz",
+    head: "kan134-gate-tiers",
+    base: "master",
+    state: "merged",
+    comments: 6,
+    additions: 412,
+    deletions: 96,
+    files: 8,
+    checks: "passing",
+    updatedAt: "2 小时前",
+    body: "把四连门禁拆成任务级与回归级两档，并补上门禁映射表。",
+  },
+  {
+    number: 191,
+    title: "E6 站点设置：site.title / site.description 白名单键",
+    author: "wangsyiiz",
+    head: "kan63-site-title",
+    base: "e6-admin",
+    state: "draft",
+    comments: 2,
+    additions: 268,
+    deletions: 14,
+    files: 5,
+    checks: "pending",
+    updatedAt: "35 分钟前",
+    body: "新增两个白名单键，补齐归一化与读取面。",
+  },
+  {
+    number: 186,
+    title: "fix(acp): 无边框窗口补权限",
+    author: "wangsyiiz",
+    head: "fix-window-perms",
+    base: "master",
+    state: "open",
+    comments: 0,
+    additions: 18,
+    deletions: 6,
+    files: 2,
+    checks: "failing",
+    updatedAt: "12 分钟前",
+    body: "core:default 不含窗口变更权限，导致拖动与三键静默失效。",
+  },
+];

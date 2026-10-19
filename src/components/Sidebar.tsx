@@ -1,16 +1,18 @@
 import { useMemo } from "react";
 import { Plus, Settings2, Terminal } from "lucide-react";
-import type { AgentProfile, SessionSummary } from "@/types";
+import type { AgentProfile, Player, SessionSummary } from "@/types";
 import { cn } from "@/lib/utils";
 
 interface SidebarProps {
   sessions: SessionSummary[];
   activeId: string;
   profiles: AgentProfile[];
+  players: Player[];
   activeProfileId: string;
   onSelect: (id: string) => void;
   onNew: () => void;
   onSelectProfile: (id: string) => void;
+  onOpenSettings: () => void;
 }
 
 const GROUPS: SessionSummary["group"][] = ["今天", "昨天", "更早"];
@@ -19,10 +21,12 @@ export function Sidebar({
   sessions,
   activeId,
   profiles,
+  players,
   activeProfileId,
   onSelect,
   onNew,
   onSelectProfile,
+  onOpenSettings,
 }: SidebarProps) {
   const grouped = useMemo(
     () =>
@@ -82,7 +86,20 @@ export function Sidebar({
                   >
                     {s.title}
                   </span>
-                  <span className="truncate font-mono text-[10px] text-ink-3">{s.cwd}</span>
+                  <span className="flex items-center gap-1">
+                    {s.playerIds.slice(0, 3).map((pid) => {
+                      const pl = players.find((x) => x.id === pid);
+                      return pl ? (
+                        <span
+                          key={pid}
+                          className="size-1.5 rounded-full"
+                          style={{ background: pl.color }}
+                          title={pl.name}
+                        />
+                      ) : null;
+                    })}
+                    <span className="truncate font-mono text-[10px] text-ink-3">{s.cwd}</span>
+                  </span>
                 </button>
               );
             })}
@@ -109,7 +126,7 @@ export function Sidebar({
             {p.launch === "wsl" && <Terminal className="size-3 shrink-0 text-ink-3" />}
           </button>
         ))}
-        <button className="mt-0.5 flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-[11.5px] text-ink-3 transition-colors hover:bg-white/[0.04] hover:text-ink-2">
+        <button onClick={onOpenSettings} className="mt-0.5 flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-[11.5px] text-ink-3 transition-colors hover:bg-white/[0.04] hover:text-ink-2">
           <Settings2 className="size-3.5" />
           设置
         </button>

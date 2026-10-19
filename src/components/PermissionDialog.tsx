@@ -1,10 +1,12 @@
 import { useEffect, useRef } from "react";
 import { ShieldAlert, ShieldCheck, ShieldX } from "lucide-react";
-import type { PermissionRequest } from "@/types";
+import type { PermissionRequest, Player } from "@/types";
 import { cn } from "@/lib/utils";
+import { PlayerAvatar } from "./PlayerAvatar";
 
 interface PermissionDialogProps {
   request: PermissionRequest;
+  player?: Player;
   open: boolean;
   onDecide: (optionId: string) => void;
 }
@@ -17,8 +19,7 @@ const TONE = {
   },
   always: {
     icon: ShieldCheck,
-    className:
-      "sc-control text-ink-1 hover:bg-white/[0.09] focus-visible:ring-line-2",
+    className: "sc-control text-ink-1 hover:bg-white/[0.09] focus-visible:ring-line-2",
   },
   reject: {
     icon: ShieldX,
@@ -27,7 +28,7 @@ const TONE = {
   },
 } as const;
 
-export function PermissionDialog({ request, open, onDecide }: PermissionDialogProps) {
+export function PermissionDialog({ request, player, open, onDecide }: PermissionDialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -48,11 +49,21 @@ export function PermissionDialog({ request, open, onDecide }: PermissionDialogPr
     >
       <div className="p-5">
         <div className="flex items-start gap-3">
-          <div className="grid size-8 shrink-0 place-items-center rounded-[8px] border border-warn-1/20 bg-warn-1/[0.09] text-warn-1">
+          <div className="grid size-8 shrink-0 place-items-center rounded-[10px] border border-warn-1/20 bg-warn-1/[0.09] text-warn-1">
             <ShieldAlert className="size-4" />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="text-[14px] font-medium text-ink-1">{request.title}</div>
+            <div className="flex items-center gap-2">
+              <span className="text-[14px] font-medium text-ink-1">{request.title}</span>
+              {player && (
+                <span className="flex items-center gap-1 rounded-full bg-white/[0.05] py-0.5 pl-0.5 pr-2">
+                  <PlayerAvatar player={player} size={14} />
+                  <span className="text-[10px]" style={{ color: player.color }}>
+                    {player.name}
+                  </span>
+                </span>
+              )}
+            </div>
             {request.meta && (
               <div className="mt-0.5 font-mono text-[10px] text-ink-3">{request.meta}</div>
             )}
