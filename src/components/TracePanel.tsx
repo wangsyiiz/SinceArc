@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { FileText, PencilLine, Play, Search, Sparkles, ShieldAlert, X } from "lucide-react";
 import type { Activity, ActivityKind, Player, TraceTurn } from "@/types";
 import { cn } from "@/lib/utils";
@@ -121,11 +121,15 @@ const KIND_ICON: Record<ActivityKind, typeof FileText> = {
   permission: ShieldAlert,
 };
 
-function Mark({ row }: { row: TraceRow }) {
+function Mark({ row, focused }: { row: TraceRow; focused: boolean }) {
   const x = row.lane === 0 ? MAIN_X : LANE_X;
   const k = row.activity?.kind ?? "read";
   const err = row.status === "error";
   const fill = err ? "var(--d1)" : row.color;
+
+  const halo = focused ? (
+    <circle cx={x} cy={row.y} r={9.5} fill={fill} opacity={0.18} />
+  ) : null;
 
   const pulse =
     row.status === "running" ? (
@@ -133,11 +137,17 @@ function Mark({ row }: { row: TraceRow }) {
     ) : null;
 
   if (row.kind === "user") {
-    return <circle cx={x} cy={row.y} r={3.6} fill="var(--i2)" />;
+    return (
+      <>
+        {halo}
+        <circle cx={x} cy={row.y} r={3.6} fill="var(--i2)" />
+      </>
+    );
   }
   if (row.kind === "reply") {
     return (
       <>
+        {halo}
         {pulse}
         <circle cx={x} cy={row.y} r={4.2} fill={fill} />
         <circle cx={x} cy={row.y} r={1.5} fill="var(--s0)" />
@@ -146,6 +156,7 @@ function Mark({ row }: { row: TraceRow }) {
   }
   return (
     <>
+      {halo}
       {pulse}
       {k === "edit" ? (
         <rect x={x - 3.4} y={row.y - 3.4} width={6.8} height={6.8} rx={1.2} fill={fill} opacity={0.9} />
@@ -169,17 +180,27 @@ function Mark({ row }: { row: TraceRow }) {
 
 interface TracePanelProps {
   open: boolean;
+  focusId: string | null;
+  focusTick: number;
   turns: TraceTurn[];
   activities: Activity[];
   players: Player[];
   onClose: () => void;
 }
 
-export function TracePanel({ open, turns, activities, players, onClose }: TracePanelProps) {
+export function TracePanel({ open, focusId, focusTick, turns, activities, players, onClose }: TracePanelProps) {
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+
   const { rows, edges, height } = useMemo(
     () => buildTrace(turns, activities, players),
     [turns, activities, players],
   );
+
+  useEffect(() => {
+    if (!open || !focusId) return;
+    const el = rowRefs.current.get(focusId);
+    if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [open, focusId, focusTick]);
 
   return (
     <div
@@ -244,7 +265,7 @@ export function TracePanel({ open, turns, activities, players, onClose }: TraceP
                 />
               ))}
               {rows.map((r) => (
-                <Mark key={r.id} row={r} />
+                <Mark key={r.id} row={r} focused={r.id === focusId} />
               ))}
             </svg>
 
@@ -254,9 +275,14 @@ export function TracePanel({ open, turns, activities, players, onClose }: TraceP
                 return (
                   <div
                     key={r.id}
+                    ref={(el) => {
+                      if (el) rowRefs.current.set(r.id, el);
+                      else rowRefs.current.delete(r.id);
+                    }}
                     style={{ height: ROW }}
                     className={cn(
-                      "flex items-center gap-1.5 pr-2",
+                      "flex items-center gap-1.5 pr-2 transition-colors",
+                      r.id === focusId && "bg-white/[0.06]",
                       r.kind === "user" && "text-ink-2",
                       r.kind === "activity" && "text-ink-2",
                       r.kind === "reply" && "text-ink-1",

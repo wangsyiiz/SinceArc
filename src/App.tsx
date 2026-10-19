@@ -9,6 +9,7 @@ import { PermissionDialog } from "@/components/PermissionDialog";
 import { ResizeHandles } from "@/components/ResizeHandles";
 import { SettingsDrawer } from "@/components/SettingsDrawer";
 import { Sidebar } from "@/components/Sidebar";
+import { ThinkingRow } from "@/components/ThinkingRow";
 import { StatusBar } from "@/components/StatusBar";
 import { TitleBar } from "@/components/TitleBar";
 import { TracePanel } from "@/components/TracePanel";
@@ -32,6 +33,7 @@ export default function App() {
   const [drawer, setDrawer] = useState<"gh" | "settings" | null>(null);
   const [activityOpen, setActivityOpen] = useState(false);
   const [traceOpen, setTraceOpen] = useState(true);
+  const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
   const [playerFilter, setPlayerFilter] = useState<string | null>(null);
   const [settings, setSettings] = useState<ThreadSettings>({ contextMessages: 5 });
   const [activeSessionId, setActiveSessionId] = useState("s-1");
@@ -129,6 +131,8 @@ export default function App() {
 
         <TracePanel
           open={traceOpen}
+          focusId={focus?.id ?? null}
+          focusTick={focus?.tick ?? 0}
           turns={turns}
           activities={activities}
           players={players}
@@ -162,7 +166,26 @@ export default function App() {
                       <EmptyState cwd={cwd} onPick={send} />
                     </div>
                   ) : (
-                    msgs.map((m) => <MessageItem key={m.id} message={m} players={players} />)
+                    <>
+                      {msgs.map((m) => <MessageItem key={m.id} message={m} players={players} />)}
+                      {activities
+                        .filter((a) => a.status === "running")
+                        .map((a) => {
+                          const p = players.find((x) => x.id === a.playerId);
+                          if (!p) return null;
+                          return (
+                            <ThinkingRow
+                              key={a.id}
+                              player={p}
+                              activity={a}
+                              onOpenTrace={() => {
+                                setTraceOpen(true);
+                                setFocus((f) => ({ id: a.id, tick: (f?.tick ?? 0) + 1 }));
+                              }}
+                            />
+                          );
+                        })}
+                    </>
                   )}
                 </div>
               </div>
