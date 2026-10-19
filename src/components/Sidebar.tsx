@@ -39,7 +39,7 @@ export function Sidebar({
           ◇
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[12.5px] font-semibold tracking-tight">SinceArc</div>
+          <div className="truncate text-[13.5px] font-semibold tracking-tight">SinceArc</div>
           <div className="truncate text-[10px] text-ink-3">ACP Client</div>
         </div>
       </div>

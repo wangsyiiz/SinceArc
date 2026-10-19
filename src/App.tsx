@@ -80,7 +80,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-surface-0 text-ink-1">
+    <div className="flex h-full flex-col overflow-hidden bg-surface-1 text-ink-1">
       <TitleBar profile={activeProfile} cwd={cwd} />
 
       <div className="flex min-h-0 flex-1 gap-2 px-2 pb-2">

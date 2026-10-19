@@ -113,7 +113,7 @@ body,
 
 body {
   margin: 0;
-  background: var(--s0);
+  background: var(--s1);
   color: var(--i1);
   font-family: var(--font-sans);
   font-size: 14px;
@@ -148,9 +148,9 @@ body {
 }
 
 /* ---------- 材质：三层 ---------- */
-/* 底层：平铺不透明，靠 1px 边框与圆角分栏 */
+/* 底层：透明，与窗口共用同一块底色，靠 1px 边框 + 圆角分栏 */
 .sc-pane {
-  background: var(--s1);
+  background: transparent;
   border: 1px solid var(--l1);
   border-radius: var(--radius-card);
 }
