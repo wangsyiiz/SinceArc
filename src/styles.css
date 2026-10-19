@@ -3,27 +3,28 @@
 /* ---------- 令牌：底层平铺 + 上层磨砂玻璃（沿用 sincecloud-web 归位表） ---------- */
 :root {
   color-scheme: dark;
-  --s0: #0c0d0f;          /* 窗口底（露出边距） */
-  --s1: #141619;          /* 面板（平铺、不透明） */
-  --s2: #1a1d21;          /* 面板内次级面 */
-  --s3: #22262b;          /* 控件底 */
-  --l1: #24282d;          /* 边框 */
-  --l2: #31363c;
-  --i1: #e8eaed;
-  --i2: #9ba1a9;
-  --i3: #6a7178;
-  --a1: #9db4ff;
-  --ai: #0b0d12;
+  /* 石板蓝（slate blue）：H≈212°，S≈25%，比纯黑暖一档，蓝但不发亮 */
+  --s0: #0e1621;          /* 窗口底（露出边距） */
+  --s1: #141f2d;          /* 面板（平铺、不透明） */
+  --s2: #1b2837;          /* 面板内次级面 */
+  --s3: #233243;          /* 控件底 */
+  --l1: #26364a;          /* 边框 */
+  --l2: #33465d;
+  --i1: #e7eef8;
+  --i2: #9fadc0;
+  --i3: #6d7d92;
+  --a1: #93a9ff;
+  --ai: #0b1119;
   --d1: #f87171;
-  --ok: #6ee7b7;
-  --warn: #fbbf24;
+  --ok: #5fe0bd;
+  --warn: #f6c177;
 
-  /* 玻璃：半透明度是主要观感，模糊是辅料（暗档 62% / 70%） */
-  --glass-1: color-mix(in srgb, #171a1e 70%, transparent);
-  --glass-2: color-mix(in srgb, #171a1e 62%, transparent);
+  /* 玻璃：半透明度是主要观感，模糊是辅料（浮层 70% / 浮条 62%） */
+  --glass-1: color-mix(in srgb, var(--s1) 70%, transparent);
+  --glass-2: color-mix(in srgb, var(--s1) 62%, transparent);
   --glass-control: color-mix(in srgb, #ffffff 6%, transparent);
-  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.06);
-  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.045), 0 0 0 1px rgb(0 0 0 / 0.25);
+  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.055);
+  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.04), 0 0 0 1px rgb(0 0 0 / 0.22);
 }
 
 :root[data-theme="light"] {
@@ -43,8 +44,8 @@
   --ok: #059669;
   --warn: #b45309;
 
-  --glass-1: color-mix(in srgb, #ffffff 78%, transparent);
-  --glass-2: color-mix(in srgb, #ffffff 70%, transparent);
+  --glass-1: color-mix(in srgb, var(--s1) 78%, transparent);
+  --glass-2: color-mix(in srgb, var(--s1) 70%, transparent);
   --glass-control: color-mix(in srgb, #000000 4%, transparent);
   --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9);
   --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.7), 0 0 0 1px rgb(0 0 0 / 0.04);
@@ -67,8 +68,8 @@
     --d1: #dc2626;
     --ok: #059669;
     --warn: #b45309;
-    --glass-1: color-mix(in srgb, #ffffff 78%, transparent);
-    --glass-2: color-mix(in srgb, #ffffff 70%, transparent);
+    --glass-1: color-mix(in srgb, var(--s1) 78%, transparent);
+    --glass-2: color-mix(in srgb, var(--s1) 70%, transparent);
     --glass-control: color-mix(in srgb, #000000 4%, transparent);
     --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9);
   }
@@ -195,7 +196,7 @@ dialog.sc-dialog {
   box-shadow: var(--edge-highlight);
 }
 dialog.sc-dialog::backdrop {
-  background: rgb(6 7 9 / 0.55);
+  background: rgb(7 11 17 / 0.58);
   -webkit-backdrop-filter: blur(4px) saturate(120%);
   backdrop-filter: blur(4px) saturate(120%);
 }
