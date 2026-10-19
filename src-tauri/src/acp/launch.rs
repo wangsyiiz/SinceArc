@@ -42,7 +42,10 @@ impl AgentProfile {
                     shell.clone(),
                     "-lc".to_string(),
                 ];
-                let mut cmd = self.program.clone();
+                // login shell 不读 ~/.zshrc，PATH 里没有 ~/.local/bin（hermes 就装在那儿）；
+                // 显式补上，并用 exec 让 agent 顶替 shell 进程，pid 才好对得上。
+                let mut cmd = String::from("export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; exec ");
+                cmd.push_str(&self.program);
                 if !self.args.is_empty() {
                     cmd.push(' ');
                     cmd.push_str(&self.args.join(" "));
@@ -89,6 +92,11 @@ mod tests {
         assert_eq!(args[0..2], ["-d", "fedora"]);
         assert!(args.contains(&"--cd".to_string()));
         assert!(args.contains(&"/home/jerry/src".to_string()));
-        assert_eq!(args.last().unwrap(), "hermes acp");
+
+        let script = args.last().expect("script is last arg");
+        // login shell 的 PATH 不含 ~/.local/bin，必须显式补
+        assert!(script.contains("$HOME/.local/bin"));
+        // 用 exec 顶替 shell，pid 才对得上
+        assert!(script.ends_with("exec hermes acp"), "got: {script}");
     }
 }

@@ -1,5 +1,5 @@
-mod acp;
-mod db;
+pub mod acp;
+pub mod db;
 
 #[tauri::command]
 fn app_info() -> serde_json::Value {
