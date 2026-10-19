@@ -22,13 +22,12 @@ interface TitleBarProps {
 }
 
 export function TitleBar({ profile, cwd }: TitleBarProps) {
-  const drag = { "data-tauri-drag-region": true } as const;
+  const drag = { "data-tauri-drag-region": "" } as const;
 
   return (
     <div
       {...drag}
       className="flex h-9 shrink-0 items-stretch select-none"
-      onDoubleClick={() => void withWindow((w) => w.toggleMaximize())}
     >
       <div className="flex items-center gap-2 pl-3.5" {...drag}>
         <span
