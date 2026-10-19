@@ -31,7 +31,7 @@ export function Composer({ busy, onSend, onStop, placeholder }: ComposerProps) {
   return (
     <div
       className={cn(
-        "sc-glass rounded-[14px] transition-colors",
+        "sc-glass rounded-[12px] transition-colors",
         busy ? "border-accent-1/35" : "focus-within:border-line-2",
       )}
     >

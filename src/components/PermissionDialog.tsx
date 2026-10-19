@@ -48,7 +48,7 @@ export function PermissionDialog({ request, open, onDecide }: PermissionDialogPr
     >
       <div className="p-5">
         <div className="flex items-start gap-3">
-          <div className="grid size-8 shrink-0 place-items-center rounded-[10px] border border-warn-1/20 bg-warn-1/[0.09] text-warn-1">
+          <div className="grid size-8 shrink-0 place-items-center rounded-[8px] border border-warn-1/20 bg-warn-1/[0.09] text-warn-1">
             <ShieldAlert className="size-4" />
           </div>
           <div className="min-w-0 flex-1">
@@ -71,7 +71,7 @@ export function PermissionDialog({ request, open, onDecide }: PermissionDialogPr
                 autoFocus={i === 0}
                 onClick={() => onDecide(opt.id)}
                 className={cn(
-                  "flex items-center gap-2 rounded-[9px] px-3 py-2 text-left text-[12.5px] transition-colors outline-none focus-visible:ring-2",
+                  "flex items-center gap-2 rounded-[8px] px-3 py-2 text-left text-[12.5px] transition-colors outline-none focus-visible:ring-2",
                   tone.className,
                 )}
               >

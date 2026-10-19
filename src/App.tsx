@@ -119,7 +119,7 @@ export default function App() {
                 {pending && (
                   <button
                     onClick={() => setPermOpen(true)}
-                    className="sc-glass pointer-events-auto mb-2 flex w-full items-center gap-2 rounded-[11px] px-3 py-2 text-left text-[11.5px] text-warn-1 transition-colors hover:brightness-110"
+                    className="sc-glass pointer-events-auto mb-2 flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-[11.5px] text-warn-1 transition-colors hover:brightness-110"
                   >
                     <AlertCircle className="size-3.5 shrink-0" />
                     <span className="truncate">agent 请求权限：{pending.title.replace(/？$/, "")}</span>

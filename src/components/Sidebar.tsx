@@ -35,7 +35,7 @@ export function Sidebar({
   return (
     <aside className="sc-pane flex h-full w-[260px] shrink-0 flex-col overflow-hidden">
       <div className="flex items-center gap-2 px-3.5 pt-3.5 pb-2.5">
-        <div className="grid size-6 place-items-center rounded-[7px] bg-accent-1/12 text-[13px] leading-none text-accent-1">
+        <div className="grid size-6 place-items-center rounded-[6px] bg-accent-1/12 text-[13px] leading-none text-accent-1">
           ◇
         </div>
         <div className="min-w-0 flex-1">
@@ -47,7 +47,7 @@ export function Sidebar({
       <div className="px-2.5 pb-2">
         <button
           onClick={onNew}
-          className="sc-control flex w-full items-center gap-2 rounded-[9px] px-2.5 py-2 text-[12.5px] text-ink-1 transition-colors hover:bg-white/[0.09]"
+          className="sc-control flex w-full items-center gap-2 rounded-[8px] px-2.5 py-2 text-[12.5px] text-ink-1 transition-colors hover:bg-white/[0.09]"
         >
           <Plus className="size-3.5 text-ink-2" />
           新建会话
@@ -70,7 +70,7 @@ export function Sidebar({
                   key={s.id}
                   onClick={() => onSelect(s.id)}
                   className={cn(
-                    "group mb-0.5 flex w-full flex-col gap-0.5 rounded-[9px] px-2.5 py-2 text-left transition-colors",
+                    "group mb-0.5 flex w-full flex-col gap-0.5 rounded-[8px] px-2.5 py-2 text-left transition-colors",
                     active ? "bg-white/[0.07] shadow-[inset_0_1px_0_rgb(255_255_255/0.05)]" : "hover:bg-white/[0.04]",
                   )}
                 >
@@ -97,7 +97,7 @@ export function Sidebar({
             key={p.id}
             onClick={() => onSelectProfile(p.id)}
             className={cn(
-              "flex w-full items-center gap-2 rounded-[9px] px-2 py-1.5 text-left transition-colors",
+              "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left transition-colors",
               p.id === activeProfileId ? "bg-white/[0.06]" : "hover:bg-white/[0.04]",
             )}
           >
@@ -109,7 +109,7 @@ export function Sidebar({
             {p.launch === "wsl" && <Terminal className="size-3 shrink-0 text-ink-3" />}
           </button>
         ))}
-        <button className="mt-0.5 flex w-full items-center gap-2 rounded-[9px] px-2 py-1.5 text-[11.5px] text-ink-3 transition-colors hover:bg-white/[0.04] hover:text-ink-2">
+        <button className="mt-0.5 flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-[11.5px] text-ink-3 transition-colors hover:bg-white/[0.04] hover:text-ink-2">
           <Settings2 className="size-3.5" />
           设置
         </button>

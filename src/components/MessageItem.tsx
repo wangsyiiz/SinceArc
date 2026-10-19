@@ -7,7 +7,7 @@ export function MessageItem({ message }: { message: Message }) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[78%] rounded-[14px] rounded-br-[5px] bg-surface-3 px-3.5 py-2.5 text-[13.5px] leading-relaxed text-ink-1">
+        <div className="max-w-[78%] rounded-[12px] rounded-br-[5px] bg-surface-3 px-3.5 py-2.5 text-[13.5px] leading-relaxed text-ink-1">
           {message.text}
         </div>
       </div>
@@ -26,7 +26,7 @@ export function MessageItem({ message }: { message: Message }) {
 
   if (message.kind === "thinking") {
     return (
-      <details className="group rounded-[10px] border border-line-1/70 bg-surface-1/40">
+      <details className="group rounded-[8px] border border-line-1/70 bg-surface-1/40">
         <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-[11.5px] text-ink-3">
           <Sparkles className="size-3" />
           思考

@@ -26,7 +26,7 @@ export function EmptyState({ cwd, onPick }: { cwd: string; onPick: (text: string
           <button
             key={s}
             onClick={() => onPick(s)}
-            className="flex items-center gap-2 rounded-[10px] border border-line-1 bg-surface-1 px-3.5 py-2.5 text-left text-[12.5px] text-ink-2 transition-colors hover:border-line-2 hover:bg-surface-2 hover:text-ink-1"
+            className="flex items-center gap-2 rounded-[8px] border border-line-1 bg-surface-1 px-3.5 py-2.5 text-left text-[12.5px] text-ink-2 transition-colors hover:border-line-2 hover:bg-surface-2 hover:text-ink-1"
           >
             <span className="flex-1">{s}</span>
             <CornerDownLeft className="size-3.5 shrink-0 text-ink-3" />

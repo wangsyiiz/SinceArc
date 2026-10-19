@@ -37,7 +37,7 @@ export function ToolCallCard({ call }: { call: ToolCall }) {
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-[10px] border bg-surface-1 transition-colors",
+        "overflow-hidden rounded-[8px] border bg-surface-1 transition-colors",
         call.status === "running" ? "border-accent-1/30" : "border-line-1",
       )}
     >

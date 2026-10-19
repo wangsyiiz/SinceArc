@@ -1,77 +1,85 @@
 @import "tailwindcss";
 
-/* ---------- 令牌：底层平铺 + 上层磨砂玻璃（沿用 sincecloud-web 归位表） ---------- */
+/* ---------- 令牌：整段沿用 sincecloud-web `tokens.css` 的面阶 ----------
+   石板蓝不是"深色"，是中等亮度的蓝紫灰：n-0 #292d3e / n-2 #2f3347 / n-3 #33384c。
+   强调色是单色（浅灰底黑字），不是彩色 accent。 */
+
 :root {
   color-scheme: dark;
-  /* 石板蓝（slate blue）：H≈212°，S≈25%，比纯黑暖一档，蓝但不发亮 */
-  --s0: #0e1621;          /* 窗口底（露出边距） */
-  --s1: #141f2d;          /* 面板（平铺、不透明） */
-  --s2: #1b2837;          /* 面板内次级面 */
-  --s3: #233243;          /* 控件底 */
-  --l1: #26364a;          /* 边框 */
-  --l2: #33465d;
-  --i1: #e7eef8;
-  --i2: #9fadc0;
-  --i3: #6d7d92;
-  --a1: #93a9ff;
-  --ai: #0b1119;
-  --d1: #f87171;
-  --ok: #5fe0bd;
-  --warn: #f6c177;
 
-  /* 玻璃：半透明度是主要观感，模糊是辅料（浮层 70% / 浮条 62%） */
-  --glass-1: color-mix(in srgb, var(--s1) 70%, transparent);
-  --glass-2: color-mix(in srgb, var(--s1) 62%, transparent);
+  /* 面阶：窗口底 → 下沉面 → 分栏面 → 卡片面 → 悬停面 */
+  --s0: #292d3e;          /* n-0 窗口底 */
+  --s1: #2f3347;          /* n-2 分栏面（侧栏 / 内容卡 / 顶栏） */
+  --s2: #33384c;          /* n-3 卡片与浮层实心面 */
+  --s3: #3c425a;          /* n-4 悬停 / 激活面 */
+  --l1: #525a7d;          /* n-5 分隔线与常规边框 */
+  --l2: #66709b;          /* n-6 强描边（输入框、hover 边框） */
+
+  --i1: #f6f6f6;
+  --i2: #c0c0c0;
+  --i3: #b2b2b2;
+
+  /* 单色强调：主按钮 = 浅灰底 + 近黑字 */
+  --a1: #dedede;
+  --ai: #080808;
+
+  /* 语义色不随主题变 */
+  --d1: #f85149;
+  --ok: #3fb950;
+  --warn: #d29922;
+
+  /* 玻璃：n-3 70% / n-2 72%，模糊是辅料 */
+  --glass-1: color-mix(in srgb, var(--s2) 70%, transparent);
+  --glass-2: color-mix(in srgb, var(--s1) 72%, transparent);
   --glass-control: color-mix(in srgb, #ffffff 6%, transparent);
-  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.055);
-  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.04), 0 0 0 1px rgb(0 0 0 / 0.22);
+  --glass-blur: 16px;
+  --glass-saturate: 1.6;
+  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.07), inset 0 -1px 0 rgb(0 0 0 / 0.4);
+  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.06), inset 0 -1px 0 rgb(0 0 0 / 0.3);
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --s0: #ece9e4;
-  --s1: #fbfaf8;
-  --s2: #f3f1ed;
-  --s3: #e9e6e0;
-  --l1: #ded9d2;
-  --l2: #cec8bf;
-  --i1: #1a1c1f;
-  --i2: #5b6169;
-  --i3: #8b929a;
-  --a1: #4f6ef7;
-  --ai: #ffffff;
-  --d1: #dc2626;
-  --ok: #059669;
-  --warn: #b45309;
+  --s0: #eeeeee;
+  --s1: #fafafa;
+  --s2: #ffffff;
+  --s3: #ededed;
+  --l1: #dedede;
+  --l2: #c4c4c4;
 
-  --glass-1: color-mix(in srgb, var(--s1) 78%, transparent);
-  --glass-2: color-mix(in srgb, var(--s1) 70%, transparent);
+  --i1: #060606;
+  --i2: #4a4a4a;
+  --i3: #6e6e6e;
+
+  --a1: #171717;
+  --ai: #ffffff;
+
+  --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
+  --glass-2: color-mix(in srgb, var(--s1) 72%, transparent);
   --glass-control: color-mix(in srgb, #000000 4%, transparent);
-  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9);
-  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.7), 0 0 0 1px rgb(0 0 0 / 0.04);
+  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 -1px 0 rgb(0 0 0 / 0.1);
+  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.7), inset 0 -1px 0 rgb(0 0 0 / 0.06);
 }
 
 @media (prefers-color-scheme: light) {
   :root[data-theme="system"] {
     color-scheme: light;
-    --s0: #ece9e4;
-    --s1: #fbfaf8;
-    --s2: #f3f1ed;
-    --s3: #e9e6e0;
-    --l1: #ded9d2;
-    --l2: #cec8bf;
-    --i1: #1a1c1f;
-    --i2: #5b6169;
-    --i3: #8b929a;
-    --a1: #4f6ef7;
+    --s0: #eeeeee;
+    --s1: #fafafa;
+    --s2: #ffffff;
+    --s3: #ededed;
+    --l1: #dedede;
+    --l2: #c4c4c4;
+    --i1: #060606;
+    --i2: #4a4a4a;
+    --i3: #6e6e6e;
+    --a1: #171717;
     --ai: #ffffff;
-    --d1: #dc2626;
-    --ok: #059669;
-    --warn: #b45309;
-    --glass-1: color-mix(in srgb, var(--s1) 78%, transparent);
-    --glass-2: color-mix(in srgb, var(--s1) 70%, transparent);
+    --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
+    --glass-2: color-mix(in srgb, var(--s1) 72%, transparent);
     --glass-control: color-mix(in srgb, #000000 4%, transparent);
-    --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9);
+    --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 -1px 0 rgb(0 0 0 / 0.1);
+    --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.7), inset 0 -1px 0 rgb(0 0 0 / 0.06);
   }
 }
 
@@ -91,7 +99,7 @@
   --color-ok-1: var(--ok);
   --color-warn-1: var(--warn);
 
-  --radius-card: 14px;
+  --radius-card: 12px;
   --font-sans: "Inter", "Segoe UI Variable Text", "Segoe UI", "PingFang SC",
     "Microsoft YaHei", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, monospace;
@@ -149,16 +157,16 @@ body {
 /* 上层浮面（对话框 / 悬浮条）：半透明 + 模糊，无外投影，靠上缘高光读层次 */
 .sc-glass {
   background: var(--glass-1);
-  -webkit-backdrop-filter: blur(20px) saturate(150%);
-  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   border: 1px solid var(--l1);
   box-shadow: var(--edge-highlight);
 }
 /* 控件（按钮 / 输入 / 行 hover）：只有 inset 内高光，不抢戏 */
 .sc-control {
   background: var(--glass-control);
-  -webkit-backdrop-filter: blur(10px) saturate(130%);
-  backdrop-filter: blur(10px) saturate(130%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  backdrop-filter: blur(10px) saturate(140%);
   box-shadow: var(--edge-hairline);
 }
 
@@ -187,16 +195,16 @@ body {
 dialog.sc-dialog {
   padding: 0;
   border: 1px solid var(--l1);
-  border-radius: 18px;
+  border-radius: 14px;
   background: var(--glass-1);
-  -webkit-backdrop-filter: blur(26px) saturate(160%);
-  backdrop-filter: blur(26px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(var(--glass-saturate));
+  backdrop-filter: blur(22px) saturate(var(--glass-saturate));
   color: var(--i1);
   width: min(520px, calc(100vw - 48px));
   box-shadow: var(--edge-highlight);
 }
 dialog.sc-dialog::backdrop {
-  background: rgb(7 11 17 / 0.58);
+  background: rgb(18 20 30 / 0.55);
   -webkit-backdrop-filter: blur(4px) saturate(120%);
   backdrop-filter: blur(4px) saturate(120%);
 }
