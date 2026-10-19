@@ -113,7 +113,7 @@ body,
 
 body {
   margin: 0;
-  background: var(--s1);
+  background: var(--s0);
   color: var(--i1);
   font-family: var(--font-sans);
   font-size: 14px;
