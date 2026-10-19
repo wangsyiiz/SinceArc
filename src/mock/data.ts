@@ -6,6 +6,7 @@ import type {
   PermissionRequest,
   Player,
   SessionSummary,
+  TraceTurn,
 } from "@/types";
 
 export const profiles: AgentProfile[] = [
@@ -93,6 +94,35 @@ export const activities: Activity[] = [
   { id: "a-6", playerId: "pl-hermes", kind: "thinking", title: "对比三种存放位置", status: "ok", at: "21:06" },
   { id: "a-7", playerId: "pl-claude", kind: "read", title: "读取 launch.rs", meta: "96 行", status: "ok", at: "21:08" },
   { id: "a-8", playerId: "pl-claude", kind: "edit", title: "修改 launch.rs", detail: "+18 −4", status: "running", at: "21:08" },
+];
+
+export const turns: TraceTurn[] = [
+  {
+    id: "t-1",
+    at: "21:04",
+    userText: "@claude 补上 setsid，关窗时把进程组一起杀掉",
+    playerId: "pl-claude",
+    activityIds: ["a-1", "a-2", "a-3", "a-4", "a-5"],
+    reply: "现在 kill_on_drop 只杀 wsl.exe 这个 relay，WSL 里的 agent 会成孤儿。",
+    status: "done",
+  },
+  {
+    id: "t-2",
+    at: "21:06",
+    userText: "@hermes pid 记在哪一层合适？",
+    playerId: "pl-hermes",
+    activityIds: ["a-6"],
+    reply: "记在 AgentProcess 上，别放全局表。",
+    status: "done",
+  },
+  {
+    id: "t-3",
+    at: "21:08",
+    userText: "顺手把 --cd 的位置也修一下",
+    playerId: "pl-claude",
+    activityIds: ["a-7", "a-8"],
+    status: "running",
+  },
 ];
 
 export const pendingPermission: PermissionRequest = {

@@ -55,6 +55,17 @@ export interface Activity {
   at: string;
 }
 
+/** 一轮：用户发话 → 某玩家的一串动作 → 该玩家的回复 */
+export interface TraceTurn {
+  id: string;
+  at: string;
+  userText: string;
+  playerId: string;
+  activityIds: string[];
+  reply?: string;
+  status: "done" | "running";
+}
+
 /* ---------- 聊天流：只留「人对人的话」 ---------- */
 export type Message =
   | { id: string; role: "user"; text: string; at: string; quoted?: QuotedRef }

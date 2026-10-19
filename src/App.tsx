@@ -11,6 +11,7 @@ import { SettingsDrawer } from "@/components/SettingsDrawer";
 import { Sidebar } from "@/components/Sidebar";
 import { StatusBar } from "@/components/StatusBar";
 import { TitleBar } from "@/components/TitleBar";
+import { TracePanel } from "@/components/TracePanel";
 import {
   activities,
   messages as seedMessages,
@@ -19,6 +20,7 @@ import {
   prs,
   profiles,
   sessions,
+  turns,
 } from "@/mock/data";
 import type { GithubPR, Message, PermissionRequest, Player, ThemeMode, ThreadSettings } from "@/types";
 
@@ -28,7 +30,8 @@ const now = () => new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minu
 export default function App() {
   const [theme, setTheme] = useState<ThemeMode>("dark");
   const [drawer, setDrawer] = useState<"gh" | "settings" | null>(null);
-  const [activityOpen, setActivityOpen] = useState(true);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [traceOpen, setTraceOpen] = useState(true);
   const [playerFilter, setPlayerFilter] = useState<string | null>(null);
   const [settings, setSettings] = useState<ThreadSettings>({ contextMessages: 5 });
   const [activeSessionId, setActiveSessionId] = useState("s-1");
@@ -124,6 +127,14 @@ export default function App() {
           onOpenSettings={() => setDrawer(drawer === "settings" ? null : "settings")}
         />
 
+        <TracePanel
+          open={traceOpen}
+          turns={turns}
+          activities={activities}
+          players={players}
+          onClose={() => setTraceOpen(false)}
+        />
+
         <main className="sc-pane flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <StatusBar
             cwd={cwd}
@@ -131,6 +142,8 @@ export default function App() {
             theme={theme}
             onCycleTheme={cycleTheme}
             onOpenGithub={() => setDrawer(drawer === "gh" ? null : "gh")}
+            traceOpen={traceOpen}
+            onToggleTrace={() => setTraceOpen((v) => !v)}
           />
 
           <div className="flex min-h-0 flex-1">
