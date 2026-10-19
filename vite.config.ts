@@ -11,5 +11,6 @@ export default defineConfig({
   },
   // Tauri 需要的固定端口与严格端口占用
   clearScreen: false,
-  server: { port: 5173, strictPort: true },
+  // 必须显式绑 IPv4：只监听 ::1 时 Tauri 的 devUrl 会连不上
+  server: { host: "127.0.0.1", port: 5173, strictPort: true },
 });

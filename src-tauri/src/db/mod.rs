@@ -1,3 +1,5 @@
+#![allow(dead_code)] // E1/E4 接线后移除：现在只有测试与占位引用
+
 //! 本地持久化（SQLite）。
 //!
 //! v1 只建表、不接线；schema 里 `workspace_id` 一开始就在，
