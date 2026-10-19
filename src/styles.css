@@ -264,3 +264,16 @@ dialog.sc-dialog[open] {
 }
 .sc-dot:nth-child(2) { animation-delay: 0.16s; }
 .sc-dot:nth-child(3) { animation-delay: 0.32s; }
+
+/* 轨迹节点定位后的淡出 */
+@keyframes sc-halo-out {
+  0%, 55% { opacity: 0.2; }
+  100% { opacity: 0; }
+}
+.sc-halo-fade { animation: sc-halo-out 3.2s ease-out forwards; }
+
+@keyframes sc-row-out {
+  0%, 55% { background-color: rgb(255 255 255 / 0.07); }
+  100% { background-color: transparent; }
+}
+.sc-row-fade { animation: sc-row-out 3.2s ease-out forwards; }

@@ -14,16 +14,24 @@ import { StatusBar } from "@/components/StatusBar";
 import { TitleBar } from "@/components/TitleBar";
 import { TracePanel } from "@/components/TracePanel";
 import {
-  activities,
+  activities as seedActivities,
   messages as seedMessages,
   pendingPermission,
   players,
   prs,
   profiles,
   sessions,
-  turns,
+  turns as seedTurns,
 } from "@/mock/data";
-import type { GithubPR, Message, PermissionRequest, Player, ThemeMode, ThreadSettings } from "@/types";
+import type {
+  Activity,
+  GithubPR,
+  Message,
+  PermissionRequest,
+  ThemeMode,
+  ThreadSettings,
+  TraceTurn,
+} from "@/types";
 
 const THEME_ORDER: ThemeMode[] = ["dark", "light", "system"];
 const now = () => new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
@@ -39,6 +47,8 @@ export default function App() {
   const [activeSessionId, setActiveSessionId] = useState("s-1");
   const [activeProfileId, setActiveProfileId] = useState("p-hermes-wsl");
   const [msgs, setMsgs] = useState<Message[]>(seedMessages);
+  const [acts, setActs] = useState<Activity[]>(seedActivities);
+  const [turns, setTurns] = useState<TraceTurn[]>(seedTurns);
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<PermissionRequest | null>(pendingPermission);
   const [permOpen, setPermOpen] = useState(false);
@@ -63,23 +73,62 @@ export default function App() {
 
   const send = useCallback((text: string) => {
     const at = now();
+    const hits = players.filter((p) => text.includes(`@${p.handle}`));
+    const targets = hits.length > 0 ? hits : [players[0]];
+    const turnId = `t-${Date.now()}`;
+
     setMsgs((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text, at }]);
-    const hit = players.find((p) => text.includes(`@${p.handle}`));
-    setBusy(true);
-    window.setTimeout(() => {
-      const p: Player = hit ?? players[0];
-      setMsgs((prev) => [
+
+    // 每个被 @ 的玩家各起一条并行支线
+    const branches = targets.map((p) => {
+      const actId = `a-${Date.now()}-${p.id}`;
+      setActs((prev) => [
         ...prev,
         {
-          id: `p-${Date.now()}`,
-          role: "player",
+          id: actId,
           playerId: p.id,
-          text: `（演示）这条本该由 ${p.name} 的 session 回答。接入后，群聊里 ${settings.contextMessages} 条上下文会作为前缀附在 prompt 里。`,
-          at: now(),
+          kind: "thinking" as const,
+          title: "思考中",
+          status: "running" as const,
+          at,
         },
       ]);
-      setBusy(false);
-    }, 900);
+      return { playerId: p.id, activityIds: [actId], status: "running" as const };
+    });
+    setTurns((prev) => [...prev, { id: turnId, at, userText: text, branches }]);
+
+    setBusy(true);
+    let left = targets.length;
+    targets.forEach((p, i) => {
+      window.setTimeout(
+        () => {
+          const actId = branches[i].activityIds[0];
+          const answer = `（演示）这条本该由 ${p.name} 的 session 回答。接入后，群聊里 ${settings.contextMessages} 条上下文会作为前缀附在 prompt 里。`;
+          setActs((prev) =>
+            prev.map((a) => (a.id === actId ? { ...a, status: "ok" as const, title: "已答复" } : a)),
+          );
+          setTurns((prev) =>
+            prev.map((t) =>
+              t.id === turnId
+                ? {
+                    ...t,
+                    branches: t.branches.map((b) =>
+                      b.playerId === p.id ? { ...b, reply: answer, status: "done" as const } : b,
+                    ),
+                  }
+                : t,
+            ),
+          );
+          setMsgs((prev) => [
+            ...prev,
+            { id: `p-${Date.now()}-${p.id}`, role: "player", playerId: p.id, text: answer, at: now() },
+          ]);
+          left -= 1;
+          if (left === 0) setBusy(false);
+        },
+        900 + i * 700,
+      );
+    });
   }, [settings.contextMessages]);
 
   const quotePr = useCallback((pr: GithubPR) => {
@@ -134,9 +183,12 @@ export default function App() {
           focusId={focus?.id ?? null}
           focusTick={focus?.tick ?? 0}
           turns={turns}
-          activities={activities}
+          activities={acts}
           players={players}
-          onClose={() => setTraceOpen(false)}
+          onClose={() => {
+            setTraceOpen(false);
+            setFocus(null);
+          }}
         />
 
         <main className="sc-pane flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -147,13 +199,18 @@ export default function App() {
             onCycleTheme={cycleTheme}
             onOpenGithub={() => setDrawer(drawer === "gh" ? null : "gh")}
             traceOpen={traceOpen}
-            onToggleTrace={() => setTraceOpen((v) => !v)}
+            onToggleTrace={() =>
+              setTraceOpen((v) => {
+                if (v) setFocus(null);
+                return !v;
+              })
+            }
           />
 
           <div className="flex min-h-0 flex-1">
             <ActivityRail
               players={players}
-              activities={activities}
+              activities={acts}
               filter={playerFilter}
               onFilter={setPlayerFilter}
             />
@@ -168,7 +225,7 @@ export default function App() {
                   ) : (
                     <>
                       {msgs.map((m) => <MessageItem key={m.id} message={m} players={players} />)}
-                      {activities
+                      {acts
                         .filter((a) => a.status === "running")
                         .map((a) => {
                           const p = players.find((x) => x.id === a.playerId);
@@ -218,7 +275,7 @@ export default function App() {
           </div>
 
           <ActivityPanel
-            activities={activities}
+            activities={acts}
             players={players}
             filter={playerFilter}
             open={activityOpen}

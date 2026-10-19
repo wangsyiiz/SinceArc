@@ -5,15 +5,16 @@ import { cn } from "@/lib/utils";
 
 const ROW = 34;
 const MAIN_X = 13;
-const LANE_X = 40;
-const SVG_W = 54;
+const LANE_W = 22;
+
+const laneX = (i: number) => MAIN_X + (i + 1) * LANE_W;
 
 type RowKind = "user" | "activity" | "reply";
 
 interface TraceRow {
   id: string;
+  x: number;
   y: number;
-  lane: 0 | 1;
   kind: RowKind;
   title: string;
   meta?: string;
@@ -35,80 +36,108 @@ function buildTrace(turns: TraceTurn[], activities: Activity[], players: Player[
   const rows: TraceRow[] = [];
   const edges: TraceEdge[] = [];
   let y = 14;
+  let lanes = 1;
 
   for (const t of turns) {
-    const p = players.find((x) => x.id === t.playerId);
-    const color = p?.color ?? "var(--i3)";
+    const p0 = players.find((x) => x.id === t.branches[0]?.playerId);
 
     rows.push({
       id: `${t.id}-user`,
+      x: MAIN_X,
       y,
-      lane: 0,
       kind: "user",
       title: t.userText,
       at: t.at,
       color: "var(--i2)",
     });
 
-    const branchTop = y + ROW;
-    edges.push({
-      d: `M ${MAIN_X} ${y + 7} C ${MAIN_X} ${branchTop - 11}, ${LANE_X} ${branchTop - 11}, ${LANE_X} ${branchTop}`,
-      color,
-    });
+    const branchStart = y + ROW;
+    lanes = Math.max(lanes, t.branches.length);
 
-    let cursor = branchTop;
-    for (const id of t.activityIds) {
-      const a = byId.get(id);
-      if (!a) continue;
-      rows.push({
-        id: a.id,
-        y: cursor,
-        lane: 1,
-        kind: "activity",
-        title: a.title,
-        meta: a.detail ?? a.meta,
-        at: a.at,
-        color,
-        status: a.status,
-        activity: a,
-        playerName: p?.name,
-      });
-      cursor += ROW;
-    }
+    let maxRows = 0;
+    const ends: { y: number; x: number; color: string; open: boolean }[] = [];
 
-    const laneEnd = cursor - ROW;
-    if (t.reply) {
-      rows.push({
-        id: `${t.id}-reply`,
-        y: cursor,
-        lane: 1,
-        kind: "reply",
-        title: `${p?.name ?? "agent"} 回复`,
-        meta: t.reply,
-        at: "",
-        color,
-        status: "ok",
-        playerName: p?.name,
-      });
-      const replyY = cursor;
-      cursor += ROW;
+    t.branches.forEach((b, i) => {
+      const p = players.find((x) => x.id === b.playerId) ?? p0;
+      const color = p?.color ?? "var(--i3)";
+      const x = laneX(i);
+
       edges.push({
-        d: `M ${LANE_X} ${replyY + 7} C ${LANE_X} ${cursor - 11}, ${MAIN_X} ${cursor - 11}, ${MAIN_X} ${cursor}`,
+        d: `M ${MAIN_X} ${y + 7} C ${MAIN_X} ${branchStart - 12}, ${x} ${branchStart - 12}, ${x} ${branchStart}`,
         color,
       });
-    } else {
-      edges.push({ d: `M ${LANE_X} ${laneEnd + 6} L ${LANE_X} ${laneEnd + 22}`, color, dashed: true });
-    }
 
-    edges.push({
-      d: `M ${LANE_X} ${branchTop} L ${LANE_X} ${t.reply ? cursor - 9 : laneEnd + 6}`,
-      color,
+      let cursor = branchStart;
+      for (const id of b.activityIds) {
+        const a = byId.get(id);
+        if (!a) continue;
+        rows.push({
+          id: a.id,
+          x,
+          y: cursor,
+          kind: "activity",
+          title: a.title,
+          meta: a.detail ?? a.meta,
+          at: a.at,
+          color,
+          status: a.status,
+          activity: a,
+          playerName: p?.name,
+        });
+        cursor += ROW;
+      }
+
+      let lastY = cursor - ROW;
+      if (b.reply) {
+        rows.push({
+          id: `${t.id}-${b.playerId}-reply`,
+          x,
+          y: cursor,
+          kind: "reply",
+          title: "回复",
+          meta: b.reply,
+          at: "",
+          color,
+          status: "ok",
+          playerName: p?.name,
+        });
+        lastY = cursor;
+        cursor += ROW;
+      }
+
+      edges.push({
+        d: `M ${x} ${branchStart} L ${x} ${lastY + (b.reply ? 8 : 5)}`,
+        color,
+        dashed: !b.reply,
+      });
+      if (!b.reply) {
+        edges.push({ d: `M ${x} ${lastY + 5} L ${x} ${lastY + 20}`, color, dashed: true });
+      }
+
+      ends.push({ y: lastY, x, color, open: !b.reply });
+      maxRows = Math.max(maxRows, (cursor - branchStart) / ROW);
     });
 
-    y = cursor + 8;
+    const turnEnd = branchStart + Math.max(maxRows, 1) * ROW + 2;
+
+    // 已结束的支线弯回主干；仍在跑的支线保持开放（虚线头）
+    for (const be of ends) {
+      if (be.open) continue;
+      edges.push({
+        d: `M ${be.x} ${be.y + 8} C ${be.x} ${turnEnd - 10}, ${MAIN_X} ${turnEnd - 10}, ${MAIN_X} ${turnEnd}`,
+        color: be.color,
+      });
+    }
+
+    y = turnEnd + 8;
   }
 
-  return { rows, edges, height: y + 8 };
+  return {
+    rows,
+    edges,
+    height: y + 6,
+    width: laneX(Math.max(0, lanes - 1)) + 14,
+  };
 }
 
 const KIND_ICON: Record<ActivityKind, typeof FileText> = {
@@ -121,26 +150,40 @@ const KIND_ICON: Record<ActivityKind, typeof FileText> = {
   permission: ShieldAlert,
 };
 
-function Mark({ row, focused }: { row: TraceRow; focused: boolean }) {
-  const x = row.lane === 0 ? MAIN_X : LANE_X;
+function Mark({ row, focused, tick }: { row: TraceRow; focused: boolean; tick: number }) {
   const k = row.activity?.kind ?? "read";
-  const err = row.status === "error";
-  const fill = err ? "var(--d1)" : row.color;
+  const fill = row.status === "error" ? "var(--d1)" : row.color;
 
   const halo = focused ? (
-    <circle cx={x} cy={row.y} r={9.5} fill={fill} opacity={0.18} />
+    <circle
+      key={`halo-${tick}`}
+      cx={row.x}
+      cy={row.y}
+      r={9.5}
+      fill={fill}
+      className="sc-halo-fade"
+    />
   ) : null;
 
   const pulse =
     row.status === "running" ? (
-      <circle cx={x} cy={row.y} r={7} fill="none" stroke={fill} strokeWidth={1.2} opacity={0.45} className="animate-pulse" />
+      <circle
+        cx={row.x}
+        cy={row.y}
+        r={7}
+        fill="none"
+        stroke={fill}
+        strokeWidth={1.2}
+        opacity={0.4}
+        className="animate-pulse"
+      />
     ) : null;
 
   if (row.kind === "user") {
     return (
       <>
         {halo}
-        <circle cx={x} cy={row.y} r={3.6} fill="var(--i2)" />
+        <circle cx={row.x} cy={row.y} r={3.6} fill="var(--i2)" />
       </>
     );
   }
@@ -149,8 +192,8 @@ function Mark({ row, focused }: { row: TraceRow; focused: boolean }) {
       <>
         {halo}
         {pulse}
-        <circle cx={x} cy={row.y} r={4.2} fill={fill} />
-        <circle cx={x} cy={row.y} r={1.5} fill="var(--s0)" />
+        <circle cx={row.x} cy={row.y} r={4.2} fill={fill} />
+        <circle cx={row.x} cy={row.y} r={1.5} fill="var(--s0)" />
       </>
     );
   }
@@ -159,20 +202,32 @@ function Mark({ row, focused }: { row: TraceRow; focused: boolean }) {
       {halo}
       {pulse}
       {k === "edit" ? (
-        <rect x={x - 3.4} y={row.y - 3.4} width={6.8} height={6.8} rx={1.2} fill={fill} opacity={0.9} />
+        <rect x={row.x - 3.4} y={row.y - 3.4} width={6.8} height={6.8} rx={1.2} fill={fill} opacity={0.9} />
       ) : k === "execute" ? (
-        <polygon points={`${x},${row.y - 4} ${x + 3.8},${row.y + 3} ${x - 3.8},${row.y + 3}`} fill={fill} opacity={0.9} />
+        <polygon
+          points={`${row.x},${row.y - 4} ${row.x + 3.8},${row.y + 3} ${row.x - 3.8},${row.y + 3}`}
+          fill={fill}
+          opacity={0.9}
+        />
       ) : k === "permission" ? (
         <polygon
-          points={`${x},${row.y - 4.4} ${x + 4.4},${row.y} ${x},${row.y + 4.4} ${x - 4.4},${row.y}`}
+          points={`${row.x},${row.y - 4.4} ${row.x + 4.4},${row.y} ${row.x},${row.y + 4.4} ${row.x - 4.4},${row.y}`}
           fill={fill}
         />
       ) : k === "thinking" ? (
-        <circle cx={x} cy={row.y} r={3.2} fill="var(--s0)" stroke={fill} strokeWidth={1.5} />
+        <circle cx={row.x} cy={row.y} r={3.2} fill="var(--s0)" stroke={fill} strokeWidth={1.5} />
       ) : k === "search" ? (
-        <circle cx={x} cy={row.y} r={3} fill="none" stroke={fill} strokeWidth={1.4} strokeDasharray="2 2" />
+        <circle
+          cx={row.x}
+          cy={row.y}
+          r={3}
+          fill="none"
+          stroke={fill}
+          strokeWidth={1.4}
+          strokeDasharray="2 2"
+        />
       ) : (
-        <circle cx={x} cy={row.y} r={2.2} fill={fill} />
+        <circle cx={row.x} cy={row.y} r={2.2} fill={fill} />
       )}
     </>
   );
@@ -188,10 +243,17 @@ interface TracePanelProps {
   onClose: () => void;
 }
 
-export function TracePanel({ open, focusId, focusTick, turns, activities, players, onClose }: TracePanelProps) {
+export function TracePanel({
+  open,
+  focusId,
+  focusTick,
+  turns,
+  activities,
+  players,
+  onClose,
+}: TracePanelProps) {
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
-
-  const { rows, edges, height } = useMemo(
+  const { rows, edges, height, width } = useMemo(
     () => buildTrace(turns, activities, players),
     [turns, activities, players],
   );
@@ -201,6 +263,8 @@ export function TracePanel({ open, focusId, focusTick, turns, activities, player
     const el = rowRefs.current.get(focusId);
     if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [open, focusId, focusTick]);
+
+  const actionCount = activities.length;
 
   return (
     <div
@@ -213,7 +277,7 @@ export function TracePanel({ open, focusId, focusTick, turns, activities, player
         <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line-1/60 px-3">
           <span className="text-[11.5px] font-medium text-ink-1">轨迹</span>
           <span className="font-mono text-[9.5px] text-ink-3">
-            {turns.length} 轮 · {activities.length} 动作
+            {turns.length} 轮 · {actionCount} 动作
           </span>
           <div className="ml-auto flex items-center gap-1">
             {players.map((p) => (
@@ -242,12 +306,12 @@ export function TracePanel({ open, focusId, focusTick, turns, activities, player
             </div>
           )}
           <div className="flex">
-            <svg width={SVG_W} height={height} className="shrink-0">
+            <svg width={width} height={height} className="shrink-0">
               <line
                 x1={MAIN_X}
                 y1={10}
                 x2={MAIN_X}
-                y2={height - 6}
+                y2={height - 4}
                 stroke="var(--l1)"
                 strokeWidth={1}
                 opacity={0.55}
@@ -261,11 +325,16 @@ export function TracePanel({ open, focusId, focusTick, turns, activities, player
                   strokeWidth={1.5}
                   strokeLinecap="round"
                   strokeDasharray={e.dashed ? "3 3" : undefined}
-                  opacity={e.dashed ? 0.55 : 0.9}
+                  opacity={e.dashed ? 0.5 : 0.88}
                 />
               ))}
               {rows.map((r) => (
-                <Mark key={r.id} row={r} focused={r.id === focusId} />
+                <Mark
+                  key={`${r.id}:${r.id === focusId ? focusTick : 0}`}
+                  row={r}
+                  focused={r.id === focusId}
+                  tick={focusTick}
+                />
               ))}
             </svg>
 
@@ -274,18 +343,16 @@ export function TracePanel({ open, focusId, focusTick, turns, activities, player
                 const Icon = r.activity ? KIND_ICON[r.activity.kind] : null;
                 return (
                   <div
-                    key={r.id}
+                    key={`${r.id}:${r.id === focusId ? focusTick : 0}`}
                     ref={(el) => {
                       if (el) rowRefs.current.set(r.id, el);
                       else rowRefs.current.delete(r.id);
                     }}
                     style={{ height: ROW }}
                     className={cn(
-                      "flex items-center gap-1.5 pr-2 transition-colors",
-                      r.id === focusId && "bg-white/[0.06]",
-                      r.kind === "user" && "text-ink-2",
-                      r.kind === "activity" && "text-ink-2",
-                      r.kind === "reply" && "text-ink-1",
+                      "flex items-center gap-1.5 pr-2",
+                      r.id === focusId && "sc-row-fade",
+                      r.kind === "reply" ? "text-ink-1" : "text-ink-2",
                     )}
                   >
                     {r.kind === "user" ? (
@@ -305,9 +372,7 @@ export function TracePanel({ open, focusId, focusTick, turns, activities, player
                         {Icon && <Icon className="size-2.5 shrink-0 text-ink-3" />}
                         <span className="truncate text-[11px]">{r.title}</span>
                         {r.meta && (
-                          <span className="min-w-0 truncate font-mono text-[9.5px] text-ink-3">
-                            {r.meta}
-                          </span>
+                          <span className="min-w-0 truncate font-mono text-[9.5px] text-ink-3">{r.meta}</span>
                         )}
                         {r.status === "running" && (
                           <span
@@ -325,7 +390,7 @@ export function TracePanel({ open, focusId, focusTick, turns, activities, player
         </div>
 
         <footer className="shrink-0 border-t border-line-1/60 px-3 py-2 text-[9.5px] leading-relaxed text-ink-3">
-          主干是你的时间轴，支线是一个 agent 的一次答复；弯回主干 = 该轮结束。
+          主干是你的时间轴；一轮里被 @ 的玩家各开一条支线并行跑，答完弯回主干，虚线头表示还在答。
         </footer>
       </div>
     </div>

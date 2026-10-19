@@ -55,15 +55,20 @@ export interface Activity {
   at: string;
 }
 
-/** 一轮：用户发话 → 某玩家的一串动作 → 该玩家的回复 */
-export interface TraceTurn {
-  id: string;
-  at: string;
-  userText: string;
+/** 一轮里的一条支线 = 某个玩家被 @ 之后的动作串 + 它的回复 */
+export interface TraceBranch {
   playerId: string;
   activityIds: string[];
   reply?: string;
   status: "done" | "running";
+}
+
+/** 一轮：用户发话 → 并行的 N 条支线（每条属于一个玩家） */
+export interface TraceTurn {
+  id: string;
+  at: string;
+  userText: string;
+  branches: TraceBranch[];
 }
 
 /* ---------- 聊天流：只留「人对人的话」 ---------- */
