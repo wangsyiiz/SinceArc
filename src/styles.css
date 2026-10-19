@@ -1,32 +1,39 @@
 @import "tailwindcss";
 
-
+/* ---------- 令牌：底层平铺 + 上层磨砂玻璃（沿用 sincecloud-web 归位表） ---------- */
 :root {
   color-scheme: dark;
-  --s0: #0f1012;
-  --s1: #16181b;
-  --s2: #1c1f23;
-  --s3: #23272c;
-  --l1: #262a2f;
-  --l2: #33383f;
+  --s0: #0c0d0f;          /* 窗口底（露出边距） */
+  --s1: #141619;          /* 面板（平铺、不透明） */
+  --s2: #1a1d21;          /* 面板内次级面 */
+  --s3: #22262b;          /* 控件底 */
+  --l1: #24282d;          /* 边框 */
+  --l2: #31363c;
   --i1: #e8eaed;
-  --i2: #a0a6ad;
-  --i3: #6e757d;
+  --i2: #9ba1a9;
+  --i3: #6a7178;
   --a1: #9db4ff;
   --ai: #0b0d12;
   --d1: #f87171;
   --ok: #6ee7b7;
   --warn: #fbbf24;
+
+  /* 玻璃：半透明度是主要观感，模糊是辅料（暗档 62% / 70%） */
+  --glass-1: color-mix(in srgb, #171a1e 70%, transparent);
+  --glass-2: color-mix(in srgb, #171a1e 62%, transparent);
+  --glass-control: color-mix(in srgb, #ffffff 6%, transparent);
+  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.06);
+  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.045), 0 0 0 1px rgb(0 0 0 / 0.25);
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --s0: #f8f7f5;
-  --s1: #ffffff;
-  --s2: #f1efec;
-  --s3: #e9e6e1;
-  --l1: #e2ded8;
-  --l2: #d3cec6;
+  --s0: #ece9e4;
+  --s1: #fbfaf8;
+  --s2: #f3f1ed;
+  --s3: #e9e6e0;
+  --l1: #ded9d2;
+  --l2: #cec8bf;
   --i1: #1a1c1f;
   --i2: #5b6169;
   --i3: #8b929a;
@@ -35,17 +42,23 @@
   --d1: #dc2626;
   --ok: #059669;
   --warn: #b45309;
+
+  --glass-1: color-mix(in srgb, #ffffff 78%, transparent);
+  --glass-2: color-mix(in srgb, #ffffff 70%, transparent);
+  --glass-control: color-mix(in srgb, #000000 4%, transparent);
+  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9);
+  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.7), 0 0 0 1px rgb(0 0 0 / 0.04);
 }
 
 @media (prefers-color-scheme: light) {
   :root[data-theme="system"] {
     color-scheme: light;
-    --s0: #f8f7f5;
-    --s1: #ffffff;
-    --s2: #f1efec;
-    --s3: #e9e6e1;
-    --l1: #e2ded8;
-    --l2: #d3cec6;
+    --s0: #ece9e4;
+    --s1: #fbfaf8;
+    --s2: #f3f1ed;
+    --s3: #e9e6e0;
+    --l1: #ded9d2;
+    --l2: #cec8bf;
     --i1: #1a1c1f;
     --i2: #5b6169;
     --i3: #8b929a;
@@ -54,6 +67,10 @@
     --d1: #dc2626;
     --ok: #059669;
     --warn: #b45309;
+    --glass-1: color-mix(in srgb, #ffffff 78%, transparent);
+    --glass-2: color-mix(in srgb, #ffffff 70%, transparent);
+    --glass-control: color-mix(in srgb, #000000 4%, transparent);
+    --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9);
   }
 }
 
@@ -93,6 +110,13 @@ body {
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+  user-select: none;
+}
+
+/* 读区可选（正文、输入、代码） */
+.sc-selectable,
+.sc-selectable * {
+  user-select: text;
 }
 
 * {
@@ -114,6 +138,35 @@ body {
   background-clip: content-box;
 }
 
+/* ---------- 材质：三层 ---------- */
+/* 底层：平铺不透明，靠 1px 边框与圆角分栏 */
+.sc-pane {
+  background: var(--s1);
+  border: 1px solid var(--l1);
+  border-radius: var(--radius-card);
+}
+/* 上层浮面（对话框 / 悬浮条）：半透明 + 模糊，无外投影，靠上缘高光读层次 */
+.sc-glass {
+  background: var(--glass-1);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(20px) saturate(150%);
+  border: 1px solid var(--l1);
+  box-shadow: var(--edge-highlight);
+}
+/* 控件（按钮 / 输入 / 行 hover）：只有 inset 内高光，不抢戏 */
+.sc-control {
+  background: var(--glass-control);
+  -webkit-backdrop-filter: blur(10px) saturate(130%);
+  backdrop-filter: blur(10px) saturate(130%);
+  box-shadow: var(--edge-hairline);
+}
+
+/* 拖拽区 */
+.sc-drag {
+  -webkit-app-region: drag;
+}
+
+/* 流式光标 */
 @keyframes sc-caret {
   0%, 45% { opacity: 1; }
   55%, 100% { opacity: 0; }
@@ -129,29 +182,34 @@ body {
   animation: sc-caret 1s steps(1) infinite;
 }
 
+/* 对话框：玻璃 + 无外投影 */
 dialog.sc-dialog {
   padding: 0;
   border: 1px solid var(--l1);
   border-radius: 18px;
-  background: var(--s1);
+  background: var(--glass-1);
+  -webkit-backdrop-filter: blur(26px) saturate(160%);
+  backdrop-filter: blur(26px) saturate(160%);
   color: var(--i1);
   width: min(520px, calc(100vw - 48px));
-  box-shadow: 0 24px 80px -12px rgb(0 0 0 / 0.55);
+  box-shadow: var(--edge-highlight);
 }
 dialog.sc-dialog::backdrop {
-  background: rgb(6 7 9 / 0.62);
-  backdrop-filter: blur(3px);
+  background: rgb(6 7 9 / 0.55);
+  -webkit-backdrop-filter: blur(4px) saturate(120%);
+  backdrop-filter: blur(4px) saturate(120%);
 }
 dialog.sc-dialog[open] {
-  animation: sc-pop 140ms ease-out;
+  animation: sc-pop 150ms cubic-bezier(0.2, 0.9, 0.3, 1);
 }
 @keyframes sc-pop {
-  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
   to { opacity: 1; transform: none; }
 }
 
+/* 消息正文 */
 .sc-prose {
-  line-height: 1.7;
+  line-height: 1.72;
   word-break: break-word;
 }
 .sc-prose p { margin: 0 0 0.7em; }
