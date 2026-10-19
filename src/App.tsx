@@ -9,8 +9,9 @@ import { PermissionDialog } from "@/components/PermissionDialog";
 import { ResizeHandles } from "@/components/ResizeHandles";
 import { SettingsDrawer } from "@/components/SettingsDrawer";
 import { Sidebar } from "@/components/Sidebar";
-import { ThinkingRow } from "@/components/ThinkingRow";
+import { Splitter } from "@/components/Splitter";
 import { StatusBar } from "@/components/StatusBar";
+import { ThinkingRow } from "@/components/ThinkingRow";
 import { TitleBar } from "@/components/TitleBar";
 import { TracePanel } from "@/components/TracePanel";
 import {
@@ -18,14 +19,16 @@ import {
   messages as seedMessages,
   pendingPermission,
   players,
-  prs,
+  prsByRepo,
   profiles,
+  repos as seedRepos,
   sessions,
   turns as seedTurns,
 } from "@/mock/data";
 import type {
   Activity,
   GithubPR,
+  GithubRepo,
   Message,
   PermissionRequest,
   ThemeMode,
@@ -33,8 +36,8 @@ import type {
   TraceTurn,
 } from "@/types";
 
-const THEME_ORDER: ThemeMode[] = ["dark", "light", "system"];
 const now = () => new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+const isWrite = (a: Activity) => a.kind === "edit" || a.kind === "execute";
 
 export default function App() {
   const [theme, setTheme] = useState<ThemeMode>("dark");
@@ -52,11 +55,18 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<PermissionRequest | null>(pendingPermission);
   const [permOpen, setPermOpen] = useState(false);
+  const [sidebarW, setSidebarW] = useState(260);
+  const [traceW, setTraceW] = useState(338);
+  const [dragging, setDragging] = useState(false);
+  const [repoList, setRepoList] = useState<GithubRepo[]>(seedRepos);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const activeProfile = profiles.find((p) => p.id === activeProfileId);
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const cwd = activeSession?.cwd ?? "/home/jerry/source/sincearc";
+
+  // 写闸门：同一时刻只放行一个写者（读可以并行）
+  const writeLock = acts.find((a) => a.status === "running" && isWrite(a)) ?? null;
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -67,71 +77,70 @@ export default function App() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [msgs]);
 
-  const cycleTheme = useCallback(() => {
-    setTheme((t) => THEME_ORDER[(THEME_ORDER.indexOf(t) + 1) % THEME_ORDER.length]);
-  }, []);
+  const send = useCallback(
+    (text: string) => {
+      const at = now();
+      const hits = players.filter((p) => text.includes(`@${p.handle}`));
+      const targets = hits.length > 0 ? hits : [players[0]];
+      const turnId = `t-${Date.now()}`;
 
-  const send = useCallback((text: string) => {
-    const at = now();
-    const hits = players.filter((p) => text.includes(`@${p.handle}`));
-    const targets = hits.length > 0 ? hits : [players[0]];
-    const turnId = `t-${Date.now()}`;
+      setMsgs((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text, at }]);
 
-    setMsgs((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text, at }]);
+      // 每个被 @ 的玩家各起一条并行支线
+      const branches = targets.map((p) => {
+        const actId = `a-${Date.now()}-${p.id}`;
+        setActs((prev) => [
+          ...prev,
+          {
+            id: actId,
+            playerId: p.id,
+            kind: "thinking" as const,
+            title: "思考中",
+            status: "running" as const,
+            at,
+          },
+        ]);
+        return { playerId: p.id, activityIds: [actId], status: "running" as const };
+      });
+      setTurns((prev) => [...prev, { id: turnId, at, userText: text, branches }]);
 
-    // 每个被 @ 的玩家各起一条并行支线
-    const branches = targets.map((p) => {
-      const actId = `a-${Date.now()}-${p.id}`;
-      setActs((prev) => [
-        ...prev,
-        {
-          id: actId,
-          playerId: p.id,
-          kind: "thinking" as const,
-          title: "思考中",
-          status: "running" as const,
-          at,
-        },
-      ]);
-      return { playerId: p.id, activityIds: [actId], status: "running" as const };
-    });
-    setTurns((prev) => [...prev, { id: turnId, at, userText: text, branches }]);
+      setBusy(true);
+      let left = targets.length;
+      targets.forEach((p, i) => {
+        window.setTimeout(
+          () => {
+            const actId = branches[i].activityIds[0];
+            const answer = `（演示）这条本该由 ${p.name} 的 session 回答。接入后，群聊里 ${settings.contextMessages} 条上下文会作为前缀附在 prompt 里。`;
+            setActs((prev) =>
+              prev.map((a) => (a.id === actId ? { ...a, status: "ok" as const, title: "已答复" } : a)),
+            );
+            setTurns((prev) =>
+              prev.map((t) =>
+                t.id === turnId
+                  ? {
+                      ...t,
+                      branches: t.branches.map((b) =>
+                        b.playerId === p.id ? { ...b, reply: answer, status: "done" as const } : b,
+                      ),
+                    }
+                  : t,
+              ),
+            );
+            setMsgs((prev) => [
+              ...prev,
+              { id: `p-${Date.now()}-${p.id}`, role: "player", playerId: p.id, text: answer, at: now() },
+            ]);
+            left -= 1;
+            if (left === 0) setBusy(false);
+          },
+          900 + i * 700,
+        );
+      });
+    },
+    [settings.contextMessages],
+  );
 
-    setBusy(true);
-    let left = targets.length;
-    targets.forEach((p, i) => {
-      window.setTimeout(
-        () => {
-          const actId = branches[i].activityIds[0];
-          const answer = `（演示）这条本该由 ${p.name} 的 session 回答。接入后，群聊里 ${settings.contextMessages} 条上下文会作为前缀附在 prompt 里。`;
-          setActs((prev) =>
-            prev.map((a) => (a.id === actId ? { ...a, status: "ok" as const, title: "已答复" } : a)),
-          );
-          setTurns((prev) =>
-            prev.map((t) =>
-              t.id === turnId
-                ? {
-                    ...t,
-                    branches: t.branches.map((b) =>
-                      b.playerId === p.id ? { ...b, reply: answer, status: "done" as const } : b,
-                    ),
-                  }
-                : t,
-            ),
-          );
-          setMsgs((prev) => [
-            ...prev,
-            { id: `p-${Date.now()}-${p.id}`, role: "player", playerId: p.id, text: answer, at: now() },
-          ]);
-          left -= 1;
-          if (left === 0) setBusy(false);
-        },
-        900 + i * 700,
-      );
-    });
-  }, [settings.contextMessages]);
-
-  const quotePr = useCallback((pr: GithubPR) => {
+  const quotePr = useCallback((pr: GithubPR, repo: GithubRepo) => {
     setMsgs((prev) => [
       ...prev,
       {
@@ -142,11 +151,26 @@ export default function App() {
         quoted: {
           kind: "pr",
           label: `#${pr.number} ${pr.title}`,
-          detail: `${pr.head} → ${pr.base} · +${pr.additions} −${pr.deletions} · ${pr.files} 文件`,
+          detail: `${repo.slug} · ${pr.head} → ${pr.base} · +${pr.additions} −${pr.deletions} · ${pr.files} 文件`,
         },
       },
     ]);
     setDrawer(null);
+  }, []);
+
+  const addRepo = useCallback((path: string) => {
+    const name = path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "新项目";
+    setRepoList((prev) => [
+      ...prev,
+      {
+        id: `r-${Date.now()}`,
+        name,
+        slug: `—/${name}`,
+        path,
+        branch: "—",
+        connected: false,
+      },
+    ]);
   }, []);
 
   const decide = useCallback((optionId: string) => {
@@ -160,10 +184,16 @@ export default function App() {
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-surface-0 text-ink-1">
-      <TitleBar profile={activeProfile} cwd={cwd} />
+      <TitleBar
+        profile={activeProfile}
+        cwd={cwd}
+        githubOpen={drawer === "gh"}
+        onOpenGithub={() => setDrawer(drawer === "gh" ? null : "gh")}
+      />
 
-      <div className="flex min-h-0 flex-1 gap-1.5 px-1 pb-1">
+      <div className="flex min-h-0 flex-1 px-1 pb-1">
         <Sidebar
+          width={sidebarW}
           sessions={sessions}
           activeId={activeSessionId}
           profiles={profiles}
@@ -178,8 +208,18 @@ export default function App() {
           onOpenSettings={() => setDrawer(drawer === "settings" ? null : "settings")}
         />
 
+        <Splitter
+          value={sidebarW}
+          onChange={setSidebarW}
+          onDragChange={setDragging}
+          min={200}
+          max={380}
+        />
+
         <TracePanel
           open={traceOpen}
+          width={traceW}
+          animate={!dragging}
           focusId={focus?.id ?? null}
           focusTick={focus?.tick ?? 0}
           turns={turns}
@@ -191,13 +231,20 @@ export default function App() {
           }}
         />
 
+        {traceOpen && (
+          <Splitter
+            value={traceW}
+            onChange={setTraceW}
+            onDragChange={setDragging}
+            min={250}
+            max={560}
+          />
+        )}
+
         <main className="sc-pane flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <StatusBar
             cwd={cwd}
             profile={activeProfile}
-            theme={theme}
-            onCycleTheme={cycleTheme}
-            onOpenGithub={() => setDrawer(drawer === "gh" ? null : "gh")}
             traceOpen={traceOpen}
             onToggleTrace={() =>
               setTraceOpen((v) => {
@@ -224,17 +271,27 @@ export default function App() {
                     </div>
                   ) : (
                     <>
-                      {msgs.map((m) => <MessageItem key={m.id} message={m} players={players} />)}
+                      {msgs.map((m) => (
+                        <MessageItem key={m.id} message={m} players={players} />
+                      ))}
                       {acts
                         .filter((a) => a.status === "running")
                         .map((a) => {
                           const p = players.find((x) => x.id === a.playerId);
                           if (!p) return null;
+                          const queued =
+                            writeLock && writeLock.id !== a.id && isWrite(a)
+                              ? {
+                                  holder:
+                                    players.find((x) => x.id === writeLock.playerId)?.name ?? "agent",
+                                }
+                              : null;
                           return (
                             <ThinkingRow
                               key={a.id}
                               player={p}
                               activity={a}
+                              queued={queued}
                               onOpenTrace={() => {
                                 setTraceOpen(true);
                                 setFocus((f) => ({ id: a.id, tick: (f?.tick ?? 0) + 1 }));
@@ -257,7 +314,9 @@ export default function App() {
                       <span className="shrink-0 font-medium">
                         {players.find((x) => x.id === pending.playerId)?.name ?? "agent"}
                       </span>
-                      <span className="truncate text-ink-2">请求权限：{pending.title.replace(/？$/, "")}</span>
+                      <span className="truncate text-ink-2">
+                        请求权限：{pending.title.replace(/？$/, "")}
+                      </span>
                       <span className="ml-auto shrink-0 text-ink-3">查看</span>
                     </button>
                   )}
@@ -267,6 +326,8 @@ export default function App() {
                       onSend={send}
                       onStop={() => setBusy(false)}
                       placeholder="输入消息，@ 玩家提问…"
+                      players={players}
+                      contextMessages={settings.contextMessages}
                     />
                   </div>
                 </div>
@@ -286,8 +347,9 @@ export default function App() {
 
       {drawer === "gh" && (
         <GithubDrawer
-          prs={prs}
-          repo="wangsyiiz/SinceArc"
+          repos={repoList}
+          prsByRepo={prsByRepo}
+          onAddRepo={addRepo}
           onClose={() => setDrawer(null)}
           onQuote={quotePr}
         />

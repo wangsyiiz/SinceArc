@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Square, Paperclip } from "lucide-react";
+import { ArrowUp, Square, Paperclip, AlertTriangle } from "lucide-react";
+import type { Player } from "@/types";
 import { cn } from "@/lib/utils";
 
 interface ComposerProps {
@@ -7,9 +8,14 @@ interface ComposerProps {
   onSend: (text: string) => void;
   onStop: () => void;
   placeholder?: string;
+  players?: Player[];
+  contextMessages?: number;
 }
 
-export function Composer({ busy, onSend, onStop, placeholder }: ComposerProps) {
+/** 粗估：系统提示 + 工具schema ≈ 1500 token，每条群聊记录 ≈ 45 token */
+const estimateInput = (agents: number, ctx: number) => agents * (1500 + ctx * 45);
+
+export function Composer({ busy, onSend, onStop, placeholder, players = [], contextMessages = 5 }: ComposerProps) {
   const [value, setValue] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -21,6 +27,8 @@ export function Composer({ busy, onSend, onStop, placeholder }: ComposerProps) {
   }, [value]);
 
   const canSend = value.trim().length > 0 && !busy;
+  const mentioned = players.filter((p) => value.includes(`@${p.handle}`));
+  const parallelCost = mentioned.length > 2 ? estimateInput(mentioned.length, contextMessages) : 0;
 
   const submit = () => {
     if (!canSend) return;
@@ -29,7 +37,18 @@ export function Composer({ busy, onSend, onStop, placeholder }: ComposerProps) {
   };
 
   return (
-    <div
+    <>
+      {parallelCost > 0 && (
+        <div className="mb-1.5 flex items-center gap-1.5 rounded-[8px] border border-warn-1/20 bg-warn-1/[0.08] px-2.5 py-1 text-[10px] text-warn-1">
+          <AlertTriangle className="size-3 shrink-0" />
+          <span>
+            {mentioned.length} 个玩家并行 · 每位约 {(estimateInput(1, contextMessages) / 1000).toFixed(1)}k
+            输入 ≈ 合计 <span className="font-mono">{(parallelCost / 1000).toFixed(1)}k</span> token
+            （含 {contextMessages} 条群聊上下文，粗估）
+          </span>
+        </div>
+      )}
+      <div
       className={cn(
         "sc-glass rounded-[12px] transition-colors",
         busy ? "border-accent-1/35" : "focus-within:border-line-2",
@@ -89,6 +108,7 @@ export function Composer({ busy, onSend, onStop, placeholder }: ComposerProps) {
           )}
         </div>
       </div>
-    </div>
+      </div>
+    </>
   );
 }

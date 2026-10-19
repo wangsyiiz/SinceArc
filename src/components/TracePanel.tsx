@@ -241,6 +241,8 @@ interface TracePanelProps {
   activities: Activity[];
   players: Player[];
   onClose: () => void;
+  width: number;
+  animate: boolean;
 }
 
 export function TracePanel({
@@ -251,9 +253,11 @@ export function TracePanel({
   activities,
   players,
   onClose,
+  width,
+  animate,
 }: TracePanelProps) {
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
-  const { rows, edges, height, width } = useMemo(
+  const { rows, edges, height, width: svgWidth } = useMemo(
     () => buildTrace(turns, activities, players),
     [turns, activities, players],
   );
@@ -269,11 +273,12 @@ export function TracePanel({
   return (
     <div
       className={cn(
-        "shrink-0 overflow-hidden transition-[width] duration-200 ease-out",
-        open ? "w-[338px]" : "w-0",
+        "shrink-0 overflow-hidden",
+        animate && "transition-[width] duration-200 ease-out",
       )}
+      style={{ width: open ? width : 0 }}
     >
-      <div className="sc-pane flex h-full w-[338px] flex-col overflow-hidden">
+      <div style={{ width }} className="sc-pane flex h-full flex-col overflow-hidden">
         <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line-1/60 px-3">
           <span className="text-[11.5px] font-medium text-ink-1">轨迹</span>
           <span className="font-mono text-[9.5px] text-ink-3">
@@ -306,7 +311,7 @@ export function TracePanel({
             </div>
           )}
           <div className="flex">
-            <svg width={width} height={height} className="shrink-0">
+            <svg width={svgWidth} height={height} className="shrink-0">
               <line
                 x1={MAIN_X}
                 y1={10}

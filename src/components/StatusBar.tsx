@@ -1,22 +1,15 @@
-import { ChevronDown, GitPullRequest, Moon, Sun, MonitorSmartphone, ShieldCheck, Waypoints } from "lucide-react";
-import type { AgentProfile, ThemeMode } from "@/types";
+import { ChevronDown, ShieldCheck, Waypoints } from "lucide-react";
+import type { AgentProfile } from "@/types";
 import { cn } from "@/lib/utils";
 
 interface StatusBarProps {
   cwd: string;
   profile: AgentProfile | undefined;
-  theme: ThemeMode;
-  onCycleTheme: () => void;
-  onOpenGithub: () => void;
   traceOpen: boolean;
   onToggleTrace: () => void;
 }
 
-const THEME_ICON = { dark: Moon, light: Sun, system: MonitorSmartphone } as const;
-
-export function StatusBar({ cwd, profile, theme, onCycleTheme, onOpenGithub, traceOpen, onToggleTrace }: StatusBarProps) {
-  const Icon = THEME_ICON[theme];
-
+export function StatusBar({ cwd, profile, traceOpen, onToggleTrace }: StatusBarProps) {
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line-1/60 px-3">
       <button
@@ -49,20 +42,7 @@ export function StatusBar({ cwd, profile, theme, onCycleTheme, onOpenGithub, tra
             {profile.connected ? `${profile.agentName ?? "已连接"} · v${profile.protocolVersion ?? 1}` : "未连接"}
           </div>
         )}
-        <button
-          onClick={onOpenGithub}
-          title="GitHub"
-          className="grid size-7 place-items-center rounded-[6px] text-ink-2 transition-colors hover:bg-white/[0.06] hover:text-ink-1"
-        >
-          <GitPullRequest className="size-3.5" />
-        </button>
-        <button
-          onClick={onCycleTheme}
-          title={`主题：${theme}`}
-          className="grid size-7 place-items-center rounded-[6px] text-ink-2 transition-colors hover:bg-white/[0.06] hover:text-ink-1"
-        >
-          <Icon className="size-3.5" />
-        </button>
+
       </div>
     </header>
   );

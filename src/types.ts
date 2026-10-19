@@ -85,6 +85,16 @@ export interface QuotedRef {
 }
 
 /* ---------- Git / 权限 ---------- */
+/** GitHub 项目：独立于聊天窗口，按路径绑定 gh 的工作目录 */
+export interface GithubRepo {
+  id: string;
+  name: string;
+  slug: string;
+  path: string;
+  branch: string;
+  connected: boolean;
+}
+
 export interface GithubPR {
   number: number;
   title: string;

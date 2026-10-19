@@ -1,4 +1,5 @@
 import { Waypoints } from "lucide-react";
+import { cn } from "@/lib/utils";
 import type { Activity, Player } from "@/types";
 import { PlayerAvatar } from "./PlayerAvatar";
 
@@ -6,9 +7,11 @@ interface ThinkingRowProps {
   player: Player;
   activity: Activity;
   onOpenTrace: () => void;
+  /** 该动作是写类操作，但写入锁被别的玩家占着 */
+  queued?: { holder: string } | null;
 }
 
-export function ThinkingRow({ player, activity, onOpenTrace }: ThinkingRowProps) {
+export function ThinkingRow({ player, activity, onOpenTrace, queued }: ThinkingRowProps) {
   return (
     <div className="flex gap-2.5">
       <PlayerAvatar player={player} size={22} className="mt-0.5" />
@@ -26,7 +29,9 @@ export function ThinkingRow({ player, activity, onOpenTrace }: ThinkingRowProps)
             <span className="sc-dot size-[4px] rounded-full" style={{ background: player.color }} />
             <span className="sc-dot size-[4px] rounded-full" style={{ background: player.color }} />
           </span>
-          <span className="truncate text-[12px] text-ink-2">{activity.title}</span>
+          <span className={cn("truncate text-[12px]", queued ? "text-ink-3" : "text-ink-2")}>
+            {queued ? `等待写入 · ${queued.holder} 正在写` : activity.title}
+          </span>
           {activity.detail && (
             <span className="min-w-0 truncate font-mono text-[10px] text-ink-3">{activity.detail}</span>
           )}

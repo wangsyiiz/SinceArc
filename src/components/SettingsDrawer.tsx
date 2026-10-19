@@ -65,6 +65,9 @@ export function SettingsDrawer({
             只附带<span className="text-ink-2">其他成员</span>的发言，你自己的历史已经在 session 里，
             重复带进去等于双份上下文。
           </p>
+          <p className="mt-1.5 text-[10.5px] leading-relaxed text-ink-3">
+            这是<span className="text-ink-2">本轮开始前</span>的快照：并行时，A 看不到 B 在这一轮里刚说的话。
+          </p>
 
           {heavy && (
             <p className="mt-2 flex items-start gap-1.5 rounded-[6px] bg-warn-1/[0.09] px-2 py-1.5 text-[10.5px] leading-relaxed text-warn-1">

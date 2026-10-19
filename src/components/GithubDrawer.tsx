@@ -1,24 +1,25 @@
 import { useState } from "react";
 import {
+  ArrowUpRight,
   CheckCircle2,
   CircleDot,
-  GitBranch,
+  FolderGit2,
   GitPullRequest,
+  Loader2,
   MessageSquare,
   Plus,
   X,
   XCircle,
-  Loader2,
-  ArrowUpRight,
 } from "lucide-react";
-import type { GithubPR } from "@/types";
+import type { GithubPR, GithubRepo } from "@/types";
 import { cn } from "@/lib/utils";
 
 interface GithubDrawerProps {
-  prs: GithubPR[];
-  repo: string;
+  repos: GithubRepo[];
+  prsByRepo: Record<string, GithubPR[]>;
+  onAddRepo: (path: string) => void;
   onClose: () => void;
-  onQuote: (pr: GithubPR) => void;
+  onQuote: (pr: GithubPR, repo: GithubRepo) => void;
 }
 
 const STATE_STYLE: Record<GithubPR["state"], { color: string; label: string }> = {
@@ -34,28 +35,103 @@ const CHECKS = {
   pending: { icon: Loader2, className: "text-warn-1 animate-spin" },
 } as const;
 
-export function GithubDrawer({ prs, repo, onClose, onQuote }: GithubDrawerProps) {
+export function GithubDrawer({ repos, prsByRepo, onAddRepo, onClose, onQuote }: GithubDrawerProps) {
+  const [activeId, setActiveId] = useState(repos[0]?.id ?? "");
   const [tab, setTab] = useState<"prs" | "issues" | "actions">("prs");
-  const [openId, setOpenId] = useState<number | null>(191);
+  const [openPr, setOpenPr] = useState<number | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [path, setPath] = useState("");
+
+  const repo = repos.find((r) => r.id === activeId) ?? repos[0];
+  const list = repo ? (prsByRepo[repo.id] ?? []) : [];
+
+  const submitPath = () => {
+    const v = path.trim();
+    if (!v) return;
+    onAddRepo(v);
+    setPath("");
+    setAdding(false);
+  };
 
   return (
     <aside className="sc-glass absolute right-1 top-9 bottom-1 z-30 flex w-[386px] flex-col overflow-hidden rounded-[12px]">
       <header className="flex h-10 shrink-0 items-center gap-2 border-b border-line-1/60 px-3">
         <GitPullRequest className="size-3.5 text-ink-2" />
         <span className="text-[12px] font-medium">GitHub</span>
-        <span className="truncate font-mono text-[10px] text-ink-3">{repo}</span>
+        <span className="ml-auto font-mono text-[9.5px] text-ink-3">{repos.length} 个项目</span>
         <button
           onClick={onClose}
-          className="ml-auto grid size-6 place-items-center rounded-[6px] text-ink-3 transition-colors hover:bg-white/[0.06] hover:text-ink-1"
+          className="grid size-6 place-items-center rounded-[6px] text-ink-3 transition-colors hover:bg-white/[0.06] hover:text-ink-1"
         >
           <X className="size-3.5" />
         </button>
       </header>
 
+      {/* 项目切换：与聊天窗口无关，各自独立 */}
+      <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-line-1/40 px-2.5 py-2">
+        {repos.map((r) => (
+          <button
+            key={r.id}
+            onClick={() => {
+              setActiveId(r.id);
+              setOpenPr(null);
+            }}
+            title={`${r.path}\n${r.slug}`}
+            className={cn(
+              "flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 text-[10.5px] transition-colors",
+              activeId === r.id
+                ? "border-line-2 bg-white/[0.08] text-ink-1"
+                : "border-transparent text-ink-3 hover:bg-white/[0.04] hover:text-ink-2",
+            )}
+          >
+            <span
+              className="size-1.5 rounded-full"
+              style={{ background: r.connected ? "var(--ok)" : "var(--i3)" }}
+            />
+            {r.name}
+          </button>
+        ))}
+        <button
+          onClick={() => setAdding((v) => !v)}
+          title="添加项目路径"
+          className="grid size-6 shrink-0 place-items-center rounded-full text-ink-3 transition-colors hover:bg-white/[0.06] hover:text-ink-1"
+        >
+          <Plus className="size-3.5" />
+        </button>
+      </div>
+
+      {adding && (
+        <div className="shrink-0 border-b border-line-1/40 px-2.5 py-2">
+          <div className="flex items-center gap-1.5">
+            <FolderGit2 className="size-3 shrink-0 text-ink-3" />
+            <input
+              autoFocus
+              value={path}
+              onChange={(e) => setPath(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitPath();
+                if (e.key === "Escape") setAdding(false);
+              }}
+              placeholder="/home/jerry/source/项目路径"
+              className="sc-selectable min-w-0 flex-1 rounded-[6px] bg-white/[0.05] px-2 py-1 font-mono text-[10.5px] text-ink-1 outline-none placeholder:text-ink-3"
+            />
+            <button
+              onClick={submitPath}
+              className="rounded-[6px] bg-accent-1 px-2 py-1 text-[10.5px] font-medium text-accent-ink transition-all hover:brightness-110"
+            >
+              添加
+            </button>
+          </div>
+          <p className="mt-1 pl-[18px] text-[9.5px] text-ink-3">
+            添加到列表；执行 gh 命令时后端把 cwd 切到这个目录
+          </p>
+        </div>
+      )}
+
       <div className="flex shrink-0 gap-1 px-2.5 py-2">
         {(
           [
-            ["prs", "Pull requests", prs.length],
+            ["prs", "Pull requests", list.length],
             ["issues", "Issues", 0],
             ["actions", "Actions", 0],
           ] as const
@@ -77,12 +153,18 @@ export function GithubDrawer({ prs, repo, onClose, onQuote }: GithubDrawerProps)
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         {tab !== "prs" ? (
           <div className="py-10 text-center text-[11px] text-ink-3">未接线</div>
+        ) : list.length === 0 ? (
+          <div className="px-4 py-10 text-center text-[11px] leading-relaxed text-ink-3">
+            这个项目还没有 PR
+            <br />
+            <span className="font-mono text-[9.5px]">{repo?.path}</span>
+          </div>
         ) : (
-          prs.map((pr) => {
+          list.map((pr) => {
             const st = STATE_STYLE[pr.state];
             const checks = CHECKS[pr.checks];
             const CheckIcon = checks.icon;
-            const expanded = openId === pr.number;
+            const expanded = openPr === pr.number;
             return (
               <div
                 key={pr.number}
@@ -92,7 +174,7 @@ export function GithubDrawer({ prs, repo, onClose, onQuote }: GithubDrawerProps)
                 )}
               >
                 <button
-                  onClick={() => setOpenId(expanded ? null : pr.number)}
+                  onClick={() => setOpenPr(expanded ? null : pr.number)}
                   className="flex w-full flex-col gap-1 px-2 py-1.5 text-left"
                 >
                   <span className="flex items-start gap-1.5">
@@ -130,7 +212,7 @@ export function GithubDrawer({ prs, repo, onClose, onQuote }: GithubDrawerProps)
                     </div>
                     <div className="mt-2 flex gap-1.5">
                       <button
-                        onClick={() => onQuote(pr)}
+                        onClick={() => repo && onQuote(pr, repo)}
                         className="flex flex-1 items-center justify-center gap-1.5 rounded-[6px] bg-accent-1 py-1.5 text-[11px] font-medium text-accent-ink transition-all hover:brightness-110"
                       >
                         <Plus className="size-3" />
@@ -150,9 +232,8 @@ export function GithubDrawer({ prs, repo, onClose, onQuote }: GithubDrawerProps)
       </div>
 
       <footer className="flex h-7 shrink-0 items-center gap-1.5 border-t border-line-1/60 px-3 font-mono text-[9.5px] text-ink-3">
-        <GitBranch className="size-2.5" />
-        fix-window-perms
-        <span className="ml-auto">gh 2.6x · 缓存 30s</span>
+        <span className="truncate">gh cwd: {repo?.path ?? "—"}</span>
+        <span className="ml-auto shrink-0">{repo?.branch ?? ""} · 缓存 30s</span>
       </footer>
     </aside>
   );
