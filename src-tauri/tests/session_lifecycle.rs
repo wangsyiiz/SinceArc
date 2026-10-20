@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use sincearc_lib::acp::{initialize, transport::Incoming};
 use sincearc_lib::acp::launch::{AgentProfile, Launch};
+use sincearc_lib::acp::{initialize, transport::Incoming};
 
 fn hermes_wsl() -> AgentProfile {
     AgentProfile {
@@ -70,7 +70,10 @@ async fn prompt_streams_chunks_then_finishes() {
         )
         .await
         .expect("session/new should succeed");
-    let session_id = created["sessionId"].as_str().expect("sessionId").to_string();
+    let session_id = created["sessionId"]
+        .as_str()
+        .expect("sessionId")
+        .to_string();
 
     // 收集通知：开着收包的 task，主线程去 await prompt
     let stats = std::sync::Arc::new(std::sync::Mutex::new((0usize, String::new())));
@@ -112,7 +115,10 @@ async fn prompt_streams_chunks_then_finishes() {
 
     assert!(chunks > 0, "至少要收到一个 agent_message_chunk");
     assert!(!text.is_empty(), "拼起来的文本不该为空");
-    assert!(result.get("stopReason").is_some(), "prompt 结果要带 stopReason");
+    assert!(
+        result.get("stopReason").is_some(),
+        "prompt 结果要带 stopReason"
+    );
 
     proc.kill().await;
 }

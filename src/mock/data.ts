@@ -20,7 +20,7 @@ export const profiles: AgentProfile[] = [
     args: ["acp"],
     distro: "fedora",
     shell: "zsh",
-    cwd: "/home/jerry/source/sincearc",
+    cwd: "/mnt/c/source/sincearc",
     connected: true,
     agentName: "hermes-agent 0.22.2",
     protocolVersion: 1,
@@ -57,7 +57,7 @@ export const sessions: SessionSummary[] = [
   {
     id: "s-1",
     title: "给 SinceArc 加会话侧栏",
-    cwd: "/home/jerry/source/sincearc",
+    cwd: "/mnt/c/source/sincearc",
     updatedAt: "刚刚",
     group: "今天",
     playerIds: ["pl-claude", "pl-hermes"],
@@ -65,7 +65,7 @@ export const sessions: SessionSummary[] = [
   {
     id: "s-2",
     title: "ACP 流式渲染的合批策略",
-    cwd: "/home/jerry/source/sincearc",
+    cwd: "/mnt/c/source/sincearc",
     updatedAt: "12 分钟前",
     group: "今天",
     playerIds: ["pl-hermes"],
@@ -81,7 +81,7 @@ export const sessions: SessionSummary[] = [
   {
     id: "s-4",
     title: "Tauri 打包体积对比",
-    cwd: "/home/jerry/source/sincearc",
+    cwd: "/mnt/c/source/sincearc",
     updatedAt: "10 月 17 日",
     group: "更早",
     playerIds: ["pl-hermes"],

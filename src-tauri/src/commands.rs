@@ -41,9 +41,7 @@ pub enum AcpEvent {
     /// agent 进程的输出流关闭了
     Exited,
     /// 一轮 prompt 开始了（UI 用来进入生成态；此时还没有任何 chunk）
-    PromptStarted {
-        session_id: String,
-    },
+    PromptStarted { session_id: String },
     /// 一轮 prompt 正常结束（带 stopReason 等原始结果）
     PromptResult {
         session_id: String,
@@ -171,7 +169,7 @@ fn to_ssh_spec(dto: &ProfileDto) -> Result<SshSpec, CmdError> {
     })
 }
 
-fn to_profile(dto: &ProfileDto) -> Result<AgentProfile, CmdError> {
+pub fn to_profile(dto: &ProfileDto) -> Result<AgentProfile, CmdError> {
     let launch = match dto.launch.as_str() {
         "local" => Launch::Local,
         "wsl" => Launch::Wsl {

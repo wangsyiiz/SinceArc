@@ -44,25 +44,47 @@ pub enum Incoming {
 
 #[derive(Debug)]
 pub enum TransportError {
-    Spawn(std::io::Error),
+    Spawn {
+        program: String,
+        source: std::io::Error,
+    },
     Io(std::io::Error),
     Timeout(u64),
     Closed,
     Json(serde_json::Error),
     Agent(Value),
     Launch(String),
+    /// 握手失败：把 agent 自己吐的 stderr 尾部带上，否则只剩一句 "closed stdout"
+    Handshake {
+        reason: String,
+        stderr_tail: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Spawn(e) => write!(f, "spawn failed: {e}"),
+            Self::Spawn { program, source } => write!(f, "spawn `{program}` failed: {source}"),
             Self::Io(e) => write!(f, "io failed: {e}"),
             Self::Timeout(s) => write!(f, "timed out after {s}s"),
             Self::Closed => write!(f, "agent closed stdout"),
             Self::Json(e) => write!(f, "bad json: {e}"),
             Self::Agent(v) => write!(f, "agent returned error: {v}"),
             Self::Launch(msg) => write!(f, "cannot start agent: {msg}"),
+            Self::Handshake {
+                reason,
+                stderr_tail,
+            } => {
+                if stderr_tail.is_empty() {
+                    write!(f, "handshake failed: {reason}")
+                } else {
+                    write!(
+                        f,
+                        "handshake failed: {reason}\n--- agent stderr ---\n{}",
+                        stderr_tail.join("\n")
+                    )
+                }
+            }
         }
     }
 }
@@ -225,7 +247,10 @@ pub fn spawn(
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
-    let mut child = cmd.spawn().map_err(TransportError::Spawn)?;
+    let mut child = cmd.spawn().map_err(|e| TransportError::Spawn {
+        program: spec.program.clone(),
+        source: e,
+    })?;
     let stdin = child.stdin.take().ok_or(TransportError::Closed)?;
     let stdout = child.stdout.take().ok_or(TransportError::Closed)?;
     let stderr = child.stderr.take().ok_or(TransportError::Closed)?;

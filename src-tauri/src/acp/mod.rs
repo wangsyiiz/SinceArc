@@ -116,11 +116,16 @@ pub async fn initialize(
             Ok((proc, incoming, InitializeOutcome::from_result(&result)))
         }
         Err(e) => {
-            let buf = stderr_tail.lock().expect("stderr tail poisoned");
-            if !buf.is_empty() {
-                tracing::error!(target: "sincearc::acp", "agent stderr tail:\n{}", buf.join("\n"));
+            // 睡一会儿让 stderr 的 reader 把崩溃前的输出收进来
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let tail = stderr_tail.lock().expect("stderr tail poisoned").clone();
+            if !tail.is_empty() {
+                tracing::error!(target: "sincearc::acp", "agent stderr tail:\n{}", tail.join("\n"));
             }
-            Err(e)
+            Err(transport::TransportError::Handshake {
+                reason: e.to_string(),
+                stderr_tail: tail,
+            })
         }
     }
 }

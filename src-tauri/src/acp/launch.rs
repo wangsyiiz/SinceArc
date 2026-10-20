@@ -39,6 +39,21 @@ pub enum Launch {
     Ssh(SshSpec),
 }
 
+/// `wsl.exe` / `ssh.exe` 用绝对路径：从资源管理器或 IDE 启动的 GUI 进程，
+/// PATH 里不一定有 System32，靠名字解析会 spawn 失败（表现为 50200）。
+fn system_tool(name: &str) -> String {
+    #[cfg(windows)]
+    {
+        if let Ok(root) = std::env::var("SystemRoot") {
+            let p = std::path::Path::new(&root).join("System32").join(name);
+            if p.exists() {
+                return p.to_string_lossy().to_string();
+            }
+        }
+    }
+    name.to_string()
+}
+
 /// 最终要交给 `tokio::process::Command` 的东西。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpawnSpec {
@@ -102,7 +117,7 @@ impl AgentProfile {
                     cmd.push_str(&self.args.join(" "));
                 }
                 argv.push(cmd);
-                ("wsl.exe".to_string(), argv)
+                (system_tool("wsl.exe"), argv)
             }
             Launch::Ssh(spec) => {
                 let mut argv = vec![
@@ -145,7 +160,7 @@ impl AgentProfile {
                 let remote = remote_command(&self.program, &self.args, cwd);
                 argv.push(remote);
 
-                ("ssh.exe".to_string(), argv)
+                (system_tool("ssh.exe"), argv)
             }
         };
 
@@ -248,7 +263,7 @@ mod tests {
         .command_line("/home/jerry/src")
         .unwrap();
 
-        assert_eq!(spec.program, "wsl.exe");
+        assert!(spec.program.ends_with("wsl.exe"), "got: {}", spec.program);
         assert_eq!(spec.args[0..2], ["-d", "fedora"]);
         assert!(spec.args.contains(&"--cd".to_string()));
         assert!(spec.args.contains(&"/home/jerry/src".to_string()));
@@ -273,7 +288,7 @@ mod tests {
         .command_line("/srv/app")
         .unwrap();
 
-        assert_eq!(spec.program, "ssh.exe");
+        assert!(spec.program.ends_with("ssh.exe"), "got: {}", spec.program);
         // 不能有 PTY
         assert_eq!(spec.args[0], "-T");
         assert!(spec.args.windows(2).any(|w| w == ["-p", "2222"]));

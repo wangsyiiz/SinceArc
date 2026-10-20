@@ -324,17 +324,24 @@ export function SettingsView({
                             />
                           )}
                         </div>
-                        <div className="col-span-2">
-                          <Field
-                            label="远端工作目录"
-                            mono
-                            value={p.cwd ?? ""}
-                            placeholder="/home/you/project"
-                            onChange={(v) => onUpdateProfile({ ...p, cwd: v })}
-                          />
-                        </div>
                       </div>
                     )}
+
+                    <div className="mt-2.5">
+                      <Field
+                        label="工作目录"
+                        mono
+                        value={p.cwd ?? ""}
+                        placeholder={
+                          p.launch === "local" ? "C:\\source\\your-project" : "/mnt/c/source/your-project"
+                        }
+                        onChange={(v) => onUpdateProfile({ ...p, cwd: v })}
+                      />
+                      <p className="mt-1 text-[9.5px] leading-relaxed text-ink-3">
+                        这个路径必须存在于 agent 那一侧：WSL 与 SSH 要 Linux 路径，本机要 Windows 路径。
+                        填错了 agent 起不来（wsl 会报 chdir failed）。
+                      </p>
+                    </div>
 
                     {errors[p.id] && (
                       <p className="mt-2 break-all rounded-[6px] bg-danger-1/[0.09] px-2 py-1.5 font-mono text-[9.5px] leading-relaxed text-danger-1">
