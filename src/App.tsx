@@ -124,11 +124,11 @@ export default function App() {
     const buf = streamBuf.current;
     streamBuf.current = {};
     for (const [acpSid, text] of Object.entries(buf)) {
-      const uiSid = acpToUi.current[acpSid];
-      if (!uiSid) {
-        diag(`flush 丢弃：session ${acpSid.slice(0, 10)}… 没有 UI 映射`);
-        continue;
-      }
+      // 映射缺失时退回当前会话：同一时刻只有一条 prompt 在跑，
+      // 「这条流式内容属于我现在看的会话」这个判断不需要一张表也能成立。
+      const mapped = acpToUi.current[acpSid];
+      const uiSid = mapped ?? lastSidRef.current;
+      if (!mapped) diag(`映射缺失，退回当前会话 ${uiSid}`);
       if (!text) continue;
       if (flushDiag.current < 12) {
         flushDiag.current += 1;
