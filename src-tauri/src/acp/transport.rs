@@ -100,6 +100,8 @@ pub struct AgentProcess {
     next_id: AtomicU64,
     /// askpass 之类的临时文件；进程对象销毁时删掉，不留密码在磁盘上
     cleanup: Option<std::path::PathBuf>,
+    /// 远端 agent 的 pid 文件（WSL / SSH）；本机直起时没有
+    pid_file: Option<String>,
 }
 
 impl Drop for AgentProcess {
@@ -111,7 +113,13 @@ impl Drop for AgentProcess {
 }
 
 impl AgentProcess {
-    /// 结束进程。WSL/SSH 场景的进程组清理在 E1.1 补（现在只杀直接子进程）。
+    /// 远端 pid 文件路径（没有就是本机直起的进程）
+    pub fn remote_pid_file(&self) -> Option<&str> {
+        self.pid_file.as_deref()
+    }
+
+    /// 结束进程。杀的是本地客户端（wsl.exe / ssh.exe）；远端 agent 是否随之
+    /// 退出由通道断开后的 stdin EOF 决定，`tests/remote_cleanup.rs` 钉这条。
     pub async fn kill(&self) {
         let _ = self.child.lock().await.kill().await;
     }
@@ -367,6 +375,7 @@ pub fn spawn(
             pending,
             next_id: AtomicU64::new(1),
             cleanup: spec.cleanup,
+            pid_file: spec.pid_file,
         },
         incoming_rx,
         erx,

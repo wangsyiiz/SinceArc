@@ -62,6 +62,11 @@ pub struct SpawnSpec {
     pub env: BTreeMap<String, String>,
     /// askpass 之类的临时文件，进程结束后删除
     pub cleanup: Option<PathBuf>,
+    /// 远端 pid 文件（WSL / SSH）：远端 shell 在 exec 前把 $$ 写进去，
+    /// exec 不改 pid，所以它就是 agent 的 pid。断连后靠它判断有没有残留 ——
+    /// 靠 `ps | grep 'hermes acp'` 是不行的：hermes 是 python 入口，
+    /// argv 里根本没有 "hermes acp" 这个子串。
+    pub pid_file: Option<String>,
 }
 
 #[derive(Debug)]
@@ -94,6 +99,17 @@ impl AgentProfile {
     pub fn command_line(&self, cwd: &str) -> Result<SpawnSpec, LaunchError> {
         let mut env = self.env.clone();
         let mut cleanup = None;
+        let pid_file = match self.launch {
+            Launch::Local => None,
+            _ => Some(format!(
+                "/tmp/sincearc-agent-{}-{}.pid",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            )),
+        };
 
         let (program, args) = match &self.launch {
             Launch::Local => (self.program.clone(), self.args.clone()),
@@ -109,8 +125,12 @@ impl AgentProfile {
                 ];
                 // login shell 不读 ~/.zshrc，PATH 里没有 ~/.local/bin（hermes 就装在那儿）；
                 // 显式补上，并用 exec 让 agent 顶替 shell 进程，pid 才好对得上。
-                let mut cmd =
-                    String::from("export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; exec ");
+                let mut cmd = String::new();
+                if let Some(f) = &pid_file {
+                    // 远端 shell 的 $$，exec 之后 pid 不变
+                    cmd.push_str(&format!("echo $$ > {f}; "));
+                }
+                cmd.push_str("export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; exec ");
                 cmd.push_str(&self.program);
                 if !self.args.is_empty() {
                     cmd.push(' ');
@@ -157,7 +177,7 @@ impl AgentProfile {
                 argv.push("--".into());
                 argv.push(format!("{}@{}", spec.user, spec.host));
 
-                let remote = remote_command(&self.program, &self.args, cwd);
+                let remote = remote_command(&self.program, &self.args, cwd, pid_file.as_deref());
                 argv.push(remote);
 
                 (system_tool("ssh.exe"), argv)
@@ -169,16 +189,22 @@ impl AgentProfile {
             args,
             env,
             cleanup,
+            pid_file,
         })
     }
 }
 
 /// 远端要执行的整条命令：先 cd（失败就整条失败），再 exec 顶替 shell。
-fn remote_command(program: &str, args: &[String], cwd: &str) -> String {
+fn remote_command(program: &str, args: &[String], cwd: &str, pid_file: Option<&str>) -> String {
     let mut cmd = String::new();
     if !cwd.is_empty() {
         cmd.push_str("cd ");
         cmd.push_str(&shell_quote(cwd));
+        cmd.push_str(" && ");
+    }
+    if let Some(f) = pid_file {
+        cmd.push_str("echo $$ > ");
+        cmd.push_str(f);
         cmd.push_str(" && ");
     }
     // 非交互 ssh 会话不读 ~/.zshrc，PATH 里没有 ~/.local/bin（hermes 就装在那儿）。
@@ -338,7 +364,7 @@ mod tests {
     #[test]
     fn remote_command_without_cwd_skips_cd() {
         assert_eq!(
-            remote_command("hermes", &["acp".into()], ""),
+            remote_command("hermes", &["acp".into()], "", None),
             "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\" exec hermes 'acp'"
         );
     }
