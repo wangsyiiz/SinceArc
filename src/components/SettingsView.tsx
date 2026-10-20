@@ -2,6 +2,8 @@ import { useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
+  Check,
+  Copy,
   MessageSquare,
   Palette,
   Plug,
@@ -101,6 +103,32 @@ export function SettingsView({
   const [busy, setBusy] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const refs = useRef<Partial<Record<SectionId, HTMLElement | null>>>({});
+  const [copied, setCopied] = useState(false);
+
+  /** 诊断内容是用来贴给别人看的，不能只让人截图 */
+  const copyDiagnostics = async () => {
+    const text = eventLog
+      .map(
+        (e) =>
+          `${new Date(e.at).toLocaleTimeString("zh-CN", { hour12: false })}  ${e.text}`,
+      )
+      .join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // WebView 不给 clipboard 权限时的兜底
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
   const n = settings.contextMessages;
   const heavy = n > 10;
 
@@ -471,7 +499,17 @@ export function SettingsView({
               }}
               className="mt-7 scroll-mt-4"
             >
-              <h2 className="text-[12px] font-medium text-ink-2">诊断</h2>
+              <div className="flex items-center justify-between">
+                <h2 className="text-[12px] font-medium text-ink-2">诊断</h2>
+                <button
+                  onClick={copyDiagnostics}
+                  disabled={eventLog.length === 0}
+                  className="flex items-center gap-1 rounded-[6px] px-2 py-1 text-[10.5px] text-ink-2 transition-colors hover:bg-surface-3/45 hover:text-ink-1 disabled:opacity-40 disabled:hover:bg-transparent"
+                >
+                  {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+                  {copied ? "已复制" : "复制"}
+                </button>
+              </div>
               <div className="mt-2 rounded-[8px] border border-line-1/60 p-3">
                 <p className="text-[10px] leading-relaxed text-ink-3">
                   最近收到的 agent 事件。连接后应该先看到 <span className="font-mono">hello</span>；
