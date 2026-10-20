@@ -23,7 +23,7 @@ export function ThinkingRow({ player, activity, onOpenTrace, queued }: ThinkingR
           <span className="font-mono text-[9.5px] text-ink-3">{activity.at}</span>
         </div>
 
-        <div className="flex items-center gap-2 rounded-[10px] border border-dashed border-line-1/70 bg-white/[0.015] px-3 py-2">
+        <div className="flex items-center gap-2 rounded-[10px] border border-dashed border-line-1/70 bg-surface-2/25 px-3 py-2">
           <span className="flex items-end gap-[3px]">
             <span className="sc-dot size-[4px] rounded-full" style={{ background: player.color }} />
             <span className="sc-dot size-[4px] rounded-full" style={{ background: player.color }} />
@@ -38,7 +38,7 @@ export function ThinkingRow({ player, activity, onOpenTrace, queued }: ThinkingR
 
           <button
             onClick={onOpenTrace}
-            className="ml-auto flex shrink-0 items-center gap-1 rounded-[6px] px-1.5 py-1 text-[10.5px] transition-colors hover:bg-white/[0.06]"
+            className="ml-auto flex shrink-0 items-center gap-1 rounded-[6px] px-1.5 py-1 text-[10.5px] transition-colors hover:bg-surface-3/55"
             style={{ color: player.color }}
             title="在轨迹里定位这个动作"
           >

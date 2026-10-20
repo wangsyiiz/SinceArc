@@ -126,6 +126,28 @@ export interface PermissionRequest {
   options: PermissionOption[];
 }
 
+/* ---------- 右侧工作区标签 ---------- */
+export type TabKind = "session" | "repo" | "pr" | "settings";
+
+export interface Tab {
+  id: string;
+  kind: TabKind;
+  title: string;
+  subtitle?: string;
+  sessionId?: string;
+  repoId?: string;
+  prNumber?: number;
+}
+
+/** 每个会话一份独立状态：切走标签不销毁 session，也不丢消息 */
+export interface SessionState {
+  msgs: Message[];
+  acts: Activity[];
+  turns: TraceTurn[];
+  busy: boolean;
+  pendingPerm: PermissionRequest | null;
+}
+
 /* ---------- 设置 ---------- */
 export interface ThreadSettings {
   /** @ 玩家时附带最近 N 条群聊记录，默认 5 */

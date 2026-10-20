@@ -34,6 +34,24 @@
   --glass-control: color-mix(in srgb, #ffffff 6%, transparent);
   --glass-blur: 16px;
   --glass-saturate: 1.6;
+  /* 圆角刻度：分段控件与控件取 base(8)，卡片取 card(12) */
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+
+  /* 分段控件：暗色档 轨道 n-3 / 滑块 n-4；
+     浅色档反过来 —— 轨道是淡黑水洗、滑块纯白（同 sincecloud 的
+     --switch-track-bg / --switch-thumb-bg，用 light-dark 表达） */
+  /* 浮层边界：暗色靠内边高光（边框透明），浅色靠 1px 边框（高光 none） */
+  --glass-border: transparent;
+
+  /* 列表选中面：暗色取 n-4；浅色要再暗一档才看得出来（n-4 在 #fafafa 上过淡） */
+  --row-active: var(--s3);
+
+  --switch-track: var(--s2);
+  --switch-thumb: var(--s3);
+  --switch-thumb-edge: rgb(255 255 255 / 0.07);
+
   --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.07), inset 0 -1px 0 rgb(0 0 0 / 0.4);
   --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.06), inset 0 -1px 0 rgb(0 0 0 / 0.3);
 }
@@ -53,6 +71,17 @@
 
   --a1: #171717;
   --ai: #ffffff;
+
+  --row-active: #e6e6e6;
+  --glass-border: var(--l1);
+
+  --switch-track: color-mix(in srgb, #060606 5%, transparent);
+  --switch-thumb: #ffffff;
+  --switch-thumb-edge: rgb(255 255 255 / 0.95);
+
+  /* 浅色主题不用内边缘高光划边界：层次交给面阶差 */
+  --edge-highlight: none;
+  --edge-hairline: none;
 
   --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
   --glass-2: color-mix(in srgb, var(--s1) 72%, transparent);
@@ -75,7 +104,19 @@
     --i3: #6e6e6e;
     --a1: #171717;
     --ai: #ffffff;
-    --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
+    --row-active: #e6e6e6;
+    --glass-border: var(--l1);
+  --glass-border: var(--l1);
+
+  --switch-track: color-mix(in srgb, #060606 5%, transparent);
+  --switch-thumb: #ffffff;
+  --switch-thumb-edge: rgb(255 255 255 / 0.95);
+
+  /* 浅色主题不用内边缘高光划边界：层次交给面阶差 */
+  --edge-highlight: none;
+  --edge-hairline: none;
+
+  --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
     --glass-2: color-mix(in srgb, var(--s1) 72%, transparent);
     --glass-control: color-mix(in srgb, #000000 4%, transparent);
     --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 -1px 0 rgb(0 0 0 / 0.1);
@@ -128,26 +169,12 @@ body {
   user-select: text;
 }
 
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--l2) transparent;
-}
-*::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-*::-webkit-scrollbar-thumb {
-  background: var(--l2);
-  border-radius: 999px;
-  border: 3px solid transparent;
-  background-clip: content-box;
-}
-*::-webkit-scrollbar-thumb:hover {
-  background: var(--i3);
-  background-clip: content-box;
-}
+/* 滚动条样式集中在文件末尾：一旦设置 scrollbar-width / scrollbar-color，
+   Chromium 会整体忽略 ::-webkit-scrollbar 自定义（标准属性优先），
+   所以这里不要再写那两个属性。 */
 
 /* ---------- 材质：三层 ---------- */
+@layer components {
 /* 底层：透明，与窗口共用同一块底色，靠 1px 边框 + 圆角分栏 */
 .sc-pane {
   background: transparent;
@@ -159,15 +186,16 @@ body {
   background: var(--glass-1);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  border: 1px solid var(--l1);
+  border: 1px solid var(--glass-border);
   box-shadow: var(--edge-highlight);
 }
-/* 控件（按钮 / 输入 / 行 hover）：只有 inset 内高光，不抢戏 */
+/* 控件：只给上缘内高光，底色由调用方的 Tailwind 类给（bg-surface-* / hover:*）
+   —— 之前这里自己铺 background，unlayered 规则会压过所有 bg-* 工具类，
+   按钮的 hover 因此静默失效。 */
 .sc-control {
-  background: var(--glass-control);
-  -webkit-backdrop-filter: blur(10px) saturate(140%);
-  backdrop-filter: blur(10px) saturate(140%);
   box-shadow: var(--edge-hairline);
+}
+
 }
 
 /* 拖拽区 */
@@ -277,3 +305,127 @@ dialog.sc-dialog[open] {
   100% { background-color: transparent; }
 }
 .sc-row-fade { animation: sc-row-out 3.2s ease-out forwards; }
+
+/* 工作区空态：呼吸 + 轨道 */
+@keyframes sc-breathe {
+  0%, 100% { opacity: 0.3; transform: scale(0.98); }
+  50% { opacity: 0.72; transform: scale(1); }
+}
+@keyframes sc-orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.sc-breathe { animation: sc-breathe 5.5s ease-in-out infinite; }
+.sc-orbit { animation: sc-orbit 22s linear infinite; }
+.sc-orbit-rev { animation: sc-orbit 34s linear infinite reverse; }
+
+/* 分段控件：平铺底框 + 一个磨砂玻璃滑块横移
+   （形状照 sincecloud-web 的 .view-switch：轨道 padding 0、净空在槽内、
+     滑块宽 = (100% − 档数×2×净空)/档数、步长 = 100% + 2×净空） */
+.sc-switch {
+  position: relative;
+  display: flex;
+  /* 32px：sincecloud 控件档 28px 在 11–12px 字号下上下只剩 3px，
+     这里按桌面端放宽一档；模糊取它的控件档参数 */
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  /* 轨道/滑块的明暗方向由主题令牌决定（浅色档滑块是白、轨道是水洗） */
+  background: var(--switch-track);
+  transition: background-color 0.16s ease-out;
+}
+
+.sc-switch__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  /* 四边净空 2px（相对内边距框；外沿看是 3px = 2 + 1px 边框）*/
+  width: calc((100% - var(--switch-count, 2) * 4px) / var(--switch-count, 2));
+  height: calc(100% - 4px);
+  /* 不留描边：只靠面阶与上缘高光读层次 */
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--switch-thumb);
+  box-shadow: inset 0 1px 0 var(--switch-thumb-edge);
+  transform: translateX(calc((100% + 4px) * var(--switch-index, 0)));
+  transition: transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+
+.sc-switch__item {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--i3);
+  font-size: 12px;
+  transition: color 0.2s;
+}
+.sc-switch__item:hover {
+  color: var(--i2);
+}
+.sc-switch__item[aria-pressed="true"],
+.sc-switch__item[aria-pressed="true"]:hover {
+  color: var(--i1);
+}
+
+/* 全局控件补间：交互元素统一 160ms ease-out（hover / active / focus 都不瞬跳） */
+@layer base {
+  /* 兜底到所有元素：列表行里的文字色常由 group-hover 修改，
+     只挂在 button 上会让「背景在过渡、文字在跳」，看起来像错位。
+     不列 fill / stroke：那会干扰 SVG 节点的绘制。 */
+  *,
+  ::before,
+  ::after {
+    transition:
+      background-color 160ms ease-out,
+      color 160ms ease-out,
+      border-color 160ms ease-out,
+      box-shadow 160ms ease-out,
+      opacity 160ms ease-out,
+      transform 160ms ease-out;
+  }
+}
+
+@layer components {
+  /* 列表 / 导航的选中面：走主题令牌，浅色下比 n-4 再深一档 */
+  .sc-row-active {
+    background: var(--row-active);
+  }
+}
+
+/* 滚动条：无箭头，静止时半透明，滚动中才显出来（带补间） */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-button,
+::-webkit-scrollbar-button:single-button,
+::-webkit-scrollbar-button:start,
+::-webkit-scrollbar-button:end {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  /* 回退：变量不可用时仍是一档可见的 thumb */
+  background-color: color-mix(in srgb, var(--l1) 28%, transparent);
+  /* 透明度由 --sb-alpha 驱动（伪元素不吃 transition，渐变靠 JS 逐帧改变量） */
+  background-color: color-mix(in srgb, var(--l1) calc(var(--sb-alpha, 0.28) * 100%), transparent);
+}

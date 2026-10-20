@@ -50,8 +50,8 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [], cont
       )}
       <div
       className={cn(
-        "sc-glass rounded-[12px] transition-colors",
-        busy ? "border-accent-1/35" : "focus-within:border-line-2",
+        "sc-glass rounded-[12px] border-transparent transition-colors",
+        busy && "border-accent-1/25",
       )}
     >
       <textarea
@@ -74,7 +74,7 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [], cont
       <div className="flex items-center gap-1 px-2 pb-1.5">
         <button
           title="添加附件（未接线）"
-          className="grid size-7 place-items-center rounded-md text-ink-3 transition-colors hover:bg-white/[0.06] hover:text-ink-2"
+          className="grid size-7 place-items-center rounded-md text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-2"
         >
           <Paperclip className="size-3.5" />
         </button>
@@ -87,7 +87,7 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [], cont
             <button
               onClick={onStop}
               title="停止"
-              className="grid size-7 place-items-center rounded-[8px] bg-white/[0.08] text-ink-1 shadow-[inset_0_1px_0_rgb(255_255_255/0.06)] transition-colors hover:bg-white/[0.12]"
+              className="grid size-7 place-items-center rounded-[8px] bg-surface-3/75 text-ink-1 shadow-[inset_0_1px_0_rgb(255_255_255/0.06)] transition-colors hover:bg-surface-3"
             >
               <Square className="size-3 fill-current" />
             </button>
@@ -100,7 +100,7 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [], cont
                 "grid size-7 place-items-center rounded-[8px] transition-all",
                 canSend
                   ? "bg-accent-1 text-accent-ink shadow-[inset_0_1px_0_rgb(255_255_255/0.25)] hover:brightness-110"
-                  : "bg-white/[0.05] text-ink-3",
+                  : "bg-surface-3/45 text-ink-3",
               )}
             >
               <ArrowUp className="size-3.5" />

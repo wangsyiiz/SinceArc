@@ -1,0 +1,127 @@
+# SinceArc 设计语言
+
+本文件是 UI 的**可执行约定**。改样式之前先读；与 `src/styles.css` 里的实现冲突时，以本文件为准，并同步改实现。
+
+令牌与材质沿用 `sincecloud-web` 的 `tokens.css` / `design-language.md`，本文件只记 SinceArc 自己的取舍与踩过的坑。
+
+---
+
+## 1. 面阶
+
+窗口与分栏都取同一套石板蓝面阶，**不用白色叠加当底色**。
+
+| 令牌 | 暗色 | 浅色 | 用途 |
+| --- | --- | --- | --- |
+| `--s0` | `#292d3e` | `#eeeeee` | 窗口底 |
+| `--s1` | `#2f3347` | `#fafafa` | 分栏面 |
+| `--s2` | `#33384c` | `#ffffff` | 卡片 / 浮层实心面 |
+| `--s3` | `#3c425a` | `#ededed` | 悬停 / 激活面 |
+| `--l1` | `#525a7d` | `#dedede` | 分隔线与常规边框 |
+| `--l2` | `#66709b` | `#c4c4c4` | 强描边 |
+
+**注意方向**：暗色是「数字越大越亮」，浅色是「数字越大越暗」。凡是用 `s3` 表达「选中」的地方，浅色档必须确认它压在下层上仍然可见（`n-4` 在 `#fafafa` 上只差 3 个明度级，看不出来）——所以选中面单独有 `--row-active`（暗色 `s3`，浅色 `#e6e6e6`）。
+
+**白色的唯一用途是「光」**：上缘 1px 内高光、hover 时扫过的那道光。任何 `bg-white/[0.0x]` 都应当换成面阶色——白色叠在石板蓝上会发灰发雾。
+
+---
+
+## 2. 材质三层
+
+| 类 | 用途 | 实现要点 |
+| --- | --- | --- |
+| `.sc-pane` | 分栏（侧栏 / 轨迹 / 主区） | 透明底 + 1px 边框 + 12 圆角；底色由窗口统一提供 |
+| `.sc-glass` | 浮层（输入框、权限条、抽屉） | `--glass-1` 半透明 + `blur(16px) saturate(1.6)` |
+| `.sc-control` | 控件（按钮、行 hover） | 只给上缘内高光，**底色由调用方用 Tailwind 类给** |
+
+三者都在 `@layer components` 里，调用方的 `bg-*` / `border-*` / `shadow-*` 能覆盖它们。
+
+---
+
+## 3. 边界方式：暗色用高光，浅色用边框
+
+| 主题 | `--glass-border` | 高光 |
+| --- | --- | --- |
+| 暗色 | `transparent` | `--edge-highlight`（上亮下暗两道 inset） |
+| 浅色 | `var(--l1)` | `none` |
+
+浅色主题**不用内边缘高光划边界**，层次交给面阶差与 1px 边框；暗色反过来。这条是主题令牌，不是逐组件判断。
+
+---
+
+## 4. 圆角
+
+`--radius-sm: 6px` / `--radius: 8px` / `--radius-lg: 12px` / `--radius-card: 12px`。
+
+滑块这类小元素的圆角与轨道**同值**（8px），不按同心公式算小——22–26px 高的元素上 4px 形同直角。
+
+---
+
+## 5. 状态过渡：一律要有补间
+
+**规则：任何状态变化都必须有过渡，不允许瞬跳。** 覆盖 hover / active / focus / 选中 / 展开折叠 / 数值与透明度变化。
+
+默认参数：
+
+```css
+/* @layer base 里统一兜底，新控件自动继承 */
+transition:
+  background-color 160ms ease-out,
+  color 160ms ease-out,
+  border-color 160ms ease-out,
+  box-shadow 160ms ease-out,
+  opacity 160ms ease-out,
+  transform 160ms ease-out;
+```
+
+需要更慢或更长位移的地方显式覆写：
+
+| 场景 | 时长 / 曲线 |
+| --- | --- |
+| 默认（颜色、边框、阴影、透明度） | `160ms ease-out` |
+| 分段控件滑块横移 | `420ms cubic-bezier(0.22, 1, 0.36, 1)` |
+| 分栏展开 / 收起 | `200ms ease-out` |
+| 滚动条淡回 | `420ms ease-out`（亮起时 110ms，**不对称**：亮得快、淡得慢） |
+
+**不对称时长是有意的**：出现要跟手，消失可以慢。两边对称会显得拖沓。
+
+### 三条实现要求
+
+1. **禁止 `transition: all`**。它会把不相关属性一起过渡，也会让 GPU 合成不可控；按属性列出来。
+2. **伪元素 / 合成层元素不吃 CSS transition 时，用逐帧改变量实现**。实例：`::-webkit-scrollbar-thumb` 由合成器单独绘制，`transition` 与否取决于内核版本；滚动条的明暗改用 JS 逐帧推进根节点上的 `--sb-alpha`，thumb 用 `color-mix(in srgb, var(--l1) calc(var(--sb-alpha) * 100%), transparent)` 取色。
+3. **兜底要覆盖到承载颜色的叶子节点，不能只挂在交互容器上**。列表行的文字色常由 `group-hover:text-*` 改在子 `span` 上；若兜底只写 `button / a / input`，结果是「背景在 160ms 渐变、文字在同一帧瞬跳」——这比两样都不渐变更难看，因为两者不同步。所以兜底是 `*, ::before, ::after`，并**不列 `fill` / `stroke`**（那会干扰 SVG 节点的绘制，等于给轨迹图加了不该有的动画）。
+
+### 还有一条：字重不可过渡
+
+选中态不要改 `font-weight`（`font-medium` 切到选中会让文字宽度变化并触发重排，抖一下比颜色跳更刺眼）。选中只靠颜色与底色表达。
+
+---
+
+## 6. 滚动条
+
+- 宽 10px，无上下箭头（`::-webkit-scrollbar-button` 全部 `display: none`）
+- thumb 用 `border: 3px solid transparent` + `background-clip: padding-box` 收成 4px
+- 静止 `--l1` 28%，滚动中 85%，停止 600ms 后淡回
+
+---
+
+## 7. 三个静默失败（都踩过）
+
+CSS 的错误不会报错，改完必须看产物或实际渲染。
+
+1. **`var(--x)` 未定义** → 整条声明被判无效并丢弃，不退回 0。
+   实例：`border-radius: var(--radius)` 而 `--radius` 从未定义，分段控件一直是直角。
+2. **unlayered 的组件类压过所有 Tailwind 工具类**。
+   实例：`.sc-control` 自带 `background`，导致调用方的 `hover:bg-*` 永远无效。修法是把组件类放进 `@layer components`。
+3. **`scrollbar-width` / `scrollbar-color` 一旦不是 `auto`，Chromium 整体忽略 `::-webkit-scrollbar` 自定义**（标准属性优先）。
+   实例：滚动条改了半天没反应，元凶是文件顶部那两条。
+
+---
+
+## 8. 自检
+
+改完 UI 至少核对三处：
+
+- 产物里目标规则还在不在（`grep` 编译后的 CSS）
+- 浅色档与暗色档各看一遍——同一令牌在两档里的明暗方向可能相反
+- 新加的交互元素有没有落到 `@layer base` 那条过渡上（没显式写 `transition` 也算有）
+- hover 时同时变化的几样东西（背景、文字、边框）是不是**同步**开始——颜色挂在子元素上时最容易漏
