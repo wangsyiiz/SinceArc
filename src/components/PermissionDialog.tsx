@@ -15,7 +15,7 @@ const TONE = {
   allow: {
     icon: ShieldCheck,
     className:
-      "bg-accent-1 text-accent-ink shadow-[inset_0_1px_0_rgb(255_255_255/0.25)] hover:brightness-110 focus-visible:ring-accent-1/50",
+      "sc-glare bg-accent-1 text-accent-ink shadow-[inset_0_1px_0_rgb(255_255_255/0.25)] hover:brightness-110 focus-visible:ring-accent-1/50",
   },
   always: {
     icon: ShieldCheck,

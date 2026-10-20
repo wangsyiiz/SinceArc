@@ -83,7 +83,7 @@ export function PrView({ pr, repo, onQuote }: PrViewProps) {
           <div className="mt-3 flex gap-1.5">
             <button
               onClick={onQuote}
-              className="flex items-center gap-1.5 rounded-[6px] bg-accent-1 px-2.5 py-1.5 text-[11px] font-medium text-accent-ink transition-all hover:brightness-110"
+              className="sc-glare flex items-center gap-1.5 rounded-[6px] bg-accent-1 px-2.5 py-1.5 text-[11px] font-medium text-accent-ink transition-all hover:brightness-110"
             >
               <Plus className="size-3" />
               加入对话

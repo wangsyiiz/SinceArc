@@ -365,3 +365,52 @@ dialog.sc-dialog[open] {
       transform 160ms ease-out;
   }
 }
+
+/* 光泽扫过（GlareHover 的形状：一道约 30% 宽的斜向光带、-45°、
+   blend mode screen、opacity 0.5）—— 光只在 hover 那一瞬经过，
+   不是让元素整体变白。 */
+.sc-glare,
+.sc-control,
+.sc-switch__thumb {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+.sc-glare::after,
+.sc-control::after,
+.sc-switch__thumb::after {
+  content: "";
+  position: absolute;
+  inset: -60% -30%;
+  background: linear-gradient(
+    115deg,
+    transparent 43%,
+    rgb(255 255 255 / 0.5) 50%,
+    transparent 57%
+  );
+  mix-blend-mode: screen;
+  opacity: 0;
+  transform: translateX(-62%);
+  transition:
+    opacity 180ms ease-out,
+    transform 680ms cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+.sc-glare:hover::after,
+.sc-control:hover::after,
+.sc-switch:hover .sc-switch__thumb::after {
+  opacity: 1;
+  transform: translateX(62%);
+}
+/* 浅色档：白光在浅底上会糊成一片，改成一道极淡的暗色水洗 */
+[data-theme="light"] .sc-glare::after,
+[data-theme="light"] .sc-control::after,
+[data-theme="light"] .sc-switch__thumb::after {
+  background: linear-gradient(
+    115deg,
+    transparent 43%,
+    rgb(0 0 0 / 0.07) 50%,
+    transparent 57%
+  );
+  mix-blend-mode: multiply;
+}
