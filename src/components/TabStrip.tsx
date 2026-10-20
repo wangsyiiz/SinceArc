@@ -20,7 +20,7 @@ export function TabStrip({ tabs, activeId, badgeOf, onSelect, onClose }: TabStri
   if (tabs.length === 0) return null;
 
   return (
-    <div className="flex h-9 shrink-0 items-end gap-0.5 overflow-x-auto border-b border-line-1/60 px-1.5">
+    <div className="flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-line-1/60">
       {tabs.map((t) => {
         const Icon = ICON[t.kind];
         const active = t.id === activeId;
@@ -29,10 +29,10 @@ export function TabStrip({ tabs, activeId, badgeOf, onSelect, onClose }: TabStri
             key={t.id}
             onClick={() => onSelect(t.id)}
             className={cn(
-              "group flex h-8 min-w-0 max-w-[220px] cursor-pointer items-center gap-1.5 rounded-t-[8px] border-x border-t px-2.5 text-[11.5px] transition-colors",
+              "group flex h-full min-w-0 max-w-[220px] cursor-pointer items-center gap-1.5 border-r border-line-1/40 px-3 text-[11.5px] transition-colors",
               active
-                ? "border-line-1/70 bg-white/[0.055] text-ink-1"
-                : "border-transparent text-ink-3 hover:bg-white/[0.03] hover:text-ink-2",
+                ? "bg-white/[0.055] text-ink-1 shadow-[inset_0_1px_0_rgb(255_255_255/0.06)]"
+                : "text-ink-3 hover:bg-white/[0.03] hover:text-ink-2",
             )}
             title={t.subtitle ?? t.title}
           >

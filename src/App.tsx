@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityPanel } from "@/components/ActivityPanel";
 import { ActivityRail } from "@/components/ActivityRail";
 import { Composer } from "@/components/Composer";
 import { EmptyState } from "@/components/EmptyState";
@@ -52,8 +51,7 @@ export default function App() {
   const [theme, setTheme] = useState<ThemeMode>("dark");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mode, setMode] = useState<SidebarMode>("sessions");
-  const [activityOpen, setActivityOpen] = useState(false);
-  const [traceOpen, setTraceOpen] = useState(true);
+  const [traceOpen, setTraceOpen] = useState(false);
   const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
   const [playerFilter, setPlayerFilter] = useState<string | null>(null);
   const [settings, setSettings] = useState<ThreadSettings>({ contextMessages: 5 });
@@ -476,14 +474,6 @@ export default function App() {
                   </div>
                 </div>
               </div>
-
-              <ActivityPanel
-                activities={state.acts}
-                players={players}
-                filter={playerFilter}
-                open={activityOpen}
-                onToggle={() => setActivityOpen((v) => !v)}
-              />
             </>
           )}
 

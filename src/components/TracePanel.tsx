@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef } from "react";
-import { FileText, PencilLine, Play, Search, Sparkles, ShieldAlert, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlignLeft, FileText, PencilLine, Play, Search, Sparkles, ShieldAlert, Waypoints, X } from "lucide-react";
 import type { Activity, ActivityKind, Player, TraceTurn } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -256,6 +256,7 @@ export function TracePanel({
   width,
   animate,
 }: TracePanelProps) {
+  const [view, setView] = useState<"graph" | "list">("graph");
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const { rows, edges, height, width: svgWidth } = useMemo(
     () => buildTrace(turns, activities, players),
@@ -284,15 +285,27 @@ export function TracePanel({
           <span className="font-mono text-[9.5px] text-ink-3">
             {turns.length} 轮 · {actionCount} 动作
           </span>
-          <div className="ml-auto flex items-center gap-1">
-            {players.map((p) => (
-              <span
-                key={p.id}
-                className="size-1.5 rounded-full"
-                style={{ background: p.color }}
-                title={p.name}
-              />
-            ))}
+          <div className="ml-auto flex items-center gap-0.5 rounded-[5px] bg-white/[0.04] p-0.5">
+            <button
+              onClick={() => setView("graph")}
+              title="图形"
+              className={cn(
+                "grid size-5 place-items-center rounded-[4px] transition-colors",
+                view === "graph" ? "bg-white/[0.09] text-ink-1" : "text-ink-3 hover:text-ink-2",
+              )}
+            >
+              <Waypoints className="size-3" />
+            </button>
+            <button
+              onClick={() => setView("list")}
+              title="列表"
+              className={cn(
+                "grid size-5 place-items-center rounded-[4px] transition-colors",
+                view === "list" ? "bg-white/[0.09] text-ink-1" : "text-ink-3 hover:text-ink-2",
+              )}
+            >
+              <AlignLeft className="size-3" />
+            </button>
           </div>
           <button
             onClick={onClose}
@@ -302,6 +315,49 @@ export function TracePanel({
           </button>
         </header>
 
+        {view === "list" && (
+          <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1">
+            {activities.length === 0 && (
+              <div className="py-8 text-center text-[11px] text-ink-3">没有活动</div>
+            )}
+            {activities.map((a) => {
+              const p = players.find((x) => x.id === a.playerId);
+              const Icon = KIND_ICON[a.kind];
+              return (
+                <div
+                  key={a.id}
+                  className="flex items-center gap-1.5 rounded-[5px] px-1 py-1 text-[11px] hover:bg-white/[0.03]"
+                >
+                  <span className="w-7 shrink-0 font-mono text-[9px] text-ink-3">{a.at}</span>
+                  {p && (
+                    <span
+                      className="size-1.5 shrink-0 rounded-full"
+                      style={{ background: p.color }}
+                      title={p.name}
+                    />
+                  )}
+                  <Icon className="size-2.5 shrink-0 text-ink-3" />
+                  <span className="shrink-0 text-ink-2">{a.title}</span>
+                  {a.detail && (
+                    <span className="min-w-0 truncate font-mono text-[9.5px] text-ink-3">
+                      {a.detail}
+                    </span>
+                  )}
+                  <span
+                    className={cn(
+                      "ml-auto size-1 shrink-0 rounded-full",
+                      a.status === "ok" && "bg-ok-1/70",
+                      a.status === "running" && "animate-pulse bg-accent-1",
+                      a.status === "error" && "bg-danger-1",
+                    )}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {view === "graph" && (
         <div className="min-h-0 flex-1 overflow-y-auto">
           {rows.length === 0 && (
             <div className="px-4 py-10 text-center text-[11px] leading-relaxed text-ink-3">
@@ -393,6 +449,7 @@ export function TracePanel({
             </div>
           </div>
         </div>
+        )}
 
         <footer className="shrink-0 border-t border-line-1/60 px-3 py-2 text-[9.5px] leading-relaxed text-ink-3">
           主干是你的时间轴；一轮里被 @ 的玩家各开一条支线并行跑，答完弯回主干，虚线头表示还在答。

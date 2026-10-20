@@ -75,28 +75,37 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* 一级导航：会话 / 代码 */}
-      <div className="mx-2.5 mb-2 flex gap-0.5 rounded-[8px] bg-white/[0.03] p-0.5">
-        {(
-          [
-            ["sessions", "会话", MessageSquare],
-            ["code", "代码", FolderGit2],
-          ] as const
-        ).map(([id, label, Icon]) => (
-          <button
-            key={id}
-            onClick={() => onModeChange(id)}
-            className={cn(
-              "flex flex-1 items-center justify-center gap-1.5 rounded-[6px] py-1.5 text-[11.5px] transition-colors",
-              mode === id
-                ? "bg-white/[0.08] text-ink-1 shadow-[inset_0_1px_0_rgb(255_255_255/0.05)]"
-                : "text-ink-3 hover:text-ink-2",
-            )}
-          >
-            <Icon className="size-3" />
-            {label}
-          </button>
-        ))}
+      {/* 一级导航：会话 / 代码（底框 + 磨砂滑块横移） */}
+      <div className="mx-2.5 mb-2">
+        <div
+          className="sc-switch"
+          role="group"
+          aria-label="一级导航"
+          style={
+            {
+              "--switch-index": mode === "sessions" ? 0 : 1,
+              "--switch-count": 2,
+            } as React.CSSProperties
+          }
+        >
+          <span className="sc-switch__thumb" aria-hidden="true" />
+          {(
+            [
+              ["sessions", "会话", MessageSquare],
+              ["code", "代码", FolderGit2],
+            ] as const
+          ).map(([id, label, Icon]) => (
+            <button
+              key={id}
+              aria-pressed={mode === id}
+              onClick={() => onModeChange(id)}
+              className="sc-switch__item"
+            >
+              <Icon className="size-3" />
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {mode === "sessions" ? (
