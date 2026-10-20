@@ -29,7 +29,7 @@ fn hermes_wsl() -> AgentProfile {
 #[ignore = "needs WSL + hermes acp on this machine"]
 async fn hermes_acp_handshake_reports_agent_info() {
     let profile = hermes_wsl();
-    let (mut proc, outcome) = initialize(&profile, "/home/jerry", Duration::from_secs(60))
+    let (proc, _incoming, outcome) = initialize(&profile, "/home/jerry", Duration::from_secs(60))
         .await
         .expect("handshake should succeed");
 
@@ -39,7 +39,7 @@ async fn hermes_acp_handshake_reports_agent_info() {
     assert!(!outcome.agent_version.is_empty());
     assert!(outcome.load_session, "hermes advertises loadSession");
 
-    let _ = proc.child.kill().await;
+    proc.kill().await;
 }
 
 /// S0 的核心承诺：并发请求靠 id 配对，不串号。
@@ -49,7 +49,7 @@ async fn hermes_acp_handshake_reports_agent_info() {
 #[ignore = "needs WSL + hermes acp on this machine"]
 async fn concurrent_requests_do_not_cross_wire() {
     let profile = hermes_wsl();
-    let (mut proc, _outcome) = initialize(&profile, "/home/jerry", Duration::from_secs(60))
+    let (proc, _incoming, _outcome) = initialize(&profile, "/home/jerry", Duration::from_secs(60))
         .await
         .expect("handshake should succeed");
 
@@ -74,5 +74,5 @@ async fn concurrent_requests_do_not_cross_wire() {
         "unknown method → result:null, got {bad_v:?}"
     );
 
-    let _ = proc.child.kill().await;
+    proc.kill().await;
 }

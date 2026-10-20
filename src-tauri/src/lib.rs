@@ -1,5 +1,9 @@
 pub mod acp;
+pub mod commands;
 pub mod db;
+pub mod state;
+
+use state::AppState;
 
 #[tauri::command]
 fn app_info() -> serde_json::Value {
@@ -19,7 +23,14 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![app_info, acp::list_profiles_hint])
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![
+            app_info,
+            acp::list_profiles_hint,
+            commands::agent_connect,
+            commands::agent_disconnect,
+            commands::agent_list_connected,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running SinceArc");
 }

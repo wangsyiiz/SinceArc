@@ -70,12 +70,21 @@ impl std::error::Error for TransportError {}
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, Value>>>>>;
 
 pub struct AgentProcess {
-    pub child: Child,
+    child: tokio::sync::Mutex<Child>,
     writer: Arc<tokio::sync::Mutex<ChildStdin>>,
     pending: Pending,
     next_id: AtomicU64,
-    /// 通知与 agent 请求；上层必须持续消费，否则 reader task 会阻塞
-    pub incoming: mpsc::Receiver<Incoming>,
+}
+
+impl AgentProcess {
+    /// 结束进程。WSL/SSH 场景的进程组清理在 E1.1 补（现在只杀直接子进程）。
+    pub async fn kill(&self) {
+        let _ = self.child.lock().await.kill().await;
+    }
+
+    pub async fn pid(&self) -> Option<u32> {
+        self.child.lock().await.id()
+    }
 }
 
 impl AgentProcess {
@@ -164,7 +173,14 @@ impl AgentProcess {
 pub fn spawn(
     profile: &AgentProfile,
     cwd: &str,
-) -> Result<(AgentProcess, mpsc::Receiver<String>), TransportError> {
+) -> Result<
+    (
+        AgentProcess,
+        mpsc::Receiver<Incoming>,
+        mpsc::Receiver<String>,
+    ),
+    TransportError,
+> {
     let (program, args) = profile.command_line(cwd);
     let mut cmd = Command::new(&program);
     cmd.args(&args)
@@ -291,12 +307,12 @@ pub fn spawn(
 
     Ok((
         AgentProcess {
-            child,
+            child: tokio::sync::Mutex::new(child),
             writer: Arc::new(tokio::sync::Mutex::new(stdin)),
             pending,
             next_id: AtomicU64::new(1),
-            incoming: incoming_rx,
         },
+        incoming_rx,
         erx,
     ))
 }

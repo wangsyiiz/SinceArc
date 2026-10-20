@@ -26,6 +26,12 @@ export interface AgentProfile {
   ssh?: SshConfig;
   /** 远端命令的工作目录（ssh 时是远端路径） */
   cwd?: string;
+  /** 启动命令，v1 固定 hermes acp，但显式写出来而不是藏在代码里 */
+  program?: string;
+  args?: string[];
+  /** WSL 场景 */
+  distro?: string;
+  shell?: string;
 }
 
 /** ACP 之外的能力（agent 自己的 CLI），不属于协议本体 */
