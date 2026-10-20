@@ -1,5 +1,13 @@
 import { useRef, useState } from "react";
-import { AlertTriangle, MessageSquare, Palette, Plug, SlidersHorizontal } from "lucide-react";
+import {
+  AlertTriangle,
+  MessageSquare,
+  Palette,
+  Plug,
+  Plus,
+  SlidersHorizontal,
+  Trash2,
+} from "lucide-react";
 import type { AgentProfile, LaunchKind, SshAuth, ThemeMode, ThreadSettings } from "@/types";
 import { cn } from "@/lib/utils";
 import { asCmdError, connectAgent, disconnectAgent } from "@/lib/ipc";
@@ -9,6 +17,8 @@ interface SettingsViewProps {
   theme: ThemeMode;
   profiles: AgentProfile[];
   onUpdateProfile: (next: AgentProfile) => void;
+  onAddProfile: () => void;
+  onRemoveProfile: (id: string) => void;
   onChangeContext: (n: number) => void;
   onCycleTheme: (t: ThemeMode) => void;
 }
@@ -72,6 +82,8 @@ export function SettingsView({
   theme,
   profiles,
   onUpdateProfile,
+  onAddProfile,
+  onRemoveProfile,
   onChangeContext,
   onCycleTheme,
 }: SettingsViewProps) {
@@ -150,16 +162,31 @@ export function SettingsView({
             }}
             className="mt-5 scroll-mt-4"
           >
-            <h2 className="text-[12px] font-medium text-ink-2">连接</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-[12px] font-medium text-ink-2">连接</h2>
+              <button
+                onClick={onAddProfile}
+                className="flex items-center gap-1 rounded-[6px] px-2 py-1 text-[10.5px] text-ink-2 transition-colors hover:bg-surface-3/45 hover:text-ink-1"
+              >
+                <Plus className="size-3" />
+                新建
+              </button>
+            </div>
             <div className="mt-2 space-y-2">
               {profiles.map((p) => {
                 const ssh = p.ssh;
                 return (
                   <div key={p.id} className="rounded-[8px] border border-line-1/60 p-3">
                     <div className="flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="truncate text-[12px] text-ink-1">{p.name}</div>
-                        <div className="truncate font-mono text-[9.5px] text-ink-3">{p.detail}</div>
+                      <div className="min-w-0 flex-1">
+                        <input
+                          value={p.name}
+                          onChange={(e) => onUpdateProfile({ ...p, name: e.target.value })}
+                          className="w-full truncate rounded-[4px] bg-transparent text-[12px] text-ink-1 focus:bg-surface-2/50 focus:outline-none"
+                        />
+                        <div className="truncate font-mono text-[9.5px] text-ink-3">
+                          {p.detail || "未配置"}
+                        </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5">
                         <span className="rounded-full border border-line-1/60 px-2 py-0.5 font-mono text-[9px] text-ink-3">
@@ -189,6 +216,13 @@ export function SettingsView({
                       <span className={p.connected ? "text-ok-1" : "text-ink-3"}>
                         {p.connected ? (p.agentName ?? "已连接") : "未连接"}
                       </span>
+                      <button
+                        onClick={() => onRemoveProfile(p.id)}
+                        title="删除这个连接"
+                        className="ml-auto rounded-[4px] p-1 text-ink-3 transition-colors hover:bg-danger-1/[0.12] hover:text-danger-1"
+                      >
+                        <Trash2 className="size-3" />
+                      </button>
                     </div>
 
                     <div className="mt-2.5 flex gap-1">

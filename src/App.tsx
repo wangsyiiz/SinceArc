@@ -83,6 +83,24 @@ export default function App() {
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const [profiles, setProfiles] = useState<AgentProfile[]>(mockProfiles);
+  const addProfile = () =>
+    setProfiles((list) => [
+      ...list,
+      {
+        id: `p-new-${Date.now().toString(36)}`,
+        name: "新连接",
+        launch: "ssh",
+        detail: "",
+        connected: false,
+        agentName: null,
+        protocolVersion: null,
+        program: "hermes",
+        args: ["acp"],
+        cwd: "",
+        ssh: { host: "", port: 22, user: "", auth: "key" },
+      },
+    ]);
+  const removeProfile = (id: string) => setProfiles((list) => list.filter((p) => p.id !== id));
   const activeProfile = profiles.find((p) => p.id === activeProfileId);
   const activeSession = sessions.find((s) => s.id === lastSessionId);
   const cwd = activeSession?.cwd ?? "/home/jerry/source/sincearc";
@@ -584,6 +602,8 @@ export default function App() {
               onUpdateProfile={(next) =>
                 setProfiles((list) => list.map((p) => (p.id === next.id ? next : p)))
               }
+              onAddProfile={addProfile}
+              onRemoveProfile={removeProfile}
               onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}
               onCycleTheme={setTheme}
             />
