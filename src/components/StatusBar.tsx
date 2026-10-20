@@ -17,13 +17,13 @@ export function StatusBar({ cwd, profile, traceOpen, onToggleTrace }: StatusBarP
         title={traceOpen ? "收起轨迹" : "展开轨迹"}
         className={cn(
           "grid size-7 shrink-0 place-items-center rounded-[6px] transition-colors",
-          traceOpen ? "bg-white/[0.07] text-ink-1" : "text-ink-2 hover:bg-white/[0.06] hover:text-ink-1",
+          traceOpen ? "bg-surface-3/65 text-ink-1" : "text-ink-2 hover:bg-surface-3/55 hover:text-ink-1",
         )}
       >
         <Waypoints className="size-3.5" />
       </button>
 
-      <button className="flex min-w-0 items-center gap-1.5 rounded-[6px] px-1.5 py-1 font-mono text-[11px] text-ink-2 transition-colors hover:bg-white/[0.04] hover:text-ink-1">
+      <button className="flex min-w-0 items-center gap-1.5 rounded-[6px] px-1.5 py-1 font-mono text-[11px] text-ink-2 transition-colors hover:bg-surface-3/35 hover:text-ink-1">
         <span className="truncate">{cwd}</span>
         <ChevronDown className="size-3 shrink-0 text-ink-3" />
       </button>
@@ -35,7 +35,7 @@ export function StatusBar({ cwd, profile, traceOpen, onToggleTrace }: StatusBarP
               "mr-1 flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px]",
               profile.connected
                 ? "border-ok-1/20 bg-ok-1/[0.08] text-ok-1"
-                : "border-line-1 bg-white/[0.03] text-ink-3",
+                : "border-line-1 bg-surface-2/50 text-ink-3",
             )}
           >
             <ShieldCheck className="size-2.5" />

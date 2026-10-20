@@ -22,7 +22,7 @@ function renderText(text: string, players: Player[]) {
 function QuoteBlock({ quoted }: { quoted: QuotedRef }) {
   const Icon = quoted.kind === "pr" ? GitPullRequest : quoted.kind === "issue" ? CircleDot : FileText;
   return (
-    <div className="flex items-start gap-2 rounded-[8px] border border-line-1/70 bg-white/[0.03] px-2.5 py-1.5">
+    <div className="flex items-start gap-2 rounded-[8px] border border-line-1/70 bg-surface-2/50 px-2.5 py-1.5">
       <Icon className="mt-[2px] size-3 shrink-0 text-ink-3" />
       <div className="min-w-0">
         <div className="truncate text-[11px] text-ink-2">{quoted.label}</div>
@@ -38,7 +38,7 @@ export function MessageItem({ message, players }: { message: Message; players: P
   if (message.role === "system") {
     return (
       <div className="flex justify-center py-0.5">
-        <span className="rounded-full bg-white/[0.04] px-2.5 py-1 font-mono text-[9.5px] text-ink-3">
+        <span className="rounded-full bg-surface-3/35 px-2.5 py-1 font-mono text-[9.5px] text-ink-3">
           {message.text}
         </span>
       </div>
@@ -49,7 +49,7 @@ export function MessageItem({ message, players }: { message: Message; players: P
     return (
       <div className="flex flex-col items-end gap-1.5">
         {message.quoted && <div className="max-w-[78%]"><QuoteBlock quoted={message.quoted} /></div>}
-        <div className="max-w-[78%] rounded-[12px] rounded-br-[5px] bg-white/[0.055] px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap text-ink-1">
+        <div className="max-w-[78%] rounded-[12px] rounded-br-[5px] bg-surface-3/50 px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap text-ink-1">
           {renderText(message.text, players)}
         </div>
       </div>

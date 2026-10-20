@@ -31,8 +31,8 @@ export function TabStrip({ tabs, activeId, badgeOf, onSelect, onClose }: TabStri
             className={cn(
               "group flex h-full min-w-0 max-w-[220px] cursor-pointer items-center gap-1.5 border-r border-line-1/40 px-3 text-[11.5px] transition-colors",
               active
-                ? "bg-white/[0.055] text-ink-1 shadow-[inset_0_1px_0_rgb(255_255_255/0.06)]"
-                : "text-ink-3 hover:bg-white/[0.03] hover:text-ink-2",
+                ? "bg-surface-3/50 text-ink-1 shadow-[inset_0_1px_0_rgb(255_255_255/0.06)]"
+                : "text-ink-3 hover:bg-surface-2/50 hover:text-ink-2",
             )}
             title={t.subtitle ?? t.title}
           >
@@ -50,7 +50,7 @@ export function TabStrip({ tabs, activeId, badgeOf, onSelect, onClose }: TabStri
                 onClose(t.id);
               }}
               className={cn(
-                "ml-0.5 grid size-4 shrink-0 place-items-center rounded-[4px] transition-colors hover:bg-white/[0.1]",
+                "ml-0.5 grid size-4 shrink-0 place-items-center rounded-[4px] transition-colors hover:bg-surface-3",
                 active ? "opacity-60 hover:opacity-100" : "opacity-0 group-hover:opacity-60",
               )}
               title="关闭"

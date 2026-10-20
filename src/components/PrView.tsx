@@ -88,13 +88,13 @@ export function PrView({ pr, repo, onQuote }: PrViewProps) {
               <Plus className="size-3" />
               加入对话
             </button>
-            <button className="flex items-center gap-1 rounded-[6px] px-2.5 py-1.5 text-[11px] text-ink-2 transition-colors hover:bg-white/[0.06]">
+            <button className="flex items-center gap-1 rounded-[6px] px-2.5 py-1.5 text-[11px] text-ink-2 transition-colors hover:bg-surface-3/55">
               gh
               <ArrowUpRight className="size-3" />
             </button>
           </div>
 
-          <div className="mt-4 rounded-[8px] bg-white/[0.02] px-3 py-2 text-[10.5px] leading-relaxed text-ink-3">
+          <div className="mt-4 rounded-[8px] bg-surface-2/30 px-3 py-2 text-[10.5px] leading-relaxed text-ink-3">
             视图内容只读。「加入对话」把这条 PR 的摘要作为引用塞进会话，由 agent 自己去读 diff ——
             客户端不代跑 gh 的写操作。
           </div>

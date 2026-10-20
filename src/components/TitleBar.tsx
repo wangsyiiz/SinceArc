@@ -31,7 +31,7 @@ export function TitleBar({ profile, cwd }: TitleBarProps) {
     >
       <div className="flex items-center gap-2 pl-3.5" {...drag}>
         <span
-          className="grid size-5 place-items-center rounded-[6px] bg-white/[0.06] text-[12px] leading-none text-ink-1"
+          className="grid size-5 place-items-center rounded-[6px] bg-surface-3/55 text-[12px] leading-none text-ink-1"
           {...drag}
         >
           ◇
@@ -84,7 +84,7 @@ function WinButton({
         "grid w-[46px] place-items-center text-ink-2 transition-colors duration-[80ms]",
         close
           ? "hover:bg-[#c42b1c] hover:text-white active:bg-[#b02617]"
-          : "hover:bg-white/[0.07] hover:text-ink-1 active:bg-white/[0.11]",
+          : "hover:bg-surface-3/65 hover:text-ink-1 active:bg-surface-3",
       )}
     >
       {children}

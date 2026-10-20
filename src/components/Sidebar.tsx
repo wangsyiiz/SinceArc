@@ -103,7 +103,7 @@ export function Sidebar({
           <div className="px-2.5 pb-2">
             <button
               onClick={onNew}
-              className="sc-control flex w-full items-center gap-2 rounded-[8px] px-2.5 py-2 text-[12.5px] text-ink-1 transition-colors hover:bg-white/[0.09]"
+              className="sc-control flex w-full items-center gap-2 rounded-[8px] px-2.5 py-2 text-[12.5px] text-ink-1 transition-colors hover:bg-surface-3/85"
             >
               <Plus className="size-3.5 text-ink-2" />
               新建会话
@@ -128,8 +128,8 @@ export function Sidebar({
                       className={cn(
                         "group mb-0.5 flex w-full flex-col gap-0.5 rounded-[8px] px-2.5 py-2 text-left transition-colors",
                         active
-                          ? "bg-white/[0.07] shadow-[inset_0_1px_0_rgb(255_255_255/0.05)]"
-                          : "hover:bg-white/[0.04]",
+                          ? "bg-surface-3/65 shadow-[inset_0_1px_0_rgb(255_255_255/0.05)]"
+                          : "hover:bg-surface-3/35",
                       )}
                     >
                       <span
@@ -174,14 +174,14 @@ export function Sidebar({
                   key={r.id}
                   onClick={() => onOpenRepo(r.id)}
                   title={r.path}
-                  className="group mb-0.5 flex w-full flex-col gap-0.5 rounded-[8px] px-2.5 py-2 text-left transition-colors hover:bg-white/[0.04]"
+                  className="group mb-0.5 flex w-full flex-col gap-0.5 rounded-[8px] px-2.5 py-2 text-left transition-colors hover:bg-surface-3/35"
                 >
                   <span className="flex items-center gap-1.5">
                     <span
                       className="size-1.5 shrink-0 rounded-full"
                       style={{ background: r.connected ? "var(--ok)" : "var(--i3)" }}
                     />
-                    <span className="truncate text-[12px] text-ink-2 group-hover:text-ink-1">
+                    <span className="transition-colors duration-150 truncate text-[12px] text-ink-2 group-hover:text-ink-1">
                       {r.name}
                     </span>
                     {count > 0 && (
@@ -207,7 +207,7 @@ export function Sidebar({
                   }}
                   onBlur={() => setAdding(false)}
                   placeholder="/home/jerry/source/项目"
-                  className="sc-selectable w-full rounded-[6px] bg-white/[0.05] px-2 py-1 font-mono text-[10.5px] text-ink-1 outline-none placeholder:text-ink-3"
+                  className="sc-selectable w-full rounded-[6px] bg-surface-3/45 px-2 py-1 font-mono text-[10.5px] text-ink-1 outline-none placeholder:text-ink-3"
                 />
                 <p className="mt-1 text-[9.5px] leading-relaxed text-ink-3">
                   回车添加；执行 gh 时后端把 cwd 切到这个目录
@@ -216,7 +216,7 @@ export function Sidebar({
             ) : (
               <button
                 onClick={() => setAdding(true)}
-                className="mt-1 flex w-full items-center gap-1.5 rounded-[8px] px-2.5 py-1.5 text-[11px] text-ink-3 transition-colors hover:bg-white/[0.04] hover:text-ink-2"
+                className="mt-1 flex w-full items-center gap-1.5 rounded-[8px] px-2.5 py-1.5 text-[11px] text-ink-3 transition-colors hover:bg-surface-3/35 hover:text-ink-2"
               >
                 <Plus className="size-3" />
                 添加项目路径
@@ -234,7 +234,7 @@ export function Sidebar({
             onClick={() => onSelectProfile(p.id)}
             className={cn(
               "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left transition-colors",
-              p.id === activeProfileId ? "bg-white/[0.06]" : "hover:bg-white/[0.04]",
+              p.id === activeProfileId ? "bg-surface-3/55" : "hover:bg-surface-3/35",
             )}
           >
             <span
@@ -249,7 +249,7 @@ export function Sidebar({
         ))}
         <button
           onClick={onOpenSettings}
-          className="mt-0.5 flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-[11.5px] text-ink-3 transition-colors hover:bg-white/[0.04] hover:text-ink-2"
+          className="mt-0.5 flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-[11.5px] text-ink-3 transition-colors hover:bg-surface-3/35 hover:text-ink-2"
         >
           <Settings2 className="size-3.5" />
           设置

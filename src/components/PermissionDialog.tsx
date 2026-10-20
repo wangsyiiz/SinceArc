@@ -19,7 +19,7 @@ const TONE = {
   },
   always: {
     icon: ShieldCheck,
-    className: "sc-control text-ink-1 hover:bg-white/[0.09] focus-visible:ring-line-2",
+    className: "sc-control text-ink-1 hover:bg-surface-3/85 focus-visible:ring-line-2",
   },
   reject: {
     icon: ShieldX,
@@ -56,7 +56,7 @@ export function PermissionDialog({ request, player, open, onDecide }: Permission
             <div className="flex items-center gap-2">
               <span className="text-[14px] font-medium text-ink-1">{request.title}</span>
               {player && (
-                <span className="flex items-center gap-1 rounded-full bg-white/[0.05] py-0.5 pl-0.5 pr-2">
+                <span className="flex items-center gap-1 rounded-full bg-surface-3/45 py-0.5 pl-0.5 pr-2">
                   <PlayerAvatar player={player} size={14} />
                   <span className="text-[10px]" style={{ color: player.color }}>
                     {player.name}

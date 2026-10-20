@@ -285,13 +285,13 @@ export function TracePanel({
           <span className="font-mono text-[9.5px] text-ink-3">
             {turns.length} 轮 · {actionCount} 动作
           </span>
-          <div className="ml-auto flex items-center gap-0.5 rounded-[5px] bg-white/[0.04] p-0.5">
+          <div className="ml-auto flex items-center gap-0.5 rounded-[5px] bg-surface-3/35 p-0.5">
             <button
               onClick={() => setView("graph")}
               title="图形"
               className={cn(
                 "grid size-5 place-items-center rounded-[4px] transition-colors",
-                view === "graph" ? "bg-white/[0.09] text-ink-1" : "text-ink-3 hover:text-ink-2",
+                view === "graph" ? "bg-surface-3/85 text-ink-1" : "text-ink-3 hover:text-ink-2",
               )}
             >
               <Waypoints className="size-3" />
@@ -301,7 +301,7 @@ export function TracePanel({
               title="列表"
               className={cn(
                 "grid size-5 place-items-center rounded-[4px] transition-colors",
-                view === "list" ? "bg-white/[0.09] text-ink-1" : "text-ink-3 hover:text-ink-2",
+                view === "list" ? "bg-surface-3/85 text-ink-1" : "text-ink-3 hover:text-ink-2",
               )}
             >
               <AlignLeft className="size-3" />
@@ -309,7 +309,7 @@ export function TracePanel({
           </div>
           <button
             onClick={onClose}
-            className="ml-1 grid size-6 place-items-center rounded-[6px] text-ink-3 transition-colors hover:bg-white/[0.06] hover:text-ink-1"
+            className="ml-1 grid size-6 place-items-center rounded-[6px] text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-1"
           >
             <X className="size-3.5" />
           </button>
@@ -326,7 +326,7 @@ export function TracePanel({
               return (
                 <div
                   key={a.id}
-                  className="flex items-center gap-1.5 rounded-[5px] px-1 py-1 text-[11px] hover:bg-white/[0.03]"
+                  className="transition-colors duration-150 flex items-center gap-1.5 rounded-[5px] px-1 py-1 text-[11px] hover:bg-surface-2/50"
                 >
                   <span className="w-7 shrink-0 font-mono text-[9px] text-ink-3">{a.at}</span>
                   {p && (

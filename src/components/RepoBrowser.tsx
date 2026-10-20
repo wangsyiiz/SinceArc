@@ -36,7 +36,7 @@ export function RepoBrowser({ repo, prs, onOpenPr }: RepoBrowserProps) {
         <span className="text-[12px] font-medium text-ink-1">{repo.name}</span>
         <span className="truncate font-mono text-[10px] text-ink-3">{repo.slug}</span>
         <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-[9.5px] text-ink-3">
-          <span className="rounded-[4px] bg-white/[0.05] px-1.5 py-0.5">{repo.branch}</span>
+          <span className="rounded-[4px] bg-surface-3/45 px-1.5 py-0.5">{repo.branch}</span>
           <span className="max-w-[240px] truncate">{repo.path}</span>
         </span>
       </header>
@@ -63,7 +63,7 @@ export function RepoBrowser({ repo, prs, onOpenPr }: RepoBrowserProps) {
                 <button
                   key={pr.number}
                   onClick={() => onOpenPr(pr)}
-                  className="mb-1 flex w-full flex-col gap-1.5 rounded-[8px] border border-transparent px-2.5 py-2 text-left transition-colors hover:border-line-1/60 hover:bg-white/[0.03]"
+                  className="mb-1 flex w-full flex-col gap-1.5 rounded-[8px] border border-transparent px-2.5 py-2 text-left transition-colors hover:border-line-1/60 hover:bg-surface-2/50"
                 >
                   <span className="flex items-start gap-2">
                     <CircleDot className="mt-[3px] size-3.5 shrink-0" style={{ color: st.color }} />

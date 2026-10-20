@@ -32,7 +32,7 @@ export function SettingsDrawer({
         <span className="text-[12px] font-medium">设置</span>
         <button
           onClick={onClose}
-          className="ml-auto grid size-6 place-items-center rounded-[6px] text-ink-3 transition-colors hover:bg-white/[0.06] hover:text-ink-1"
+          className="ml-auto grid size-6 place-items-center rounded-[6px] text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-1"
         >
           <X className="size-3.5" />
         </button>
@@ -85,7 +85,7 @@ export function SettingsDrawer({
               onClick={() => onCycleTheme(t.id)}
               className={cn(
                 "flex-1 rounded-[6px] py-1.5 text-[11px] transition-colors",
-                theme === t.id ? "bg-white/[0.08] text-ink-1" : "text-ink-3 hover:text-ink-2",
+                theme === t.id ? "bg-surface-3/75 text-ink-1" : "text-ink-3 hover:text-ink-2",
               )}
             >
               {t.label}
