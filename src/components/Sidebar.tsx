@@ -65,18 +65,8 @@ export function Sidebar({
 
   return (
     <aside style={{ width }} className="sc-pane flex h-full shrink-0 flex-col overflow-hidden">
-      <div className="flex items-center gap-2 px-3.5 pt-3.5 pb-2.5">
-        <div className="grid size-6 place-items-center rounded-[6px] bg-accent-1/12 text-[13px] leading-none text-accent-1">
-          ◇
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[13.5px] font-semibold tracking-tight">SinceArc</div>
-          <div className="truncate text-[10px] text-ink-3">ACP Client</div>
-        </div>
-      </div>
-
       {/* 一级导航：会话 / 代码（底框 + 磨砂滑块横移） */}
-      <div className="mx-2.5 mb-2">
+      <div className="px-2.5 pt-3 pb-2.5">
         <div
           className="sc-switch"
           role="group"

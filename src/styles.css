@@ -302,7 +302,8 @@ dialog.sc-dialog[open] {
 .sc-switch {
   position: relative;
   display: flex;
-  height: 30px;
+  /* 控件档 28px（同 sincecloud 的 --ddn-control-h），净空 3px 落在槽内 */
+  height: 28px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: var(--radius);
@@ -315,22 +316,26 @@ dialog.sc-dialog[open] {
 }
 .sc-switch__thumb {
   position: absolute;
-  top: 3px;
-  left: 3px;
-  width: calc((100% - var(--switch-count, 2) * 6px) / var(--switch-count, 2));
-  height: calc(100% - 6px);
+  top: 2px;
+  left: 2px;
+  /* 四边净空 2px（相对内边距框；外沿看是 3px = 2 + 1px 边框）*/
+  width: calc((100% - var(--switch-count, 2) * 4px) / var(--switch-count, 2));
+  height: calc(100% - 4px);
+  border: 1px solid rgb(255 255 255 / 0.08);
   border-radius: var(--radius);
   background: rgb(255 255 255 / 0.09);
   backdrop-filter: blur(16px) saturate(1.6);
   -webkit-backdrop-filter: blur(16px) saturate(1.6);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.07), 0 2px 8px rgb(0 0 0 / 0.25);
-  transform: translateX(calc((100% + 6px) * var(--switch-index, 0)));
+  /* 无外投影：层次靠 1px 亮边框 + 上缘高光（设计语言第 3 条） */
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.07);
+  transform: translateX(calc((100% + 4px) * var(--switch-index, 0)));
   transition: transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
   pointer-events: none;
 }
 [data-theme="light"] .sc-switch__thumb {
+  border-color: rgb(0 0 0 / 0.06);
   background: #fff;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.12), 0 2px 8px rgb(0 0 0 / 0.08);
+  box-shadow: none;
 }
 .sc-switch__item {
   position: relative;
