@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { AlertTriangle, MessageSquare, Palette, Plug, SlidersHorizontal } from "lucide-react";
 import type { AgentProfile, LaunchKind, SshAuth, ThemeMode, ThreadSettings } from "@/types";
 import { cn } from "@/lib/utils";
+import { asCmdError, connectAgent, disconnectAgent } from "@/lib/ipc";
 
 interface SettingsViewProps {
   settings: ThreadSettings;
@@ -75,9 +76,44 @@ export function SettingsView({
   onCycleTheme,
 }: SettingsViewProps) {
   const [active, setActive] = useState<SectionId>("chat");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const refs = useRef<Partial<Record<SectionId, HTMLElement | null>>>({});
   const n = settings.contextMessages;
   const heavy = n > 10;
+
+  const handleConnect = async (p: AgentProfile) => {
+    setBusy(p.id);
+    setErrors((e) => ({ ...e, [p.id]: "" }));
+    try {
+      const out = await connectAgent(p);
+      onUpdateProfile({
+        ...p,
+        connected: true,
+        agentName: `${out.agentName} ${out.agentVersion}`,
+        protocolVersion: out.protocolVersion,
+      });
+    } catch (e) {
+      const err = asCmdError(e);
+      setErrors((prev) => ({ ...prev, [p.id]: `${err.code} ${err.msg}` }));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleDisconnect = async (p: AgentProfile) => {
+    setBusy(p.id);
+    setErrors((e) => ({ ...e, [p.id]: "" }));
+    try {
+      await disconnectAgent(p.id);
+      onUpdateProfile({ ...p, connected: false, agentName: null, protocolVersion: null });
+    } catch (e) {
+      const err = asCmdError(e);
+      setErrors((prev) => ({ ...prev, [p.id]: `${err.code} ${err.msg}` }));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   /** 左侧导航只做锚点跳转：内容始终整页可见 */
   const jump = (id: SectionId) => {
@@ -125,8 +161,33 @@ export function SettingsView({
                         <div className="truncate text-[12px] text-ink-1">{p.name}</div>
                         <div className="truncate font-mono text-[9.5px] text-ink-3">{p.detail}</div>
                       </div>
-                      <span className="shrink-0 rounded-full border border-line-1/60 px-2 py-0.5 font-mono text-[9px] text-ink-3">
-                        {LAUNCH_LABEL[p.launch]}
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <span className="rounded-full border border-line-1/60 px-2 py-0.5 font-mono text-[9px] text-ink-3">
+                          {LAUNCH_LABEL[p.launch]}
+                        </span>
+                        <button
+                          onClick={() => (p.connected ? handleDisconnect(p) : handleConnect(p))}
+                          disabled={busy === p.id}
+                          className={cn(
+                            "rounded-[6px] px-2 py-1 text-[10.5px] transition-colors",
+                            "sc-row-active text-ink-1 hover:brightness-110",
+                            busy === p.id && "opacity-60",
+                          )}
+                        >
+                          {busy === p.id ? "…" : p.connected ? "断开" : "连接"}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="mt-1.5 flex items-center gap-1.5 text-[9.5px]">
+                      <span
+                        className={cn(
+                          "size-1.5 rounded-full",
+                          p.connected ? "bg-ok-1" : "bg-ink-3/50",
+                        )}
+                      />
+                      <span className={p.connected ? "text-ok-1" : "text-ink-3"}>
+                        {p.connected ? (p.agentName ?? "已连接") : "未连接"}
                       </span>
                     </div>
 
@@ -206,9 +267,11 @@ export function SettingsView({
                             <Field
                               label="密码"
                               type="password"
-                              value=""
-                              placeholder="存系统凭据库（未接线）"
-                              onChange={() => {}}
+                              value={ssh.password ?? ""}
+                              placeholder="仅本次运行有效，不落盘"
+                              onChange={(v) =>
+                                onUpdateProfile({ ...p, ssh: { ...ssh, password: v } })
+                              }
                             />
                           )}
                         </div>
@@ -222,6 +285,12 @@ export function SettingsView({
                           />
                         </div>
                       </div>
+                    )}
+
+                    {errors[p.id] && (
+                      <p className="mt-2 break-all rounded-[6px] bg-danger-1/[0.09] px-2 py-1.5 font-mono text-[9.5px] leading-relaxed text-danger-1">
+                        {errors[p.id]}
+                      </p>
                     )}
                   </div>
                 );
