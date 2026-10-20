@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import {
+  Activity,
   AlertTriangle,
   MessageSquare,
   Palette,
@@ -39,6 +40,7 @@ const SECTIONS = [
   { id: "chat", label: "群聊", icon: MessageSquare },
   { id: "appearance", label: "外观", icon: Palette },
   { id: "session", label: "会话", icon: SlidersHorizontal },
+  { id: "diagnostics", label: "诊断", icon: Activity },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -460,7 +462,7 @@ export function SettingsView({
 
             <section
               ref={(el) => {
-                refs.current.session = el;
+                refs.current.diagnostics = el;
               }}
               className="mt-7 scroll-mt-4"
             >
