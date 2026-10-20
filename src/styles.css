@@ -169,24 +169,9 @@ body {
   user-select: text;
 }
 
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--l2) transparent;
-}
-*::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-*::-webkit-scrollbar-thumb {
-  background: var(--l2);
-  border-radius: 999px;
-  border: 3px solid transparent;
-  background-clip: content-box;
-}
-*::-webkit-scrollbar-thumb:hover {
-  background: var(--i3);
-  background-clip: content-box;
-}
+/* 滚动条样式集中在文件末尾：一旦设置 scrollbar-width / scrollbar-color，
+   Chromium 会整体忽略 ::-webkit-scrollbar 自定义（标准属性优先），
+   所以这里不要再写那两个属性。 */
 
 /* ---------- 材质：三层 ---------- */
 @layer components {
