@@ -88,6 +88,9 @@ export default function App() {
   const [eventCount, setEventCount] = useState(0);
   const [lastEvent, setLastEvent] = useState("");
   const [eventLog, setEventLog] = useState<{ at: number; text: string }[]>([]);
+  const diag = useCallback((text: string) => {
+    setEventLog((prev) => [...prev, { at: Date.now(), text: `· ${text}` }].slice(-80));
+  }, []);
 
   const patchSession = useCallback((sid: string, fn: (s: SessionState) => SessionState) => {
     setSessionState((prev) => ({ ...prev, [sid]: fn(prev[sid] ?? emptySession()) }));
@@ -98,6 +101,9 @@ export default function App() {
   const streamBuf = useRef<Record<string, string>>({});
   /** ACP 会话 -> 当前这一轮的 turn id（轨迹要跟着同一条轮次走） */
   const acpToTurn = useRef<Record<string, string>>({});
+  /** 最近一次确认过的 ACP 会话 id：chunk 没带 sessionId 时的兜底 */
+  const activeAcp = useRef("");
+  const flushDiag = useRef(0);
   const flushTimer = useRef(0);
   const lastSidRef = useRef(lastSessionId);
   lastSidRef.current = lastSessionId;
@@ -109,7 +115,15 @@ export default function App() {
     streamBuf.current = {};
     for (const [acpSid, text] of Object.entries(buf)) {
       const uiSid = acpToUi.current[acpSid];
-      if (!uiSid || !text) continue;
+      if (!uiSid) {
+        diag(`flush 丢弃：session ${acpSid.slice(0, 10)}… 没有 UI 映射`);
+        continue;
+      }
+      if (!text) continue;
+      if (flushDiag.current < 12) {
+        flushDiag.current += 1;
+        diag(`flush -> ${uiSid} +${text.length} 字`);
+      }
       const streamId = `stream-${acpSid}`;
       patchSession(uiSid, (s) => {
         const last = s.msgs[s.msgs.length - 1];
@@ -146,7 +160,7 @@ export default function App() {
         return { ...s, msgs, turns };
       });
     }
-  }, [patchSession]);
+  }, [diag, patchSession]);
 
   const onAgentEvent = useCallback(
     (profileId: string, event: AcpEvent) => {
@@ -177,7 +191,8 @@ export default function App() {
             : event.kind,
       );
       if (su?.update?.sessionUpdate === "agent_message_chunk") {
-        const acpSid = su.sessionId ?? "";
+        const acpSid = su.sessionId || activeAcp.current;
+        if (!su.sessionId) diag("chunk 缺 sessionId，回退到最近活跃会话");
         const text = su.update.content?.text ?? "";
         if (text) {
           streamBuf.current[acpSid] = (streamBuf.current[acpSid] ?? "") + text;
@@ -191,6 +206,7 @@ export default function App() {
       if (event.kind === "promptResult" || event.kind === "promptFailed") {
         flushStream();
         const uiSid = acpToUi.current[event.sessionId];
+        diag(`promptResult -> ${uiSid ?? "无映射"}`);
         if (uiSid) {
           const streamId = `stream-${event.sessionId}`;
           const actId = `act-stream-${event.sessionId}`;
@@ -244,6 +260,7 @@ export default function App() {
     setSessionsByProfile((m) => ({ ...m, [profileId]: sessionId }));
     // 建立映射：agent 回的事件带的是 ACP sessionId
     acpToUi.current[sessionId] = lastSidRef.current;
+    activeAcp.current = sessionId;
   }, []);
   const addProfile = () =>
     setProfiles((list) => [
@@ -410,6 +427,9 @@ export default function App() {
         const actId = `act-stream-${acpSid}`;
         const turnId = `turn-live-${Date.now()}`;
         acpToTurn.current[acpSid] = turnId;
+        // 事件回来要落到「这次发消息的那个会话」，而不是连接时的快照
+        acpToUi.current[acpSid] = sid;
+        activeAcp.current = acpSid;
 
         patchSession(sid, (s) => ({
           ...s,
