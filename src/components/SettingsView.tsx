@@ -193,6 +193,11 @@ export function SettingsView({
               </button>
             </div>
             <div className="mt-2 space-y-2">
+              {profiles.length === 0 && (
+                <div className="rounded-[8px] border border-dashed border-line-1/60 px-3 py-6 text-center text-[10.5px] text-ink-3">
+                  还没有连接配置。点右上「新建」加一个 —— 填好之后会自动存到本机。
+                </div>
+              )}
               {profiles.map((p) => {
                 const ssh = p.ssh;
                 return (

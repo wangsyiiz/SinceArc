@@ -24,7 +24,6 @@ import {
   pendingPermission,
   players,
   prsByRepo,
-  profiles as mockProfiles,
   repos as seedRepos,
   sessions,
   turns as seedTurns,
@@ -91,7 +90,7 @@ export default function App() {
   const [layoutW, setLayoutW] = useState(0);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
-  const [profiles, setProfiles] = useState<AgentProfile[]>(mockProfiles);
+  const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   /** 库里的配置是否已读过：没读完不要往回写，否则会把空列表存进去 */
   const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [sessionsByProfile, setSessionsByProfile] = useState<Record<string, string>>({});
@@ -297,11 +296,9 @@ export default function App() {
       try {
         const stored = await profilesLoad();
         if (!alive) return;
-        if (stored.length > 0) {
-          setProfiles(stored.map(fromDto));
-        } else {
-          await profilesSave(mockProfiles).catch(() => {});
-        }
+        // 只认库里的。库是空的就一直空着 —— 用 mock 播种会在界面上留下
+        // 永远连不通的假配置，干扰判断（用户明确要求删掉这类噪点）。
+        setProfiles(stored.map(fromDto));
       } catch {
         // 非 Tauri 环境（浏览器直开）保持 mock
       } finally {

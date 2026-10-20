@@ -1,6 +1,5 @@
 import type {
   Activity,
-  AgentProfile,
   GithubPR,
   GithubRepo,
   Message,
@@ -9,43 +8,6 @@ import type {
   SessionSummary,
   TraceTurn,
 } from "@/types";
-
-export const profiles: AgentProfile[] = [
-  {
-    id: "p-hermes-wsl",
-    name: "Hermes (WSL)",
-    launch: "wsl",
-    detail: "fedora · hermes acp",
-    program: "hermes",
-    args: ["acp"],
-    distro: "fedora",
-    shell: "zsh",
-    cwd: "/mnt/c/source/sincearc",
-    connected: true,
-    agentName: "hermes-agent 0.22.2",
-    protocolVersion: 1,
-  },
-  {
-    id: "p-local-mock",
-    name: "本地 Mock",
-    launch: "local",
-    detail: "C:\\source\\mock-acp.exe",
-    connected: false,
-    agentName: null,
-    protocolVersion: null,
-  },
-  {
-    id: "p-ssh-aliyun",
-    name: "Aliyun",
-    launch: "ssh",
-    detail: "root@47.109.56.213 · hermes acp",
-    connected: true,
-    agentName: "hermes-agent 0.22.2",
-    protocolVersion: 1,
-    cwd: "/root/src/demo",
-    ssh: { host: "47.109.56.213", port: 22, user: "root", auth: "key", keyPath: "C:\\Users\\picke\\.ssh\\id_ed25519" },
-  },
-];
 
 export const players: Player[] = [
   { id: "pl-claude", name: "Claude", handle: "claude", color: "#c0a3ff", profileId: "p-hermes-wsl", busy: true },
