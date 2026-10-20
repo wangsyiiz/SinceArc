@@ -35,3 +35,8 @@ npm run tauri dev      # 需要 Windows 侧 Node + Rust
 - **workspace 是 fs 沙箱的根**，不是 UI 分组。`fs/*` 回调必须走单点校验。
 - 流式 token 进 zustand，不进 React Query cache；UI 按 30–60 ms 合批。
 - 消息两阶段渲染：流式纯文本，回合结束后才解析 markdown。
+
+## 文档
+
+- `docs/design-language.md` —— UI 设计语言的可执行约定（面阶、材质三层、边界方式、**状态过渡一律要补间**、三个 CSS 静默失败）
+- `docs/acp-notes.md` —— ACP 协议与握手的实测记录
