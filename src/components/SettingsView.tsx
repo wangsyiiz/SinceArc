@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import type { AgentProfile, LaunchKind, SshAuth, ThemeMode, ThreadSettings } from "@/types";
 import { cn } from "@/lib/utils";
-import { asCmdError, connectAgent, disconnectAgent, sessionNew, type AcpEvent } from "@/lib/ipc";
+import { asCmdError, connectAgent, disconnectAgent, type AcpEvent } from "@/lib/ipc";
 
 interface SettingsViewProps {
   settings: ThreadSettings;
@@ -116,11 +116,11 @@ export function SettingsView({
         protocolVersion: out.protocolVersion,
       });
 
-      // 握手成功就开一个会话：没有 session 的 agent 只能握手，不能对话。
-      // 建会话失败不影响「已连接」的事实，单独报。
+      // 会话由后端在连接时决定：优先复用上次的（session/load），没有再新建。
+      // 这样每连一次不会在 agent 侧留下一个空会话。
       try {
-        const info = await sessionNew(p.id, p.cwd ?? "");
-        onSession(p.id, info.sessionId);
+        if (!out.sessionId) throw new Error("agent 没有给出会话");
+        onSession(p.id, out.sessionId);
       } catch (e) {
         const err = asCmdError(e);
         setErrors((prev) => ({ ...prev, [p.id]: `会话创建失败：${err.code} ${err.msg}` }));

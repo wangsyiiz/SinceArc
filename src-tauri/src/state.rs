@@ -29,13 +29,22 @@ pub struct SessionRecord {
     pub cwd: String,
 }
 
-#[derive(Default)]
 pub struct AppState {
     agents: Mutex<HashMap<String, Arc<AgentHandle>>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
+    /// 配置与会话记账（同步 SQLite，操作都是毫秒级，直接锁用）
+    pub db: Arc<crate::db::Db>,
 }
 
 impl AppState {
+    pub fn new(db: crate::db::Db) -> Self {
+        Self {
+            agents: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
+            db: Arc::new(db),
+        }
+    }
+
     pub async fn insert(&self, id: String, handle: Arc<AgentHandle>) {
         self.agents.lock().await.insert(id, handle);
     }

@@ -80,7 +80,7 @@ impl From<transport::TransportError> for CmdError {
 
 /// 前端传来的 profile。字段与 `AgentProfile` 不同 —— 那是内部结构，
 /// 这里只接 UI 真正会填的那几项。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileDto {
     pub id: String,
@@ -121,6 +121,10 @@ pub struct ConnectOutcome {
     pub load_session: bool,
     pub image_prompts: bool,
     pub auth_methods: Vec<String>,
+    /// 本次连接落到的会话：复用了旧的就还是旧的，没有就新建。
+    /// 前端直接用它，不必再发一次 session/new（那样每连一次就多一个空会话）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// SSH 的必填项缺失时逐个点名，不给默认值 ——
@@ -273,7 +277,7 @@ pub async fn agent_connect(
 
     state
         .insert(
-            id,
+            id.clone(),
             Arc::new(AgentHandle {
                 proc: Arc::new(proc),
                 outcome: outcome.clone(),
@@ -282,6 +286,10 @@ pub async fn agent_connect(
             }),
         )
         .await;
+
+    // 会话归属：优先复用上次的（agent 侧因此不会每连一次就多一个空会话）
+    let handle = state.get(&id).await.expect("just inserted");
+    let session_id = attach_session(&state, &id, &handle, &cwd).await;
 
     // 自检：这条如果前端也没收到，问题在 Channel 本身而不是 ACP 事件
     tracing::info!(target: "sincearc::ipc", "hello -> webview");
@@ -296,7 +304,130 @@ pub async fn agent_connect(
         load_session: outcome.load_session,
         image_prompts: outcome.image_prompts,
         auth_methods: outcome.auth_methods,
+        session_id,
     })
+}
+
+/// 连上之后把会话定下来：能 load 就 load，不能就 new。
+///
+/// 返回会话 id；两步都失败时返回 None（连接本身仍然算成功 ——
+/// 握手通了就是通了，会话建不起来是另一件事，前端会拿到 None）。
+async fn attach_session(
+    state: &AppState,
+    profile_id: &str,
+    handle: &AgentHandle,
+    cwd: &str,
+) -> Option<String> {
+    let mut warnings: Vec<String> = Vec::new();
+
+    if handle.outcome.load_session {
+        match state.db.last_session(profile_id) {
+            Ok(Some(prev)) => {
+                let params = serde_json::json!({
+                    "sessionId": prev,
+                    "cwd": cwd,
+                    "mcpServers": [],
+                });
+                match handle
+                    .proc
+                    .request("session/load", params, Duration::from_secs(120))
+                    .await
+                {
+                    Ok(_) => {
+                        tracing::info!(
+                            target: "sincearc::ipc",
+                            session = %prev,
+                            "session resumed"
+                        );
+                        let _ = state.db.remember_session(&prev, profile_id, cwd);
+                        state
+                            .insert_session(
+                                prev.clone(),
+                                SessionRecord {
+                                    profile_id: profile_id.to_string(),
+                                    cwd: cwd.to_string(),
+                                },
+                            )
+                            .await;
+                        return Some(prev);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "sincearc::ipc",
+                            session = %prev,
+                            error = %e,
+                            "session/load failed, creating a new one"
+                        );
+                        warnings.push(format!("load {prev}: {e}"));
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(target: "sincearc::ipc", error = %e, "读取会话记录失败"),
+        }
+    }
+
+    let created = handle
+        .proc
+        .request(
+            "session/new",
+            serde_json::json!({ "cwd": cwd, "mcpServers": [] }),
+            Duration::from_secs(120),
+        )
+        .await;
+
+    match created {
+        Ok(v) => {
+            let sid = v["sessionId"].as_str()?.to_string();
+            tracing::info!(target: "sincearc::ipc", session = %sid, "session created");
+            let _ = state.db.remember_session(&sid, profile_id, cwd);
+            state
+                .insert_session(
+                    sid.clone(),
+                    SessionRecord {
+                        profile_id: profile_id.to_string(),
+                        cwd: cwd.to_string(),
+                    },
+                )
+                .await;
+            Some(sid)
+        }
+        Err(e) => {
+            tracing::warn!(target: "sincearc::ipc", error = %e, "session/new failed");
+            // 上次 load 失败的线索留在日志里，别让它只在内存里闪一下
+            for w in warnings {
+                tracing::warn!(target: "sincearc::ipc", "previous attempt: {w}");
+            }
+            None
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn profiles_load(state: State<'_, AppState>) -> Result<Vec<ProfileDto>, CmdError> {
+    state
+        .db
+        .load_profiles()
+        .map_err(|e| CmdError::new(50000, format!("读取配置失败：{e}")))
+}
+
+#[tauri::command]
+pub async fn profiles_save(
+    state: State<'_, AppState>,
+    profiles: Vec<ProfileDto>,
+) -> Result<(), CmdError> {
+    // 密码永不落盘：这里再剥一次，别指望前端记得
+    let sanitized: Vec<ProfileDto> = profiles
+        .into_iter()
+        .map(|p| ProfileDto {
+            ssh_password: None,
+            ..p
+        })
+        .collect();
+    state
+        .db
+        .save_profiles(&sanitized)
+        .map_err(|e| CmdError::new(50000, format!("保存配置失败：{e}")))
 }
 
 #[derive(Debug, Serialize)]

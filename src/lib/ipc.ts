@@ -1,4 +1,4 @@
-import type { AgentProfile } from "@/types";
+import type { AgentProfile, SshAuth, SshConfig } from "@/types";
 
 /**
  * Tauri command 的薄封装。
@@ -26,7 +26,26 @@ export interface SessionInfo {
   sessionId: string;
 }
 
+export interface ProfileDto {
+  id: string;
+  name: string;
+  launch: string;
+  program: string;
+  args: string[];
+  cwd: string;
+  distro?: string | null;
+  shell?: string | null;
+  sshHost?: string | null;
+  sshPort?: number | null;
+  sshUser?: string | null;
+  sshAuth?: string | null;
+  sshKeyPath?: string | null;
+  sshPassword?: string | null;
+}
+
 export interface ConnectOutcome {
+  /** 本次连接落到的会话（复用旧的或新建的）；handshake 通了但建会话失败时为 undefined */
+  sessionId?: string;
   agentName: string;
   agentVersion: string;
   protocolVersion: number;
@@ -67,6 +86,41 @@ function toDto(p: AgentProfile) {
   };
 }
 
+/** 库里的配置读回来：DTO 是扁平的，还原成界面用的 AgentProfile */
+export function fromDto(d: ProfileDto): AgentProfile {
+  const ssh: SshConfig | undefined =
+    d.launch === "ssh" && d.sshHost
+      ? {
+          host: d.sshHost,
+          port: d.sshPort ?? 22,
+          user: d.sshUser ?? "",
+          auth: (d.sshAuth as SshAuth) ?? "key",
+          keyPath: d.sshKeyPath ?? undefined,
+          // 密码不在库里，重连时需要重新填
+          password: undefined,
+        }
+      : undefined;
+
+  return {
+    id: d.id,
+    name: d.name,
+    launch: d.launch as AgentProfile["launch"],
+    detail:
+      d.launch === "ssh"
+        ? `${d.sshUser ?? "?"}@${d.sshHost ?? "?"}`
+        : d.launch === "wsl"
+          ? `${d.distro ?? "wsl"} · ${d.program}`
+          : d.program,
+    connected: false,
+    cwd: d.cwd,
+    program: d.program,
+    args: d.args,
+    distro: d.distro ?? undefined,
+    shell: d.shell ?? undefined,
+    ssh,
+  };
+}
+
 export async function connectAgent(
   profile: AgentProfile,
   onEvent?: (e: AcpEvent) => void,
@@ -87,6 +141,16 @@ export function sessionNew(profileId: string, cwd: string): Promise<SessionInfo>
 /** 发一轮消息。立即返回：内容从事件流回来，不在这里等生成完。 */
 export function sessionPrompt(sessionId: string, text: string): Promise<void> {
   return invoke<void>("session_prompt", { sessionId, text });
+}
+
+/** 读回本机存的连接配置 */
+export function profilesLoad(): Promise<ProfileDto[]> {
+  return invoke<ProfileDto[]>("profiles_load", {});
+}
+
+/** 整表覆盖保存（后端会剥掉 SSH 密码，密码永不落盘） */
+export function profilesSave(profiles: AgentProfile[]): Promise<void> {
+  return invoke<void>("profiles_save", { profiles: profiles.map(toDto) });
 }
 
 /* ---------- session/update 的解析 ---------- */

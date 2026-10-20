@@ -39,7 +39,15 @@ import type {
   ThemeMode,
   ThreadSettings,
 } from "@/types";
-import { asCmdError, asSessionUpdate, sessionPrompt, type AcpEvent } from "@/lib/ipc";
+import {
+  asCmdError,
+  asSessionUpdate,
+  fromDto,
+  profilesLoad,
+  profilesSave,
+  sessionPrompt,
+  type AcpEvent,
+} from "@/lib/ipc";
 
 const now = () => new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 const isWrite = (a: Activity) => a.kind === "edit" || a.kind === "execute";
@@ -84,6 +92,8 @@ export default function App() {
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const [profiles, setProfiles] = useState<AgentProfile[]>(mockProfiles);
+  /** 库里的配置是否已读过：没读完不要往回写，否则会把空列表存进去 */
+  const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [sessionsByProfile, setSessionsByProfile] = useState<Record<string, string>>({});
   const [eventCount, setEventCount] = useState(0);
   const [lastEvent, setLastEvent] = useState("");
@@ -280,6 +290,38 @@ export default function App() {
       },
     ]);
   const removeProfile = (id: string) => setProfiles((list) => list.filter((p) => p.id !== id));
+  // 启动时读本机库：有记录就用记录，第一次运行才播种 mock
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const stored = await profilesLoad();
+        if (!alive) return;
+        if (stored.length > 0) {
+          setProfiles(stored.map(fromDto));
+        } else {
+          await profilesSave(mockProfiles).catch(() => {});
+        }
+      } catch {
+        // 非 Tauri 环境（浏览器直开）保持 mock
+      } finally {
+        if (alive) setProfilesLoaded(true);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // 变更后回写（防抖：改名是逐字触发的）
+  useEffect(() => {
+    if (!profilesLoaded) return;
+    const t = setTimeout(() => {
+      profilesSave(profiles).catch((e) => console.warn("[db] save profiles failed", e));
+    }, 400);
+    return () => clearTimeout(t);
+  }, [profiles, profilesLoaded]);
+
   const activeProfile = profiles.find((p) => p.id === activeProfileId);
   const activeSession = sessions.find((s) => s.id === lastSessionId);
   const cwd = activeSession?.cwd ?? "/home/jerry/source/sincearc";

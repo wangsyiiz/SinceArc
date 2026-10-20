@@ -7,14 +7,22 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS profiles (
   id            TEXT PRIMARY KEY,
   name          TEXT NOT NULL,
-  launch_kind   TEXT NOT NULL CHECK (launch_kind IN ('local', 'wsl')),
+  -- three launch kinds: 本机 / WSL / SSH（远程与 WSL 共用同一条 ssh 路径，只差 host）
+  launch_kind   TEXT NOT NULL CHECK (launch_kind IN ('local', 'wsl', 'ssh')),
   distro        TEXT,
   shell         TEXT,
   program       TEXT NOT NULL,
   args_json     TEXT NOT NULL DEFAULT '[]',
   env_json      TEXT NOT NULL DEFAULT '{}',
   default_cwd   TEXT NOT NULL,
-  created_at    INTEGER NOT NULL
+  -- SSH 凭证：密码不在这张表里（只在内存过一手）
+  ssh_host      TEXT,
+  ssh_port      INTEGER,
+  ssh_user      TEXT,
+  ssh_auth      TEXT,
+  ssh_key_path  TEXT,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS workspaces (
@@ -49,6 +57,7 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_session_seq ON messages(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS permission_rules (
   id            TEXT PRIMARY KEY,

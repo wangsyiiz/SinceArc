@@ -23,7 +23,15 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
-        .manage(AppState::default())
+        .setup(|app| {
+            use tauri::Manager as _;
+            let dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&dir)?;
+            let db = db::Db::open(&dir.join("sincearc.db"))?;
+            tracing::info!(target: "sincearc::ipc", path = %dir.join("sincearc.db").display(), "db ready");
+            app.manage(AppState::new(db));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             app_info,
             acp::list_profiles_hint,
@@ -31,6 +39,8 @@ pub fn run() {
             commands::agent_disconnect,
             commands::session_new,
             commands::session_prompt,
+            commands::profiles_load,
+            commands::profiles_save,
             commands::agent_list_connected,
         ])
         .run(tauri::generate_context!())
