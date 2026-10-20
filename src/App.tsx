@@ -90,6 +90,23 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
+  // 任何一个滚动容器在滚：给根节点打标记，滚动条据此提亮
+  useEffect(() => {
+    let timer = 0;
+    const onScroll = () => {
+      document.documentElement.dataset.scrolling = "true";
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        document.documentElement.dataset.scrolling = "false";
+      }, 600);
+    };
+    document.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("scroll", onScroll, true);
+      window.clearTimeout(timer);
+    };
+  }, []);
+
   // 量三栏容器宽度：分栏上限由「主区最小宽度」反推，不是硬编码
   useEffect(() => {
     const el = layoutRef.current;

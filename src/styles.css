@@ -415,3 +415,34 @@ dialog.sc-dialog[open] {
     background: var(--row-active);
   }
 }
+
+/* 滚动条：无箭头，静止时半透明，滚动中才显出来（带补间） */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-button,
+::-webkit-scrollbar-button:single-button,
+::-webkit-scrollbar-button:start,
+::-webkit-scrollbar-button:end {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--l1) 28%, transparent);
+  background-clip: padding-box;
+  transition: background-color 220ms ease-out;
+}
+:root[data-scrolling="true"] ::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--l1) 85%, transparent);
+}
