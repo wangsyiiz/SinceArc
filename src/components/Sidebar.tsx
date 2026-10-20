@@ -91,7 +91,7 @@ export function Sidebar({
               onClick={() => onModeChange(id)}
               className="sc-switch__item"
             >
-              <Icon className="size-3" />
+              <Icon className="size-3.5" />
               {label}
             </button>
           ))}
