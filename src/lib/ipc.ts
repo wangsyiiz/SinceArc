@@ -16,7 +16,10 @@ export interface CmdError {
 export type AcpEvent =
   | { kind: "notification"; method: string; params: unknown }
   | { kind: "request"; id: number; method: string; params: unknown }
-  | { kind: "exited" };
+  | { kind: "exited" }
+  | { kind: "promptStarted"; sessionId: string }
+  | { kind: "promptResult"; sessionId: string; result: unknown }
+  | { kind: "promptFailed"; sessionId: string; msg: string };
 
 export interface SessionInfo {
   sessionId: string;
@@ -78,6 +81,28 @@ export async function connectAgent(
 
 export function sessionNew(profileId: string, cwd: string): Promise<SessionInfo> {
   return invoke<SessionInfo>("session_new", { profileId, cwd });
+}
+
+/** 发一轮消息。立即返回：内容从事件流回来，不在这里等生成完。 */
+export function sessionPrompt(sessionId: string, text: string): Promise<void> {
+  return invoke<void>("session_prompt", { sessionId, text });
+}
+
+/* ---------- session/update 的解析 ---------- */
+
+export interface SessionUpdate {
+  sessionId?: string;
+  update?: {
+    sessionUpdate?: string;
+    content?: { type?: string; text?: string };
+    [k: string]: unknown;
+  };
+}
+
+/** 从 notification 里取出 session/update 载荷；不是就返回 null */
+export function asSessionUpdate(e: AcpEvent): SessionUpdate | null {
+  if (e.kind !== "notification" || e.method !== "session/update") return null;
+  return (e.params as SessionUpdate) ?? null;
 }
 
 export function disconnectAgent(profileId: string): Promise<void> {

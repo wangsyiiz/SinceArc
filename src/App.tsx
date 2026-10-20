@@ -39,7 +39,7 @@ import type {
   ThemeMode,
   ThreadSettings,
 } from "@/types";
-import type { AcpEvent } from "@/lib/ipc";
+import { asCmdError, asSessionUpdate, sessionPrompt, type AcpEvent } from "@/lib/ipc";
 
 const now = () => new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 const isWrite = (a: Activity) => a.kind === "edit" || a.kind === "execute";
@@ -87,13 +87,95 @@ export default function App() {
   const [sessionsByProfile, setSessionsByProfile] = useState<Record<string, string>>({});
   const [eventCount, setEventCount] = useState(0);
 
-  const onAgentEvent = useCallback((profileId: string, event: AcpEvent) => {
-    setEventCount((n) => n + 1);
-    // S2：先落到控制台，能看见「握手之后 agent 真的在说话」
-    console.debug("[acp]", profileId, event);
+  const patchSession = useCallback((sid: string, fn: (s: SessionState) => SessionState) => {
+    setSessionState((prev) => ({ ...prev, [sid]: fn(prev[sid] ?? emptySession()) }));
   }, []);
+
+  // ACP sessionId -> UI 会话 id（mock 的 s-1 之类）。S3 阶段只有一个活跃会话，够用。
+  const acpToUi = useRef<Record<string, string>>({});
+  const streamBuf = useRef<Record<string, string>>({});
+  const flushTimer = useRef(0);
+  const lastSidRef = useRef(lastSessionId);
+  lastSidRef.current = lastSessionId;
+
+  /** 40ms 合批：chunk 是逐字来的，逐条 setState 会让 React 每字重渲染一次 */
+  const flushStream = useCallback(() => {
+    flushTimer.current = 0;
+    const buf = streamBuf.current;
+    streamBuf.current = {};
+    for (const [acpSid, text] of Object.entries(buf)) {
+      const uiSid = acpToUi.current[acpSid];
+      if (!uiSid || !text) continue;
+      const streamId = `stream-${acpSid}`;
+      patchSession(uiSid, (s) => {
+        const last = s.msgs[s.msgs.length - 1];
+        if (last && last.id === streamId && last.role === "player") {
+          return {
+            ...s,
+            msgs: [...s.msgs.slice(0, -1), { ...last, text: last.text + text }],
+          };
+        }
+        return {
+          ...s,
+          msgs: [
+            ...s.msgs,
+            {
+              id: streamId,
+              role: "player",
+              playerId: players[0].id,
+              text,
+              at: now(),
+              streaming: true,
+            },
+          ],
+        };
+      });
+    }
+  }, [patchSession]);
+
+  const onAgentEvent = useCallback(
+    (profileId: string, event: AcpEvent) => {
+      setEventCount((n) => n + 1);
+
+      const su = asSessionUpdate(event);
+      if (su?.update?.sessionUpdate === "agent_message_chunk") {
+        const acpSid = su.sessionId ?? "";
+        const text = su.update.content?.text ?? "";
+        if (text) {
+          streamBuf.current[acpSid] = (streamBuf.current[acpSid] ?? "") + text;
+          if (!flushTimer.current) flushTimer.current = window.setTimeout(flushStream, 40);
+        }
+        return;
+      }
+
+      if (event.kind === "promptStarted") return;
+
+      if (event.kind === "promptResult" || event.kind === "promptFailed") {
+        flushStream();
+        const uiSid = acpToUi.current[event.sessionId];
+        if (uiSid) {
+          const streamId = `stream-${event.sessionId}`;
+          patchSession(uiSid, (s) => ({
+            ...s,
+            busy: false,
+            msgs: s.msgs.map((m) =>
+              m.id === streamId && m.role === "player" ? { ...m, streaming: false } : m,
+            ),
+          }));
+        }
+        if (event.kind === "promptFailed") console.warn("[acp] prompt failed", event.msg);
+        return;
+      }
+
+      console.debug("[acp]", profileId, event);
+    },
+    [flushStream, patchSession],
+  );
+
   const onSession = useCallback((profileId: string, sessionId: string) => {
     setSessionsByProfile((m) => ({ ...m, [profileId]: sessionId }));
+    // 建立映射：agent 回的事件带的是 ACP sessionId
+    acpToUi.current[sessionId] = lastSidRef.current;
   }, []);
   const addProfile = () =>
     setProfiles((list) => [
@@ -197,9 +279,6 @@ export default function App() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [state.msgs, activeTabId]);
 
-  const patchSession = useCallback((sid: string, fn: (s: SessionState) => SessionState) => {
-    setSessionState((prev) => ({ ...prev, [sid]: fn(prev[sid] ?? emptySession()) }));
-  }, []);
 
   const openTab = useCallback((tab: Omit<Tab, "id" | "title"> & { title?: string }) => {
     const key =
@@ -249,6 +328,36 @@ export default function App() {
     (text: string) => {
       const sid = lastSessionId;
       const at = now();
+
+      // 用户消息先落地，真假链路都一样
+      patchSession(sid, (s) => ({
+        ...s,
+        busy: true,
+        msgs: [...s.msgs, { id: `u-${Date.now()}`, role: "user", text, at }],
+      }));
+
+      // 已连上真 agent：走 ACP；否则退回演示数据
+      const acpSid = activeProfile ? sessionsByProfile[activeProfile.id] : undefined;
+      if (acpSid) {
+        sessionPrompt(acpSid, text).catch((e) => {
+          const err = asCmdError(e);
+          patchSession(sid, (s) => ({
+            ...s,
+            busy: false,
+            msgs: [
+              ...s.msgs,
+              {
+                id: `err-${Date.now()}`,
+                role: "system",
+                text: `发送失败：${err.code} ${err.msg}`,
+                at,
+              },
+            ],
+          }));
+        });
+        return;
+      }
+
       const hits = players.filter((p) => text.includes(`@${p.handle}`));
       const targets = hits.length > 0 ? hits : [players[0]];
       const turnId = `t-${Date.now()}`;
@@ -256,8 +365,6 @@ export default function App() {
 
       patchSession(sid, (s) => ({
         ...s,
-        busy: true,
-        msgs: [...s.msgs, { id: `u-${Date.now()}`, role: "user", text, at }],
         acts: [
           ...s.acts,
           ...targets.map((p, i) => ({
@@ -326,7 +433,7 @@ export default function App() {
         );
       });
     },
-    [lastSessionId, patchSession, settings.contextMessages],
+    [lastSessionId, patchSession, settings.contextMessages, activeProfile, sessionsByProfile],
   );
 
   /** 把 PR 作为引用塞进会话：优先复用已打开的会话标签 */

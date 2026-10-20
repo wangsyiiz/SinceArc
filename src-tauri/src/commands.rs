@@ -40,6 +40,17 @@ pub enum AcpEvent {
     },
     /// agent 进程的输出流关闭了
     Exited,
+    /// 一轮 prompt 开始了（UI 用来进入生成态；此时还没有任何 chunk）
+    PromptStarted {
+        session_id: String,
+    },
+    /// 一轮 prompt 正常结束（带 stopReason 等原始结果）
+    PromptResult {
+        session_id: String,
+        result: serde_json::Value,
+    },
+    /// 一轮 prompt 失败（超时、进程没了、agent 报错）
+    PromptFailed { session_id: String, msg: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -247,6 +258,7 @@ pub async fn agent_connect(
                 proc: Arc::new(proc),
                 outcome: outcome.clone(),
                 profile: parsed,
+                events: on_event.clone(),
             }),
         )
         .await;
@@ -305,6 +317,66 @@ pub async fn session_new(
         .await;
 
     Ok(SessionInfo { session_id })
+}
+
+const PROMPT_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// 发一轮消息。**立即返回** —— 流式内容走 `session/update` 通知，
+/// 结束信号走 `PromptResult` / `PromptFailed` 事件。
+/// 这里不 await 那一轮，否则 UI 会把整个生成过程当一次卡顿。
+#[tauri::command]
+pub async fn session_prompt(
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+) -> Result<(), CmdError> {
+    if text.trim().is_empty() {
+        return Err(CmdError::new(50300, "消息为空"));
+    }
+
+    let record = state
+        .session(&session_id)
+        .await
+        .ok_or_else(|| CmdError::new(50300, format!("未知会话：{session_id}")))?;
+    let handle = state.get(&record.profile_id).await.ok_or_else(|| {
+        CmdError::new(
+            50300,
+            format!("会话所属的 profile 已断开：{}", record.profile_id),
+        )
+    })?;
+
+    let params = serde_json::json!({
+        "sessionId": session_id,
+        "prompt": [{ "type": "text", "text": text }],
+    });
+
+    let sid = session_id.clone();
+    let events = handle.events.clone();
+    let proc = handle.proc.clone();
+
+    tokio::spawn(async move {
+        // 先告诉界面「这一轮开始了」，UI 据此进入生成态
+        let _ = events.send(AcpEvent::PromptStarted {
+            session_id: sid.clone(),
+        });
+
+        match proc.request("session/prompt", params, PROMPT_TIMEOUT).await {
+            Ok(result) => {
+                let _ = events.send(AcpEvent::PromptResult {
+                    session_id: sid,
+                    result,
+                });
+            }
+            Err(e) => {
+                let _ = events.send(AcpEvent::PromptFailed {
+                    session_id: sid,
+                    msg: e.to_string(),
+                });
+            }
+        }
+    });
+
+    Ok(())
 }
 
 #[tauri::command]

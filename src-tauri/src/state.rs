@@ -10,12 +10,16 @@ use tokio::sync::Mutex;
 
 use crate::acp::launch::AgentProfile;
 use crate::acp::{transport, InitializeOutcome};
+use crate::commands::AcpEvent;
 
 pub struct AgentHandle {
     pub proc: Arc<transport::AgentProcess>,
     pub outcome: InitializeOutcome,
     /// 起进程时用的 profile（cwd、launch 方式），session 创建要用
     pub profile: AgentProfile,
+    /// 推给界面的事件通道。prompt 是长请求，响应从后台 task 回来，
+    /// 所以句柄要自己持有一份。
+    pub events: tauri::ipc::Channel<AcpEvent>,
 }
 
 /// 一个 ACP 会话属于哪个 profile（后续 prompt / cancel 要按它路由）
