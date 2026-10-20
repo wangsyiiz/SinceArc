@@ -342,7 +342,6 @@ export default function App() {
           onChange={setSidebarW}
           onDragChange={setDragging}
           min={200}
-          max={380}
         />
 
         <TracePanel
@@ -366,7 +365,6 @@ export default function App() {
             onChange={setTraceW}
             onDragChange={setDragging}
             min={250}
-            max={560}
           />
         )}
 
@@ -451,7 +449,7 @@ export default function App() {
                       {state.pendingPerm && (
                         <button
                           onClick={() => setPermOpen(true)}
-                          className="sc-glass pointer-events-auto mb-2 flex w-full items-center gap-2 rounded-[10px] border-0 px-3 py-1.5 text-left text-[11px] text-warn-1 transition-colors hover:brightness-110"
+                          className="sc-glass pointer-events-auto mb-2 flex w-full items-center gap-2 rounded-[10px] border-0 shadow-none px-3 py-1.5 text-left text-[11px] text-warn-1 transition-colors hover:brightness-110"
                         >
                           <span className="shrink-0 font-medium">
                             {players.find((x) => x.id === state.pendingPerm?.playerId)?.name ??

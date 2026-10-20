@@ -50,7 +50,7 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [], cont
       )}
       <div
       className={cn(
-        "sc-glass rounded-[12px] border-transparent shadow-none transition-colors",
+        "sc-glass rounded-[12px] border-transparent transition-colors",
         busy && "border-accent-1/25",
       )}
     >

@@ -42,6 +42,9 @@
   /* 分段控件：暗色档 轨道 n-3 / 滑块 n-4；
      浅色档反过来 —— 轨道是淡黑水洗、滑块纯白（同 sincecloud 的
      --switch-track-bg / --switch-thumb-bg，用 light-dark 表达） */
+  /* 浮层边界：暗色靠内边高光（边框透明），浅色靠 1px 边框（高光 none） */
+  --glass-border: transparent;
+
   /* 列表选中面：暗色取 n-4；浅色要再暗一档才看得出来（n-4 在 #fafafa 上过淡） */
   --row-active: var(--s3);
 
@@ -70,6 +73,7 @@
   --ai: #ffffff;
 
   --row-active: #e6e6e6;
+  --glass-border: var(--l1);
 
   --switch-track: color-mix(in srgb, #060606 5%, transparent);
   --switch-thumb: #ffffff;
@@ -101,6 +105,8 @@
     --a1: #171717;
     --ai: #ffffff;
     --row-active: #e6e6e6;
+    --glass-border: var(--l1);
+  --glass-border: var(--l1);
 
   --switch-track: color-mix(in srgb, #060606 5%, transparent);
   --switch-thumb: #ffffff;
@@ -195,7 +201,7 @@ body {
   background: var(--glass-1);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  border: 1px solid var(--l1);
+  border: 1px solid var(--glass-border);
   box-shadow: var(--edge-highlight);
 }
 /* 控件：只给上缘内高光，底色由调用方的 Tailwind 类给（bg-surface-* / hover:*）

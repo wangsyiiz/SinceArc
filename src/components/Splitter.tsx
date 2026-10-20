@@ -5,11 +5,12 @@ interface SplitterProps {
   onChange: (n: number) => void;
   onDragChange?: (dragging: boolean) => void;
   min?: number;
+  /** 不传则不设上限 */
   max?: number;
 }
 
 /** 竖向拖拽把手：占据分栏之间的 6px 间隙，hover 时显出一条细线 */
-export function Splitter({ value, onChange, onDragChange, min = 200, max = 520 }: SplitterProps) {
+export function Splitter({ value, onChange, onDragChange, min = 200, max }: SplitterProps) {
   const drag = useRef<{ x: number; v: number } | null>(null);
 
   return (
@@ -24,7 +25,8 @@ export function Splitter({ value, onChange, onDragChange, min = 200, max = 520 }
       }}
       onPointerMove={(e) => {
         if (!drag.current) return;
-        const next = Math.min(max, Math.max(min, drag.current.v + (e.clientX - drag.current.x)));
+        const raw = drag.current.v + (e.clientX - drag.current.x);
+        const next = max === undefined ? Math.max(min, raw) : Math.min(max, Math.max(min, raw));
         onChange(next);
       }}
       onPointerUp={(e) => {
