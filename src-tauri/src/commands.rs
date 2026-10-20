@@ -12,13 +12,35 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tauri::ipc::Channel;
 use tauri::State;
 
 use crate::acp::launch::{AgentProfile, Launch, SshAuth, SshSpec};
 use crate::acp::{self, transport};
-use crate::state::{AgentHandle, AppState};
+use crate::state::{AgentHandle, AppState, SessionRecord};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// 推给界面的事件。UI 只认这个枚举，不直接看 ACP 的 JSON ——
+/// 协议类型收敛在 acp 模块里（见 acp/mod.rs 的约束 1）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AcpEvent {
+    /// 单向通知，例如 `session/update`
+    Notification {
+        method: String,
+        params: serde_json::Value,
+    },
+    /// agent 发来的请求，需要回响应（S4 起接线）
+    Request {
+        id: u64,
+        method: String,
+        params: serde_json::Value,
+    },
+    /// agent 进程的输出流关闭了
+    Exited,
+}
 
 #[derive(Debug, Serialize)]
 pub struct CmdError {
@@ -169,6 +191,7 @@ fn to_profile(dto: &ProfileDto) -> Result<AgentProfile, CmdError> {
 pub async fn agent_connect(
     state: State<'_, AppState>,
     profile: ProfileDto,
+    on_event: Channel<AcpEvent>,
 ) -> Result<ConnectOutcome, CmdError> {
     let id = profile.id.clone();
     let parsed = to_profile(&profile)?;
@@ -187,18 +210,26 @@ pub async fn agent_connect(
             CmdError::from(e)
         })?;
 
-    // S1 阶段只把入站消息打到日志：S2 起接 Channel 转到界面。
+    // 入站消息逐条推给界面；channel 断了说明前端不要了，停掉转发即可。
+    let events = on_event.clone();
     tokio::spawn(async move {
         while let Some(msg) = incoming.recv().await {
-            match msg {
+            let payload = match msg {
                 transport::Incoming::Notification { method, params } => {
-                    tracing::debug!(target: "sincearc::acp", %method, bytes = params.to_string().len(), "notification");
+                    tracing::debug!(target: "sincearc::acp", %method, "notification");
+                    AcpEvent::Notification { method, params }
                 }
-                transport::Incoming::Request { id, method, .. } => {
-                    tracing::warn!(target: "sincearc::acp", id, %method, "unhandled agent request (S2 起接线)");
+                transport::Incoming::Request { id, method, params } => {
+                    tracing::debug!(target: "sincearc::acp", id, %method, "agent request");
+                    AcpEvent::Request { id, method, params }
                 }
+            };
+            if events.send(payload).is_err() {
+                tracing::debug!(target: "sincearc::ipc", "event channel closed, stop forwarding");
+                return;
             }
         }
+        let _ = events.send(AcpEvent::Exited);
     });
 
     tracing::info!(
@@ -230,11 +261,63 @@ pub async fn agent_connect(
     })
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInfo {
+    pub session_id: String,
+}
+
+/// 新建会话。`cwd` 属于 agent 所在的世界（WSL/SSH 是 `/home/...`）。
+#[tauri::command]
+pub async fn session_new(
+    state: State<'_, AppState>,
+    profile_id: String,
+    cwd: String,
+) -> Result<SessionInfo, CmdError> {
+    let handle = state
+        .get(&profile_id)
+        .await
+        .ok_or_else(|| CmdError::new(50300, format!("profile 未连接，不能建会话：{profile_id}")))?;
+
+    let result = handle
+        .proc
+        .request(
+            "session/new",
+            serde_json::json!({ "cwd": cwd, "mcpServers": [] }),
+            REQUEST_TIMEOUT,
+        )
+        .await?;
+
+    let session_id = result
+        .get("sessionId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            CmdError::new(
+                50200,
+                format!("session/new 没有返回 sessionId，实际返回：{result}"),
+            )
+        })?
+        .to_string();
+
+    tracing::info!(target: "sincearc::ipc", profile = %profile_id, session = %session_id, "session created");
+    state
+        .insert_session(session_id.clone(), SessionRecord { profile_id, cwd })
+        .await;
+
+    Ok(SessionInfo { session_id })
+}
+
 #[tauri::command]
 pub async fn agent_disconnect(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<(), CmdError> {
+    // 会话跟着进程一起死：先摘记录，别让 prompt 打到已关闭的进程上
+    let dead = state.drop_sessions_of(&profile_id).await;
+    if !dead.is_empty() {
+        tracing::info!(target: "sincearc::ipc", profile = %profile_id, sessions = dead.len(), "drop sessions on disconnect");
+    }
+
     match state.take(&profile_id).await {
         Some(handle) => {
             handle.proc.kill().await;

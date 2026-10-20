@@ -39,6 +39,7 @@ import type {
   ThemeMode,
   ThreadSettings,
 } from "@/types";
+import type { AcpEvent } from "@/lib/ipc";
 
 const now = () => new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 const isWrite = (a: Activity) => a.kind === "edit" || a.kind === "execute";
@@ -83,6 +84,17 @@ export default function App() {
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const [profiles, setProfiles] = useState<AgentProfile[]>(mockProfiles);
+  const [sessionsByProfile, setSessionsByProfile] = useState<Record<string, string>>({});
+  const [eventCount, setEventCount] = useState(0);
+
+  const onAgentEvent = useCallback((profileId: string, event: AcpEvent) => {
+    setEventCount((n) => n + 1);
+    // S2：先落到控制台，能看见「握手之后 agent 真的在说话」
+    console.debug("[acp]", profileId, event);
+  }, []);
+  const onSession = useCallback((profileId: string, sessionId: string) => {
+    setSessionsByProfile((m) => ({ ...m, [profileId]: sessionId }));
+  }, []);
   const addProfile = () =>
     setProfiles((list) => [
       ...list,
@@ -478,6 +490,8 @@ export default function App() {
               <StatusBar
                 cwd={cwd}
                 profile={activeProfile}
+                sessionId={activeProfile ? sessionsByProfile[activeProfile.id] : undefined}
+                eventCount={eventCount}
                 traceOpen={traceOpen}
                 onToggleTrace={() =>
                   setTraceOpen((v) => {
@@ -604,6 +618,8 @@ export default function App() {
               }
               onAddProfile={addProfile}
               onRemoveProfile={removeProfile}
+              onAgentEvent={onAgentEvent}
+              onSession={onSession}
               onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}
               onCycleTheme={setTheme}
             />

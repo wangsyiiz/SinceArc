@@ -12,6 +12,16 @@ export interface CmdError {
   msg: string;
 }
 
+/** 后端推来的事件。tag = kind，与 Rust 的 AcpEvent 对齐 */
+export type AcpEvent =
+  | { kind: "notification"; method: string; params: unknown }
+  | { kind: "request"; id: number; method: string; params: unknown }
+  | { kind: "exited" };
+
+export interface SessionInfo {
+  sessionId: string;
+}
+
 export interface ConnectOutcome {
   agentName: string;
   agentVersion: string;
@@ -53,8 +63,21 @@ function toDto(p: AgentProfile) {
   };
 }
 
-export function connectAgent(profile: AgentProfile): Promise<ConnectOutcome> {
-  return invoke<ConnectOutcome>("agent_connect", { profile: toDto(profile) });
+export async function connectAgent(
+  profile: AgentProfile,
+  onEvent?: (e: AcpEvent) => void,
+): Promise<ConnectOutcome> {
+  if (!isTauri()) {
+    throw { code: 50900, msg: "当前不在 Tauri 运行环境里（浏览器直开无法调用后端）" } as CmdError;
+  }
+  const { Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<AcpEvent>();
+  if (onEvent) channel.onmessage = onEvent;
+  return invoke<ConnectOutcome>("agent_connect", { profile: toDto(profile), onEvent: channel });
+}
+
+export function sessionNew(profileId: string, cwd: string): Promise<SessionInfo> {
+  return invoke<SessionInfo>("session_new", { profileId, cwd });
 }
 
 export function disconnectAgent(profileId: string): Promise<void> {

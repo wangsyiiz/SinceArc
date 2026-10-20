@@ -29,6 +29,7 @@ pub fn run() {
             acp::list_profiles_hint,
             commands::agent_connect,
             commands::agent_disconnect,
+            commands::session_new,
             commands::agent_list_connected,
         ])
         .run(tauri::generate_context!())

@@ -70,3 +70,19 @@ v1 用 UNC（`\\wsl.localhost\<distro>\...`，实测读文件 22 ms）访问 WSL
 - `PromptResponse.usage` 需要 Rust crate 的 `unstable_end_turn_token_usage` feature，
   字段是**跨轮累计**；上游没给时是 `None`（不是 0）。
 - 没有 token 速率字段，也没有实时流式计数（`usage_update` 在轮次边界发）。
+
+### session/new 的返回比协议文档写的多
+
+实测（hermes 0.22.2）`session/new` 返回的不止 `sessionId`：
+
+```json
+{
+  "sessionId": "local-<64 hex>",
+  "models": { "availableModels": [...], "currentModelId": "opencode-go:deepseek-v4.1-flash" },
+  "modes":  { "availableModes": [...], "currentModeId": "default" },
+  "_meta":  { "hermes": { "sessionProvenance": { ... } } }
+}
+```
+
+`modes` 就是权限档的来源（`default` / `accept_edits` / `dont_ask`），
+`models` 是模型切换的来源 —— 这两个都是 UI 要用的，别硬编码。

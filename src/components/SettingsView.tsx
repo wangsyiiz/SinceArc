@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import type { AgentProfile, LaunchKind, SshAuth, ThemeMode, ThreadSettings } from "@/types";
 import { cn } from "@/lib/utils";
-import { asCmdError, connectAgent, disconnectAgent } from "@/lib/ipc";
+import { asCmdError, connectAgent, disconnectAgent, sessionNew, type AcpEvent } from "@/lib/ipc";
 
 interface SettingsViewProps {
   settings: ThreadSettings;
@@ -19,6 +19,9 @@ interface SettingsViewProps {
   onUpdateProfile: (next: AgentProfile) => void;
   onAddProfile: () => void;
   onRemoveProfile: (id: string) => void;
+  /** agent 推来的事件（S2：只做计数与日志，S3 起进消息流） */
+  onAgentEvent: (profileId: string, event: AcpEvent) => void;
+  onSession: (profileId: string, sessionId: string) => void;
   onChangeContext: (n: number) => void;
   onCycleTheme: (t: ThemeMode) => void;
 }
@@ -84,6 +87,8 @@ export function SettingsView({
   onUpdateProfile,
   onAddProfile,
   onRemoveProfile,
+  onAgentEvent,
+  onSession,
   onChangeContext,
   onCycleTheme,
 }: SettingsViewProps) {
@@ -98,13 +103,23 @@ export function SettingsView({
     setBusy(p.id);
     setErrors((e) => ({ ...e, [p.id]: "" }));
     try {
-      const out = await connectAgent(p);
+      const out = await connectAgent(p, (e) => onAgentEvent(p.id, e));
       onUpdateProfile({
         ...p,
         connected: true,
         agentName: `${out.agentName} ${out.agentVersion}`,
         protocolVersion: out.protocolVersion,
       });
+
+      // 握手成功就开一个会话：没有 session 的 agent 只能握手，不能对话。
+      // 建会话失败不影响「已连接」的事实，单独报。
+      try {
+        const info = await sessionNew(p.id, p.cwd ?? "");
+        onSession(p.id, info.sessionId);
+      } catch (e) {
+        const err = asCmdError(e);
+        setErrors((prev) => ({ ...prev, [p.id]: `会话创建失败：${err.code} ${err.msg}` }));
+      }
     } catch (e) {
       const err = asCmdError(e);
       setErrors((prev) => ({ ...prev, [p.id]: `${err.code} ${err.msg}` }));

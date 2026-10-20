@@ -18,9 +18,17 @@ pub struct AgentHandle {
     pub profile: AgentProfile,
 }
 
+/// 一个 ACP 会话属于哪个 profile（后续 prompt / cancel 要按它路由）
+#[derive(Debug, Clone)]
+pub struct SessionRecord {
+    pub profile_id: String,
+    pub cwd: String,
+}
+
 #[derive(Default)]
 pub struct AppState {
     agents: Mutex<HashMap<String, Arc<AgentHandle>>>,
+    sessions: Mutex<HashMap<String, SessionRecord>>,
 }
 
 impl AppState {
@@ -39,5 +47,27 @@ impl AppState {
 
     pub async fn ids(&self) -> Vec<String> {
         self.agents.lock().await.keys().cloned().collect()
+    }
+
+    pub async fn insert_session(&self, session_id: String, record: SessionRecord) {
+        self.sessions.lock().await.insert(session_id, record);
+    }
+
+    pub async fn session(&self, session_id: &str) -> Option<SessionRecord> {
+        self.sessions.lock().await.get(session_id).cloned()
+    }
+
+    /// 断连时把该 profile 名下的会话一并摘掉（进程没了，会话不可能还活着）
+    pub async fn drop_sessions_of(&self, profile_id: &str) -> Vec<String> {
+        let mut map = self.sessions.lock().await;
+        let dead: Vec<String> = map
+            .iter()
+            .filter(|(_, r)| r.profile_id == profile_id)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in &dead {
+            map.remove(k);
+        }
+        dead
     }
 }

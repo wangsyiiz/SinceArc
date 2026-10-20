@@ -8,11 +8,23 @@ interface StatusBarProps {
   profile: AgentProfile | undefined;
   traceOpen: boolean;
   onToggleTrace: () => void;
+  /** 当前 profile 的会话 id（握手后建出来的那个） */
+  sessionId?: string;
+  /** S2 调试用：累计收到的 inbound 事件数 */
+  eventCount?: number;
   /** 右侧插槽：agent 能力入口等 */
   right?: ReactNode;
 }
 
-export function StatusBar({ cwd, profile, traceOpen, onToggleTrace, right }: StatusBarProps) {
+export function StatusBar({
+  cwd,
+  profile,
+  traceOpen,
+  onToggleTrace,
+  sessionId,
+  eventCount = 0,
+  right,
+}: StatusBarProps) {
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line-1/60 px-3">
       <button
@@ -33,6 +45,19 @@ export function StatusBar({ cwd, profile, traceOpen, onToggleTrace, right }: Sta
 
       <div className="ml-auto flex items-center gap-0.5">
         {right}
+        {sessionId && (
+          <span
+            className="mr-1 font-mono text-[9px] text-ink-3"
+            title={`session ${sessionId}`}
+          >
+            s:{sessionId.slice(0, 8)}
+          </span>
+        )}
+        {eventCount > 0 && (
+          <span className="mr-1 font-mono text-[9px] text-ink-3" title="收到的 ACP 事件数">
+            ev {eventCount}
+          </span>
+        )}
         {profile && (
           <div
             className={cn(
