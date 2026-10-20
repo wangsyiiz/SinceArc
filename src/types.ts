@@ -58,10 +58,17 @@ export interface SessionSummary {
   id: string;
   title: string;
   cwd: string;
+  /** 人类可读的"最后活动时间"（展示用，由 updatedAtSec 格式化而来） */
   updatedAt: string;
+  /** 库里的时间戳（秒），排序与分组都按它算 */
+  updatedAtSec?: number;
   group: "今天" | "昨天" | "更早";
   /** 这个会话里有哪些玩家 */
   playerIds: string[];
+  /** 绑定的 ACP 会话 id：事件按它归属，重连时优先复用 */
+  acpSessionId?: string | null;
+  /** 哪个连接配置下的会话 */
+  profileId?: string;
 }
 
 /* ---------- 过程（不再进聊天流） ---------- */

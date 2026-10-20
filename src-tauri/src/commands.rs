@@ -17,6 +17,7 @@ use tauri::State;
 
 use crate::acp::launch::{AgentProfile, Launch, SshAuth, SshSpec};
 use crate::acp::{self, transport};
+use crate::db;
 use crate::state::{AgentHandle, AppState, SessionRecord};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -321,7 +322,7 @@ async fn attach_session(
     let mut warnings: Vec<String> = Vec::new();
 
     if handle.outcome.load_session {
-        match state.db.last_session(profile_id) {
+        match state.db.last_acp_session(profile_id) {
             Ok(Some(prev)) => {
                 let params = serde_json::json!({
                     "sessionId": prev,
@@ -339,7 +340,6 @@ async fn attach_session(
                             session = %prev,
                             "session resumed"
                         );
-                        let _ = state.db.remember_session(&prev, profile_id, cwd);
                         state
                             .insert_session(
                                 prev.clone(),
@@ -380,7 +380,6 @@ async fn attach_session(
         Ok(v) => {
             let sid = v["sessionId"].as_str()?.to_string();
             tracing::info!(target: "sincearc::ipc", session = %sid, "session created");
-            let _ = state.db.remember_session(&sid, profile_id, cwd);
             state
                 .insert_session(
                     sid.clone(),
@@ -573,4 +572,72 @@ pub async fn agent_disconnect(
 #[tauri::command]
 pub async fn agent_list_connected(state: State<'_, AppState>) -> Result<Vec<String>, CmdError> {
     Ok(state.ids().await)
+}
+
+/* ---------------- 会话与消息的读写 ---------------- */
+
+#[tauri::command]
+pub async fn sessions_list(
+    state: State<'_, AppState>,
+    profile_id: Option<String>,
+) -> Result<Vec<db::SessionRow>, CmdError> {
+    state
+        .db
+        .list_sessions(profile_id.as_deref())
+        .map_err(|e| CmdError::new(50000, format!("读取会话列表失败：{e}")))
+}
+
+#[tauri::command]
+pub async fn session_upsert(
+    state: State<'_, AppState>,
+    row: db::SessionRow,
+) -> Result<(), CmdError> {
+    state
+        .db
+        .upsert_session(&row)
+        .map_err(|e| CmdError::new(50000, format!("保存会话失败：{e}")))
+}
+
+#[tauri::command]
+pub async fn session_delete(state: State<'_, AppState>, id: String) -> Result<(), CmdError> {
+    state
+        .db
+        .delete_session(&id)
+        .map_err(|e| CmdError::new(50000, format!("删除会话失败：{e}")))
+}
+
+#[tauri::command]
+pub async fn session_bind_acp(
+    state: State<'_, AppState>,
+    id: String,
+    acp_session_id: String,
+) -> Result<(), CmdError> {
+    state
+        .db
+        .bind_acp_session(&id, &acp_session_id)
+        .map_err(|e| CmdError::new(50000, format!("绑定会话失败：{e}")))
+}
+
+#[tauri::command]
+pub async fn messages_append(
+    state: State<'_, AppState>,
+    session_id: String,
+    messages: Vec<db::MessageInput>,
+) -> Result<(), CmdError> {
+    state
+        .db
+        .append_messages(&session_id, &messages)
+        .map_err(|e| CmdError::new(50000, format!("保存消息失败：{e}")))
+}
+
+#[tauri::command]
+pub async fn messages_load(
+    state: State<'_, AppState>,
+    session_id: String,
+    limit: Option<i64>,
+) -> Result<Vec<db::MessageRow>, CmdError> {
+    state
+        .db
+        .load_messages(&session_id, limit.unwrap_or(200))
+        .map_err(|e| CmdError::new(50000, format!("读取消息失败：{e}")))
 }

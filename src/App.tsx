@@ -19,16 +19,12 @@ import { TitleBar } from "@/components/TitleBar";
 import { TracePanel } from "@/components/TracePanel";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
 import {
-  activities as seedActivities,
-  messages as seedMessages,
-  pendingPermission,
   players,
   prsByRepo,
   repos as seedRepos,
-  sessions as mockSessions,
-  turns as seedTurns,
 } from "@/mock/data";
 import type {
+  Message,
   SessionSummary,
   Activity,
   AgentProfile,
@@ -43,8 +39,14 @@ import {
   asCmdError,
   asSessionUpdate,
   fromDto,
+  messagesAppend,
+  messagesLoad,
   profilesLoad,
   profilesSave,
+  sessionBindAcp,
+  sessionsList,
+  sessionUpsert,
+  type SessionRowDto,
   sessionPrompt,
   type AcpEvent,
 } from "@/lib/ipc";
@@ -71,22 +73,12 @@ export default function App() {
   const [traceW, setTraceW] = useState(338);
   const [dragging, setDragging] = useState(false);
   const [repoList, setRepoList] = useState<GithubRepo[]>(seedRepos);
-  const [sessions, setSessions] = useState<SessionSummary[]>(mockSessions);
-  const [tabs, setTabs] = useState<Tab[]>([
-    { id: "tab-s-1", kind: "session", title: mockSessions[0].title, sessionId: "s-1" },
-  ]);
-  const [activeTabId, setActiveTabId] = useState<string | null>("tab-s-1");
-  const [lastSessionId, setLastSessionId] = useState("s-1");
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [lastSessionId, setLastSessionId] = useState("");
   const [permOpen, setPermOpen] = useState(false);
-  const [sessionState, setSessionState] = useState<Record<string, SessionState>>({
-    "s-1": {
-      msgs: seedMessages,
-      acts: seedActivities,
-      turns: seedTurns,
-      busy: false,
-      pendingPerm: pendingPermission,
-    },
-  });
+  const [sessionState, setSessionState] = useState<Record<string, SessionState>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
   const layoutRef = useRef<HTMLDivElement>(null);
   const [layoutW, setLayoutW] = useState(0);
@@ -110,6 +102,8 @@ export default function App() {
   // ACP sessionId -> UI 会话 id（mock 的 s-1 之类）。S3 阶段只有一个活跃会话，够用。
   const acpToUi = useRef<Record<string, string>>({});
   const streamBuf = useRef<Record<string, string>>({});
+  /** 本轮已累积的完整回复（定稿时整条落库，不用再去 state 里翻） */
+  const streamText = useRef<Record<string, string>>({});
   /** ACP 会话 -> 当前这一轮的 turn id（轨迹要跟着同一条轮次走） */
   const acpToTurn = useRef<Record<string, string>>({});
   /** 最近一次确认过的 ACP 会话 id：chunk 没带 sessionId 时的兜底 */
@@ -210,6 +204,7 @@ export default function App() {
         const text = su.update.content?.text ?? "";
         if (text) {
           streamBuf.current[acpSid] = (streamBuf.current[acpSid] ?? "") + text;
+          streamText.current[acpSid] = (streamText.current[acpSid] ?? "") + text;
           if (!flushTimer.current) flushTimer.current = window.setTimeout(flushStream, 40);
         }
         return;
@@ -262,6 +257,29 @@ export default function App() {
           }));
         }
         if (event.kind === "promptFailed") console.warn("[acp] prompt failed", event.msg);
+
+        // 这一轮整条落库（同一 id 重复写是幂等的）
+        const acpSid = event.sessionId;
+        const full = streamText.current[acpSid] ?? "";
+        delete streamText.current[acpSid];
+        if (uiSid && full) {
+          const id = `stream-${acpSid}`;
+          messagesAppend(uiSid, [
+            {
+              id,
+              role: "player",
+              kind: "text",
+              payload: {
+                id,
+                role: "player",
+                playerId: players[0].id,
+                text: full,
+                at: now(),
+                streaming: false,
+              },
+            },
+          ]).catch((e) => console.warn("[db] append reply failed", e));
+        }
         return;
       }
 
@@ -275,6 +293,18 @@ export default function App() {
     // 建立映射：agent 回的事件带的是 ACP sessionId
     acpToUi.current[sessionId] = lastSidRef.current;
     activeAcp.current = sessionId;
+
+    const uiId = lastSidRef.current;
+    if (uiId) {
+      sessionBindAcp(uiId, sessionId).catch((e) =>
+        console.warn("[db] bind acp session failed", e),
+      );
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === uiId ? { ...s, acpSessionId: sessionId, profileId } : s,
+        ),
+      );
+    }
   }, []);
   const addProfile = () =>
     setProfiles((list) => [
@@ -324,9 +354,77 @@ export default function App() {
     return () => clearTimeout(t);
   }, [profiles, profilesLoaded]);
 
+  /** 库行 -> 侧栏条目（时间与分组都按库里的时间戳算） */
+  const toSummary = useCallback((r: SessionRowDto): SessionSummary => {
+    const at = new Date(r.updatedAt * 1000);
+    const today = new Date();
+    const sameDay = at.toDateString() === today.toDateString();
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    return {
+      id: r.id,
+      title: r.title,
+      cwd: r.cwd,
+      updatedAt: sameDay
+        ? at.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })
+        : at.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }),
+      updatedAtSec: r.updatedAt,
+      group: sameDay ? "今天" : at.toDateString() === yesterday.toDateString() ? "昨天" : "更早",
+      playerIds: [],
+      acpSessionId: r.acpSessionId ?? null,
+      profileId: r.profileId ?? undefined,
+    };
+  }, []);
+
+  // 库里的会话列表：启动读一次，之后每次变更都回写
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const rows = await sessionsList();
+        if (alive) setSessions(rows.map(toSummary));
+      } catch {
+        // 非 Tauri 环境：保持空列表
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [toSummary]);
+
+  // 启动时列表回来了就直接打开最近一个，别让人对着一屏空白点新建
+  useEffect(() => {
+    if (tabs.length > 0) return;
+    const first = sessions[0];
+    if (!first) return;
+    const tabId = `tab-${first.id}`;
+    setTabs([{ id: tabId, kind: "session", title: first.title, sessionId: first.id }]);
+    setActiveTabId(tabId);
+    setLastSessionId(first.id);
+  }, [sessions, tabs.length]);
+
+  // 切到某个会话时把它最近的消息读回来（库里没有就什么都不做）
+  useEffect(() => {
+    const sid = lastSessionId;
+    if (!sid) return;
+    let alive = true;
+    (async () => {
+      const rows = await messagesLoad(sid).catch(() => []);
+      if (!alive || rows.length === 0) return;
+      setSessionState((prev) => {
+        const cur = prev[sid] ?? emptySession();
+        if (cur.msgs.length > 0) return prev; // 期间已经聊起来了，别覆盖
+        return { ...prev, [sid]: { ...cur, msgs: rows.map((r) => r.payload as Message) } };
+      });
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [lastSessionId]);
+
   const activeProfile = profiles.find((p) => p.id === activeProfileId);
   const activeSession = sessions.find((s) => s.id === lastSessionId);
-  const cwd = activeSession?.cwd ?? "/home/jerry/source/sincearc";
+  const cwd = activeSession?.cwd ?? activeProfile?.cwd ?? "";
   const state = sessionState[lastSessionId] ?? emptySession();
 
   const writeLock = state.acts.find((a) => a.status === "running" && isWrite(a)) ?? null;
@@ -459,11 +557,15 @@ export default function App() {
       const at = now();
 
       // 用户消息先落地，真假链路都一样
+      const userMsg: Message = { id: `u-${Date.now()}`, role: "user", text, at };
       patchSession(sid, (s) => ({
         ...s,
         busy: true,
-        msgs: [...s.msgs, { id: `u-${Date.now()}`, role: "user", text, at }],
+        msgs: [...s.msgs, userMsg],
       }));
+      messagesAppend(sid, [
+        { id: userMsg.id, role: "user", kind: "text", payload: userMsg },
+      ]).catch((e) => console.warn("[db] append message failed", e));
 
       // 已连上真 agent：走 ACP；否则退回演示数据
       const acpSid = activeProfile ? sessionsByProfile[activeProfile.id] : undefined;
@@ -663,17 +765,27 @@ export default function App() {
     const id = `s-${Date.now()}`;
     setSessionState((prev) => ({ ...prev, [id]: emptySession() }));
     // 必须进列表：只在 tab 里存在的话，关掉标签就再也找不回来了
-    setSessions((prev) => [
-      {
-        id,
-        title: "新会话",
-        cwd: activeProfile?.cwd ?? "",
-        updatedAt: "刚刚",
-        group: "今天",
-        playerIds: [],
-      },
-      ...prev,
-    ]);
+    const summary: SessionSummary = {
+      id,
+      title: "新会话",
+      cwd: activeProfile?.cwd ?? "",
+      updatedAt: "刚刚",
+      updatedAtSec: Math.floor(Date.now() / 1000),
+      group: "今天",
+      playerIds: [],
+      acpSessionId: null,
+      profileId: activeProfile?.id,
+    };
+    setSessions((prev) => [summary, ...prev]);
+    sessionUpsert({
+      id,
+      acpSessionId: null,
+      profileId: activeProfile?.id ?? null,
+      title: summary.title,
+      cwd: summary.cwd,
+      createdAt: summary.updatedAtSec!,
+      updatedAt: summary.updatedAtSec!,
+    }).catch((e) => console.warn("[db] upsert session failed", e));
     openTab({ kind: "session", title: "新会话", sessionId: id });
     setLastSessionId(id);
   }, [activeProfile, openTab]);

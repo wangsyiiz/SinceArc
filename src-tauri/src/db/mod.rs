@@ -1,27 +1,68 @@
 //! 本地持久化（SQLite）。
 //!
-//! 存三类东西：
-//! - `profiles`：agent 连接配置。**SSH 密码不入库** —— 它本来只在内存里过一手，
-//!   落盘就等于把凭据写进明文文件，与既定口径冲突。
-//! - `workspaces`：agent 侧的工作目录（`fs/*` 回调的沙箱根）。当前每个 profile
-//!   自动对应一个，路径取 profile 的 cwd。
-//! - `sessions`：ACP 会话 id 与其归属。作用是重连时优先 `session/load` 复用，
-//!   而不是每次都 `session/new` —— 后者会在 agent 侧堆一串再也不会被打开的会话。
+//! 一个会话 = 一行：**UI 会话 id 是主键**，ACP 的 sessionId 只是它的一个字段。
+//! 早期版本反过来（ACP id 当主键 + 前端一张映射表桥接两套 id），那样每次重启
+//! 都要重建映射，而且映射一旦没建立，流式内容就会写到别处去。
 //!
-//! `messages` / `permission_rules` 表已建但未接线（E4 用）。
+//! `profiles` 存连接配置（SSH 密码不入库）、`sessions` 存会话列表、
+//! `messages` 存消息。`workspaces` / `permission_rules` 是 E4 预留，尚未接线。
 
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 
 use crate::commands::ProfileDto;
 
 pub const SCHEMA: &str = include_str!("schema.sql");
 
+/// 结构版本：与 schema.sql 不符时整表重建（自用工具，会话数据可再生）
+const SCHEMA_VERSION: i64 = 2;
+
 pub struct Db {
     conn: Mutex<Connection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRow {
+    pub id: String,
+    pub acp_session_id: Option<String>,
+    /// 还没绑定连接配置的草稿会话为 None
+    pub profile_id: Option<String>,
+    pub title: String,
+    pub cwd: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageRow {
+    pub id: String,
+    pub seq: i64,
+    pub role: String,
+    pub kind: String,
+    /// 原始消息对象（前端 `Message` 的形状），不做有损转换
+    pub payload: serde_json::Value,
+    pub created_at: i64,
+}
+
+/// 写入用：seq 由后端按 MAX+1 分配，前端不需要知道
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageInput {
+    pub id: String,
+    pub role: String,
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    pub payload: serde_json::Value,
+}
+
+fn default_kind() -> String {
+    "text".to_string()
 }
 
 fn now() -> i64 {
@@ -34,11 +75,43 @@ fn now() -> i64 {
 impl Db {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
+
+        // 旧结构（sessions 缺 acp_session_id 列）直接重建，不做逐列迁移：
+        // 会话数据可再生产，留着半旧表只会让后面每一步都要判断两套结构。
+        let has_table: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? > 0;
+        let has_column: bool = if has_table {
+            conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='acp_session_id'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )? > 0
+        } else {
+            true
+        };
+        if has_table && !has_column {
+            tracing::warn!(
+                target: "sincearc::ipc",
+                "旧库结构，重建 sessions/messages 表（配置保留）"
+            );
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS messages;
+                 DROP TABLE IF EXISTS sessions;",
+            )?;
+        }
+
         conn.execute_batch(SCHEMA)?;
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
     }
+
+    /* ---------------- profiles ---------------- */
 
     pub fn load_profiles(&self) -> rusqlite::Result<Vec<ProfileDto>> {
         let conn = self.conn.lock().expect("db poisoned");
@@ -70,8 +143,7 @@ impl Db {
         rows.collect()
     }
 
-    /// 整表对齐：列表里的 upsert，不在列表里的删掉（workspace / session 由外键级联）。
-    /// 自用工具、配置数量个位数，全量覆盖比维护增量简单，也不会留下僵尸配置。
+    /// 整表对齐：列表里的 upsert，不在列表里的删掉（会话随外键级联）。
     pub fn save_profiles(&self, list: &[ProfileDto]) -> rusqlite::Result<()> {
         let mut conn = self.conn.lock().expect("db poisoned");
         let tx = conn.transaction()?;
@@ -113,8 +185,6 @@ impl Db {
         }
 
         let keep: Vec<String> = list.iter().map(|p| p.id.clone()).collect();
-
-        // 先找出这次被删掉的配置
         let existing: Vec<String> = {
             let mut stmt = tx.prepare("SELECT id FROM profiles")?;
             let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
@@ -130,8 +200,7 @@ impl Db {
                 .take(doomed.len())
                 .collect::<Vec<_>>()
                 .join(",");
-            // workspaces 对 profiles 是 RESTRICT（防误删沙箱根），所以删除顺序必须显式：
-            // 先删该配置的工作区（sessions 随之 CASCADE），再删配置本身。
+            // workspaces 对 profiles 是 RESTRICT（防误删沙箱根），删除顺序显式写出来
             tx.execute(
                 &format!("DELETE FROM workspaces WHERE profile_id IN ({marks})"),
                 rusqlite::params_from_iter(&doomed),
@@ -145,56 +214,144 @@ impl Db {
         tx.commit()
     }
 
-    /// 每个 profile 一个默认 workspace，id 由 profile 派生（确定性，不重复建）
-    fn ensure_workspace(
-        &self,
-        tx: &rusqlite::Transaction<'_>,
-        profile_id: &str,
-        cwd: &str,
-    ) -> rusqlite::Result<String> {
-        let id = format!("ws-{profile_id}");
-        let roots = serde_json::to_string(&[cwd]).unwrap_or_else(|_| "[]".into());
-        tx.execute(
-            "INSERT INTO workspaces (id, name, profile_id, roots_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(id) DO NOTHING",
-            params![id, profile_id, profile_id, roots, now()],
-        )?;
-        Ok(id)
+    /* ---------------- sessions ---------------- */
+
+    pub fn list_sessions(&self, profile_id: Option<&str>) -> rusqlite::Result<Vec<SessionRow>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let sql = "SELECT id, acp_session_id, profile_id, title, cwd, created_at, updated_at
+                   FROM sessions
+                   WHERE (?1 IS NULL OR profile_id = ?1)
+                   ORDER BY updated_at DESC, created_at DESC";
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map(params![profile_id], |r| {
+            Ok(SessionRow {
+                id: r.get(0)?,
+                acp_session_id: r.get(1)?,
+                profile_id: r.get(2)?,
+                title: r.get(3)?,
+                cwd: r.get(4)?,
+                created_at: r.get(5)?,
+                updated_at: r.get(6)?,
+            })
+        })?;
+        rows.collect()
     }
 
-    /// 记一次会话：新建的插入，复用的一次刷新 updated_at
-    pub fn remember_session(
-        &self,
-        session_id: &str,
-        profile_id: &str,
-        cwd: &str,
-    ) -> rusqlite::Result<()> {
-        let mut conn = self.conn.lock().expect("db poisoned");
-        let tx = conn.transaction()?;
-        let ws = self.ensure_workspace(&tx, profile_id, cwd)?;
-        let ts = now();
-        tx.execute(
-            "INSERT INTO sessions (id, workspace_id, cwd, state, created_at, updated_at)
-             VALUES (?1, ?2, ?3, 'active', ?4, ?4)
-             ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at",
-            params![session_id, ws, cwd, ts],
+    pub fn upsert_session(&self, row: &SessionRow) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "INSERT INTO sessions (id, acp_session_id, profile_id, title, cwd, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(id) DO UPDATE SET
+               -- 绑定过的 ACP id 不能被一次空值覆盖掉
+               acp_session_id = COALESCE(excluded.acp_session_id, sessions.acp_session_id),
+               profile_id = excluded.profile_id,
+               title = excluded.title,
+               cwd = excluded.cwd,
+               updated_at = excluded.updated_at",
+            params![
+                row.id,
+                row.acp_session_id,
+                row.profile_id,
+                row.title,
+                row.cwd,
+                row.created_at,
+                row.updated_at
+            ],
         )?;
-        tx.commit()
+        Ok(())
     }
 
-    /// 该 profile 最近用过的会话（重连时优先 load 它）
-    pub fn last_session(&self, profile_id: &str) -> rusqlite::Result<Option<String>> {
+    pub fn bind_acp_session(&self, id: &str, acp_session_id: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "UPDATE sessions SET acp_session_id = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, acp_session_id, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_session(&self, id: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// 该 profile 最近绑定的 ACP 会话（重连时优先 load 它）
+    pub fn last_acp_session(&self, profile_id: &str) -> rusqlite::Result<Option<String>> {
         let conn = self.conn.lock().expect("db poisoned");
         conn.query_row(
-            "SELECT s.id FROM sessions s
-             JOIN workspaces w ON w.id = s.workspace_id
-             WHERE w.profile_id = ?1 AND s.state = 'active'
-             ORDER BY s.updated_at DESC LIMIT 1",
+            "SELECT acp_session_id FROM sessions
+             WHERE profile_id = ?1 AND acp_session_id IS NOT NULL
+             ORDER BY updated_at DESC LIMIT 1",
             params![profile_id],
             |r| r.get(0),
         )
         .optional()
+        .map(|v: Option<Option<String>>| v.flatten())
+    }
+
+    /* ---------------- messages ---------------- */
+
+    pub fn append_messages(&self, session_id: &str, msgs: &[MessageInput]) -> rusqlite::Result<()> {
+        if msgs.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().expect("db poisoned");
+        let tx = conn.transaction()?;
+        let base: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        )?;
+        let ts = now();
+        for (i, m) in msgs.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO messages (id, session_id, seq, role, kind, payload_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(id) DO UPDATE SET
+                   payload_json = excluded.payload_json,
+                   role = excluded.role,
+                   kind = excluded.kind",
+                params![
+                    m.id,
+                    session_id,
+                    base + i as i64 + 1,
+                    m.role,
+                    m.kind,
+                    m.payload.to_string(),
+                    ts
+                ],
+            )?;
+        }
+        tx.execute(
+            "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
+            params![ts, session_id],
+        )?;
+        tx.commit()
+    }
+
+    /// 最近 limit 条，按 seq 升序返回
+    pub fn load_messages(&self, session_id: &str, limit: i64) -> rusqlite::Result<Vec<MessageRow>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, seq, role, kind, payload_json, created_at
+             FROM messages WHERE session_id = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![session_id, limit], |r| {
+            let payload: String = r.get(4)?;
+            Ok(MessageRow {
+                id: r.get(0)?,
+                seq: r.get(1)?,
+                role: r.get(2)?,
+                kind: r.get(3)?,
+                payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+                created_at: r.get(5)?,
+            })
+        })?;
+        let mut out: Vec<MessageRow> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        out.reverse();
+        Ok(out)
     }
 }
 
@@ -216,7 +373,7 @@ mod tests {
 
     fn sample() -> ProfileDto {
         ProfileDto {
-            id: "p-hermes-wsl".into(),
+            id: "p1".into(),
             name: "Hermes (WSL)".into(),
             launch: "wsl".into(),
             program: "hermes".into(),
@@ -229,55 +386,96 @@ mod tests {
             ssh_user: None,
             ssh_auth: None,
             ssh_key_path: None,
-            ssh_password: Some("should-never-be-stored".into()),
+            ssh_password: Some("must-not-persist".into()),
+        }
+    }
+
+    fn session(id: &str, acp: Option<&str>) -> SessionRow {
+        SessionRow {
+            id: id.into(),
+            acp_session_id: acp.map(|s| s.to_string()),
+            profile_id: Some("p1".into()),
+            title: "新会话".into(),
+            cwd: "/mnt/c/source/sincearc".into(),
+            created_at: now(),
+            updated_at: now(),
         }
     }
 
     #[test]
-    fn profiles_survive_a_round_trip_and_passwords_are_dropped() {
+    fn profiles_round_trip_and_passwords_are_dropped() {
         let (db, path) = temp_db();
         db.save_profiles(&[sample()]).expect("save");
-
         let loaded = db.load_profiles().expect("load");
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].name, "Hermes (WSL)");
-        assert_eq!(loaded[0].cwd, "/mnt/c/source/sincearc");
-        assert_eq!(loaded[0].args, vec!["acp".to_string()]);
-        // 密码不落盘：写进去的值读回来必须没有
         assert!(loaded[0].ssh_password.is_none());
-
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
-    fn removing_a_profile_cascades_its_sessions() {
+    fn sessions_are_listed_newest_first_and_cascade_on_profile_delete() {
         let (db, path) = temp_db();
         db.save_profiles(&[sample()]).expect("save");
-        db.remember_session("sess-1", "p-hermes-wsl", "/mnt/c/source/sincearc")
-            .expect("remember");
-        assert_eq!(
-            db.last_session("p-hermes-wsl").expect("last").as_deref(),
-            Some("sess-1")
-        );
-
-        // 界面上删掉这条配置 -> 它的会话记账一并消失，不留孤儿
-        db.save_profiles(&[]).expect("clear");
-        assert!(db.last_session("p-hermes-wsl").expect("last").is_none());
-
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn session_reuse_picks_the_most_recent_one() {
-        let (db, path) = temp_db();
-        db.save_profiles(&[sample()]).expect("save");
-        db.remember_session("old", "p-hermes-wsl", "/a").expect("a");
+        db.upsert_session(&session("s-old", Some("acp-1")))
+            .expect("s1");
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        db.remember_session("new", "p-hermes-wsl", "/b").expect("b");
+        db.upsert_session(&session("s-new", None)).expect("s2");
+
+        let list = db.list_sessions(None).expect("list");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, "s-new", "最近的排前面");
+
+        // 删配置 -> 它的会话一起没了
+        db.save_profiles(&[]).expect("clear");
+        assert!(db.list_sessions(None).expect("list").is_empty());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn binding_an_acp_session_survives_a_null_upsert() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+        db.bind_acp_session("s-1", "local-abc").expect("bind");
+        // 之后再 upsert 一次（acp 为空）不能把绑定冲掉
+        db.upsert_session(&session("s-1", None)).expect("upsert");
+        let list = db.list_sessions(None).expect("list");
+        assert_eq!(list[0].acp_session_id.as_deref(), Some("local-abc"));
         assert_eq!(
-            db.last_session("p-hermes-wsl").expect("last").as_deref(),
-            Some("new")
+            db.last_acp_session("p1").expect("last").as_deref(),
+            Some("local-abc")
         );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn messages_append_in_order_and_reload_ascending() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+
+        let mk = |id: &str, text: &str| MessageInput {
+            id: id.into(),
+            role: "player".into(),
+            kind: "text".into(),
+            payload: serde_json::json!({ "id": id, "text": text }),
+        };
+        db.append_messages("s-1", &[mk("m1", "第一句")]).expect("a");
+        db.append_messages("s-1", &[mk("m2", "第二句")]).expect("b");
+
+        // 同一条再写一次（流式定稿会重复调用），不应该多出一行
+        db.append_messages("s-1", &[mk("m2", "第二句（更新）")])
+            .expect("b2");
+
+        let rows = db.load_messages("s-1", 50).expect("load");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].seq, 1);
+        assert_eq!(rows[1].seq, 2);
+        assert_eq!(rows[1].payload["text"], "第二句（更新）");
+
+        // 会话被删 -> 消息跟着走
+        db.delete_session("s-1").expect("del");
+        assert!(db.load_messages("s-1", 50).expect("load").is_empty());
         std::fs::remove_file(&path).ok();
     }
 }

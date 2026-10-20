@@ -41,6 +41,12 @@ pub fn run() {
             commands::session_prompt,
             commands::profiles_load,
             commands::profiles_save,
+            commands::sessions_list,
+            commands::session_upsert,
+            commands::session_delete,
+            commands::session_bind_acp,
+            commands::messages_append,
+            commands::messages_load,
             commands::agent_list_connected,
         ])
         .run(tauri::generate_context!())

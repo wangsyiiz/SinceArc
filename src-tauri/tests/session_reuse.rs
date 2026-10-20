@@ -48,7 +48,10 @@ async fn a_session_can_be_loaded_after_reconnect() {
         )
         .await
         .expect("session/new");
-    let sid = created["sessionId"].as_str().expect("sessionId").to_string();
+    let sid = created["sessionId"]
+        .as_str()
+        .expect("sessionId")
+        .to_string();
     println!("created session = {sid}");
 
     proc1

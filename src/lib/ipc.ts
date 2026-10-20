@@ -153,6 +153,55 @@ export function profilesSave(profiles: AgentProfile[]): Promise<void> {
   return invoke<void>("profiles_save", { profiles: profiles.map(toDto) });
 }
 
+/* ---------- 会话与消息 ---------- */
+
+export interface SessionRowDto {
+  id: string;
+  acpSessionId?: string | null;
+  profileId?: string | null;
+  title: string;
+  cwd: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface MessageRowDto {
+  id: string;
+  seq: number;
+  role: string;
+  kind: string;
+  payload: unknown;
+  createdAt: number;
+}
+
+export function sessionsList(profileId?: string): Promise<SessionRowDto[]> {
+  return invoke<SessionRowDto[]>("sessions_list", { profileId: profileId ?? null });
+}
+
+export function sessionUpsert(row: SessionRowDto): Promise<void> {
+  return invoke<void>("session_upsert", { row });
+}
+
+export function sessionDelete(id: string): Promise<void> {
+  return invoke<void>("session_delete", { id });
+}
+
+/** 把 ACP 会话绑到某个 UI 会话上（一处绑定，之后按它归属事件） */
+export function sessionBindAcp(id: string, acpSessionId: string): Promise<void> {
+  return invoke<void>("session_bind_acp", { id, acpSessionId });
+}
+
+export function messagesAppend(
+  sessionId: string,
+  messages: { id: string; role: string; kind?: string; payload: unknown }[],
+): Promise<void> {
+  return invoke<void>("messages_append", { sessionId, messages });
+}
+
+export function messagesLoad(sessionId: string, limit?: number): Promise<MessageRowDto[]> {
+  return invoke<MessageRowDto[]>("messages_load", { sessionId, limit: limit ?? null });
+}
+
 /* ---------- session/update 的解析 ---------- */
 
 export interface SessionUpdate {
