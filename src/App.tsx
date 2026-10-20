@@ -25,10 +25,11 @@ import {
   players,
   prsByRepo,
   repos as seedRepos,
-  sessions,
+  sessions as mockSessions,
   turns as seedTurns,
 } from "@/mock/data";
 import type {
+  SessionSummary,
   Activity,
   AgentProfile,
   GithubPR,
@@ -70,8 +71,9 @@ export default function App() {
   const [traceW, setTraceW] = useState(338);
   const [dragging, setDragging] = useState(false);
   const [repoList, setRepoList] = useState<GithubRepo[]>(seedRepos);
+  const [sessions, setSessions] = useState<SessionSummary[]>(mockSessions);
   const [tabs, setTabs] = useState<Tab[]>([
-    { id: "tab-s-1", kind: "session", title: sessions[0].title, sessionId: "s-1" },
+    { id: "tab-s-1", kind: "session", title: mockSessions[0].title, sessionId: "s-1" },
   ]);
   const [activeTabId, setActiveTabId] = useState<string | null>("tab-s-1");
   const [lastSessionId, setLastSessionId] = useState("s-1");
@@ -128,6 +130,9 @@ export default function App() {
       const mapped = acpToUi.current[acpSid];
       const uiSid = mapped ?? lastSidRef.current;
       if (!mapped) diag(`映射缺失，退回当前会话 ${uiSid}`);
+      if (uiSid !== lastSidRef.current) {
+        diag(`写入 ${uiSid}（当前看的是 ${lastSidRef.current}）`);
+      }
       if (!text) continue;
       if (flushDiag.current < 12) {
         flushDiag.current += 1;
@@ -657,9 +662,21 @@ export default function App() {
   const newSession = useCallback(() => {
     const id = `s-${Date.now()}`;
     setSessionState((prev) => ({ ...prev, [id]: emptySession() }));
+    // 必须进列表：只在 tab 里存在的话，关掉标签就再也找不回来了
+    setSessions((prev) => [
+      {
+        id,
+        title: "新会话",
+        cwd: activeProfile?.cwd ?? "",
+        updatedAt: "刚刚",
+        group: "今天",
+        playerIds: [],
+      },
+      ...prev,
+    ]);
     openTab({ kind: "session", title: "新会话", sessionId: id });
     setLastSessionId(id);
-  }, [openTab]);
+  }, [activeProfile, openTab]);
 
   const activeRepo = activeTab?.repoId
     ? repoList.find((r) => r.id === activeTab.repoId)
