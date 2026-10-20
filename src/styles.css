@@ -42,6 +42,9 @@
   /* 分段控件：暗色档 轨道 n-3 / 滑块 n-4；
      浅色档反过来 —— 轨道是淡黑水洗、滑块纯白（同 sincecloud 的
      --switch-track-bg / --switch-thumb-bg，用 light-dark 表达） */
+  /* 列表选中面：暗色取 n-4；浅色要再暗一档才看得出来（n-4 在 #fafafa 上过淡） */
+  --row-active: var(--s3);
+
   --switch-track: var(--s2);
   --switch-thumb: var(--s3);
   --switch-thumb-edge: rgb(255 255 255 / 0.07);
@@ -66,9 +69,15 @@
   --a1: #171717;
   --ai: #ffffff;
 
+  --row-active: #e6e6e6;
+
   --switch-track: color-mix(in srgb, #060606 5%, transparent);
   --switch-thumb: #ffffff;
   --switch-thumb-edge: rgb(255 255 255 / 0.95);
+
+  /* 浅色主题不用内边缘高光划边界：层次交给面阶差 */
+  --edge-highlight: none;
+  --edge-hairline: none;
 
   --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
   --glass-2: color-mix(in srgb, var(--s1) 72%, transparent);
@@ -91,9 +100,15 @@
     --i3: #6e6e6e;
     --a1: #171717;
     --ai: #ffffff;
-    --switch-track: color-mix(in srgb, #060606 5%, transparent);
+    --row-active: #e6e6e6;
+
+  --switch-track: color-mix(in srgb, #060606 5%, transparent);
   --switch-thumb: #ffffff;
   --switch-thumb-edge: rgb(255 255 255 / 0.95);
+
+  /* 浅色主题不用内边缘高光划边界：层次交给面阶差 */
+  --edge-highlight: none;
+  --edge-hairline: none;
 
   --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
     --glass-2: color-mix(in srgb, var(--s1) 72%, transparent);
@@ -385,5 +400,12 @@ dialog.sc-dialog[open] {
       box-shadow 160ms ease-out,
       opacity 160ms ease-out,
       transform 160ms ease-out;
+  }
+}
+
+@layer components {
+  /* 列表 / 导航的选中面：走主题令牌，浅色下比 n-4 再深一档 */
+  .sc-row-active {
+    background: var(--row-active);
   }
 }

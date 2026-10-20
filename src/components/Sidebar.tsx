@@ -128,14 +128,14 @@ export function Sidebar({
                       className={cn(
                         "group mb-0.5 flex w-full flex-col gap-0.5 rounded-[8px] px-2.5 py-2 text-left transition-colors",
                         active
-                          ? "bg-surface-3/65 shadow-[inset_0_1px_0_rgb(255_255_255/0.05)]"
+                          ? "sc-row-active"
                           : "hover:bg-surface-3/35",
                       )}
                     >
                       <span
                         className={cn(
                           "truncate text-[12px]",
-                          active ? "text-ink-1" : "text-ink-2 group-hover:text-ink-1",
+                          active ? "font-medium text-ink-1" : "text-ink-2 group-hover:text-ink-1",
                         )}
                       >
                         {s.title}
