@@ -34,6 +34,11 @@
   --glass-control: color-mix(in srgb, #ffffff 6%, transparent);
   --glass-blur: 16px;
   --glass-saturate: 1.6;
+  /* 圆角刻度：分段控件与控件取 base(8)，卡片取 card(12) */
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+
   --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.07), inset 0 -1px 0 rgb(0 0 0 / 0.4);
   --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.06), inset 0 -1px 0 rgb(0 0 0 / 0.3);
 }
