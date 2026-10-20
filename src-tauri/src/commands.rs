@@ -389,6 +389,7 @@ pub async fn session_prompt(
 
     tokio::spawn(async move {
         // 先告诉界面「这一轮开始了」，UI 据此进入生成态
+        tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptStarted");
         let _ = events.send(AcpEvent::PromptStarted {
             session_id: sid.clone(),
         });
@@ -396,6 +397,7 @@ pub async fn session_prompt(
         match proc.request("session/prompt", params, PROMPT_TIMEOUT).await {
             Ok(result) => {
                 tracing::info!(target: "sincearc::ipc", session = %sid, stop = ?result.get("stopReason"), "prompt finished");
+                tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptResult");
                 let _ = events.send(AcpEvent::PromptResult {
                     session_id: sid,
                     result,
@@ -403,6 +405,7 @@ pub async fn session_prompt(
             }
             Err(e) => {
                 tracing::warn!(target: "sincearc::ipc", session = %sid, error = %e, "prompt failed");
+                tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptFailed");
                 let _ = events.send(AcpEvent::PromptFailed {
                     session_id: sid,
                     msg: e.to_string(),

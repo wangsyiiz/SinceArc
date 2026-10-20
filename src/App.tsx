@@ -151,6 +151,12 @@ export default function App() {
   const onAgentEvent = useCallback(
     (profileId: string, event: AcpEvent) => {
       setEventCount((n) => n + 1);
+
+      const su = asSessionUpdate(event);
+      const kindLabel = su?.update?.sessionUpdate;
+      // 正文片段：类型判错时也能看出内容到底在哪一类更新里
+      const preview = su?.update?.content?.text?.slice(0, 40) ?? "";
+
       setEventLog((prev) =>
         [
           ...prev,
@@ -158,20 +164,18 @@ export default function App() {
             at: Date.now(),
             text:
               event.kind === "notification" || event.kind === "request"
-                ? `${event.kind}:${event.method}`
+                ? `${event.kind}:${event.method}${kindLabel ? ` / ${kindLabel}` : ""}${preview ? ` · ${preview}` : ""}`
                 : event.kind,
           },
-        ].slice(-60),
+        ].slice(-80),
       );
       setLastEvent(
         event.kind === "notification"
-          ? event.method
+          ? `${event.method}${kindLabel ? `/${kindLabel}` : ""}`
           : event.kind === "request"
             ? event.method
             : event.kind,
       );
-
-      const su = asSessionUpdate(event);
       if (su?.update?.sessionUpdate === "agent_message_chunk") {
         const acpSid = su.sessionId ?? "";
         const text = su.update.content?.text ?? "";
