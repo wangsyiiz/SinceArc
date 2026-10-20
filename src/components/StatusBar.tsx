@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { ChevronDown, ShieldCheck, Waypoints } from "lucide-react";
 import type { AgentProfile } from "@/types";
 import { cn } from "@/lib/utils";
@@ -7,9 +8,11 @@ interface StatusBarProps {
   profile: AgentProfile | undefined;
   traceOpen: boolean;
   onToggleTrace: () => void;
+  /** 右侧插槽：agent 能力入口等 */
+  right?: ReactNode;
 }
 
-export function StatusBar({ cwd, profile, traceOpen, onToggleTrace }: StatusBarProps) {
+export function StatusBar({ cwd, profile, traceOpen, onToggleTrace, right }: StatusBarProps) {
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line-1/60 px-3">
       <button
@@ -29,6 +32,7 @@ export function StatusBar({ cwd, profile, traceOpen, onToggleTrace }: StatusBarP
       </button>
 
       <div className="ml-auto flex items-center gap-0.5">
+        {right}
         {profile && (
           <div
             className={cn(

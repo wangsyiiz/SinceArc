@@ -8,6 +8,8 @@ import { PrView } from "@/components/PrView";
 import { RepoBrowser } from "@/components/RepoBrowser";
 import { ResizeHandles } from "@/components/ResizeHandles";
 import { SettingsView } from "@/components/SettingsView";
+import { AgentCapabilities } from "@/components/AgentCapabilities";
+import { commandsFor } from "@/extensions/registry";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
 import { StatusBar } from "@/components/StatusBar";
@@ -22,13 +24,14 @@ import {
   pendingPermission,
   players,
   prsByRepo,
-  profiles,
+  profiles as mockProfiles,
   repos as seedRepos,
   sessions,
   turns as seedTurns,
 } from "@/mock/data";
 import type {
   Activity,
+  AgentProfile,
   GithubPR,
   GithubRepo,
   SessionState,
@@ -79,6 +82,7 @@ export default function App() {
   const [layoutW, setLayoutW] = useState(0);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+  const [profiles, setProfiles] = useState<AgentProfile[]>(mockProfiles);
   const activeProfile = profiles.find((p) => p.id === activeProfileId);
   const activeSession = sessions.find((s) => s.id === lastSessionId);
   const cwd = activeSession?.cwd ?? "/home/jerry/source/sincearc";
@@ -463,6 +467,12 @@ export default function App() {
                     return !v;
                   })
                 }
+                right={
+                  <AgentCapabilities
+                    profile={activeProfile}
+                    commands={commandsFor(activeProfile?.agentName)}
+                  />
+                }
               />
 
               <div className="flex min-h-0 flex-1">
@@ -569,7 +579,11 @@ export default function App() {
           {activeTab?.kind === "settings" && (
             <SettingsView
               settings={settings}
+              profiles={profiles}
               theme={theme}
+              onUpdateProfile={(next) =>
+                setProfiles((list) => list.map((p) => (p.id === next.id ? next : p)))
+              }
               onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}
               onCycleTheme={setTheme}
             />

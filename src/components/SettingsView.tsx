@@ -1,11 +1,13 @@
 import { useRef, useState } from "react";
-import { AlertTriangle, MessageSquare, Palette, SlidersHorizontal } from "lucide-react";
-import type { ThemeMode, ThreadSettings } from "@/types";
+import { AlertTriangle, MessageSquare, Palette, Plug, SlidersHorizontal } from "lucide-react";
+import type { AgentProfile, LaunchKind, SshAuth, ThemeMode, ThreadSettings } from "@/types";
 import { cn } from "@/lib/utils";
 
 interface SettingsViewProps {
   settings: ThreadSettings;
   theme: ThemeMode;
+  profiles: AgentProfile[];
+  onUpdateProfile: (next: AgentProfile) => void;
   onChangeContext: (n: number) => void;
   onCycleTheme: (t: ThemeMode) => void;
 }
@@ -17,6 +19,7 @@ const THEMES: { id: ThemeMode; label: string }[] = [
 ];
 
 const SECTIONS = [
+  { id: "connection", label: "连接", icon: Plug },
   { id: "chat", label: "群聊", icon: MessageSquare },
   { id: "appearance", label: "外观", icon: Palette },
   { id: "session", label: "会话", icon: SlidersHorizontal },
@@ -24,7 +27,53 @@ const SECTIONS = [
 
 type SectionId = (typeof SECTIONS)[number]["id"];
 
-export function SettingsView({ settings, theme, onChangeContext, onCycleTheme }: SettingsViewProps) {
+const LAUNCH_LABEL: Record<LaunchKind, string> = {
+  local: "本机直连",
+  wsl: "WSL",
+  ssh: "SSH",
+};
+
+function Field({
+  label,
+  value,
+  onChange,
+  placeholder,
+  mono,
+  type = "text",
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  mono?: boolean;
+  type?: string;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[9.5px] text-ink-3">{label}</span>
+      <input
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className={cn(
+          "h-7 w-full rounded-[6px] border border-line-1/60 bg-surface-2/40 px-2 text-[11px] text-ink-1",
+          "placeholder:text-ink-3 focus:border-accent-1/50 focus:outline-none",
+          mono && "font-mono",
+        )}
+      />
+    </label>
+  );
+}
+
+export function SettingsView({
+  settings,
+  theme,
+  profiles,
+  onUpdateProfile,
+  onChangeContext,
+  onCycleTheme,
+}: SettingsViewProps) {
   const [active, setActive] = useState<SectionId>("chat");
   const refs = useRef<Partial<Record<SectionId, HTMLElement | null>>>({});
   const n = settings.contextMessages;
@@ -61,9 +110,134 @@ export function SettingsView({ settings, theme, onChangeContext, onCycleTheme }:
 
           <section
             ref={(el) => {
+              refs.current.connection = el;
+            }}
+            className="mt-5 scroll-mt-4"
+          >
+            <h2 className="text-[12px] font-medium text-ink-2">连接</h2>
+            <div className="mt-2 space-y-2">
+              {profiles.map((p) => {
+                const ssh = p.ssh;
+                return (
+                  <div key={p.id} className="rounded-[8px] border border-line-1/60 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-[12px] text-ink-1">{p.name}</div>
+                        <div className="truncate font-mono text-[9.5px] text-ink-3">{p.detail}</div>
+                      </div>
+                      <span className="shrink-0 rounded-full border border-line-1/60 px-2 py-0.5 font-mono text-[9px] text-ink-3">
+                        {LAUNCH_LABEL[p.launch]}
+                      </span>
+                    </div>
+
+                    <div className="mt-2.5 flex gap-1">
+                      {(["local", "wsl", "ssh"] as LaunchKind[]).map((k) => (
+                        <button
+                          key={k}
+                          onClick={() =>
+                            onUpdateProfile({
+                              ...p,
+                              launch: k,
+                              ssh:
+                                k === "ssh"
+                                  ? (p.ssh ?? { host: "", port: 22, user: "", auth: "key" })
+                                  : p.ssh,
+                            })
+                          }
+                          className={cn(
+                            "flex-1 rounded-[6px] py-1 text-[10.5px] transition-colors",
+                            p.launch === k
+                              ? "sc-row-active text-ink-1"
+                              : "text-ink-3 hover:bg-surface-3/35 hover:text-ink-2",
+                          )}
+                        >
+                          {LAUNCH_LABEL[k]}
+                        </button>
+                      ))}
+                    </div>
+
+                    {p.launch === "ssh" && ssh && (
+                      <div className="mt-2.5 grid grid-cols-2 gap-2">
+                        <Field
+                          label="主机"
+                          mono
+                          value={ssh.host}
+                          placeholder="47.109.56.213 或 ~/.ssh/config 的别名"
+                          onChange={(v) => onUpdateProfile({ ...p, ssh: { ...ssh, host: v } })}
+                        />
+                        <Field
+                          label="端口"
+                          mono
+                          value={String(ssh.port)}
+                          onChange={(v) =>
+                            onUpdateProfile({ ...p, ssh: { ...ssh, port: Number(v) || 22 } })
+                          }
+                        />
+                        <Field
+                          label="账号"
+                          mono
+                          value={ssh.user}
+                          placeholder="root"
+                          onChange={(v) => onUpdateProfile({ ...p, ssh: { ...ssh, user: v } })}
+                        />
+                        <label className="block">
+                          <span className="mb-1 block text-[9.5px] text-ink-3">认证</span>
+                          <select
+                            value={ssh.auth}
+                            onChange={(e) =>
+                              onUpdateProfile({ ...p, ssh: { ...ssh, auth: e.target.value as SshAuth } })
+                            }
+                            className="h-7 w-full rounded-[6px] border border-line-1/60 bg-surface-2/40 px-2 text-[11px] text-ink-1 focus:border-accent-1/50 focus:outline-none"
+                          >
+                            <option value="key">私钥</option>
+                            <option value="password">密码</option>
+                          </select>
+                        </label>
+                        <div className="col-span-2">
+                          {ssh.auth === "key" ? (
+                            <Field
+                              label="私钥路径"
+                              mono
+                              value={ssh.keyPath ?? ""}
+                              placeholder="C:\Users\you\.ssh\id_ed25519"
+                              onChange={(v) => onUpdateProfile({ ...p, ssh: { ...ssh, keyPath: v } })}
+                            />
+                          ) : (
+                            <Field
+                              label="密码"
+                              type="password"
+                              value=""
+                              placeholder="存系统凭据库（未接线）"
+                              onChange={() => {}}
+                            />
+                          )}
+                        </div>
+                        <div className="col-span-2">
+                          <Field
+                            label="远端工作目录"
+                            mono
+                            value={p.cwd ?? ""}
+                            placeholder="/home/you/project"
+                            onChange={(v) => onUpdateProfile({ ...p, cwd: v })}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <p className="mt-2 text-[10.5px] leading-relaxed text-ink-3">
+              本地与远程是同一条 SSH 路径，只差 host：本地填 <code className="font-mono">localhost</code>{" "}
+              即可走 WSL 里的 sshd。密码不会落到 SQLite，存系统凭据库（未接线）。
+            </p>
+          </section>
+
+          <section
+            ref={(el) => {
               refs.current.chat = el;
             }}
-            className="mt-6 scroll-mt-4"
+            className="mt-7 scroll-mt-4"
           >
             <h2 className="text-[12px] font-medium text-ink-2">群聊</h2>
             <div className="mt-2 rounded-[8px] border border-line-1/60 p-3.5">

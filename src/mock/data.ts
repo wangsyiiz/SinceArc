@@ -29,6 +29,17 @@ export const profiles: AgentProfile[] = [
     agentName: null,
     protocolVersion: null,
   },
+  {
+    id: "p-ssh-aliyun",
+    name: "Aliyun",
+    launch: "ssh",
+    detail: "root@47.109.56.213 · hermes acp",
+    connected: true,
+    agentName: "hermes-agent 0.22.2",
+    protocolVersion: 1,
+    cwd: "/root/src/demo",
+    ssh: { host: "47.109.56.213", port: 22, user: "root", auth: "key", keyPath: "C:\\Users\\picke\\.ssh\\id_ed25519" },
+  },
 ];
 
 export const players: Player[] = [

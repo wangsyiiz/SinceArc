@@ -1,6 +1,18 @@
 export type ThemeMode = "dark" | "light" | "system";
 
-export type LaunchKind = "wsl" | "local";
+/** 本机直连 / 经 wsl.exe / 经 ssh（本地与远程同一条路径，只差 host） */
+export type LaunchKind = "local" | "wsl" | "ssh";
+
+export type SshAuth = "key" | "password";
+
+export interface SshConfig {
+  host: string;
+  port: number;
+  user: string;
+  auth: SshAuth;
+  /** auth = "key" 时的私钥路径（Windows 侧绝对路径） */
+  keyPath?: string;
+}
 
 export interface AgentProfile {
   id: string;
@@ -10,6 +22,18 @@ export interface AgentProfile {
   connected: boolean;
   agentName?: string | null;
   protocolVersion?: number | null;
+  /** 仅 launch = "ssh" 时有值 */
+  ssh?: SshConfig;
+  /** 远端命令的工作目录（ssh 时是远端路径） */
+  cwd?: string;
+}
+
+/** ACP 之外的能力（agent 自己的 CLI），不属于协议本体 */
+export interface AgentCommand {
+  id: string;
+  label: string;
+  argv: string[];
+  note?: string;
 }
 
 /** 群聊里的「玩家」= 一个 agent profile + 一个独立 session */
