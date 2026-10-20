@@ -86,6 +86,7 @@ export default function App() {
   const [profiles, setProfiles] = useState<AgentProfile[]>(mockProfiles);
   const [sessionsByProfile, setSessionsByProfile] = useState<Record<string, string>>({});
   const [eventCount, setEventCount] = useState(0);
+  const [lastEvent, setLastEvent] = useState("");
 
   const patchSession = useCallback((sid: string, fn: (s: SessionState) => SessionState) => {
     setSessionState((prev) => ({ ...prev, [sid]: fn(prev[sid] ?? emptySession()) }));
@@ -136,6 +137,13 @@ export default function App() {
   const onAgentEvent = useCallback(
     (profileId: string, event: AcpEvent) => {
       setEventCount((n) => n + 1);
+      setLastEvent(
+        event.kind === "notification"
+          ? event.method
+          : event.kind === "request"
+            ? event.method
+            : event.kind,
+      );
 
       const su = asSessionUpdate(event);
       if (su?.update?.sessionUpdate === "agent_message_chunk") {
@@ -155,12 +163,27 @@ export default function App() {
         const uiSid = acpToUi.current[event.sessionId];
         if (uiSid) {
           const streamId = `stream-${event.sessionId}`;
+          const actId = `act-stream-${event.sessionId}`;
           patchSession(uiSid, (s) => ({
             ...s,
             busy: false,
-            msgs: s.msgs.map((m) =>
-              m.id === streamId && m.role === "player" ? { ...m, streaming: false } : m,
-            ),
+            acts: s.acts.filter((a) => a.id !== actId),
+            msgs:
+              event.kind === "promptFailed"
+                ? [
+                    ...s.msgs.map((m) =>
+                      m.id === streamId && m.role === "player" ? { ...m, streaming: false } : m,
+                    ),
+                    {
+                      id: `perr-${Date.now()}`,
+                      role: "system" as const,
+                      text: `这一轮失败：${event.msg}`,
+                      at: now(),
+                    },
+                  ]
+                : s.msgs.map((m) =>
+                    m.id === streamId && m.role === "player" ? { ...m, streaming: false } : m,
+                  ),
           }));
         }
         if (event.kind === "promptFailed") console.warn("[acp] prompt failed", event.msg);
@@ -339,6 +362,22 @@ export default function App() {
       // 已连上真 agent：走 ACP；否则退回演示数据
       const acpSid = activeProfile ? sessionsByProfile[activeProfile.id] : undefined;
       if (acpSid) {
+        const actId = `act-stream-${acpSid}`;
+        patchSession(sid, (s) => ({
+          ...s,
+          acts: [
+            ...s.acts.filter((a) => a.id !== actId),
+            {
+              id: actId,
+              playerId: players[0].id,
+              kind: "thinking" as const,
+              title: "思考中",
+              status: "running" as const,
+              at,
+            },
+          ],
+        }));
+
         sessionPrompt(acpSid, text).catch((e) => {
           const err = asCmdError(e);
           patchSession(sid, (s) => ({
@@ -599,6 +638,7 @@ export default function App() {
                 profile={activeProfile}
                 sessionId={activeProfile ? sessionsByProfile[activeProfile.id] : undefined}
                 eventCount={eventCount}
+                lastEvent={lastEvent}
                 traceOpen={traceOpen}
                 onToggleTrace={() =>
                   setTraceOpen((v) => {

@@ -10,8 +10,9 @@ interface StatusBarProps {
   onToggleTrace: () => void;
   /** 当前 profile 的会话 id（握手后建出来的那个） */
   sessionId?: string;
-  /** S2 调试用：累计收到的 inbound 事件数 */
+  /** 调试用：累计收到的 inbound 事件数与其方法名 */
   eventCount?: number;
+  lastEvent?: string;
   /** 右侧插槽：agent 能力入口等 */
   right?: ReactNode;
 }
@@ -23,6 +24,7 @@ export function StatusBar({
   onToggleTrace,
   sessionId,
   eventCount = 0,
+  lastEvent,
   right,
 }: StatusBarProps) {
   return (
@@ -54,8 +56,12 @@ export function StatusBar({
           </span>
         )}
         {eventCount > 0 && (
-          <span className="mr-1 font-mono text-[9px] text-ink-3" title="收到的 ACP 事件数">
+          <span
+            className="mr-1 max-w-[160px] truncate font-mono text-[9px] text-ink-3"
+            title={`收到的 ACP 事件：${eventCount}，最后一条 ${lastEvent ?? "-"}`}
+          >
             ev {eventCount}
+            {lastEvent ? ` · ${lastEvent}` : ""}
           </span>
         )}
         {profile && (

@@ -25,7 +25,11 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// 推给界面的事件。UI 只认这个枚举，不直接看 ACP 的 JSON ——
 /// 协议类型收敛在 acp 模块里（见 acp/mod.rs 的约束 1）。
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum AcpEvent {
     /// 单向通知，例如 `session/update`
     Notification {
@@ -348,6 +352,13 @@ pub async fn session_prompt(
         "prompt": [{ "type": "text", "text": text }],
     });
 
+    tracing::info!(
+        target: "sincearc::ipc",
+        session = %session_id,
+        chars = text.chars().count(),
+        "prompt sent"
+    );
+
     let sid = session_id.clone();
     let events = handle.events.clone();
     let proc = handle.proc.clone();
@@ -360,12 +371,14 @@ pub async fn session_prompt(
 
         match proc.request("session/prompt", params, PROMPT_TIMEOUT).await {
             Ok(result) => {
+                tracing::info!(target: "sincearc::ipc", session = %sid, stop = ?result.get("stopReason"), "prompt finished");
                 let _ = events.send(AcpEvent::PromptResult {
                     session_id: sid,
                     result,
                 });
             }
             Err(e) => {
+                tracing::warn!(target: "sincearc::ipc", session = %sid, error = %e, "prompt failed");
                 let _ = events.send(AcpEvent::PromptFailed {
                     session_id: sid,
                     msg: e.to_string(),
