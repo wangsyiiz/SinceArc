@@ -377,13 +377,12 @@ dialog.sc-dialog[open] {
 
 /* 全局控件补间：交互元素统一 160ms ease-out（hover / active / focus 都不瞬跳） */
 @layer base {
-  button,
-  [role="button"],
-  a,
-  input,
-  textarea,
-  select,
-  summary {
+  /* 兜底到所有元素：列表行里的文字色常由 group-hover 修改，
+     只挂在 button 上会让「背景在过渡、文字在跳」，看起来像错位。
+     不列 fill / stroke：那会干扰 SVG 节点的绘制。 */
+  *,
+  ::before,
+  ::after {
     transition:
       background-color 160ms ease-out,
       color 160ms ease-out,

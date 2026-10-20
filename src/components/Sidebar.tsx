@@ -135,7 +135,7 @@ export function Sidebar({
                       <span
                         className={cn(
                           "truncate text-[12px]",
-                          active ? "font-medium text-ink-1" : "text-ink-2 group-hover:text-ink-1",
+                          active ? "text-ink-1" : "text-ink-2 group-hover:text-ink-1",
                         )}
                       >
                         {s.title}

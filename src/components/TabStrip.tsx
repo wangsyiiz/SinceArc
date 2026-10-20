@@ -26,8 +26,9 @@ export function TabStrip({ tabs, activeId, badgeOf, onSelect, onClose }: TabStri
         const Icon = ICON[t.kind];
         const active = t.id === activeId;
         return (
-          <div
+          <button
             key={t.id}
+            type="button"
             onClick={() => onSelect(t.id)}
             className={cn(
               "group flex h-full min-w-0 max-w-[220px] cursor-pointer items-center gap-1.5 border-r border-line-1/40 px-3 text-[11.5px] transition-colors",
@@ -58,7 +59,7 @@ export function TabStrip({ tabs, activeId, badgeOf, onSelect, onClose }: TabStri
             >
               <X className="size-2.5" />
             </button>
-          </div>
+          </button>
         );
       })}
     </div>
