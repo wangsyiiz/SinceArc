@@ -42,6 +42,8 @@ pub enum AcpEvent {
         method: String,
         params: serde_json::Value,
     },
+    /// 连接建立后的自检：前端收到它就说明事件通道是通的
+    Hello,
     /// agent 进程的输出流关闭了
     Exited,
     /// 一轮 prompt 开始了（UI 用来进入生成态；此时还没有任何 chunk）
@@ -238,7 +240,10 @@ pub async fn agent_connect(
                 }
             };
             if events.send(payload).is_err() {
-                tracing::debug!(target: "sincearc::ipc", "event channel closed, stop forwarding");
+                tracing::warn!(
+                    target: "sincearc::ipc",
+                    "event channel closed (前端不再接收)，停止转发"
+                );
                 return;
             }
         }
@@ -264,6 +269,11 @@ pub async fn agent_connect(
             }),
         )
         .await;
+
+    // 自检：这条如果前端也没收到，问题在 Channel 本身而不是 ACP 事件
+    if on_event.send(AcpEvent::Hello).is_err() {
+        tracing::warn!(target: "sincearc::ipc", "hello event rejected：Channel 不可用");
+    }
 
     Ok(ConnectOutcome {
         agent_name: outcome.agent_name,

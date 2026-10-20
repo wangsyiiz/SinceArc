@@ -16,6 +16,7 @@ export interface CmdError {
 export type AcpEvent =
   | { kind: "notification"; method: string; params: unknown }
   | { kind: "request"; id: number; method: string; params: unknown }
+  | { kind: "hello" }
   | { kind: "exited" }
   | { kind: "promptStarted"; sessionId: string }
   | { kind: "promptResult"; sessionId: string; result: unknown }
