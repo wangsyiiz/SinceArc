@@ -323,9 +323,9 @@ mod tests {
 
         assert_eq!(spec.args[spec.args.len() - 2], "root@example.com");
         let remote = spec.args.last().unwrap();
-        // cd 与 exec 都在，且 exec 让 SIGHUP 直达 agent
+        // cd、pid 记账、exec 三段都在；exec 让 SIGHUP 直达 agent
         assert!(
-            remote.starts_with("cd '/srv/app' && PATH=\"$HOME/.local/bin"),
+            remote.starts_with("cd '/srv/app' && echo $$ > /tmp/sincearc-agent-"),
             "got: {remote:?}"
         );
         assert!(remote.ends_with("exec hermes 'acp'"), "got: {remote:?}");
