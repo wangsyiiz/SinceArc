@@ -424,10 +424,9 @@ dialog.sc-dialog[open] {
 ::-webkit-scrollbar-thumb {
   border: 3px solid transparent;
   border-radius: 999px;
-  background-color: color-mix(in srgb, var(--l1) 28%, transparent);
   background-clip: padding-box;
-  transition: background-color 220ms ease-out;
-}
-:root[data-scrolling="true"] ::-webkit-scrollbar-thumb {
-  background-color: color-mix(in srgb, var(--l1) 85%, transparent);
+  /* 回退：变量不可用时仍是一档可见的 thumb */
+  background-color: color-mix(in srgb, var(--l1) 28%, transparent);
+  /* 透明度由 --sb-alpha 驱动（伪元素不吃 transition，渐变靠 JS 逐帧改变量） */
+  background-color: color-mix(in srgb, var(--l1) calc(var(--sb-alpha, 0.28) * 100%), transparent);
 }

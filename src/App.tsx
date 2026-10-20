@@ -90,20 +90,49 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
-  // 任何一个滚动容器在滚：给根节点打标记，滚动条据此提亮
+  // 滚动条透明度：伪元素不参与 transition，所以渐变靠逐帧改根节点上的 --sb-alpha
   useEffect(() => {
-    let timer = 0;
+    const root = document.documentElement;
+    let hideTimer = 0;
+    let raf = 0;
+    let alpha = 0.28;
+    let active = false;
+
+    const apply = (v: number) => {
+      alpha = v;
+      root.style.setProperty("--sb-alpha", v.toFixed(3));
+    };
+
+    const animateTo = (target: number, duration: number) => {
+      cancelAnimationFrame(raf);
+      const from = alpha;
+      const t0 = performance.now();
+      const tick = (now: number) => {
+        const p = Math.min(1, (now - t0) / duration);
+        const eased = 1 - Math.pow(1 - p, 3); // ease-out cubic
+        apply(from + (target - from) * eased);
+        if (p < 1) raf = requestAnimationFrame(tick);
+      };
+      raf = requestAnimationFrame(tick);
+    };
+
     const onScroll = () => {
-      document.documentElement.dataset.scrolling = "true";
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        document.documentElement.dataset.scrolling = "false";
+      if (!active) {
+        active = true;
+        animateTo(0.85, 110); // 亮起来快
+      }
+      window.clearTimeout(hideTimer);
+      hideTimer = window.setTimeout(() => {
+        active = false;
+        animateTo(0.28, 420); // 淡回去慢
       }, 600);
     };
+
     document.addEventListener("scroll", onScroll, true);
     return () => {
       document.removeEventListener("scroll", onScroll, true);
-      window.clearTimeout(timer);
+      window.clearTimeout(hideTimer);
+      cancelAnimationFrame(raf);
     };
   }, []);
 
