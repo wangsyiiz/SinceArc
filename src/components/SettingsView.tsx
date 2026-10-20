@@ -24,6 +24,8 @@ interface SettingsViewProps {
   onSession: (profileId: string, sessionId: string) => void;
   onChangeContext: (n: number) => void;
   onCycleTheme: (t: ThemeMode) => void;
+  /** 最近收到的 ACP 事件（诊断用：确认通道到底通不通） */
+  eventLog?: { at: number; text: string }[];
 }
 
 const THEMES: { id: ThemeMode; label: string }[] = [
@@ -91,6 +93,7 @@ export function SettingsView({
   onSession,
   onChangeContext,
   onCycleTheme,
+  eventLog = [],
 }: SettingsViewProps) {
   const [active, setActive] = useState<SectionId>("chat");
   const [busy, setBusy] = useState<string | null>(null);
@@ -454,6 +457,36 @@ export function SettingsView({
               </div>
             </div>
           </section>
+
+            <section
+              ref={(el) => {
+                refs.current.session = el;
+              }}
+              className="mt-7 scroll-mt-4"
+            >
+              <h2 className="text-[12px] font-medium text-ink-2">诊断</h2>
+              <div className="mt-2 rounded-[8px] border border-line-1/60 p-3">
+                <p className="text-[10px] leading-relaxed text-ink-3">
+                  最近收到的 agent 事件。连接后应该先看到 <span className="font-mono">hello</span>；
+                  发消息后应出现 <span className="font-mono">notification:session/update</span> 与{" "}
+                  <span className="font-mono">promptResult</span>。
+                </p>
+                <div className="mt-2 max-h-[168px] overflow-y-auto font-mono text-[9.5px] leading-relaxed text-ink-3">
+                  {eventLog.length === 0 ? (
+                    <div>还没有事件</div>
+                  ) : (
+                    eventLog.map((e, i) => (
+                      <div key={i} className="flex gap-2">
+                        <span className="shrink-0 opacity-60">
+                          {new Date(e.at).toLocaleTimeString("zh-CN", { hour12: false })}
+                        </span>
+                        <span className="truncate">{e.text}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </section>
 
             <p className="mt-8 text-[10px] text-ink-3">未接线版本 · 设置仅本次运行有效</p>
           </div>

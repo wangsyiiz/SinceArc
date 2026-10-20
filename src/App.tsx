@@ -87,6 +87,7 @@ export default function App() {
   const [sessionsByProfile, setSessionsByProfile] = useState<Record<string, string>>({});
   const [eventCount, setEventCount] = useState(0);
   const [lastEvent, setLastEvent] = useState("");
+  const [eventLog, setEventLog] = useState<{ at: number; text: string }[]>([]);
 
   const patchSession = useCallback((sid: string, fn: (s: SessionState) => SessionState) => {
     setSessionState((prev) => ({ ...prev, [sid]: fn(prev[sid] ?? emptySession()) }));
@@ -150,6 +151,18 @@ export default function App() {
   const onAgentEvent = useCallback(
     (profileId: string, event: AcpEvent) => {
       setEventCount((n) => n + 1);
+      setEventLog((prev) =>
+        [
+          ...prev,
+          {
+            at: Date.now(),
+            text:
+              event.kind === "notification" || event.kind === "request"
+                ? `${event.kind}:${event.method}`
+                : event.kind,
+          },
+        ].slice(-60),
+      );
       setLastEvent(
         event.kind === "notification"
           ? event.method
@@ -815,6 +828,7 @@ export default function App() {
               onSession={onSession}
               onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}
               onCycleTheme={setTheme}
+              eventLog={eventLog}
             />
           )}
 

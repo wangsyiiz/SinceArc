@@ -239,6 +239,19 @@ pub async fn agent_connect(
                     AcpEvent::Request { id, method, params }
                 }
             };
+            tracing::info!(
+                target: "sincearc::ipc",
+                kind = %match &payload {
+                    AcpEvent::Notification { method, .. } => format!("notification:{method}"),
+                    AcpEvent::Request { method, .. } => format!("request:{method}"),
+                    AcpEvent::Hello => "hello".to_string(),
+                    AcpEvent::Exited => "exited".to_string(),
+                    AcpEvent::PromptStarted { .. } => "promptStarted".to_string(),
+                    AcpEvent::PromptResult { .. } => "promptResult".to_string(),
+                    AcpEvent::PromptFailed { .. } => "promptFailed".to_string(),
+                },
+                "forward -> webview"
+            );
             if events.send(payload).is_err() {
                 tracing::warn!(
                     target: "sincearc::ipc",
@@ -271,6 +284,7 @@ pub async fn agent_connect(
         .await;
 
     // 自检：这条如果前端也没收到，问题在 Channel 本身而不是 ACP 事件
+    tracing::info!(target: "sincearc::ipc", "hello -> webview");
     if on_event.send(AcpEvent::Hello).is_err() {
         tracing::warn!(target: "sincearc::ipc", "hello event rejected：Channel 不可用");
     }
