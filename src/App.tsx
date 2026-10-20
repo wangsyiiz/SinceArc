@@ -99,9 +99,10 @@ export default function App() {
     return () => ro.disconnect();
   }, []);
 
-  const MAIN_MIN = 380;
-  const sidebarMax = Math.max(200, layoutW - (traceOpen ? traceW : 0) - MAIN_MIN - 12);
-  const traceMax = Math.max(250, layoutW - sidebarW - MAIN_MIN - 12);
+  // 主视图至少占一半；分栏上限由它反推
+  const mainMin = Math.max(380, Math.round(layoutW / 2));
+  const sidebarMax = Math.max(200, layoutW - (traceOpen ? traceW : 0) - mainMin - 12);
+  const traceMax = Math.max(250, layoutW - sidebarW - mainMin - 12);
 
   // 窗口缩小时把超出的分栏拉回来
   useEffect(() => {
@@ -393,7 +394,7 @@ export default function App() {
           />
         )}
 
-        <main className="sc-pane flex min-h-0 flex-1 flex-col overflow-hidden" style={{ minWidth: MAIN_MIN }}>
+        <main className="sc-pane flex min-h-0 flex-1 flex-col overflow-hidden" style={{ minWidth: mainMin }}>
           <TabStrip
             tabs={tabs}
             activeId={activeTabId}

@@ -37,8 +37,9 @@ export function SettingsView({ settings, theme, onChangeContext, onCycleTheme }:
   };
 
   return (
-    <div className="flex min-h-0 flex-1">
-      <nav className="w-[172px] shrink-0 bg-surface-0 px-2 py-3">
+    <div className="flex min-h-0 flex-1 justify-center">
+      <div className="flex min-h-0 w-full max-w-[780px]">
+        <nav className="w-[152px] shrink-0 px-2 py-6">
         {SECTIONS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -52,10 +53,10 @@ export function SettingsView({ settings, theme, onChangeContext, onCycleTheme }:
             {label}
           </button>
         ))}
-      </nav>
+        </nav>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[560px] px-6 py-6">
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="px-6 py-6">
           <h1 className="text-[15px] font-medium text-ink-1">设置</h1>
 
           <section
@@ -155,7 +156,8 @@ export function SettingsView({ settings, theme, onChangeContext, onCycleTheme }:
             </div>
           </section>
 
-          <p className="mt-8 text-[10px] text-ink-3">未接线版本 · 设置仅本次运行有效</p>
+            <p className="mt-8 text-[10px] text-ink-3">未接线版本 · 设置仅本次运行有效</p>
+          </div>
         </div>
       </div>
     </div>

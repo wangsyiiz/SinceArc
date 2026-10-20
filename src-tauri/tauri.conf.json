@@ -15,8 +15,8 @@
         "title": "SinceArc",
         "width": 1180,
         "height": 800,
-        "minWidth": 900,
-        "minHeight": 580,
+        "minWidth": 1080,
+        "minHeight": 680,
         "center": true,
         "decorations": false
       }
