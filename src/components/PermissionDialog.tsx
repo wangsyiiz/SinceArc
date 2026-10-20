@@ -19,7 +19,7 @@ const TONE = {
   },
   always: {
     icon: ShieldCheck,
-    className: "sc-control text-ink-1 hover:bg-surface-3/85 focus-visible:ring-line-2",
+    className: "sc-control bg-surface-3/50 text-ink-1 hover:bg-surface-3/85 focus-visible:ring-line-2",
   },
   reject: {
     icon: ShieldX,

@@ -153,6 +153,7 @@ body {
 }
 
 /* ---------- 材质：三层 ---------- */
+@layer components {
 /* 底层：透明，与窗口共用同一块底色，靠 1px 边框 + 圆角分栏 */
 .sc-pane {
   background: transparent;
@@ -167,10 +168,13 @@ body {
   border: 1px solid var(--l1);
   box-shadow: var(--edge-highlight);
 }
-/* 控件（按钮 / 输入 / 行 hover）：面阶取色，只有上缘内高光，不抢戏 */
+/* 控件：只给上缘内高光，底色由调用方的 Tailwind 类给（bg-surface-* / hover:*）
+   —— 之前这里自己铺 background，unlayered 规则会压过所有 bg-* 工具类，
+   按钮的 hover 因此静默失效。 */
 .sc-control {
-  background: color-mix(in srgb, var(--s3) 55%, transparent);
   box-shadow: var(--edge-hairline);
+}
+
 }
 
 /* 拖拽区 */
@@ -318,8 +322,8 @@ dialog.sc-dialog[open] {
   /* 四边净空 2px（相对内边距框；外沿看是 3px = 2 + 1px 边框）*/
   width: calc((100% - var(--switch-count, 2) * 4px) / var(--switch-count, 2));
   height: calc(100% - 4px);
-  /* 滑块取面阶 s3（激活面），不铺白、不做玻璃：背后是纯色，模糊无内容可糊 */
-  border: 1px solid color-mix(in srgb, var(--l1) 55%, transparent);
+  /* 滑块取面阶 s3（激活面），不铺白、不做玻璃、不留描边：只靠面阶与上缘高光读层次 */
+  border: 0;
   border-radius: var(--radius);
   background: var(--s3);
   /* 无外投影：层次靠 1px 边框 + 上缘高光（设计语言第 3 条） */
@@ -343,7 +347,11 @@ dialog.sc-dialog[open] {
   font-size: 12px;
   transition: color 0.2s;
 }
-.sc-switch__item[aria-pressed="true"] {
+.sc-switch__item:hover {
+  color: var(--i2);
+}
+.sc-switch__item[aria-pressed="true"],
+.sc-switch__item[aria-pressed="true"]:hover {
   color: var(--i1);
 }
 

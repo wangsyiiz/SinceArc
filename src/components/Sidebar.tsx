@@ -103,7 +103,7 @@ export function Sidebar({
           <div className="px-2.5 pb-2">
             <button
               onClick={onNew}
-              className="sc-control flex w-full items-center gap-2 rounded-[8px] px-2.5 py-2 text-[12.5px] text-ink-1 transition-colors hover:bg-surface-3/85"
+              className="sc-control flex w-full items-center gap-2 rounded-[8px] bg-surface-3/50 px-2.5 py-2 text-[12.5px] text-ink-1 transition-colors hover:bg-surface-3/85"
             >
               <Plus className="size-3.5 text-ink-2" />
               新建会话

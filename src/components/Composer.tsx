@@ -50,8 +50,8 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [], cont
       )}
       <div
       className={cn(
-        "sc-glass rounded-[12px] transition-colors",
-        busy ? "border-accent-1/35" : "focus-within:border-line-2",
+        "sc-glass rounded-[12px] border-transparent transition-colors",
+        busy && "border-accent-1/25",
       )}
     >
       <textarea
