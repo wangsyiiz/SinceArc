@@ -1,4 +1,4 @@
-import { FolderGit2, GitPullRequest, MessageSquare, X } from "lucide-react";
+import { FolderGit2, GitPullRequest, MessageSquare, Settings2, X } from "lucide-react";
 import type { Tab } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -6,6 +6,7 @@ const ICON = {
   session: MessageSquare,
   repo: FolderGit2,
   pr: GitPullRequest,
+  settings: Settings2,
 } as const;
 
 interface TabStripProps {

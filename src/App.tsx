@@ -7,7 +7,7 @@ import { PermissionDialog } from "@/components/PermissionDialog";
 import { PrView } from "@/components/PrView";
 import { RepoBrowser } from "@/components/RepoBrowser";
 import { ResizeHandles } from "@/components/ResizeHandles";
-import { SettingsDrawer } from "@/components/SettingsDrawer";
+import { SettingsView } from "@/components/SettingsView";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
 import { StatusBar } from "@/components/StatusBar";
@@ -49,7 +49,6 @@ const emptySession = (): SessionState => ({
 
 export default function App() {
   const [theme, setTheme] = useState<ThemeMode>("dark");
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [mode, setMode] = useState<SidebarMode>("sessions");
   const [traceOpen, setTraceOpen] = useState(false);
   const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
@@ -104,14 +103,18 @@ export default function App() {
         ? `tab-${tab.sessionId}`
         : tab.kind === "repo"
           ? `tab-repo-${tab.repoId}`
-          : `tab-pr-${tab.repoId}-${tab.prNumber}`;
+          : tab.kind === "settings"
+            ? "tab-settings"
+            : `tab-pr-${tab.repoId}-${tab.prNumber}`;
     const title =
       tab.title ??
       (tab.kind === "session"
         ? (sessions.find((s) => s.id === tab.sessionId)?.title ?? "会话")
         : tab.kind === "repo"
           ? "项目"
-          : `#${tab.prNumber}`);
+          : tab.kind === "settings"
+            ? "设置"
+            : `#${tab.prNumber}`);
     setTabs((prev) => (prev.some((t) => t.id === key) ? prev : [...prev, { ...tab, id: key, title }]));
     setActiveTabId(key);
     if (tab.kind === "session" && tab.sessionId) setLastSessionId(tab.sessionId);
@@ -326,7 +329,7 @@ export default function App() {
           onSelect={(id) => openTab({ kind: "session", sessionId: id })}
           onNew={newSession}
           onSelectProfile={setActiveProfileId}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => openTab({ kind: "settings", title: "设置" })}
           onOpenRepo={(repoId) => {
             const repo = repoList.find((r) => r.id === repoId);
             openTab({ kind: "repo", title: repo?.name ?? "项目", repoId });
@@ -493,21 +496,20 @@ export default function App() {
             />
           )}
 
+          {activeTab?.kind === "settings" && (
+            <SettingsView
+              settings={settings}
+              theme={theme}
+              onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}
+              onCycleTheme={setTheme}
+            />
+          )}
+
           {activeTab?.kind === "pr" && activePr && activeRepo && (
             <PrView pr={activePr} repo={activeRepo} onQuote={() => quotePr(activePr, activeRepo)} />
           )}
         </main>
       </div>
-
-      {settingsOpen && (
-        <SettingsDrawer
-          settings={settings}
-          theme={theme}
-          onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}
-          onCycleTheme={setTheme}
-          onClose={() => setSettingsOpen(false)}
-        />
-      )}
 
       <ResizeHandles />
       {state.pendingPerm && (

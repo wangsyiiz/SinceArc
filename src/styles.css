@@ -39,6 +39,13 @@
   --radius: 8px;
   --radius-lg: 12px;
 
+  /* 分段控件：暗色档 轨道 n-3 / 滑块 n-4；
+     浅色档反过来 —— 轨道是淡黑水洗、滑块纯白（同 sincecloud 的
+     --switch-track-bg / --switch-thumb-bg，用 light-dark 表达） */
+  --switch-track: var(--s2);
+  --switch-thumb: var(--s3);
+  --switch-thumb-edge: rgb(255 255 255 / 0.07);
+
   --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.07), inset 0 -1px 0 rgb(0 0 0 / 0.4);
   --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.06), inset 0 -1px 0 rgb(0 0 0 / 0.3);
 }
@@ -58,6 +65,10 @@
 
   --a1: #171717;
   --ai: #ffffff;
+
+  --switch-track: color-mix(in srgb, #060606 5%, transparent);
+  --switch-thumb: #ffffff;
+  --switch-thumb-edge: rgb(255 255 255 / 0.95);
 
   --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
   --glass-2: color-mix(in srgb, var(--s1) 72%, transparent);
@@ -80,7 +91,11 @@
     --i3: #6e6e6e;
     --a1: #171717;
     --ai: #ffffff;
-    --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
+    --switch-track: color-mix(in srgb, #060606 5%, transparent);
+  --switch-thumb: #ffffff;
+  --switch-thumb-edge: rgb(255 255 255 / 0.95);
+
+  --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
     --glass-2: color-mix(in srgb, var(--s1) 72%, transparent);
     --glass-control: color-mix(in srgb, #000000 4%, transparent);
     --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 -1px 0 rgb(0 0 0 / 0.1);
@@ -310,8 +325,8 @@ dialog.sc-dialog[open] {
   padding: 0;
   border: 1px solid transparent;
   border-radius: var(--radius);
-  /* 轨道取面阶 s2（不用白叠：白色叠加会让石板蓝发灰） */
-  background: var(--s2);
+  /* 轨道/滑块的明暗方向由主题令牌决定（浅色档滑块是白、轨道是水洗） */
+  background: var(--switch-track);
   transition: background-color 0.16s ease-out;
 }
 
@@ -322,12 +337,11 @@ dialog.sc-dialog[open] {
   /* 四边净空 2px（相对内边距框；外沿看是 3px = 2 + 1px 边框）*/
   width: calc((100% - var(--switch-count, 2) * 4px) / var(--switch-count, 2));
   height: calc(100% - 4px);
-  /* 滑块取面阶 s3（激活面），不铺白、不做玻璃、不留描边：只靠面阶与上缘高光读层次 */
+  /* 不留描边：只靠面阶与上缘高光读层次 */
   border: 0;
   border-radius: var(--radius);
-  background: var(--s3);
-  /* 无外投影：层次靠 1px 边框 + 上缘高光（设计语言第 3 条） */
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.07);
+  background: var(--switch-thumb);
+  box-shadow: inset 0 1px 0 var(--switch-thumb-edge);
   transform: translateX(calc((100% + 4px) * var(--switch-index, 0)));
   transition: transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
   pointer-events: none;

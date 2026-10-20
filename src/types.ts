@@ -127,7 +127,7 @@ export interface PermissionRequest {
 }
 
 /* ---------- 右侧工作区标签 ---------- */
-export type TabKind = "session" | "repo" | "pr";
+export type TabKind = "session" | "repo" | "pr" | "settings";
 
 export interface Tab {
   id: string;
