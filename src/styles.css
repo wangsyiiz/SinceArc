@@ -277,3 +277,16 @@ dialog.sc-dialog[open] {
   100% { background-color: transparent; }
 }
 .sc-row-fade { animation: sc-row-out 3.2s ease-out forwards; }
+
+/* 工作区空态：呼吸 + 轨道 */
+@keyframes sc-breathe {
+  0%, 100% { opacity: 0.3; transform: scale(0.98); }
+  50% { opacity: 0.72; transform: scale(1); }
+}
+@keyframes sc-orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.sc-breathe { animation: sc-breathe 5.5s ease-in-out infinite; }
+.sc-orbit { animation: sc-orbit 22s linear infinite; }
+.sc-orbit-rev { animation: sc-orbit 34s linear infinite reverse; }

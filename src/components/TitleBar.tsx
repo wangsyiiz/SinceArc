@@ -1,4 +1,4 @@
-import { GitPullRequest, Minus, Square, X } from "lucide-react";
+import { Minus, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AgentProfile } from "@/types";
 
@@ -19,11 +19,9 @@ async function withWindow(
 interface TitleBarProps {
   profile: AgentProfile | undefined;
   cwd: string;
-  githubOpen: boolean;
-  onOpenGithub: () => void;
 }
 
-export function TitleBar({ profile, cwd, githubOpen, onOpenGithub }: TitleBarProps) {
+export function TitleBar({ profile, cwd }: TitleBarProps) {
   const drag = { "data-tauri-drag-region": "" } as const;
 
   return (
@@ -52,10 +50,6 @@ export function TitleBar({ profile, cwd, githubOpen, onOpenGithub }: TitleBarPro
 
       {/* 仿 Windows 原生：46×36、贴边、无圆角、无间距 */}
       <div className="flex items-stretch">
-        <WinButton label="GitHub" active={githubOpen} onClick={onOpenGithub}>
-          <GitPullRequest className="size-3.5" strokeWidth={1.6} />
-        </WinButton>
-        <span className="my-2 w-px shrink-0 bg-white/[0.07]" />
         <WinButton label="最小化" onClick={() => void withWindow((w) => w.minimize())}>
           <Minus className="size-3" strokeWidth={1.6} />
         </WinButton>
@@ -74,13 +68,11 @@ function WinButton({
   children,
   label,
   close,
-  active,
   onClick,
 }: {
   children: React.ReactNode;
   label: string;
   close?: boolean;
-  active?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -93,7 +85,6 @@ function WinButton({
         close
           ? "hover:bg-[#c42b1c] hover:text-white active:bg-[#b02617]"
           : "hover:bg-white/[0.07] hover:text-ink-1 active:bg-white/[0.11]",
-        active && !close && "bg-white/[0.07] text-ink-1",
       )}
     >
       {children}
