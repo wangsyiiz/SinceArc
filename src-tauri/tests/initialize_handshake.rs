@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use sincearc_lib::acp::launch::{AgentProfile, Launch};
 use sincearc_lib::acp::initialize;
+use sincearc_lib::acp::launch::{AgentProfile, Launch};
 
 fn hermes_wsl() -> AgentProfile {
     AgentProfile {
@@ -53,7 +53,11 @@ async fn concurrent_requests_do_not_cross_wire() {
         .await
         .expect("handshake should succeed");
 
-    let ok = proc.request("session/list", serde_json::json!({}), Duration::from_secs(30));
+    let ok = proc.request(
+        "session/list",
+        serde_json::json!({}),
+        Duration::from_secs(30),
+    );
     let bad = proc.request(
         "__sincearc_nonexistent_method__",
         serde_json::json!({}),

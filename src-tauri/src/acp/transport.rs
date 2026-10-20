@@ -50,6 +50,7 @@ pub enum TransportError {
     Closed,
     Json(serde_json::Error),
     Agent(Value),
+    Launch(String),
 }
 
 impl std::fmt::Display for TransportError {
@@ -61,6 +62,7 @@ impl std::fmt::Display for TransportError {
             Self::Closed => write!(f, "agent closed stdout"),
             Self::Json(e) => write!(f, "bad json: {e}"),
             Self::Agent(v) => write!(f, "agent returned error: {v}"),
+            Self::Launch(msg) => write!(f, "cannot start agent: {msg}"),
         }
     }
 }
@@ -74,6 +76,16 @@ pub struct AgentProcess {
     writer: Arc<tokio::sync::Mutex<ChildStdin>>,
     pending: Pending,
     next_id: AtomicU64,
+    /// askpass 之类的临时文件；进程对象销毁时删掉，不留密码在磁盘上
+    cleanup: Option<std::path::PathBuf>,
+}
+
+impl Drop for AgentProcess {
+    fn drop(&mut self) {
+        if let Some(p) = &self.cleanup {
+            let _ = std::fs::remove_file(p);
+        }
+    }
 }
 
 impl AgentProcess {
@@ -117,11 +129,17 @@ impl AgentProcess {
         {
             let mut w = self.writer.lock().await;
             if let Err(e) = w.write_all(payload.as_bytes()).await {
-                self.pending.lock().expect("pending map poisoned").remove(&id);
+                self.pending
+                    .lock()
+                    .expect("pending map poisoned")
+                    .remove(&id);
                 return Err(TransportError::Io(e));
             }
             if let Err(e) = w.flush().await {
-                self.pending.lock().expect("pending map poisoned").remove(&id);
+                self.pending
+                    .lock()
+                    .expect("pending map poisoned")
+                    .remove(&id);
                 return Err(TransportError::Io(e));
             }
         }
@@ -131,14 +149,21 @@ impl AgentProcess {
             Ok(Ok(Err(e))) => Err(TransportError::Agent(e)),
             Ok(Err(_)) => Err(TransportError::Closed),
             Err(_) => {
-                self.pending.lock().expect("pending map poisoned").remove(&id);
+                self.pending
+                    .lock()
+                    .expect("pending map poisoned")
+                    .remove(&id);
                 Err(TransportError::Timeout(timeout.as_secs()))
             }
         }
     }
 
     /// 回一条响应给 agent（用于 client 侧实现的 `fs/*`、`session/request_permission` 等）。
-    pub async fn respond(&self, id: u64, result: Result<Value, Value>) -> Result<(), TransportError> {
+    pub async fn respond(
+        &self,
+        id: u64,
+        result: Result<Value, Value>,
+    ) -> Result<(), TransportError> {
         let msg = match result {
             Ok(v) => serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": v }),
             Err(e) => serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": e }),
@@ -181,15 +206,17 @@ pub fn spawn(
     ),
     TransportError,
 > {
-    let (program, args) = profile.command_line(cwd);
-    let mut cmd = Command::new(&program);
-    cmd.args(&args)
+    let spec = profile
+        .command_line(cwd)
+        .map_err(|e| TransportError::Launch(e.to_string()))?;
+    let mut cmd = Command::new(&spec.program);
+    cmd.args(&spec.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    for (k, v) in &profile.env {
+    for (k, v) in &spec.env {
         cmd.env(k, v);
     }
     // wsl.exe 默认输出 UTF-16LE（每字符夹 \0），显式要求 UTF-8
@@ -255,7 +282,10 @@ pub fn spawn(
             };
 
             let id = value.get("id").and_then(Value::as_u64);
-            let method = value.get("method").and_then(Value::as_str).map(str::to_string);
+            let method = value
+                .get("method")
+                .and_then(Value::as_str)
+                .map(str::to_string);
 
             match (id, method) {
                 // 响应：有 id、无 method
@@ -311,6 +341,7 @@ pub fn spawn(
             writer: Arc::new(tokio::sync::Mutex::new(stdin)),
             pending,
             next_id: AtomicU64::new(1),
+            cleanup: spec.cleanup,
         },
         incoming_rx,
         erx,

@@ -14,7 +14,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::acp::launch::{AgentProfile, Launch};
+use crate::acp::launch::{AgentProfile, Launch, SshAuth, SshSpec};
 use crate::acp::{self, transport};
 use crate::state::{AgentHandle, AppState};
 
@@ -58,9 +58,21 @@ pub struct ProfileDto {
     pub distro: Option<String>,
     #[serde(default)]
     pub shell: Option<String>,
-    /// 仅 launch = "ssh" 时有值（E1.1 才实现）
+    /// 仅 launch = "ssh" 时有值
     #[serde(default)]
     pub ssh_host: Option<String>,
+    #[serde(default)]
+    pub ssh_port: Option<u16>,
+    #[serde(default)]
+    pub ssh_user: Option<String>,
+    /// "key" | "password"
+    #[serde(default)]
+    pub ssh_auth: Option<String>,
+    #[serde(default)]
+    pub ssh_key_path: Option<String>,
+    /// 密码只在内存里过一手：不写配置、不落 SQLite
+    #[serde(default)]
+    pub ssh_password: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,6 +86,58 @@ pub struct ConnectOutcome {
     pub auth_methods: Vec<String>,
 }
 
+/// SSH 的必填项缺失时逐个点名，不给默认值 ——
+/// 默认值会让「没填」和「填错了」拿到同一个结果。
+fn to_ssh_spec(dto: &ProfileDto) -> Result<SshSpec, CmdError> {
+    let host = dto
+        .ssh_host
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| CmdError::new(50300, "SSH 主机未填"))?;
+    let user = dto
+        .ssh_user
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| CmdError::new(50300, "SSH 账号未填"))?;
+
+    let auth = match dto.ssh_auth.as_deref() {
+        Some("key") => {
+            let path = dto
+                .ssh_key_path
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| CmdError::new(50300, "认证方式选了私钥，但私钥路径未填"))?;
+            SshAuth::Key {
+                path: path.to_string(),
+            }
+        }
+        Some("password") => {
+            let secret = dto
+                .ssh_password
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| CmdError::new(50300, "认证方式选了密码，但密码未填"))?;
+            SshAuth::Password {
+                secret: secret.to_string(),
+            }
+        }
+        Some(other) => {
+            return Err(CmdError::new(
+                50300,
+                format!("未知的认证方式：{other}（只接受 key / password）"),
+            ))
+        }
+        None => return Err(CmdError::new(50300, "SSH 认证方式未选")),
+    };
+
+    Ok(SshSpec {
+        host: host.to_string(),
+        port: dto.ssh_port.unwrap_or(22),
+        user: user.to_string(),
+        auth,
+    })
+}
+
 fn to_profile(dto: &ProfileDto) -> Result<AgentProfile, CmdError> {
     let launch = match dto.launch.as_str() {
         "local" => Launch::Local,
@@ -81,17 +145,7 @@ fn to_profile(dto: &ProfileDto) -> Result<AgentProfile, CmdError> {
             distro: dto.distro.clone().unwrap_or_else(|| "fedora".into()),
             shell: dto.shell.clone().unwrap_or_else(|| "zsh".into()),
         },
-        // 类型与配置已经留好，argv 生成在 E1.1 落地；现在明确拒绝，
-        // 不假装能用。
-        "ssh" => {
-            return Err(CmdError::new(
-                50100,
-                format!(
-                    "SSH 通道尚未实现（E1.1）：{}",
-                    dto.ssh_host.as_deref().unwrap_or("<未填主机>")
-                ),
-            ))
-        }
+        "ssh" => Launch::Ssh(to_ssh_spec(dto)?),
         other => {
             return Err(CmdError::new(
                 50300,
@@ -177,7 +231,10 @@ pub async fn agent_connect(
 }
 
 #[tauri::command]
-pub async fn agent_disconnect(state: State<'_, AppState>, profile_id: String) -> Result<(), CmdError> {
+pub async fn agent_disconnect(
+    state: State<'_, AppState>,
+    profile_id: String,
+) -> Result<(), CmdError> {
     match state.take(&profile_id).await {
         Some(handle) => {
             handle.proc.kill().await;

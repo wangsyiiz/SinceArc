@@ -12,6 +12,8 @@ export interface SshConfig {
   auth: SshAuth;
   /** auth = "key" 时的私钥路径（Windows 侧绝对路径） */
   keyPath?: string;
+  /** auth = "password" 时的口令；只在内存里过一手，不落盘 */
+  password?: string;
 }
 
 export interface AgentProfile {
