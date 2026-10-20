@@ -75,6 +75,8 @@ export default function App() {
     },
   });
   const scrollRef = useRef<HTMLDivElement>(null);
+  const layoutRef = useRef<HTMLDivElement>(null);
+  const [layoutW, setLayoutW] = useState(0);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const activeProfile = profiles.find((p) => p.id === activeProfileId);
@@ -87,6 +89,27 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  // 量三栏容器宽度：分栏上限由「主区最小宽度」反推，不是硬编码
+  useEffect(() => {
+    const el = layoutRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([e]) => setLayoutW(e.contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const MAIN_MIN = 380;
+  const sidebarMax = Math.max(200, layoutW - (traceOpen ? traceW : 0) - MAIN_MIN - 12);
+  const traceMax = Math.max(250, layoutW - sidebarW - MAIN_MIN - 12);
+
+  // 窗口缩小时把超出的分栏拉回来
+  useEffect(() => {
+    if (!layoutW) return;
+    setSidebarW((w) => Math.min(w, sidebarMax));
+    setTraceW((w) => Math.min(w, traceMax));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutW, traceOpen]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -314,7 +337,7 @@ export default function App() {
     <div className="relative flex h-full flex-col overflow-hidden bg-surface-0 text-ink-1">
       <TitleBar profile={activeProfile} cwd={cwd} />
 
-      <div className="flex min-h-0 flex-1 px-1 pb-1">
+      <div ref={layoutRef} className="flex min-h-0 flex-1 px-1 pb-1">
         <Sidebar
           width={sidebarW}
           mode={mode}
@@ -342,6 +365,7 @@ export default function App() {
           onChange={setSidebarW}
           onDragChange={setDragging}
           min={200}
+          max={sidebarMax}
         />
 
         <TracePanel
@@ -365,10 +389,11 @@ export default function App() {
             onChange={setTraceW}
             onDragChange={setDragging}
             min={250}
+            max={traceMax}
           />
         )}
 
-        <main className="sc-pane flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <main className="sc-pane flex min-h-0 flex-1 flex-col overflow-hidden" style={{ minWidth: MAIN_MIN }}>
           <TabStrip
             tabs={tabs}
             activeId={activeTabId}
