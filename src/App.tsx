@@ -95,6 +95,8 @@ export default function App() {
   // ACP sessionId -> UI 会话 id（mock 的 s-1 之类）。S3 阶段只有一个活跃会话，够用。
   const acpToUi = useRef<Record<string, string>>({});
   const streamBuf = useRef<Record<string, string>>({});
+  /** ACP 会话 -> 当前这一轮的 turn id（轨迹要跟着同一条轮次走） */
+  const acpToTurn = useRef<Record<string, string>>({});
   const flushTimer = useRef(0);
   const lastSidRef = useRef(lastSessionId);
   lastSidRef.current = lastSessionId;
@@ -110,26 +112,37 @@ export default function App() {
       const streamId = `stream-${acpSid}`;
       patchSession(uiSid, (s) => {
         const last = s.msgs[s.msgs.length - 1];
-        if (last && last.id === streamId && last.role === "player") {
-          return {
-            ...s,
-            msgs: [...s.msgs.slice(0, -1), { ...last, text: last.text + text }],
-          };
-        }
-        return {
-          ...s,
-          msgs: [
-            ...s.msgs,
-            {
-              id: streamId,
-              role: "player",
-              playerId: players[0].id,
-              text,
-              at: now(),
-              streaming: true,
-            },
-          ],
-        };
+        const msgs =
+          last && last.id === streamId && last.role === "player"
+            ? [...s.msgs.slice(0, -1), { ...last, text: last.text + text }]
+            : [
+                ...s.msgs,
+                {
+                  id: streamId,
+                  role: "player" as const,
+                  playerId: players[0].id,
+                  text,
+                  at: now(),
+                  streaming: true,
+                },
+              ];
+
+        // 轨迹栏同步：这一轮的 running 分支跟着累积 reply
+        const turnId = acpToTurn.current[acpSid];
+        const turns = turnId
+          ? s.turns.map((t) =>
+              t.id === turnId
+                ? {
+                    ...t,
+                    branches: t.branches.map((b) =>
+                      b.status === "running" ? { ...b, reply: (b.reply ?? "") + text } : b,
+                    ),
+                  }
+                : t,
+            )
+          : s.turns;
+
+        return { ...s, msgs, turns };
       });
     }
   }, [patchSession]);
@@ -164,10 +177,25 @@ export default function App() {
         if (uiSid) {
           const streamId = `stream-${event.sessionId}`;
           const actId = `act-stream-${event.sessionId}`;
+          const turnId = acpToTurn.current[event.sessionId];
           patchSession(uiSid, (s) => ({
             ...s,
             busy: false,
-            acts: s.acts.filter((a) => a.id !== actId),
+            acts: s.acts.map((a) =>
+              a.id === actId
+                ? { ...a, status: event.kind === "promptFailed" ? ("error" as const) : ("ok" as const) }
+                : a,
+            ),
+            turns: turnId
+              ? s.turns.map((t) =>
+                  t.id === turnId
+                    ? {
+                        ...t,
+                        branches: t.branches.map((b) => ({ ...b, status: "done" as const })),
+                      }
+                    : t,
+                )
+              : s.turns,
             msgs:
               event.kind === "promptFailed"
                 ? [
@@ -363,6 +391,9 @@ export default function App() {
       const acpSid = activeProfile ? sessionsByProfile[activeProfile.id] : undefined;
       if (acpSid) {
         const actId = `act-stream-${acpSid}`;
+        const turnId = `turn-live-${Date.now()}`;
+        acpToTurn.current[acpSid] = turnId;
+
         patchSession(sid, (s) => ({
           ...s,
           acts: [
@@ -374,6 +405,21 @@ export default function App() {
               title: "思考中",
               status: "running" as const,
               at,
+            },
+          ],
+          turns: [
+            ...s.turns,
+            {
+              id: turnId,
+              at,
+              userText: text,
+              branches: [
+                {
+                  playerId: players[0].id,
+                  activityIds: [actId],
+                  status: "running" as const,
+                },
+              ],
             },
           ],
         }));
