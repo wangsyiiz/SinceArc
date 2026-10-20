@@ -49,3 +49,24 @@ v1 用 UNC（`\\wsl.localhost\<distro>\...`，实测读文件 22 ms）访问 WSL
 - `protocolVersion` 显式钉 `1`，不依赖默认值。
 - v2 是 draft：`session/prompt` 只回"已受理"，进度走 `state_update`。
   crate 里它是独立 feature（`unstable_protocol_v2`），不启用。
+
+## 实测记录（2026-10-20）
+
+### 未知 method 不报错
+
+`hermes acp` 收到不存在的 method 时回 `{"id":N,"result":null}`，**不是** JSON-RPC error。
+所以「method 不存在会报错」不能用来探测能力 —— 能力判断只认 `initialize` 返回的
+`agentCapabilities`，别靠试探调用。
+
+### 并发请求
+
+`session/list` 与一个不存在的 method 交错发出，两者各自拿到正确结果（`{sessions:[]}` 与 `null`），
+没有串号。传输层用 pending 表按 id 配对，不要退回「读一行就当本次响应」。
+
+### usage
+
+- `session/update` 的 `usage_update`（`used` / `size` / `cost`）是稳定字段，hermes 实现了，
+  但 `used` 是**粗估**（`estimate_request_tokens_rough`），不是计费口径。
+- `PromptResponse.usage` 需要 Rust crate 的 `unstable_end_turn_token_usage` feature，
+  字段是**跨轮累计**；上游没给时是 `None`（不是 0）。
+- 没有 token 速率字段，也没有实时流式计数（`usage_update` 在轮次边界发）。

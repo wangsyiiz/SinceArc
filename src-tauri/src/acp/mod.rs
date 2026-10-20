@@ -71,12 +71,14 @@ impl InitializeOutcome {
 }
 
 /// 起进程并完成握手。返回会话外壳与 outcome。
+///
+/// 注意：调用方必须持续消费 `proc.incoming`，否则 reader task 会在 channel 满时阻塞。
 pub async fn initialize(
     profile: &AgentProfile,
     cwd: &str,
     timeout: Duration,
 ) -> Result<(transport::AgentProcess, InitializeOutcome), transport::TransportError> {
-    let (mut proc, mut stderr) = transport::spawn(profile, cwd)?;
+    let (proc, mut stderr) = transport::spawn(profile, cwd)?;
 
     // stderr 只留最后 40 行，用于失败时给出 agent 的抱怨
     let stderr_tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
@@ -99,7 +101,7 @@ pub async fn initialize(
         }
     });
 
-    match transport::request(&mut proc, 1, "initialize", params, timeout).await {
+    match proc.request("initialize", params, timeout).await {
         Ok(result) => {
             if result.get("protocolVersion").and_then(Value::as_i64) != Some(1) {
                 tracing::warn!(target: "sincearc::acp", "agent negotiated an unexpected protocol version");

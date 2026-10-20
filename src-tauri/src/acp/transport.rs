@@ -1,21 +1,46 @@
-//! stdio 传输：起进程、按行分帧、请求/响应配对。
+//! stdio 传输：起进程、按行分帧、请求/响应配对、入站消息分发。
 //!
 //! 约束（来自 ACP 规范）：
 //! - 消息是换行分隔的 JSON，一条消息内不得含裸换行；
 //! - stdout 只放协议，stderr 是自由日志，必须单开一路；
 //! - 一次 read 可能切在任意位置，所以按 `\n` 切分并保留残余片段。
+//!
+//! 分流是双向的（这是 S0 改造的要点）：
+//! - 出站：`request()` 分配 id、登记 pending 表、写 stdin，然后等自己的 oneshot；
+//! - 入站：reader task 把每条消息分成 **响应**（有 id 无 method，路由到 pending）、
+//!   **请求**（有 id 有 method，agent → client，例如 `session/request_permission`）、
+//!   **通知**（无 id 有 method，例如 `session/update`）。
+//!
+//! 旧实现让 `request()` 直接读 `lines` 并丢弃不匹配的消息 —— 那样并发两个请求就会串号，
+//! 且通知与 client 请求会被无声吞掉。
 
+use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use super::launch::AgentProfile;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// 入站消息。reader task 分好类之后交给上层消费。
+#[derive(Debug, Clone)]
+pub enum Incoming {
+    /// agent → client 的请求，必须回响应，否则 agent 会一直等
+    Request {
+        id: u64,
+        method: String,
+        params: Value,
+    },
+    /// 单向通知：`session/update` 之类
+    Notification { method: String, params: Value },
+}
 
 #[derive(Debug)]
 pub enum TransportError {
@@ -42,14 +67,104 @@ impl std::fmt::Display for TransportError {
 
 impl std::error::Error for TransportError {}
 
+type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, Value>>>>>;
+
 pub struct AgentProcess {
     pub child: Child,
-    pub stdin: ChildStdin,
-    pub lines: mpsc::Receiver<String>,
+    writer: Arc<tokio::sync::Mutex<ChildStdin>>,
+    pending: Pending,
+    next_id: AtomicU64,
+    /// 通知与 agent 请求；上层必须持续消费，否则 reader task 会阻塞
+    pub incoming: mpsc::Receiver<Incoming>,
+}
+
+impl AgentProcess {
+    /// 发一条请求并等 id 匹配的响应。
+    ///
+    /// 与旧实现的区别：不再独占 `self` —— 内部用 pending 表配对，
+    /// 所以可以并发发多条（`&self`）。通知与 agent 请求走 `incoming`。
+    pub async fn request(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, TransportError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel::<Result<Value, Value>>();
+        self.pending
+            .lock()
+            .expect("pending map poisoned")
+            .insert(id, tx);
+
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        let mut payload = serde_json::to_string(&msg).map_err(TransportError::Json)?;
+        payload.push('\n');
+
+        {
+            let mut w = self.writer.lock().await;
+            if let Err(e) = w.write_all(payload.as_bytes()).await {
+                self.pending.lock().expect("pending map poisoned").remove(&id);
+                return Err(TransportError::Io(e));
+            }
+            if let Err(e) = w.flush().await {
+                self.pending.lock().expect("pending map poisoned").remove(&id);
+                return Err(TransportError::Io(e));
+            }
+        }
+
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(Ok(v))) => Ok(v),
+            Ok(Ok(Err(e))) => Err(TransportError::Agent(e)),
+            Ok(Err(_)) => Err(TransportError::Closed),
+            Err(_) => {
+                self.pending.lock().expect("pending map poisoned").remove(&id);
+                Err(TransportError::Timeout(timeout.as_secs()))
+            }
+        }
+    }
+
+    /// 回一条响应给 agent（用于 client 侧实现的 `fs/*`、`session/request_permission` 等）。
+    pub async fn respond(&self, id: u64, result: Result<Value, Value>) -> Result<(), TransportError> {
+        let msg = match result {
+            Ok(v) => serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": v }),
+            Err(e) => serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": e }),
+        };
+        let mut payload = serde_json::to_string(&msg).map_err(TransportError::Json)?;
+        payload.push('\n');
+        let mut w = self.writer.lock().await;
+        w.write_all(payload.as_bytes())
+            .await
+            .map_err(TransportError::Io)?;
+        w.flush().await.map_err(TransportError::Io)
+    }
+
+    /// 发一条通知（无 id、无响应）。
+    pub async fn notify(&self, method: &str, params: Value) -> Result<(), TransportError> {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        });
+        let mut payload = serde_json::to_string(&msg).map_err(TransportError::Json)?;
+        payload.push('\n');
+        let mut w = self.writer.lock().await;
+        w.write_all(payload.as_bytes())
+            .await
+            .map_err(TransportError::Io)?;
+        w.flush().await.map_err(TransportError::Io)
+    }
 }
 
 /// 起 agent 进程；stderr 单独收集，交给调用方做 debug 面板。
-pub fn spawn(profile: &AgentProfile, cwd: &str) -> Result<(AgentProcess, mpsc::Receiver<String>), TransportError> {
+pub fn spawn(
+    profile: &AgentProfile,
+    cwd: &str,
+) -> Result<(AgentProcess, mpsc::Receiver<String>), TransportError> {
     let (program, args) = profile.command_line(cwd);
     let mut cmd = Command::new(&program);
     cmd.args(&args)
@@ -72,7 +187,7 @@ pub fn spawn(profile: &AgentProfile, cwd: &str) -> Result<(AgentProcess, mpsc::R
     let stdout = child.stdout.take().ok_or(TransportError::Closed)?;
     let stderr = child.stderr.take().ok_or(TransportError::Closed)?;
 
-    let (tx, rx) = mpsc::channel::<String>(256);
+    let (line_tx, mut line_rx) = mpsc::channel::<String>(256);
     tokio::spawn(async move {
         let mut reader = BufReader::new(stdout);
         let mut line = String::new();
@@ -82,7 +197,7 @@ pub fn spawn(profile: &AgentProfile, cwd: &str) -> Result<(AgentProcess, mpsc::R
                 Ok(0) => break,
                 Ok(_) => {
                     let trimmed = line.trim_end_matches(['\r', '\n']);
-                    if !trimmed.is_empty() && tx.send(trimmed.to_string()).await.is_err() {
+                    if !trimmed.is_empty() && line_tx.send(trimmed.to_string()).await.is_err() {
                         break;
                     }
                 }
@@ -110,65 +225,78 @@ pub fn spawn(profile: &AgentProfile, cwd: &str) -> Result<(AgentProcess, mpsc::R
         }
     });
 
+    let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+    let (incoming_tx, incoming_rx) = mpsc::channel::<Incoming>(256);
+
+    // 分发器：把行流拆成 响应 / 请求 / 通知
+    let dispatch_pending = pending.clone();
+    tokio::spawn(async move {
+        while let Some(line) = line_rx.recv().await {
+            let value: Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                // 非协议行（agent 误写日志到 stdout）跳过，不要污染解析
+                Err(_) => continue,
+            };
+
+            let id = value.get("id").and_then(Value::as_u64);
+            let method = value.get("method").and_then(Value::as_str).map(str::to_string);
+
+            match (id, method) {
+                // 响应：有 id、无 method
+                (Some(id), None) => {
+                    let payload = match value.get("error") {
+                        Some(e) => Err(e.clone()),
+                        None => Ok(value.get("result").cloned().unwrap_or(Value::Null)),
+                    };
+                    if let Some(tx) = dispatch_pending
+                        .lock()
+                        .expect("pending map poisoned")
+                        .remove(&id)
+                    {
+                        let _ = tx.send(payload);
+                    } else {
+                        tracing::warn!(target: "sincearc::acp", id, "response for unknown id");
+                    }
+                }
+                // agent → client 请求：有 id、有 method，必须回响应
+                (Some(id), Some(method)) => {
+                    let msg = Incoming::Request {
+                        id,
+                        method,
+                        params: value.get("params").cloned().unwrap_or(Value::Null),
+                    };
+                    if incoming_tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+                // 通知：无 id、有 method
+                (None, Some(method)) => {
+                    let msg = Incoming::Notification {
+                        method,
+                        params: value.get("params").cloned().unwrap_or(Value::Null),
+                    };
+                    if incoming_tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+                // 既无 id 又无 method：垃圾，忽略
+                (None, None) => {}
+            }
+        }
+
+        // stdout 关闭：把所有还在等的请求叫醒，避免调用方一直悬着
+        let mut map = dispatch_pending.lock().expect("pending map poisoned");
+        map.clear();
+    });
+
     Ok((
         AgentProcess {
             child,
-            stdin,
-            lines: rx,
+            writer: Arc::new(tokio::sync::Mutex::new(stdin)),
+            pending,
+            next_id: AtomicU64::new(1),
+            incoming: incoming_rx,
         },
         erx,
     ))
-}
-
-/// 发一条请求并等 id 匹配的响应；通知与其它 id 的响应被丢弃（E2 会分发它们）。
-pub async fn request(
-    proc: &mut AgentProcess,
-    id: u64,
-    method: &str,
-    params: Value,
-    timeout: Duration,
-) -> Result<Value, TransportError> {
-    let msg = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    let mut payload = serde_json::to_string(&msg).map_err(TransportError::Json)?;
-    payload.push('\n');
-
-    proc.stdin
-        .write_all(payload.as_bytes())
-        .await
-        .map_err(TransportError::Io)?;
-    proc.stdin.flush().await.map_err(TransportError::Io)?;
-
-    let wait = async {
-        while let Some(line) = proc.lines.recv().await {
-            let value: Value = match serde_json::from_str(&line) {
-                Ok(v) => v,
-                Err(_) => continue, // 非协议行（例如 agent 误写日志）直接跳过
-            };
-            if value.get("id").and_then(Value::as_u64) != Some(id) {
-                continue;
-            }
-            if let Some(err) = value.get("error") {
-                return Err(TransportError::Agent(err.clone()));
-            }
-            return Ok(value.get("result").cloned().unwrap_or(Value::Null));
-        }
-        Err(TransportError::Closed)
-    };
-
-    timeout_ok(wait, timeout).await
-}
-
-async fn timeout_ok<F>(fut: F, timeout: Duration) -> Result<Value, TransportError>
-where
-    F: std::future::Future<Output = Result<Value, TransportError>>,
-{
-    match tokio::time::timeout(timeout, fut).await {
-        Ok(r) => r,
-        Err(_) => Err(TransportError::Timeout(timeout.as_secs())),
-    }
 }
