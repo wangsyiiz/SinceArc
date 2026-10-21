@@ -168,7 +168,7 @@ export default function App() {
     },
     [permissions.enqueue],
   );
-  const { eventCount, lastEvent, eventLog, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ lastSessionId, patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission });
+  const { eventCount, lastEvent, eventLog, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission });
   const activeSession = sessions.find((s) => s.id === lastSessionId);
   // 归属跟会话走，不再跟一个全局「选中连接」走：全局选中项的唯一入口（左下角列表）
   // 已经移除，靠它就等于靠一个永远空着的值

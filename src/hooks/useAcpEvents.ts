@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { useCallback, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import {
   asSessionUpdate,
   messagesAppend,
@@ -14,24 +14,37 @@ import type { SessionSummary } from "@/types";
 import { MAIN_AGENT_ID } from "./usePrompt";
 import type { PatchSession } from "./useSessionState";
 
+/**
+ * 事件归属的唯一来源是**后端**给的 `uiSessionId`。
+ *
+ * 这里曾经维护 `acpToUi`（ACP 会话 → 界面会话），映射缺失时「退回当前打开的会话」。
+ * 那等于让「用户正在看哪一页」参与数据归属 —— 切一下会话，回答就写进另一个会话，
+ * 界面上是「消息串了」，库里也跟着串。
+ * 现在归属由后端的会话记录决定（含群成员身份），前端只做两件事：能投就投，投不了就丢弃并留痕。
+ */
+interface StreamState {
+  uiSid: string;
+  /** 谁说的话：群成员 id；主 agent 为 null */
+  authorId: string | null;
+  msgId: string;
+  /** 已经推到界面上的文本 */
+  text: string;
+  /** 还没 flush 的片段 */
+  buf: string;
+}
+
 export interface AcpRefs {
-  acpToUi: RefObject<Record<string, string>>;
-  acpToTurn: RefObject<Record<string, string>>;
-  /** ACP 会话 -> 该会话的发言者（agent user id）。主 agent 不在这张表里 */
-  acpToAuthor: RefObject<Record<string, string>>;
-  activeAcp: RefObject<string>;
-  streamText: RefObject<Record<string, string>>;
+  /** ACP 会话 -> 当前这一轮的 turn id（轨迹栏用） */
+  acpToTurn: React.RefObject<Record<string, string>>;
 }
 
 export function useAcpEvents({
-  lastSessionId,
   patchSession,
   setSessions,
   onSessionBound,
   onAgentSwitch,
   onPermission,
 }: {
-  lastSessionId: string;
   patchSession: PatchSession;
   /** 会话绑定 ACP session 后要回写列表（acpSessionId / profileId） */
   setSessions: Dispatch<SetStateAction<SessionSummary[]>>;
@@ -60,82 +73,42 @@ export function useAcpEvents({
     setEventLog((prev) => [...prev, { at: Date.now(), text: `· ${text}` }].slice(-80));
   }, []);
 
-  // ACP sessionId -> UI 会话 id（mock 的 s-1 之类）。S3 阶段只有一个活跃会话，够用。
-  const acpToUi = useRef<Record<string, string>>({});
-  /** ACP 会话 -> 发言的 agent user id（群成员的回答要记在它名下，docs/group-chat.md §4） */
-  const acpToAuthor = useRef<Record<string, string>>({});
-  const streamBuf = useRef<Record<string, string>>({});
-  /** 本轮已累积的完整回复（定稿时整条落库，不用再去 state 里翻） */
-  const streamText = useRef<Record<string, string>>({});
-  /** ACP 会话 -> 当前这一轮的 turn id（轨迹要跟着同一条轮次走） */
+  /** ACP 会话 -> 这一轮的流式状态（每条回答一个独立 msgId，绝不重复使用） */
+  const streams = useRef<Record<string, StreamState>>({});
   const acpToTurn = useRef<Record<string, string>>({});
-  /** 最近一次确认过的 ACP 会话 id：chunk 没带 sessionId 时的兜底 */
-  const activeAcp = useRef("");
-  const flushDiag = useRef(0);
-
-  /**
-   * 每条回答必须有**自己的**消息 id。
-   *
-   * 以前是 `stream-${acpSid}`：同一个会话的每一条回答都用同一个 id，
-   * 而落库是 `ON CONFLICT(id) DO UPDATE` —— 后一条直接把前一条覆盖掉。
-   * 表现就是「前面几轮的 agent 回答凭空消失」（实测一个群 11 条消息只剩 1 条回答）。
-   * 现在按「这一轮」生成 id，promptStarted 时清空，下一轮重新开一条。
-   */
-  const streamMsgId = useRef<Record<string, string>>({});
-  const curStreamId = (acpSid: string) => {
-    if (!streamMsgId.current[acpSid]) {
-      streamMsgId.current[acpSid] = `stream-${acpSid}-${Date.now()}`;
-    }
-    return streamMsgId.current[acpSid];
-  };
   const flushTimer = useRef(0);
-  const lastSidRef = useRef(lastSessionId);
-  lastSidRef.current = lastSessionId;
+  const flushDiag = useRef(0);
 
   /** 40ms 合批：chunk 是逐字来的，逐条 setState 会让 React 每字重渲染一次 */
   const flushStream = useCallback(() => {
     flushTimer.current = 0;
-    const buf = streamBuf.current;
-    streamBuf.current = {};
-    for (const [acpSid, text] of Object.entries(buf)) {
-      // 映射缺失时退回当前会话：同一时刻只有一条 prompt 在跑，
-      // 「这条流式内容属于我现在看的会话」这个判断不需要一张表也能成立。
-      const uiSid = acpToUi.current[acpSid];
-      if (!uiSid) {
-        // 不作「落到当前会话」的猜测：那正是消息串到别的会话的原因。
-        // 没有映射就丢弃（并留痕），宁可少显示一条，也不能把别人的历史染了。
-        clog("DROP-NOMAP", `chunk acp=${acpSid} len=${text.length}`);
-        continue;
-      }
-      if (uiSid !== lastSidRef.current) {
-        diag(`写入 ${uiSid}（当前看的是 ${lastSidRef.current}）`);
-      }
+    for (const [acpSid, st] of Object.entries(streams.current)) {
+      const text = st.buf;
+      st.buf = "";
       if (!text) continue;
+      st.text += text;
       if (flushDiag.current < 12) {
         flushDiag.current += 1;
-        diag(`flush -> ${uiSid} +${text.length} 字`);
-        clog("FLUSH", `acp=${acpSid} ui=${uiSid} +${text.length}`);
+        diag(`flush -> ${st.uiSid} +${text.length} 字`);
+        clog("FLUSH", `acp=${acpSid} ui=${st.uiSid} +${text.length}`);
       }
-      const streamId = curStreamId(acpSid);
-      patchSession(uiSid, (s) => {
+      patchSession(st.uiSid, (s) => {
         const last = s.msgs[s.msgs.length - 1];
         const msgs =
-          last && last.id === streamId && last.role === "player"
+          last && last.id === st.msgId && last.role === "player"
             ? [...s.msgs.slice(0, -1), { ...last, text: last.text + text }]
             : [
                 ...s.msgs,
                 {
-                  id: streamId,
+                  id: st.msgId,
                   role: "player" as const,
-                  // 成员的回答记在它名下；主 agent 的回答仍是默认玩家
-                  playerId: acpToAuthor.current[acpSid] ?? MAIN_AGENT_ID,
+                  playerId: st.authorId ?? MAIN_AGENT_ID,
                   text,
                   at: now(),
                   streaming: true,
                 },
               ];
 
-        // 轨迹栏同步：这一轮的 running 分支跟着累积 reply
         const turnId = acpToTurn.current[acpSid];
         const turns = turnId
           ? s.turns.map((t) =>
@@ -155,13 +128,16 @@ export function useAcpEvents({
     }
   }, [diag, patchSession]);
 
+  const scheduleFlush = useCallback(() => {
+    if (!flushTimer.current) flushTimer.current = window.setTimeout(flushStream, 40);
+  }, [flushStream]);
+
   const onAgentEvent = useCallback(
     (profileId: string, event: AcpEvent) => {
       setEventCount((n) => n + 1);
 
       const su = asSessionUpdate(event);
       const kindLabel = su?.update?.sessionUpdate;
-      // 正文片段：类型判错时也能看出内容到底在哪一类更新里
       const preview = su?.update?.content?.text?.slice(0, 40) ?? "";
 
       setEventLog((prev) =>
@@ -184,148 +160,63 @@ export function useAcpEvents({
             : event.kind,
       );
 
+      // 归属只认后端填的字段；缺失就是「不属于任何界面会话」
+      const uiSid: string | null = "uiSessionId" in event ? (event.uiSessionId ?? null) : null;
+      const acpSid: string | null = "sessionId" in event ? (event.sessionId ?? null) : null;
+      const authorId: string | null = "authorId" in event ? (event.authorId ?? null) : null;
+
       if (event.kind === "request" && event.method === "session/request_permission") {
-        const params = (event.params ?? {}) as { sessionId?: unknown };
-        const acpSid =
-          typeof params.sessionId === "string" && params.sessionId
-            ? params.sessionId
-            : activeAcp.current;
-        const uiSid = acpToUi.current[acpSid];
         if (!uiSid) {
-          diag(`权限请求 #${event.id} 找不到会话映射（${acpSid || "无 sessionId"}），按拒绝作答`);
-          // 丢弃不等于可以不管：没人回答 agent 会一直等。按拒绝收尾是最保守的选择。
-          denyPermission(
-            profileId,
-            event.id,
-            parsePermissionOptions(event.params),
-          );
+          diag(`权限请求 #${event.id} 没有归属会话（acp=${acpSid ?? "-"}），按拒绝作答`);
+          clog("PERM-NOUI", `acp=${acpSid ?? "-"} id=${event.id}`);
+          // 丢弃不等于可以不管：没人回答，agent 会一直等。按拒绝收尾最保守。
+          denyPermission(profileId, event.id, parsePermissionOptions(event.params));
         } else {
-          onPermission?.({
-            uiSid,
-            profileId,
-            requestId: event.id,
-            params: event.params,
-          });
+          onPermission?.({ uiSid, profileId, requestId: event.id, params: event.params });
         }
-        // 权限请求的 params 不是对话正文，不能继续落到消息/流式分支里。
         return;
       }
 
       if (su?.update?.sessionUpdate === "current_mode_update") {
-        const uiSid = acpToUi.current[su.sessionId ?? activeAcp.current];
         const modeId = su.update.currentModeId;
         if (uiSid && modeId) onAgentSwitch?.(uiSid, modeId);
-        // 这条通知只是状态同步，没有正文，不能继续落进消息流
+        // 这条通知只是状态同步，没有正文
         return;
       }
 
       if (su?.update?.sessionUpdate === "agent_message_chunk") {
-        const acpSid = su.sessionId || activeAcp.current;
-        if (!su.sessionId) diag("chunk 缺 sessionId，回退到最近活跃会话");
         const text = su.update.content?.text ?? "";
-        if (text) {
-          streamBuf.current[acpSid] = (streamBuf.current[acpSid] ?? "") + text;
-          streamText.current[acpSid] = (streamText.current[acpSid] ?? "") + text;
-          if (!flushTimer.current) flushTimer.current = window.setTimeout(flushStream, 40);
+        if (!text) return;
+        if (!acpSid || !uiSid) {
+          // 不猜：宁可少显示一条，也不把回答写进别的会话
+          clog("DROP-NOMAP", `acp=${acpSid ?? "-"} ui=- len=${text.length}`);
+          return;
         }
+        const st = (streams.current[acpSid] ??= {
+          uiSid,
+          authorId,
+          msgId: `stream-${acpSid}-${Date.now()}`,
+          text: "",
+          buf: "",
+        });
+        // 同一条 ACP 会话被另一个界面会话接手时，以最新一次投递为准
+        if (st.uiSid !== uiSid) {
+          clog("REBIND", `acp=${acpSid} ${st.uiSid} -> ${uiSid}`);
+          st.uiSid = uiSid;
+        }
+        st.buf += text;
+        scheduleFlush();
         return;
       }
 
       if (event.kind === "promptStarted") {
-        // 新一轮：上一轮的消息 id 作废，第一段 chunk 会开一条新消息
-        delete streamMsgId.current[event.sessionId];
-        delete streamText.current[event.sessionId];
-        return;
-      }
-
-      if (event.kind === "promptResult" || event.kind === "promptFailed") {
-        flushStream();
-        // 与 flushStream 保持同一套兜底：映射缺失就落到当前会话。
-        // 这里以前是硬取映射，取不到就整块跳过 —— 回答在界面里看得见、却一行都没落库。
-        const uiSid = acpToUi.current[event.sessionId];
-        if (!uiSid) clog("RESULT-NOMAP", `acp=${event.sessionId}（丢弃，不猜会话）`);
-        diag(`promptResult -> ${uiSid ?? "无映射"}`);
-        if (uiSid) {
-          const streamId = curStreamId(event.sessionId);
-          const actId = `act-stream-${event.sessionId}`;
-          const turnId = acpToTurn.current[event.sessionId];
-          patchSession(uiSid, (s) => ({
-            ...s,
-            busy: false,
-            acts: s.acts.map((a) =>
-              a.id === actId
-                ? { ...a, status: event.kind === "promptFailed" ? ("error" as const) : ("ok" as const) }
-                : a,
-            ),
-            turns: turnId
-              ? s.turns.map((t) =>
-                  t.id === turnId
-                    ? {
-                        ...t,
-                        branches: t.branches.map((b) => ({ ...b, status: "done" as const })),
-                      }
-                    : t,
-                )
-              : s.turns,
-            msgs:
-              event.kind === "promptFailed"
-                ? [
-                    ...s.msgs.map((m) =>
-                      m.id === streamId && m.role === "player" ? { ...m, streaming: false } : m,
-                    ),
-                    {
-                      id: `perr-${Date.now()}`,
-                      role: "system" as const,
-                      text: `这一轮失败：${event.msg}`,
-                      at: now(),
-                    },
-                  ]
-                : s.msgs.map((m) =>
-                    m.id === streamId && m.role === "player" ? { ...m, streaming: false } : m,
-                  ),
-          }));
-        }
-        if (event.kind === "promptFailed") {
-          console.warn("[acp] prompt failed", event.msg);
-          clog("FAIL", `acp=${event.sessionId} ui=${uiSid ?? "-"} ${event.msg}`);
-          // 失败原因也要落库：否则恢复会话后就是「问了没人答」，看不出当时是失败
-          if (uiSid) {
-            const id = `perr-${Date.now()}`;
-            messagesAppend(uiSid, [
-              {
-                id,
-                role: "system",
-                kind: "text",
-                payload: { id, role: "system", text: `这一轮失败：${event.msg}`, at: now() },
-              },
-            ]).catch((e) => console.warn("[db] append failure notice failed", e));
-          }
-        }
-
-        // 这一轮整条落库（同一 id 重复写是幂等的）
-        const acpSid = event.sessionId;
-        let full = streamText.current[acpSid] ?? "";
-        delete streamText.current[acpSid];
-        if (!full) {
-          // 兜底：chunk 事件里的 sessionId 与 prompt 用的不一致时，
-          // 文本会累积在另一个 key 下 —— 界面照样显示（flush 有兜底），
-          // 但这里读 `acpSid` 会得到空串，于是**一行都不落库**。
-          // 这条路径此前完全静默，正是「界面有回答、库里没有」最可能的成因。
-          for (const [k, v] of Object.entries(streamText.current)) {
-            if (!v || k === acpSid) continue;
-            const kUi = acpToUi.current[k];
-            if (kUi && kUi === uiSid) {
-              full = v;
-              delete streamText.current[k];
-              clog("RESULT-ID-MISMATCH", `prompt=${acpSid} streamed=${k} ui=${uiSid} len=${v.length}`);
-              break;
-            }
-          }
-        }
-        clog("RESULT", `acp=${acpSid} ui=${uiSid ?? "-"} kind=${event.kind} len=${full.length}`);
-        if (uiSid && full) {
-          const id = curStreamId(acpSid);
-          messagesAppend(uiSid, [
+        if (!acpSid) return;
+        // 上一轮如果没收到 promptResult（进程崩了、连接断了），文本会留在这里。
+        // 新一轮开始时先把它落库，别悄悄丢掉已经显示给用户的内容。
+        const stale = streams.current[acpSid];
+        if (stale && stale.text) {
+          const id = stale.msgId;
+          messagesAppend(stale.uiSid, [
             {
               id,
               role: "player",
@@ -333,29 +224,109 @@ export function useAcpEvents({
               payload: {
                 id,
                 role: "player",
-                playerId: acpToAuthor.current[acpSid] ?? MAIN_AGENT_ID,
+                playerId: stale.authorId ?? MAIN_AGENT_ID,
+                text: stale.text,
+                at: now(),
+                streaming: false,
+              },
+            },
+          ])
+            .then(() => clog("SALVAGE", `ui=${stale.uiSid} id=${id} len=${stale.text.length}`))
+            .catch((e) => console.warn("[db] salvage failed", e));
+        }
+        // 新一轮：上一轮的状态作废，第一段 chunk 会开一条新消息
+        delete streams.current[acpSid];
+        return;
+      }
+
+      if (event.kind === "promptResult" || event.kind === "promptFailed") {
+        flushStream();
+        if (!uiSid) {
+          clog("RESULT-NOUI", `acp=${acpSid ?? "-"} kind=${event.kind}`);
+          diag(`promptResult 无归属会话（acp=${acpSid ?? "-"}）`);
+          if (acpSid) delete streams.current[acpSid];
+          return;
+        }
+        const st = acpSid ? streams.current[acpSid] : undefined;
+        const actId = `act-stream-${acpSid ?? "x"}`;
+        const turnId = acpSid ? acpToTurn.current[acpSid] : undefined;
+        const failed = event.kind === "promptFailed";
+
+        patchSession(uiSid, (s) => ({
+          ...s,
+          busy: false,
+          acts: s.acts.map((a) =>
+            a.id === actId ? { ...a, status: failed ? ("error" as const) : ("ok" as const) } : a,
+          ),
+          turns: turnId
+            ? s.turns.map((t) =>
+                t.id === turnId
+                  ? { ...t, branches: t.branches.map((b) => ({ ...b, status: "done" as const })) }
+                  : t,
+              )
+            : s.turns,
+          msgs: [
+            ...s.msgs.map((m) =>
+              st && m.id === st.msgId && m.role === "player" ? { ...m, streaming: false } : m,
+            ),
+            ...(failed
+              ? [
+                  {
+                    id: `perr-${Date.now()}`,
+                    role: "system" as const,
+                    text: `这一轮失败：${event.msg}`,
+                    at: now(),
+                  },
+                ]
+              : []),
+          ],
+        }));
+
+        const full = st?.text ?? "";
+        clog("RESULT", `acp=${acpSid ?? "-"} ui=${uiSid} kind=${event.kind} len=${full.length}`);
+        if (failed) {
+          console.warn("[acp] prompt failed", event.msg);
+          const id = `perr-${Date.now()}`;
+          messagesAppend(uiSid, [
+            {
+              id,
+              role: "system",
+              kind: "text",
+              payload: { id, role: "system", text: `这一轮失败：${event.msg}`, at: now() },
+            },
+          ]).catch((e) => console.warn("[db] append failure notice failed", e));
+        }
+        if (full && st) {
+          messagesAppend(uiSid, [
+            {
+              id: st.msgId,
+              role: "player",
+              kind: "text",
+              payload: {
+                id: st.msgId,
+                role: "player",
+                playerId: st.authorId ?? MAIN_AGENT_ID,
                 text: full,
                 at: now(),
                 streaming: false,
               },
             },
           ])
-            .then(() => clog("DB-OK", `ui=${uiSid} id=${id} len=${full.length}`))
+            .then(() => clog("DB-OK", `ui=${uiSid} id=${st.msgId} len=${full.length}`))
             .catch((e) => {
               console.warn("[db] append reply failed", e);
-              clog("DB-ERR", `ui=${uiSid} id=${id} ${String(e)}`);
-              // 写不进库必须让用户看见：否则他下次恢复会话又会以为「回答丢了」
+              clog("DB-ERR", `ui=${uiSid} id=${st.msgId} ${String(e)}`);
+              // 写不进库必须让用户看见，否则恢复会话时他只会以为回答丢了
               pushSystemNotice(patchSession, uiSid, `这条回答没能写入历史：${String(e)}`);
             });
         }
-        // 这一轮结束：放掉 id，下一轮重新生成（否则下一轮还会覆盖这一条）
-        delete streamMsgId.current[acpSid];
+        if (acpSid) delete streams.current[acpSid];
         return;
       }
 
       console.debug("[acp]", profileId, event);
     },
-    [diag, flushStream, onAgentSwitch, onPermission, patchSession],
+    [diag, flushStream, onAgentSwitch, onPermission, patchSession, scheduleFlush],
   );
 
   const onSession = useCallback(
@@ -363,44 +334,45 @@ export function useAcpEvents({
       profileId: string,
       sessionId: string,
       snapshot?: ModesSnapshot | null,
-      /** 这次连接是为哪个界面会话发起的。**必须由调用方给出**，不能用「当前打开的那个」猜：
-       *  猜出来的结果是事件串到别的会话里（实测：在设置页新建成员会话，会把成员的回答
-       *  绑到当时打开的那个群；切会话时同理）。 */
+      /**
+       * 这次连接是为哪个界面会话发起的。**必须由调用方给出** ——
+       * 后端据此把事件投到正确的会话，前端不再维护「acp → 界面会话」的映射。
+       * 设置页给成员建会话时没有界面会话，不传即可（那条会话的事件不会投给任何人）。
+       */
       uiSid?: string,
     ) => {
-    setSessionsByProfile((m) => ({ ...m, [profileId]: sessionId }));
-    // 建立映射：agent 回的事件带的是 ACP sessionId
-    if (uiSid) {
-      acpToUi.current[sessionId] = uiSid;
-    } else {
-      delete acpToUi.current[sessionId];
-      clog("BIND-NOUI", `acp=${sessionId} profile=${profileId}（没有界面会话，先不映射）`);
-    }
-    activeAcp.current = sessionId;
-
-    const uiId = uiSid;
-    if (uiId) {
-      sessionBindAcp(uiId, sessionId).catch((e) =>
+      setSessionsByProfile((m) => ({ ...m, [profileId]: sessionId }));
+      if (!uiSid) {
+        clog("BIND-NOUI", `acp=${sessionId} profile=${profileId}（没有界面会话）`);
+        return;
+      }
+      sessionBindAcp(uiSid, sessionId).catch((e) =>
         console.warn("[db] bind acp session failed", e),
       );
       setSessions((prev) =>
-        prev.map((s) =>
-          s.id === uiId ? { ...s, acpSessionId: sessionId, profileId } : s,
-        ),
+        prev.map((s) => (s.id === uiSid ? { ...s, acpSessionId: sessionId, profileId } : s)),
       );
-    }
-    onSessionBound?.({
-      profileId,
-      acpSessionId: sessionId,
-      uiSessionId: lastSidRef.current,
-      snapshot: snapshot ?? null,
-    });
-  }, [onSessionBound, setSessions]);
-
-  const acp = useMemo<AcpRefs>(
-    () => ({ acpToUi, acpToTurn, acpToAuthor, activeAcp, streamText }),
-    [],
+      onSessionBound?.({
+        profileId,
+        acpSessionId: sessionId,
+        uiSessionId: uiSid,
+        snapshot: snapshot ?? null,
+      });
+    },
+    [onSessionBound, setSessions],
   );
 
-  return { eventCount, lastEvent, eventLog, diag, sessionsByProfile, flushStream, onAgentEvent, onSession, acp };
+  const acp = useMemo<AcpRefs>(() => ({ acpToTurn }), []);
+
+  return {
+    eventCount,
+    lastEvent,
+    eventLog,
+    diag,
+    sessionsByProfile,
+    flushStream,
+    onAgentEvent,
+    onSession,
+    acp,
+  };
 }

@@ -53,7 +53,7 @@ export function useAgentConnect({
   /** 显式连接（设置页按钮）。失败抛 CmdError，由调用方决定怎么显示。 */
   const connect = useCallback(async (p: AgentProfile, uiSid?: string): Promise<string> => {
     const s = stateRef.current;
-    const out = await connectAgent(p, (e) => s.onAgentEvent(p.id, e));
+    const out = await connectAgent(p, (e) => s.onAgentEvent(p.id, e), uiSid);
     s.onUpdateProfile({
       ...p,
       connected: true,

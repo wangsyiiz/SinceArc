@@ -32,7 +32,7 @@ export function usePrompt({
   /** 无感启动：没连就现连，永不抛异常 */
   ensureConnected: (profileId: string | null | undefined, uiSid?: string) => Promise<EnsureResult>;
 }) {
-  const { acpToUi, acpToTurn, acpToAuthor, activeAcp } = acp;
+  const { acpToTurn } = acp;
 
   /** 只翻 busy 标记：失败时界面要让用户能接着发 */
   const setBusy = (sid: string, busy: boolean) =>
@@ -121,23 +121,21 @@ export function usePrompt({
         // 成员的会话必须在那个进程里「活着」，否则 prompt 只会拿到 not_found。
         // 放在这里而不是连接时做：成员可能来自别的会话，连接阶段并不知道要 load 谁。
         try {
-          await sessionLoad(target.profileId, target.acpSessionId, target.cwd);
+          await sessionLoad(target.profileId, target.acpSessionId, target.cwd, sid);
         } catch (e) {
           const err = asCmdError(e);
           setBusy(sid, false);
           pushSystemNotice(patchSession, sid, `无法恢复成员会话：${err.code} ${err.msg}`);
           return;
         }
-        acpToAuthor.current[acpSid] = target.authorId;
       }
 
       if (acpSid) {
         const actId = `act-stream-${acpSid}`;
         const turnId = `turn-live-${Date.now()}`;
         acpToTurn.current[acpSid] = turnId;
-        // 事件回来要落到「这次发消息的那个会话」，而不是连接时的快照
-        acpToUi.current[acpSid] = sid;
-        activeAcp.current = acpSid;
+        // 归属由后端按会话记录投递（docs/desktop-ux.md「事件路由」），
+        // 这里只记「这一轮的 turn id」，供轨迹栏把回答挂到对应分支上。
 
         patchSession(sid, (s) => ({
           ...s,
@@ -173,7 +171,7 @@ export function usePrompt({
           "SEND",
           `acp=${acpSid} ui=${sid} target=${target ? `member:${target.authorId}` : "main"} len=${text.length}`,
         );
-        sessionPrompt(acpSid, text).catch((e) => {
+        sessionPrompt(acpSid, text, sid).catch((e) => {
           const err = asCmdError(e);
           setBusy(sid, false);
           pushSystemNotice(patchSession, sid, `发送失败：${err.code} ${err.msg}`);

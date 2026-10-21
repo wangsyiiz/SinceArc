@@ -439,6 +439,31 @@ impl Db {
 
     /* ---------- 群聊成员（docs/group-chat.md） ---------- */
 
+    /// 反查：某个 ACP 会话是哪个群成员的身份（一个会话至多一个身份，schema v4 的唯一约束）
+    pub fn agent_user_by_acp_session(
+        &self,
+        acp_session_id: &str,
+    ) -> rusqlite::Result<Option<AgentUserRow>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, profile_id, acp_session_id, name, handle, color, created_at
+             FROM agent_users WHERE acp_session_id = ?1",
+        )?;
+        let mut rows = stmt.query(params![acp_session_id])?;
+        match rows.next()? {
+            Some(r) => Ok(Some(AgentUserRow {
+                id: r.get(0)?,
+                profile_id: r.get(1)?,
+                acp_session_id: r.get(2)?,
+                name: r.get(3)?,
+                handle: r.get(4)?,
+                color: r.get(5)?,
+                created_at: r.get(6)?,
+            })),
+            None => Ok(None),
+        }
+    }
+
     pub fn list_agent_users(&self) -> rusqlite::Result<Vec<AgentUserRow>> {
         let conn = self.conn.lock().expect("db poisoned");
         let mut stmt = conn.prepare(

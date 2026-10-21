@@ -13,14 +13,27 @@ export interface CmdError {
 }
 
 /** 后端推来的事件。tag = kind，与 Rust 的 AcpEvent 对齐 */
+/**
+ * 归属信息：后端按会话记录填好，前端**不许**用「当前打开的会话」去补。
+ * 缺失就代表这条事件确实不属于任何界面会话（例如设置页里为成员新建的会话）。
+ */
+interface EventRoute {
+  /** ACP 会话 id */
+  sessionId?: string | null;
+  /** 该投给哪个界面会话 */
+  uiSessionId?: string | null;
+  /** 发言者：群成员 id；主 agent 时为 null */
+  authorId?: string | null;
+}
+
 export type AcpEvent =
-  | { kind: "notification"; method: string; params: unknown }
-  | { kind: "request"; id: number; method: string; params: unknown }
+  | ({ kind: "notification"; method: string; params: unknown } & EventRoute)
+  | ({ kind: "request"; id: number; method: string; params: unknown } & EventRoute)
   | { kind: "hello" }
   | { kind: "exited" }
-  | { kind: "promptStarted"; sessionId: string }
-  | { kind: "promptResult"; sessionId: string; result: unknown }
-  | { kind: "promptFailed"; sessionId: string; msg: string };
+  | ({ kind: "promptStarted"; } & EventRoute & { sessionId: string })
+  | ({ kind: "promptResult"; result: unknown } & EventRoute & { sessionId: string })
+  | ({ kind: "promptFailed"; msg: string } & EventRoute & { sessionId: string });
 
 export interface SessionInfo {
   sessionId: string;
@@ -152,6 +165,7 @@ export function fromDto(d: ProfileDto): AgentProfile {
 export async function connectAgent(
   profile: AgentProfile,
   onEvent?: (e: AcpEvent) => void,
+  uiSessionId?: string,
 ): Promise<ConnectOutcome> {
   if (!isTauri()) {
     throw { code: 50900, msg: "当前不在 Tauri 运行环境里（浏览器直开无法调用后端）" } as CmdError;
@@ -159,11 +173,19 @@ export async function connectAgent(
   const { Channel } = await import("@tauri-apps/api/core");
   const channel = new Channel<AcpEvent>();
   if (onEvent) channel.onmessage = onEvent;
-  return invoke<ConnectOutcome>("agent_connect", { profile: toDto(profile), onEvent: channel });
+  return invoke<ConnectOutcome>("agent_connect", {
+    profile: toDto(profile),
+    onEvent: channel,
+    uiSessionId,
+  });
 }
 
-export function sessionNew(profileId: string, cwd: string): Promise<SessionInfo> {
-  return invoke<SessionInfo>("session_new", { profileId, cwd });
+export function sessionNew(
+  profileId: string,
+  cwd: string,
+  uiSessionId?: string,
+): Promise<SessionInfo> {
+  return invoke<SessionInfo>("session_new", { profileId, cwd, uiSessionId });
 }
 
 /** 发一轮消息。立即返回：内容从事件流回来，不在这里等生成完。 */
@@ -172,12 +194,22 @@ export function sessionLoad(
   profileId: string,
   acpSessionId: string,
   cwd: string,
+  uiSessionId?: string,
 ): Promise<ModesSnapshot | null> {
-  return invoke<ModesSnapshot | null>("session_load", { profileId, acpSessionId, cwd });
+  return invoke<ModesSnapshot | null>("session_load", {
+    profileId,
+    acpSessionId,
+    cwd,
+    uiSessionId,
+  });
 }
 
-export function sessionPrompt(sessionId: string, text: string): Promise<void> {
-  return invoke<void>("session_prompt", { sessionId, text });
+export function sessionPrompt(
+  sessionId: string,
+  text: string,
+  uiSessionId?: string,
+): Promise<void> {
+  return invoke<void>("session_prompt", { sessionId, text, uiSessionId });
 }
 
 /**

@@ -37,26 +37,46 @@ pub enum AcpEvent {
     Notification {
         method: String,
         params: serde_json::Value,
+        /// 事件所属的 ACP 会话（agent 没给就是 None）
+        session_id: Option<String>,
+        /// 该投给哪个界面会话 —— 由后端按会话归属填，前端不许猜
+        ui_session_id: Option<String>,
+        /// 发言者（群成员身份）；主 agent 时为 None
+        author_id: Option<String>,
     },
     /// agent 发来的请求，需要回响应（S4 起接线）
     Request {
         id: u64,
         method: String,
         params: serde_json::Value,
+        session_id: Option<String>,
+        ui_session_id: Option<String>,
+        author_id: Option<String>,
     },
     /// 连接建立后的自检：前端收到它就说明事件通道是通的
     Hello,
     /// agent 进程的输出流关闭了
     Exited,
     /// 一轮 prompt 开始了（UI 用来进入生成态；此时还没有任何 chunk）
-    PromptStarted { session_id: String },
+    PromptStarted {
+        session_id: String,
+        ui_session_id: Option<String>,
+        author_id: Option<String>,
+    },
     /// 一轮 prompt 正常结束（带 stopReason 等原始结果）
     PromptResult {
         session_id: String,
+        ui_session_id: Option<String>,
+        author_id: Option<String>,
         result: serde_json::Value,
     },
     /// 一轮 prompt 失败（超时、进程没了、agent 报错）
-    PromptFailed { session_id: String, msg: String },
+    PromptFailed {
+        session_id: String,
+        ui_session_id: Option<String>,
+        author_id: Option<String>,
+        msg: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -651,6 +671,8 @@ pub async fn agent_connect(
     state: State<'_, AppState>,
     profile: ProfileDto,
     on_event: Channel<AcpEvent>,
+    // 这次连接是给哪个界面会话用的（没有就不建映射）
+    ui_session_id: Option<String>,
 ) -> Result<ConnectOutcome, CmdError> {
     let id = profile.id.clone();
     validate_launch_input(&profile)?;
@@ -678,12 +700,39 @@ pub async fn agent_connect(
     let proc_for_task = proc.clone();
     let pending = state.pending.clone();
     let profile_for_task = id.clone();
+    // 归属表：事件该投给哪个界面会话，完全由后端记录决定（前端不再猜「当前会话」）
+    let routes = state.routes.clone();
     tokio::spawn(async move {
+        /// 从 ACP 原始消息里取 sessionId，再按归属表补上界面会话与作者
+        async fn route(
+            routes: &crate::state::Routes,
+            params: &serde_json::Value,
+        ) -> (Option<String>, Option<String>, Option<String>) {
+            let acp = params
+                .get("sessionId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            match acp {
+                Some(sid) => match routes.get(&sid).await {
+                    Some(rec) => (Some(sid), rec.ui_session_id, rec.author_id),
+                    None => (Some(sid), None, None),
+                },
+                None => (None, None, None),
+            }
+        }
+
         while let Some(msg) = incoming.recv().await {
             let payload = match msg {
                 transport::Incoming::Notification { method, params } => {
                     tracing::debug!(target: "sincearc::acp", %method, "notification");
-                    AcpEvent::Notification { method, params }
+                    let (session_id, ui_session_id, author_id) = route(&routes, &params).await;
+                    AcpEvent::Notification {
+                        method,
+                        params,
+                        session_id,
+                        ui_session_id,
+                        author_id,
+                    }
                 }
                 transport::Incoming::Request { id, method, params } => {
                     tracing::debug!(target: "sincearc::acp", id, %method, "agent request");
@@ -708,7 +757,15 @@ pub async fn agent_connect(
                     }
                     // 只有登记过的 id 才允许被回答（见 agent_respond_request）
                     pending.mark(&profile_for_task, id).await;
-                    AcpEvent::Request { id, method, params }
+                    let (session_id, ui_session_id, author_id) = route(&routes, &params).await;
+                    AcpEvent::Request {
+                        id,
+                        method,
+                        params,
+                        session_id,
+                        ui_session_id,
+                        author_id,
+                    }
                 }
             };
             tracing::info!(
@@ -757,10 +814,11 @@ pub async fn agent_connect(
 
     // 会话归属：优先复用上次的（agent 侧因此不会每连一次就多一个空会话）
     let handle = state.get(&id).await.expect("just inserted");
-    let (session_id, modes) = match attach_session(&state, &id, &handle, &cwd).await {
-        Some((session_id, modes)) => (Some(session_id), modes),
-        None => (None, None),
-    };
+    let (session_id, modes) =
+        match attach_session(&state, &id, &handle, &cwd, ui_session_id.clone()).await {
+            Some((session_id, modes)) => (Some(session_id), modes),
+            None => (None, None),
+        };
 
     // 自检：这条如果前端也没收到，问题在 Channel 本身而不是 ACP 事件
     tracing::info!(target: "sincearc::ipc", "hello -> webview");
@@ -790,6 +848,7 @@ async fn attach_session(
     profile_id: &str,
     handle: &AgentHandle,
     cwd: &str,
+    ui_session_id: Option<String>,
 ) -> Option<(String, Option<acp::SessionModes>)> {
     let mut warnings: Vec<String> = Vec::new();
 
@@ -822,6 +881,8 @@ async fn attach_session(
                                 SessionRecord {
                                     profile_id: profile_id.to_string(),
                                     cwd: cwd.to_string(),
+                                    ui_session_id: ui_session_id.clone(),
+                                    author_id: None,
                                 },
                             )
                             .await;
@@ -866,6 +927,8 @@ async fn attach_session(
                     SessionRecord {
                         profile_id: profile_id.to_string(),
                         cwd: cwd.to_string(),
+                        ui_session_id: ui_session_id.clone(),
+                        author_id: None,
                     },
                 )
                 .await;
@@ -921,6 +984,8 @@ pub async fn session_new(
     state: State<'_, AppState>,
     profile_id: String,
     cwd: String,
+    // 这个会话是给哪个界面会话用的；设置页为成员建会话时传 None
+    ui_session_id: Option<String>,
 ) -> Result<SessionInfo, CmdError> {
     let handle = state
         .get(&profile_id)
@@ -956,7 +1021,15 @@ pub async fn session_new(
     }
 
     state
-        .insert_session(session_id.clone(), SessionRecord { profile_id, cwd })
+        .insert_session(
+            session_id.clone(),
+            SessionRecord {
+                profile_id,
+                cwd,
+                ui_session_id,
+                author_id: None,
+            },
+        )
         .await;
 
     Ok(SessionInfo { session_id })
@@ -978,6 +1051,8 @@ pub async fn session_load(
     profile_id: String,
     acp_session_id: String,
     cwd: String,
+    // 这次 load 是为了向哪个界面会话投递（群里 @ 成员时就是那个群）
+    ui_session_id: Option<String>,
 ) -> Result<Option<acp::SessionModes>, CmdError> {
     if acp_session_id.trim().is_empty() {
         return Err(CmdError::new(50602, "session id 不能为空"));
@@ -1000,12 +1075,22 @@ pub async fn session_load(
     if let Some(m) = &modes {
         state.set_modes(acp_session_id.clone(), m.clone()).await;
     }
+    // 这个 ACP 会话若是某个群成员的身份，记下作者 id —— 前端据此把回答记在成员名下，
+    // 不需要自己维护「acp → 成员」的映射表。
+    let author_id = state
+        .db
+        .agent_user_by_acp_session(&acp_session_id)
+        .ok()
+        .flatten()
+        .map(|u| u.id);
     state
         .insert_session(
             acp_session_id.clone(),
             SessionRecord {
                 profile_id: profile_id.clone(),
                 cwd,
+                ui_session_id,
+                author_id,
             },
         )
         .await;
@@ -1021,15 +1106,26 @@ pub async fn session_prompt(
     state: State<'_, AppState>,
     session_id: String,
     text: String,
+    // 这次投递来自哪个界面会话
+    ui_session_id: Option<String>,
 ) -> Result<(), CmdError> {
     if text.trim().is_empty() {
         return Err(CmdError::new(50300, "消息为空"));
     }
 
-    let record = state
+    let mut record = state
         .session(&session_id)
         .await
         .ok_or_else(|| CmdError::new(50300, format!("未知会话：{session_id}")))?;
+
+    // 归属以「这一次是谁发的」为准：同一个成员会话可能被不同的群 @ 过，
+    // 事件必须投给当前这次提问所在的群，而不是它上一次被绑的地方。
+    if let Some(ui) = ui_session_id.clone() {
+        record.ui_session_id = Some(ui);
+        state
+            .insert_session(session_id.clone(), record.clone())
+            .await;
+    }
     let handle = state.get(&record.profile_id).await.ok_or_else(|| {
         CmdError::new(
             50300,
@@ -1052,12 +1148,18 @@ pub async fn session_prompt(
     let sid = session_id.clone();
     let events = handle.events.clone();
     let proc = handle.proc.clone();
+    // 这三个事件必须自带归属：推送时前端可能已经切到别的会话，
+    // 「当前打开的那个」不是判断依据。
+    let ui_for_event = record.ui_session_id.clone().or(ui_session_id);
+    let author_for_event = record.author_id.clone();
 
     tokio::spawn(async move {
         // 先告诉界面「这一轮开始了」，UI 据此进入生成态
         tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptStarted");
         let _ = events.send(AcpEvent::PromptStarted {
             session_id: sid.clone(),
+            ui_session_id: ui_for_event.clone(),
+            author_id: author_for_event.clone(),
         });
 
         match proc.request("session/prompt", params, PROMPT_TIMEOUT).await {
@@ -1066,6 +1168,8 @@ pub async fn session_prompt(
                 tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptResult");
                 let _ = events.send(AcpEvent::PromptResult {
                     session_id: sid,
+                    ui_session_id: ui_for_event,
+                    author_id: author_for_event,
                     result,
                 });
             }
@@ -1074,6 +1178,8 @@ pub async fn session_prompt(
                 tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptFailed");
                 let _ = events.send(AcpEvent::PromptFailed {
                     session_id: sid,
+                    ui_session_id: ui_for_event,
+                    author_id: author_for_event,
                     msg: e.to_string(),
                 });
             }

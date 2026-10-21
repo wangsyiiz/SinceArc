@@ -121,10 +121,18 @@ manifest 上不做自动断连：进程随应用退出。用户主动「断开�
 - 回答落库的消息 id 必须**每轮唯一**（`stream-${acpSid}-${时间戳}`）。曾经用
   `stream-${acpSid}`，而写入是 `ON CONFLICT(id) DO UPDATE`，后一轮直接把前一轮覆盖掉。
 
-### 事件路由：只认显式映射，不猜「当前打开的会话」
+### 事件路由：归属是后端的会话记录，前端不猜
 
-- `session/update` 与 `promptResult` 只按 `acpToUi[acpSessionId]` 的映射投递；
-  映射必须由发起方给出（`connect(p, uiSid)` → `onSession(..., uiSid)`）。
-- **禁止**「映射缺失就落到 lastSessionId」这类兜底：这就是消息串到别的会话、以及
-  成员的回答出现在当前群里的成因。缺失时丢弃并记 `DROP-NOMAP` / `RESULT-NOMAP` 日志。
-- 在设置页新建成员会话这类「不属于任何界面会话」的连接，按设计**不建立映射**（记 `BIND-NOUI`）。
+这条是重构后的规则（之前是前端维护「ACP 会话 → 界面会话」映射，并在缺失时退回
+`lastSessionId`，切一下会话消息就串到别的会话里，库里也跟着错）。
+
+- 后端 `SessionRecord` 带 `ui_session_id` 与 `author_id`：
+  `agent_connect(profile, uiSessionId)`、`session_new(..., uiSessionId)`、
+  `session_load(..., uiSessionId)`、`session_prompt(..., uiSessionId)` 都会写这份记录；
+  `session_prompt` 以**这一次是谁发的**为准覆盖归属（同一成员会话可被不同群 @）。
+- **每个**出站事件（`notification` / `request` / `promptStarted` / `promptResult` / `promptFailed`）
+  都带 `sessionId`（ACP 会话）、`uiSessionId`（该投给谁）、`authorId`（发言的群成员）。
+- 前端只用这三个字段：能投就投，缺失就丢弃并记 `DROP-NOMAP` / `RESULT-NOUI` 日志。
+  **禁止**再用「当前打开的会话」补归属 —— 用户切页面不该改变数据的归属。
+- 设置页为成员新建会话这一类「不属于任何界面会话」的连接，`ui_session_id` 就是 None，
+  其事件不会投给任何人（记 `BIND-NOUI`）。
