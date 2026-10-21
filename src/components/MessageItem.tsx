@@ -3,17 +3,32 @@ import type { Message, Player, QuotedRef } from "@/types";
 import { cn } from "@/lib/utils";
 import { PlayerAvatar } from "./PlayerAvatar";
 
-/** 把 @handle 渲染成该玩家的颜色 */
+/**
+ * 把 @handle 渲染成该玩家的颜色。
+ *
+ * 不用 `/@([a-zA-Z][\w-]*)/`：短名可能有中文（`hermes-测试2`），字符集正则会把
+ * `@hermes-测` 截断，高亮只剩一半。改成按**已知短名**拼 alternation，长的排在前面
+ * （否则 `@hermes-测试2` 会被 `@hermes-测试` 抢先匹配）。
+ */
 function renderText(text: string, players: Player[]) {
-  return text.split(/(@[a-zA-Z][\w-]*)/g).map((part, i) => {
-    const m = /^@([a-zA-Z][\w-]*)$/.exec(part);
-    const p = m ? players.find((pl) => pl.handle === m[1]) : undefined;
-    if (p) {
-      return (
-        <span key={i} style={{ color: p.color }} className="font-medium">
-          @{p.handle}
-        </span>
-      );
+  const handles = players
+    .map((p) => p.handle)
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  if (handles.length === 0) return <span>{text}</span>;
+  const escaped = handles.map((h) => h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const re = new RegExp(`(@(?:${escaped.join("|")}))`, "gi");
+  return text.split(re).map((part, i) => {
+    if (i % 2 === 1) {
+      const handle = part.slice(1).toLowerCase();
+      const p = players.find((pl) => pl.handle.toLowerCase() === handle);
+      if (p) {
+        return (
+          <span key={i} style={{ color: p.color }} className="font-medium">
+            {part}
+          </span>
+        );
+      }
     }
     return <span key={i}>{part}</span>;
   });

@@ -32,16 +32,32 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [], cont
     ? players.filter((p) => p.handle.toLowerCase().startsWith(mention.query.toLowerCase()))
     : [];
 
-  /** 从「光标前那一段」判断是不是正在敲 @handle */
+  /**
+   * 从「光标前那一段」判断是不是正在敲 @handle。
+   *
+   * 不用字符集正则取 handle：短名可能有中文（如 `hermes-测试2`），`\w` 只认 ASCII，
+   * 会把 `@hermes-测` 截成 `@hermes-`，候选看起来匹配、点下去却插错东西。
+   * 这里只判断「@ 在哪、后面还是不是同一个词」，查询串按原样截取。
+   */
   const syncMention = (text: string, caret: number) => {
     const before = text.slice(0, caret);
-    const m = /@([\w-]*)$/.exec(before);
-    // @ 必须在行首或空白之后：邮箱里的 @ 不该触发（john@example.com）
-    if (!m || (m.index > 0 && !/\s/.test(before[m.index - 1]))) {
+    const idx = before.lastIndexOf("@");
+    if (idx < 0) {
       setMention(null);
       return;
     }
-    setMention({ start: m.index, caret, query: m[1] });
+    // @ 必须在行首或空白之后：邮箱里的 @ 不该触发（john@example.com）
+    if (idx > 0 && !/\s/.test(before[idx - 1])) {
+      setMention(null);
+      return;
+    }
+    const query = before.slice(idx + 1);
+    // 中间出现空白 → 这个词已经敲完了，不再补全
+    if (/\s/.test(query)) {
+      setMention(null);
+      return;
+    }
+    setMention({ start: idx, caret, query });
     setActive(0);
   };
 

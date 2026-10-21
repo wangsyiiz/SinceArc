@@ -12,6 +12,7 @@ import { AgentCapabilities } from "@/components/AgentCapabilities";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { MAIN_AGENT_ID } from "@/hooks/usePrompt";
 import { profileLabel } from "@/lib/format";
+import { findMention, mentionToken } from "@/lib/mentions";
 import { commandLineOf, commandsFor } from "@/extensions/registry";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
@@ -363,11 +364,15 @@ export default function App() {
    */
   const sendInGroup = useCallback(
     async (raw: string) => {
-      const m = /@([a-zA-Z][\w-]*)/.exec(raw);
-      if (!m) return send(raw);
-      const handle = m[1].toLowerCase();
-      const who = members.find((u) => u.handle.toLowerCase() === handle);
-      if (!who) {
+      // 用已知短名去文本里找（短名可能含中文，字符集正则会把它截断）
+      const hit = findMention(
+        raw,
+        members.map((u) => u.handle),
+      );
+      if (!hit) {
+        // 敲了 @ 却一个成员都对不上：说清敲的是什么，不静默投给主 agent
+        const token = mentionToken(raw);
+        if (!token) return send(raw);
         const at = now();
         patchSession(lastSessionId, (s) => ({
           ...s,
@@ -376,13 +381,16 @@ export default function App() {
             {
               id: `at-miss-${Date.now()}`,
               role: "system" as const,
-              text: `@${m[1]} 不在这个群里 —— 这条消息没有发出去（要加人请到设置 → 成员）`,
+              text: `@${token} 不在这个群里 —— 这条消息没有发出去（要加人请到左栏的 + 或设置 → 成员）`,
               at,
             },
           ],
         }));
         return;
       }
+      // findMention 只在 members 的短名里命中，所以一定能找到人
+      const who = members.find((u) => u.handle === hit.handle);
+      if (!who) return;
       const prof = profiles.find((p) => p.id === who.profileId);
       return send(raw, {
         profileId: who.profileId,

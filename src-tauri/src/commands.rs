@@ -369,6 +369,10 @@ pub fn agent_user_save(
     if user.handle.trim().trim_start_matches('@').is_empty() {
         return Err(CmdError::new(50602, "handle 不能为空"));
     }
+    if user.handle.trim().chars().any(|c| c.is_whitespace()) {
+        // 解析靠空白断词：短名里有空格就永远 @ 不到（docs/group-chat.md §3）
+        return Err(CmdError::new(50602, "短名里不能有空格"));
+    }
     if user.acp_session_id.trim().is_empty() {
         return Err(CmdError::new(
             50602,
