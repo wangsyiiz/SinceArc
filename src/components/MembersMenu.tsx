@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { Check, Plus, UserMinus, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -38,17 +38,33 @@ export function MembersMenu({
   const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
-  /** 弹层用 fixed：左栏只有 44px 宽，父容器还带 overflow —— absolute 会被裁掉一半 */
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  /**
+   * 弹层用 fixed：左栏只有 44px 宽、父容器还带 overflow —— absolute 会被裁掉一半。
+   * 位置按**面板实测高度**算，并把面板垂直居中在按钮上：
+   * 之前拿固定 320px 估，估错了就变成面板往上飘、看着和按钮没关系（所有者实测反馈）。
+   * 量出来之前先 hidden，避免先闪一下再跳。
+   */
+  const [pos, setPos] = useState<CSSProperties | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return;
+    }
+    const b = btnRef.current?.getBoundingClientRect();
+    const p = panelRef.current?.getBoundingClientRect();
+    if (!b || !p) return;
+    const gap = 8;
+    const left = Math.min(b.right + gap, window.innerWidth - p.width - 8);
+    const centered = b.top + b.height / 2 - p.height / 2;
+    const top = Math.max(8, Math.min(centered, window.innerHeight - p.height - 8));
+    setPos({ left, top });
+    // users.length：成员列表是异步来的，面板高度会变，加载完得重算一次
+  }, [open, users.length]);
 
   useEffect(() => {
     if (!open) return;
-    const r = btnRef.current?.getBoundingClientRect();
-    if (r) {
-      // 面板高约 320px：底部放不下就往上收，别让它掉出视口
-      const top = Math.max(8, Math.min(r.top, window.innerHeight - 336));
-      setPos({ left: r.right + 8, top });
-    }
     setError(null);
     agentUsersList()
       .then(setUsers)
@@ -109,8 +125,9 @@ export function MembersMenu({
 
       {open && (
         <div
+          ref={panelRef}
           className="sc-glass fixed z-50 w-64 rounded-[8px] border border-line-1/60 p-2"
-          style={{ left: pos?.left ?? 0, top: pos?.top ?? 0 }}
+          style={{ ...(pos ?? { left: 0, top: 0 }), visibility: pos ? "visible" : "hidden" }}
         >
           <div className="flex items-center gap-1.5 px-1 pb-1.5">
             <Users size={12} className="text-ink-3" />
