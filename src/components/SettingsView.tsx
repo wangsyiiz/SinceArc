@@ -325,7 +325,7 @@ export function SettingsView({
                       <ModeSelect
                         compact
                         variant="connection"
-                        followLabel="不指定（随 agent 默认）"
+                        followLabel="跟随 Agent"
                         fallbackLabel={agentDefaultLabel}
                         // 跟随且没有连接默认时，按钮上显示 agent 报的当前值（规范 §5.2）
                         current={p.defaultMode ?? snapshot?.current ?? null}
