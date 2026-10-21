@@ -197,6 +197,22 @@ export function profilesSave(profiles: AgentProfile[]): Promise<void> {
   return invoke<void>("profiles_save", { profiles: profiles.map(toDto) });
 }
 
+/** 探测结果：真跑一次 initialize，agent 自报的名字/版本 */
+export interface ProbeOutcome {
+  agentName: string;
+  agentVersion: string;
+  protocolVersion: number;
+  loadSession: boolean;
+}
+
+/**
+ * 只握手、不保留进程：用来回答「这条命令到底是不是 ACP agent」。
+ * 命令写得对不对、装没装、要不要登录，都会在这里暴露出来。
+ */
+export function agentProbe(p: AgentProfile): Promise<ProbeOutcome> {
+  return invoke<ProbeOutcome>("agent_probe", { profile: toDto(p) });
+}
+
 /* ---------- 会话与消息 ---------- */
 
 export interface SessionRowDto {

@@ -210,6 +210,44 @@ pub fn to_profile(dto: &ProfileDto) -> Result<AgentProfile, CmdError> {
     })
 }
 
+/// 探测一条连接配置能不能起 ACP agent。
+///
+/// 只做握手，不留进程 —— 设置页要回答的是「这条命令到底是不是 ACP agent」，
+/// 这件事只有真跑一次 initialize 才算证明过，靠命令名猜是猜不出来的。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeOutcome {
+    pub agent_name: String,
+    pub agent_version: String,
+    pub protocol_version: i64,
+    pub load_session: bool,
+}
+
+#[tauri::command]
+pub async fn agent_probe(profile: ProfileDto) -> Result<ProbeOutcome, CmdError> {
+    let parsed = to_profile(&profile)?;
+    let cwd = profile.cwd.clone();
+    // 比正常连接短：用户点了「探测」就在等结果，等太久不如直接报错
+    let (proc, _incoming, outcome) = acp::initialize(&parsed, &cwd, Duration::from_secs(20))
+        .await
+        .map_err(|e| {
+            tracing::warn!(target: "sincearc::ipc", profile = %profile.id, error = %e, "probe failed");
+            CmdError::from(e)
+        })?;
+    proc.kill().await;
+    tracing::info!(
+        target: "sincearc::ipc", profile = %profile.id,
+        agent = %outcome.agent_name, version = %outcome.agent_version,
+        "probe ok"
+    );
+    Ok(ProbeOutcome {
+        agent_name: outcome.agent_name,
+        agent_version: outcome.agent_version,
+        protocol_version: outcome.protocol_version,
+        load_session: outcome.load_session,
+    })
+}
+
 #[tauri::command]
 pub async fn agent_connect(
     state: State<'_, AppState>,

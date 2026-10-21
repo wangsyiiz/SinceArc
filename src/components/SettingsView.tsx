@@ -1,8 +1,9 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
   Check,
+  ChevronDown,
   Copy,
   MessageSquare,
   Palette,
@@ -14,9 +15,18 @@ import {
 import type { AgentProfile, LaunchKind, SshAuth, ThemeMode, ThreadSettings } from "@/types";
 import { cn } from "@/lib/utils";
 import {
+  agentProbe,
   asCmdError,
   type ModesSnapshot,
+  type ProbeOutcome,
 } from "@/lib/ipc";
+import {
+  AGENT_PRESETS,
+  joinCommand,
+  matchPreset,
+  splitCommand,
+  type AgentPreset,
+} from "@/lib/agentPresets";
 import { ModeSelect } from "@/components/ModeSelect";
 
 interface SettingsViewProps {
@@ -94,6 +104,115 @@ function Field({
   );
 }
 
+type ProbeResult =
+  | { ok: true; outcome: ProbeOutcome }
+  | { ok: false; error: string };
+
+function AgentSelect({
+  profile,
+  onPreset,
+  onCustom,
+}: {
+  profile: AgentProfile;
+  onPreset: (preset: AgentPreset) => void;
+  onCustom: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const current = matchPreset(profile.program, profile.args);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          "flex h-7 max-w-[220px] items-center gap-1.5 rounded-[6px] px-2 text-[11px] transition-colors",
+          open
+            ? "bg-surface-3/65 text-ink-1"
+            : "text-ink-2 hover:bg-surface-3/55 hover:text-ink-1",
+        )}
+      >
+        <span className="truncate">{current?.name ?? "自定义"}</span>
+        <ChevronDown
+          className={cn(
+            "size-3 shrink-0 text-ink-3 transition-transform",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+
+      {open && (
+        <div className="sc-glass absolute top-full right-0 z-30 mt-1.5 w-[320px] rounded-[10px] p-1">
+          {AGENT_PRESETS.map((preset) => {
+            const active = current?.id === preset.id;
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                title={preset.origin}
+                onClick={() => {
+                  onPreset(preset);
+                  setOpen(false);
+                }}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-[6px] px-2 py-1.5 text-left transition-colors",
+                  active ? "sc-row-active" : "hover:bg-surface-3/45",
+                )}
+              >
+                <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-1">
+                  {preset.name}
+                </span>
+                <span className="max-w-[150px] shrink-0 truncate text-[9.5px] text-ink-3">
+                  {preset.requires ?? preset.origin}
+                </span>
+                <span className="grid size-3.5 shrink-0 place-items-center">
+                  {active && <Check className="size-3.5 text-accent-1" />}
+                </span>
+              </button>
+            );
+          })}
+
+          <div className="my-1 border-t border-line-1/40" />
+          <button
+            type="button"
+            onClick={() => {
+              onCustom();
+              setOpen(false);
+            }}
+            className={cn(
+              "flex w-full items-center gap-2 rounded-[6px] px-2 py-1.5 text-left transition-colors",
+              current ? "hover:bg-surface-3/45" : "sc-row-active",
+            )}
+          >
+            <span className="min-w-0 flex-1 text-[11.5px] text-ink-1">自定义命令</span>
+            <span className="grid size-3.5 shrink-0 place-items-center">
+              {!current && <Check className="size-3.5 text-accent-1" />}
+            </span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SettingsView({
   settings,
   theme,
@@ -112,6 +231,11 @@ export function SettingsView({
   const [active, setActive] = useState<SectionId>("chat");
   const [busy, setBusy] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  /** 探测会真的 spawn 进程，和连接用的 busy 分开，避免互相锁住 */
+  const [probeBusy, setProbeBusy] = useState<string | null>(null);
+  const [probeResults, setProbeResults] = useState<Record<string, ProbeResult>>({});
+  const [commandDrafts, setCommandDrafts] = useState<Record<string, string>>({});
+  const [commandEditing, setCommandEditing] = useState<Record<string, boolean>>({});
   const refs = useRef<Partial<Record<SectionId, HTMLElement | null>>>({});
   const [copied, setCopied] = useState(false);
 
@@ -167,6 +291,77 @@ export function SettingsView({
       setErrors((prev) => ({ ...prev, [p.id]: `${err.code} ${err.msg}` }));
     } finally {
       setBusy(null);
+    }
+  };
+
+  const clearProbe = (id: string) => {
+    setProbeResults((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const clearCommandDraft = (id: string) => {
+    setCommandDrafts((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const choosePreset = (p: AgentProfile, preset: AgentPreset) => {
+    clearProbe(p.id);
+    clearCommandDraft(p.id);
+    setCommandEditing((prev) => ({ ...prev, [p.id]: false }));
+    onUpdateProfile({ ...p, program: preset.program, args: [...preset.args] });
+  };
+
+  const chooseCustom = (p: AgentProfile) => {
+    clearCommandDraft(p.id);
+    setCommandEditing((prev) => ({ ...prev, [p.id]: true }));
+  };
+
+  const commitCommand = (p: AgentProfile) => {
+    const raw = commandDrafts[p.id];
+    if (raw === undefined) return;
+    if (!raw.trim()) {
+      // 空输入不写回，保留原命令
+      clearCommandDraft(p.id);
+      return;
+    }
+    const { program, args } = splitCommand(raw);
+    const unchanged =
+      program === (p.program ?? "") &&
+      args.join("\u0000") === (p.args ?? []).join("\u0000");
+    clearCommandDraft(p.id);
+    if (unchanged) return;
+    clearProbe(p.id);
+    onUpdateProfile({ ...p, program, args });
+  };
+
+  const handleProbe = async (p: AgentProfile) => {
+    const draft = commandDrafts[p.id];
+    // 点探测时输入框可能还没 blur：按框里的内容探测，而不是上一次提交的值
+    const target =
+      draft !== undefined && draft.trim()
+        ? { ...p, ...splitCommand(draft) }
+        : p;
+    setProbeBusy(p.id);
+    clearProbe(p.id);
+    try {
+      const outcome = await agentProbe(target);
+      setProbeResults((prev) => ({ ...prev, [p.id]: { ok: true, outcome } }));
+    } catch (e) {
+      const err = asCmdError(e);
+      setProbeResults((prev) => ({
+        ...prev,
+        [p.id]: { ok: false, error: `${err.code} ${err.msg}` },
+      }));
+    } finally {
+      setProbeBusy((current) => (current === p.id ? null : current));
     }
   };
 
@@ -229,6 +424,10 @@ export function SettingsView({
                 // 正好就是「不指定」时实际会生效的模式
                 const agentDefault = availableModes.find((m) => m.id === snapshot?.current);
                 const agentDefaultLabel = agentDefault?.name ?? snapshot?.current ?? null;
+                const currentPreset = matchPreset(p.program, p.args);
+                const command = commandDrafts[p.id] ?? joinCommand(p.program, p.args);
+                const showCommand = currentPreset === null || commandEditing[p.id];
+                const probe = probeResults[p.id];
                 return (
                   <div key={p.id} className="rounded-[8px] border border-line-1/60 p-3">
                     <div className="flex items-center justify-between gap-2">
@@ -305,29 +504,6 @@ export function SettingsView({
                       ))}
                     </div>
 
-                    <div className="mt-2.5 flex items-center justify-between gap-3">
-                      <span className="shrink-0 text-[9.5px] text-ink-3">默认文件编辑审批</span>
-                      <ModeSelect
-                        compact
-                        variant="connection"
-                        followLabel="跟随 Agent"
-                        fallbackLabel={agentDefaultLabel}
-                        // 跟随且没有连接默认时，按钮上显示 agent 报的当前值（规范 §5.2）
-                        current={p.defaultMode ?? snapshot?.current ?? null}
-                        available={availableModes}
-                        following={p.defaultMode == null}
-                        onChoose={(modeId) => onUpdateProfile({ ...p, defaultMode: modeId })}
-                      />
-                    </div>
-                    {availableModes.length === 0 && (
-                      <p className="mt-1 text-right text-[9.5px] text-ink-3">
-                        连接一次之后才能选
-                      </p>
-                    )}
-                    <p className="mt-1 text-[9.5px] leading-relaxed text-ink-3">
-                      每次打开会话都会按这里重新应用；agent 在会话内自己切走的模式，重开后回到这里的设置。
-                    </p>
-
                     {p.launch === "ssh" && ssh && (
                       <div className="mt-2.5 grid grid-cols-2 gap-2">
                         <Field
@@ -390,6 +566,92 @@ export function SettingsView({
                     )}
 
                     <div className="mt-2.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="shrink-0 text-[9.5px] text-ink-3">Agent</span>
+                        <AgentSelect
+                          profile={p}
+                          onPreset={(preset) => choosePreset(p, preset)}
+                          onCustom={() => chooseCustom(p)}
+                        />
+                      </div>
+
+                      <div className="mt-1.5 flex items-center gap-1.5">
+                        {showCommand ? (
+                          <input
+                            aria-label="Agent 命令"
+                            spellCheck={false}
+                            value={command}
+                            placeholder="npx -y @google/gemini-cli@0.65.0 --acp"
+                            onChange={(e) =>
+                              setCommandDrafts((prev) => ({ ...prev, [p.id]: e.target.value }))
+                            }
+                            onBlur={() => commitCommand(p)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                e.currentTarget.blur();
+                              }
+                            }}
+                            className="h-7 min-w-0 flex-1 rounded-[6px] border border-line-1/60 bg-surface-2/40 px-2 font-mono text-[11px] text-ink-1 placeholder:text-ink-3 focus:border-accent-1/50 focus:outline-none"
+                          />
+                        ) : (
+                          <span
+                            title={command}
+                            className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink-3"
+                          >
+                            {command}
+                          </span>
+                        )}
+                        {!showCommand && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setCommandEditing((prev) => ({ ...prev, [p.id]: true }))
+                            }
+                            className="shrink-0 rounded-[6px] px-2 py-1 text-[10.5px] text-ink-2 transition-colors hover:bg-surface-3/45 hover:text-ink-1"
+                          >
+                            编辑命令
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleProbe(p)}
+                          disabled={probeBusy === p.id}
+                          className={cn(
+                            "shrink-0 rounded-[6px] px-2 py-1 text-[10.5px] transition-colors",
+                            "sc-row-active text-ink-1 hover:brightness-110",
+                            probeBusy === p.id && "opacity-60",
+                          )}
+                        >
+                          {probeBusy === p.id ? "探测中…" : "探测"}
+                        </button>
+                      </div>
+
+                      <p className="mt-1 text-[9.5px] leading-relaxed text-ink-3">
+                        {currentPreset
+                          ? currentPreset.origin
+                          : "命令里可以带参数；确认能起 ACP 就用右边的探测"}
+                      </p>
+                      {probe && (
+                        <p
+                          className={cn(
+                            "mt-1 break-all font-mono text-[9.5px] leading-relaxed",
+                            probe.ok ? "text-ok-1" : "text-danger-1",
+                          )}
+                        >
+                          {probe.ok
+                            ? `已连接 ${probe.outcome.agentName} ${probe.outcome.agentVersion} · 协议 v${probe.outcome.protocolVersion}`
+                            : probe.error}
+                        </p>
+                      )}
+                      {p.connected && (
+                        <p className="mt-1 text-[9.5px] leading-relaxed text-warn-1">
+                          改了 agent 命令需要重新连接才会生效
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="mt-2.5">
                       <Field
                         label="工作目录"
                         mono
@@ -404,6 +666,29 @@ export function SettingsView({
                         填错了 agent 起不来（wsl 会报 chdir failed）。
                       </p>
                     </div>
+
+                    <div className="mt-2.5 flex items-center justify-between gap-3">
+                      <span className="shrink-0 text-[9.5px] text-ink-3">默认文件编辑审批</span>
+                      <ModeSelect
+                        compact
+                        variant="connection"
+                        followLabel="跟随 Agent"
+                        fallbackLabel={agentDefaultLabel}
+                        // 跟随且没有连接默认时，按钮上显示 agent 报的当前值（规范 §5.2）
+                        current={p.defaultMode ?? snapshot?.current ?? null}
+                        available={availableModes}
+                        following={p.defaultMode == null}
+                        onChoose={(modeId) => onUpdateProfile({ ...p, defaultMode: modeId })}
+                      />
+                    </div>
+                    {availableModes.length === 0 && (
+                      <p className="mt-1 text-right text-[9.5px] text-ink-3">
+                        连接一次之后才能选
+                      </p>
+                    )}
+                    <p className="mt-1 text-[9.5px] leading-relaxed text-ink-3">
+                      每次打开会话都会按这里重新应用；agent 在会话内自己切走的模式，重开后回到这里的设置。
+                    </p>
 
                     {errors[p.id] && (
                       <p className="mt-2 break-all rounded-[6px] bg-danger-1/[0.09] px-2 py-1.5 font-mono text-[9.5px] leading-relaxed text-danger-1">

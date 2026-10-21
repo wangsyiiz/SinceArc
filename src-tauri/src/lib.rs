@@ -35,6 +35,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             acp::list_profiles_hint,
+            commands::agent_probe,
             commands::agent_connect,
             commands::agent_disconnect,
             commands::agent_respond_request,
