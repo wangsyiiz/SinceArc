@@ -260,6 +260,9 @@ pub struct ProbeOutcome {
     pub agent_version: String,
     pub protocol_version: i64,
     pub load_session: bool,
+    /// 握手报上来的能力键（拍平后）。探测的价值一半在这里：
+    /// 用户能**在保存连接之前**知道这个 agent 支不支持恢复会话 / 图片 / fork。
+    pub capabilities: Vec<String>,
 }
 
 /// SSH 只扫**用户已经存了连接配置**的 host（docs/discovery.md §3）。
@@ -460,6 +463,7 @@ pub async fn agent_probe(profile: ProfileDto) -> Result<ProbeOutcome, CmdError> 
         agent_version: outcome.agent_version,
         protocol_version: outcome.protocol_version,
         load_session: outcome.load_session,
+        capabilities: outcome.capabilities,
     })
 }
 

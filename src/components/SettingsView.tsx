@@ -31,6 +31,7 @@ import {
   type AgentPreset,
 } from "@/lib/agentPresets";
 import { ModeSelect } from "@/components/ModeSelect";
+import { CAPABILITY_LABEL } from "@/components/AgentCapabilities";
 
 interface SettingsViewProps {
   settings: ThreadSettings;
@@ -385,6 +386,12 @@ export function SettingsView({
   };
 
   /** 左侧导航只做锚点跳转：内容始终整页可见 */
+  /** 能力键 → 人话。空数组时什么都不加，避免行尾挂一个空括号 */
+  const describeCaps = (caps: string[]): string => {
+    if (caps.length === 0) return "";
+    return ` · ${caps.map((k) => CAPABILITY_LABEL[k] ?? k).join(" / ")}`;
+  };
+
   /** 把「发现到的一条命令 + 它所在的环境」翻译成一条可探测/可保存的连接配置 */
   const profileFromHit = (c: DiscoveryCandidate, hit: DiscoveryHit): AgentProfile => {
     const wsl = hit.host.startsWith("wsl:");
@@ -417,7 +424,11 @@ export function SettingsView({
       const out = await agentProbe(profileFromHit(c, hit));
       setDiscoveryProbe((prev) => ({
         ...prev,
-        [key]: { ok: `${out.agentName} ${out.agentVersion} · 协议 v${out.protocolVersion}` },
+        [key]: {
+          ok: `${out.agentName} ${out.agentVersion} · 协议 v${out.protocolVersion}${describeCaps(
+            out.capabilities,
+          )}`,
+        },
       }));
     } catch (e) {
       const err = asCmdError(e);
@@ -692,16 +703,25 @@ export function SettingsView({
                           : "命令里可以带参数；确认能起 ACP 就用右边的探测"}
                       </p>
                       {probe && (
-                        <p
-                          className={cn(
-                            "mt-1 break-all font-mono text-[9.5px] leading-relaxed",
-                            probe.ok ? "text-ok-1" : "text-danger-1",
+                        <>
+                          <p
+                            className={cn(
+                              "mt-1 break-all font-mono text-[9.5px] leading-relaxed",
+                              probe.ok ? "text-ok-1" : "text-danger-1",
+                            )}
+                          >
+                            {probe.ok
+                              ? `已连接 ${probe.outcome.agentName} ${probe.outcome.agentVersion} · 协议 v${probe.outcome.protocolVersion}`
+                              : probe.error}
+                          </p>
+                          {probe.ok && (
+                            <p className="mt-0.5 break-all text-[9.5px] leading-relaxed text-ink-3">
+                              {probe.outcome.capabilities.length === 0
+                                ? "这个 agent 没报任何可选能力"
+                                : describeCaps(probe.outcome.capabilities).replace(" · ", "")}
+                            </p>
                           )}
-                        >
-                          {probe.ok
-                            ? `已连接 ${probe.outcome.agentName} ${probe.outcome.agentVersion} · 协议 v${probe.outcome.protocolVersion}`
-                            : probe.error}
-                        </p>
+                        </>
                       )}
                       {p.connected && (
                         <p className="mt-1 text-[9.5px] leading-relaxed text-warn-1">

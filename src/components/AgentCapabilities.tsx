@@ -16,7 +16,7 @@ interface AgentCapabilitiesProps {
  * 键由后端从 `initialize` 的 `agentCapabilities` 摊平（`acp::capability_keys`），
  * 这里只负责翻译；不认识的键不显示 —— 猜一个能力出来比不显示更糟。
  */
-const CAPABILITY_LABEL: Record<string, string> = {
+export const CAPABILITY_LABEL: Record<string, string> = {
   loadSession: "恢复历史会话",
   image: "图片输入",
   audio: "音频输入",

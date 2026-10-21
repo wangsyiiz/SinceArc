@@ -205,6 +205,8 @@ export interface ProbeOutcome {
   agentVersion: string;
   protocolVersion: number;
   loadSession: boolean;
+  /** 握手报上来的能力键；保存连接之前就能看到这个 agent 支持什么 */
+  capabilities: string[];
 }
 
 /**
