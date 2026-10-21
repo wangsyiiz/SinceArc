@@ -119,9 +119,11 @@ session_members (
 |---|---|
 | `agent_users` / `session_members` / `messages.author_id` | ✅ schema v4 |
 | 成员 CRUD + `session/load` 验真 | ✅ 后端；设置 → 成员（测试状态机）✅ |
+| 左栏「群成员」入口（拉人进群 / 移出） | ✅ `MembersMenu`，每次打开重拉全局玩家表 |
 | 群里 `@handle` 投递 | ✅ `session_load` 把成员会话 load 进已连接进程，再 `session/prompt` |
 | 回答归属（名字 + 颜色） | ✅ `acpToAuthor` 映射 → 消息 `playerId`；群里有成员时玩家表由成员派生 |
 | `@` 不在群里 → 明确失败 | ✅ 写一条 system 说明，不投给主 agent |
+| 「创建了成员」≠「在群里」 | ✅ `@` 只在本群成员里找；拉人进群是左栏入口的事 |
 | 输入框 `@` 自动补全 | ❌ 未做（要手打 handle；成员名在设置 → 成员里看） |
 | 自动 `session/new` 创建成员 | ❌ 第二刀（要先验连接层并发） |
 

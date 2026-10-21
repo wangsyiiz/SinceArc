@@ -84,20 +84,21 @@ export default function App() {
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
   const { state, patchSession, writeLock, initSession, sessionState } = useSessionState(lastSessionId);
 
-  // 成员跟着「当前会话」走：换群就换一批人
-  useEffect(() => {
-    let alive = true;
+  /** 重新读当前群的成员：换群、加入、移出都走它 */
+  const reloadMembers = useCallback(() => {
     if (!lastSessionId) {
       setMembers([]);
       return;
     }
     sessionMembers(lastSessionId)
-      .then((list) => alive && setMembers(list))
+      .then(setMembers)
       .catch((e) => console.warn("[group] load members failed", e));
-    return () => {
-      alive = false;
-    };
   }, [lastSessionId]);
+
+  // 成员跟着「当前会话」走：换群就换一批人
+  useEffect(() => {
+    reloadMembers();
+  }, [reloadMembers]);
 
   const { bySid: modesBySid, byProfile: modesByProfile, applyFor, choose, noteAgentSwitch } = useSessionModes();
   const onSessionBound = useCallback(
@@ -464,6 +465,16 @@ export default function App() {
                   activities={state.acts}
                   filter={playerFilter}
                   onFilter={setPlayerFilter}
+                  group={
+                    lastSessionId
+                      ? {
+                          sessionId: lastSessionId,
+                          members,
+                          profiles,
+                          onChanged: reloadMembers,
+                        }
+                      : undefined
+                  }
                 />
                 <div className="relative min-h-0 flex-1">
                   <div ref={scrollRef} className="h-full overflow-y-auto">

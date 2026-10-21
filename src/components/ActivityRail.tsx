@@ -1,15 +1,31 @@
 import type { Activity, Player } from "@/types";
 import { cn } from "@/lib/utils";
 import { PlayerAvatar } from "./PlayerAvatar";
+import { MembersMenu } from "./MembersMenu";
+import type { AgentUser } from "@/lib/ipc";
+import type { AgentProfile } from "@/types";
 
 interface ActivityRailProps {
   players: Player[];
   activities: Activity[];
   filter: string | null;
   onFilter: (playerId: string | null) => void;
+  /** 群成员入口（没选中会话时不传：草稿会话还没 id，拉不了人） */
+  group?: {
+    sessionId: string;
+    members: AgentUser[];
+    profiles: AgentProfile[];
+    onChanged: () => void;
+  };
 }
 
-export function ActivityRail({ players, activities, filter, onFilter }: ActivityRailProps) {
+export function ActivityRail({
+  players,
+  activities,
+  filter,
+  onFilter,
+  group,
+}: ActivityRailProps) {
   return (
     <aside className="flex w-11 shrink-0 flex-col items-center gap-2.5 border-r border-line-1/50 py-3">
       {players.map((p) => {
@@ -37,7 +53,17 @@ export function ActivityRail({ players, activities, filter, onFilter }: Activity
           </button>
         );
       })}
-      <div className="mt-auto text-[9px] tracking-widest text-ink-3 [writing-mode:vertical-rl]">
+      {group && (
+        <div className="mt-auto mb-2">
+          <MembersMenu
+            sessionId={group.sessionId}
+            members={group.members}
+            profiles={group.profiles}
+            onChanged={group.onChanged}
+          />
+        </div>
+      )}
+      <div className={cn("text-[9px] tracking-widest text-ink-3 [writing-mode:vertical-rl]", !group && "mt-auto")}>
         {filter ?? "AGENTS"}
       </div>
     </aside>
