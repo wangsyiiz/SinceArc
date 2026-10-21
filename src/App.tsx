@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityRail } from "@/components/ActivityRail";
 import { Composer } from "@/components/Composer";
 import { EmptyState } from "@/components/EmptyState";
@@ -18,691 +18,48 @@ import { ThinkingRow } from "@/components/ThinkingRow";
 import { TitleBar } from "@/components/TitleBar";
 import { TracePanel } from "@/components/TracePanel";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
-import {
-  players,
-  prsByRepo,
-  repos as seedRepos,
-} from "@/mock/data";
-import type {
-  Message,
-  SessionSummary,
-  Activity,
-  AgentProfile,
-  GithubPR,
-  GithubRepo,
-  SessionState,
-  Tab,
-  ThemeMode,
-  ThreadSettings,
-} from "@/types";
-import {
-  asCmdError,
-  asSessionUpdate,
-  fromDto,
-  messagesAppend,
-  messagesLoad,
-  profilesLoad,
-  profilesSave,
-  sessionBindAcp,
-  sessionsList,
-  sessionUpsert,
-  type SessionRowDto,
-  sessionPrompt,
-  type AcpEvent,
-} from "@/lib/ipc";
-
-const now = () => new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-const isWrite = (a: Activity) => a.kind === "edit" || a.kind === "execute";
-const emptySession = (): SessionState => ({
-  msgs: [],
-  acts: [],
-  turns: [],
-  busy: false,
-  pendingPerm: null,
-});
+import { players, prsByRepo } from "@/mock/data";
+import type { GithubPR, GithubRepo, SessionSummary, Tab, ThreadSettings } from "@/types";
+import { sessionUpsert } from "@/lib/ipc";
+import { isWrite, now } from "@/lib/format";
+import { useAcpEvents } from "@/hooks/useAcpEvents";
+import { usePaneLayout } from "@/hooks/usePaneLayout";
+import { useProfileStore } from "@/hooks/useProfileStore";
+import { usePrompt } from "@/hooks/usePrompt";
+import { useRepos } from "@/hooks/useRepos";
+import { useScrollFade } from "@/hooks/useScrollFade";
+import { useSessionList } from "@/hooks/useSessionList";
+import { useSessionState } from "@/hooks/useSessionState";
+import { useTabs } from "@/hooks/useTabs";
+import { useTheme } from "@/hooks/useTheme";
 
 export default function App() {
-  const [theme, setTheme] = useState<ThemeMode>("dark");
+  const { theme, setTheme } = useTheme();
+  useScrollFade();
   const [mode, setMode] = useState<SidebarMode>("sessions");
   const [traceOpen, setTraceOpen] = useState(false);
   const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
   const [playerFilter, setPlayerFilter] = useState<string | null>(null);
   const [settings, setSettings] = useState<ThreadSettings>({ contextMessages: 5 });
-  const [activeProfileId, setActiveProfileId] = useState("p-hermes-wsl");
-  const [sidebarW, setSidebarW] = useState(260);
-  const [traceW, setTraceW] = useState(338);
-  const [dragging, setDragging] = useState(false);
-  const [repoList, setRepoList] = useState<GithubRepo[]>(seedRepos);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [tabs, setTabs] = useState<Tab[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
-  const [lastSessionId, setLastSessionId] = useState("");
   const [permOpen, setPermOpen] = useState(false);
-  const [sessionState, setSessionState] = useState<Record<string, SessionState>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
-  const layoutRef = useRef<HTMLDivElement>(null);
-  const [layoutW, setLayoutW] = useState(0);
 
-  const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
-  const [profiles, setProfiles] = useState<AgentProfile[]>([]);
-  /** 库里的配置是否已读过：没读完不要往回写，否则会把空列表存进去 */
-  const [profilesLoaded, setProfilesLoaded] = useState(false);
-  const [sessionsByProfile, setSessionsByProfile] = useState<Record<string, string>>({});
-  const [eventCount, setEventCount] = useState(0);
-  const [lastEvent, setLastEvent] = useState("");
-  const [eventLog, setEventLog] = useState<{ at: number; text: string }[]>([]);
-  const diag = useCallback((text: string) => {
-    setEventLog((prev) => [...prev, { at: Date.now(), text: `· ${text}` }].slice(-80));
-  }, []);
+  const { profiles, setProfiles, activeProfile, activeProfileId, setActiveProfileId, addProfile, removeProfile } = useProfileStore();
+  const { sessions, setSessions } = useSessionList();
+  const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
+  const { state, patchSession, writeLock, initSession, sessionState } = useSessionState(lastSessionId);
+  const { eventCount, lastEvent, eventLog, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ lastSessionId, patchSession, setSessions });
+  const { send } = usePrompt({ lastSessionId, patchSession, activeProfile, sessionsByProfile, contextMessages: settings.contextMessages, acp });
+  const { sidebarW, setSidebarW, traceW, setTraceW, dragging, setDragging, layoutRef, mainMin, sidebarMax, traceMax } = usePaneLayout(traceOpen);
+  const { repoList, addRepo, activeRepo, activePr } = useRepos(activeTab);
 
-  const patchSession = useCallback((sid: string, fn: (s: SessionState) => SessionState) => {
-    setSessionState((prev) => ({ ...prev, [sid]: fn(prev[sid] ?? emptySession()) }));
-  }, []);
-
-  // ACP sessionId -> UI 会话 id（mock 的 s-1 之类）。S3 阶段只有一个活跃会话，够用。
-  const acpToUi = useRef<Record<string, string>>({});
-  const streamBuf = useRef<Record<string, string>>({});
-  /** 本轮已累积的完整回复（定稿时整条落库，不用再去 state 里翻） */
-  const streamText = useRef<Record<string, string>>({});
-  /** ACP 会话 -> 当前这一轮的 turn id（轨迹要跟着同一条轮次走） */
-  const acpToTurn = useRef<Record<string, string>>({});
-  /** 最近一次确认过的 ACP 会话 id：chunk 没带 sessionId 时的兜底 */
-  const activeAcp = useRef("");
-  const flushDiag = useRef(0);
-  const flushTimer = useRef(0);
-  const lastSidRef = useRef(lastSessionId);
-  lastSidRef.current = lastSessionId;
-
-  /** 40ms 合批：chunk 是逐字来的，逐条 setState 会让 React 每字重渲染一次 */
-  const flushStream = useCallback(() => {
-    flushTimer.current = 0;
-    const buf = streamBuf.current;
-    streamBuf.current = {};
-    for (const [acpSid, text] of Object.entries(buf)) {
-      // 映射缺失时退回当前会话：同一时刻只有一条 prompt 在跑，
-      // 「这条流式内容属于我现在看的会话」这个判断不需要一张表也能成立。
-      const mapped = acpToUi.current[acpSid];
-      const uiSid = mapped ?? lastSidRef.current;
-      if (!mapped) diag(`映射缺失，退回当前会话 ${uiSid}`);
-      if (uiSid !== lastSidRef.current) {
-        diag(`写入 ${uiSid}（当前看的是 ${lastSidRef.current}）`);
-      }
-      if (!text) continue;
-      if (flushDiag.current < 12) {
-        flushDiag.current += 1;
-        diag(`flush -> ${uiSid} +${text.length} 字`);
-      }
-      const streamId = `stream-${acpSid}`;
-      patchSession(uiSid, (s) => {
-        const last = s.msgs[s.msgs.length - 1];
-        const msgs =
-          last && last.id === streamId && last.role === "player"
-            ? [...s.msgs.slice(0, -1), { ...last, text: last.text + text }]
-            : [
-                ...s.msgs,
-                {
-                  id: streamId,
-                  role: "player" as const,
-                  playerId: players[0].id,
-                  text,
-                  at: now(),
-                  streaming: true,
-                },
-              ];
-
-        // 轨迹栏同步：这一轮的 running 分支跟着累积 reply
-        const turnId = acpToTurn.current[acpSid];
-        const turns = turnId
-          ? s.turns.map((t) =>
-              t.id === turnId
-                ? {
-                    ...t,
-                    branches: t.branches.map((b) =>
-                      b.status === "running" ? { ...b, reply: (b.reply ?? "") + text } : b,
-                    ),
-                  }
-                : t,
-            )
-          : s.turns;
-
-        return { ...s, msgs, turns };
-      });
-    }
-  }, [diag, patchSession]);
-
-  const onAgentEvent = useCallback(
-    (profileId: string, event: AcpEvent) => {
-      setEventCount((n) => n + 1);
-
-      const su = asSessionUpdate(event);
-      const kindLabel = su?.update?.sessionUpdate;
-      // 正文片段：类型判错时也能看出内容到底在哪一类更新里
-      const preview = su?.update?.content?.text?.slice(0, 40) ?? "";
-
-      setEventLog((prev) =>
-        [
-          ...prev,
-          {
-            at: Date.now(),
-            text:
-              event.kind === "notification" || event.kind === "request"
-                ? `${event.kind}:${event.method}${kindLabel ? ` / ${kindLabel}` : ""}${preview ? ` · ${preview}` : ""}`
-                : event.kind,
-          },
-        ].slice(-80),
-      );
-      setLastEvent(
-        event.kind === "notification"
-          ? `${event.method}${kindLabel ? `/${kindLabel}` : ""}`
-          : event.kind === "request"
-            ? event.method
-            : event.kind,
-      );
-      if (su?.update?.sessionUpdate === "agent_message_chunk") {
-        const acpSid = su.sessionId || activeAcp.current;
-        if (!su.sessionId) diag("chunk 缺 sessionId，回退到最近活跃会话");
-        const text = su.update.content?.text ?? "";
-        if (text) {
-          streamBuf.current[acpSid] = (streamBuf.current[acpSid] ?? "") + text;
-          streamText.current[acpSid] = (streamText.current[acpSid] ?? "") + text;
-          if (!flushTimer.current) flushTimer.current = window.setTimeout(flushStream, 40);
-        }
-        return;
-      }
-
-      if (event.kind === "promptStarted") return;
-
-      if (event.kind === "promptResult" || event.kind === "promptFailed") {
-        flushStream();
-        const uiSid = acpToUi.current[event.sessionId];
-        diag(`promptResult -> ${uiSid ?? "无映射"}`);
-        if (uiSid) {
-          const streamId = `stream-${event.sessionId}`;
-          const actId = `act-stream-${event.sessionId}`;
-          const turnId = acpToTurn.current[event.sessionId];
-          patchSession(uiSid, (s) => ({
-            ...s,
-            busy: false,
-            acts: s.acts.map((a) =>
-              a.id === actId
-                ? { ...a, status: event.kind === "promptFailed" ? ("error" as const) : ("ok" as const) }
-                : a,
-            ),
-            turns: turnId
-              ? s.turns.map((t) =>
-                  t.id === turnId
-                    ? {
-                        ...t,
-                        branches: t.branches.map((b) => ({ ...b, status: "done" as const })),
-                      }
-                    : t,
-                )
-              : s.turns,
-            msgs:
-              event.kind === "promptFailed"
-                ? [
-                    ...s.msgs.map((m) =>
-                      m.id === streamId && m.role === "player" ? { ...m, streaming: false } : m,
-                    ),
-                    {
-                      id: `perr-${Date.now()}`,
-                      role: "system" as const,
-                      text: `这一轮失败：${event.msg}`,
-                      at: now(),
-                    },
-                  ]
-                : s.msgs.map((m) =>
-                    m.id === streamId && m.role === "player" ? { ...m, streaming: false } : m,
-                  ),
-          }));
-        }
-        if (event.kind === "promptFailed") console.warn("[acp] prompt failed", event.msg);
-
-        // 这一轮整条落库（同一 id 重复写是幂等的）
-        const acpSid = event.sessionId;
-        const full = streamText.current[acpSid] ?? "";
-        delete streamText.current[acpSid];
-        if (uiSid && full) {
-          const id = `stream-${acpSid}`;
-          messagesAppend(uiSid, [
-            {
-              id,
-              role: "player",
-              kind: "text",
-              payload: {
-                id,
-                role: "player",
-                playerId: players[0].id,
-                text: full,
-                at: now(),
-                streaming: false,
-              },
-            },
-          ]).catch((e) => console.warn("[db] append reply failed", e));
-        }
-        return;
-      }
-
-      console.debug("[acp]", profileId, event);
-    },
-    [flushStream, patchSession],
-  );
-
-  const onSession = useCallback((profileId: string, sessionId: string) => {
-    setSessionsByProfile((m) => ({ ...m, [profileId]: sessionId }));
-    // 建立映射：agent 回的事件带的是 ACP sessionId
-    acpToUi.current[sessionId] = lastSidRef.current;
-    activeAcp.current = sessionId;
-
-    const uiId = lastSidRef.current;
-    if (uiId) {
-      sessionBindAcp(uiId, sessionId).catch((e) =>
-        console.warn("[db] bind acp session failed", e),
-      );
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === uiId ? { ...s, acpSessionId: sessionId, profileId } : s,
-        ),
-      );
-    }
-  }, []);
-  const addProfile = () =>
-    setProfiles((list) => [
-      ...list,
-      {
-        id: `p-new-${Date.now().toString(36)}`,
-        name: "新连接",
-        launch: "ssh",
-        detail: "",
-        connected: false,
-        agentName: null,
-        protocolVersion: null,
-        program: "hermes",
-        args: ["acp"],
-        cwd: "",
-        ssh: { host: "", port: 22, user: "", auth: "key" },
-      },
-    ]);
-  const removeProfile = (id: string) => setProfiles((list) => list.filter((p) => p.id !== id));
-  // 启动时读本机库：有记录就用记录，第一次运行才播种 mock
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const stored = await profilesLoad();
-        if (!alive) return;
-        // 只认库里的。库是空的就一直空着 —— 用 mock 播种会在界面上留下
-        // 永远连不通的假配置，干扰判断（用户明确要求删掉这类噪点）。
-        setProfiles(stored.map(fromDto));
-      } catch {
-        // 非 Tauri 环境（浏览器直开）保持 mock
-      } finally {
-        if (alive) setProfilesLoaded(true);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  // 变更后回写（防抖：改名是逐字触发的）
-  useEffect(() => {
-    if (!profilesLoaded) return;
-    const t = setTimeout(() => {
-      profilesSave(profiles).catch((e) => console.warn("[db] save profiles failed", e));
-    }, 400);
-    return () => clearTimeout(t);
-  }, [profiles, profilesLoaded]);
-
-  /** 库行 -> 侧栏条目（时间与分组都按库里的时间戳算） */
-  const toSummary = useCallback((r: SessionRowDto): SessionSummary => {
-    const at = new Date(r.updatedAt * 1000);
-    const today = new Date();
-    const sameDay = at.toDateString() === today.toDateString();
-    const yesterday = new Date(today);
-    yesterday.setDate(today.getDate() - 1);
-    return {
-      id: r.id,
-      title: r.title,
-      cwd: r.cwd,
-      updatedAt: sameDay
-        ? at.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })
-        : at.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }),
-      updatedAtSec: r.updatedAt,
-      group: sameDay ? "今天" : at.toDateString() === yesterday.toDateString() ? "昨天" : "更早",
-      playerIds: [],
-      acpSessionId: r.acpSessionId ?? null,
-      profileId: r.profileId ?? undefined,
-    };
-  }, []);
-
-  // 库里的会话列表：启动读一次，之后每次变更都回写
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const rows = await sessionsList();
-        if (alive) setSessions(rows.map(toSummary));
-      } catch {
-        // 非 Tauri 环境：保持空列表
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [toSummary]);
-
-  // 启动时列表回来了就直接打开最近一个，别让人对着一屏空白点新建
-  useEffect(() => {
-    if (tabs.length > 0) return;
-    const first = sessions[0];
-    if (!first) return;
-    const tabId = `tab-${first.id}`;
-    setTabs([{ id: tabId, kind: "session", title: first.title, sessionId: first.id }]);
-    setActiveTabId(tabId);
-    setLastSessionId(first.id);
-  }, [sessions, tabs.length]);
-
-  // 切到某个会话时把它最近的消息读回来（库里没有就什么都不做）
-  useEffect(() => {
-    const sid = lastSessionId;
-    if (!sid) return;
-    let alive = true;
-    (async () => {
-      const rows = await messagesLoad(sid).catch(() => []);
-      if (!alive || rows.length === 0) return;
-      setSessionState((prev) => {
-        const cur = prev[sid] ?? emptySession();
-        if (cur.msgs.length > 0) return prev; // 期间已经聊起来了，别覆盖
-        return { ...prev, [sid]: { ...cur, msgs: rows.map((r) => r.payload as Message) } };
-      });
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [lastSessionId]);
-
-  const activeProfile = profiles.find((p) => p.id === activeProfileId);
   const activeSession = sessions.find((s) => s.id === lastSessionId);
   const cwd = activeSession?.cwd ?? activeProfile?.cwd ?? "";
-  const state = sessionState[lastSessionId] ?? emptySession();
-
-  const writeLock = state.acts.find((a) => a.status === "running" && isWrite(a)) ?? null;
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
-
-  // 滚动条透明度：伪元素不参与 transition，所以渐变靠逐帧改根节点上的 --sb-alpha
-  useEffect(() => {
-    const root = document.documentElement;
-    let hideTimer = 0;
-    let raf = 0;
-    let alpha = 0.28;
-    let active = false;
-
-    const apply = (v: number) => {
-      alpha = v;
-      root.style.setProperty("--sb-alpha", v.toFixed(3));
-    };
-
-    const animateTo = (target: number, duration: number) => {
-      cancelAnimationFrame(raf);
-      const from = alpha;
-      const t0 = performance.now();
-      const tick = (now: number) => {
-        const p = Math.min(1, (now - t0) / duration);
-        const eased = 1 - Math.pow(1 - p, 3); // ease-out cubic
-        apply(from + (target - from) * eased);
-        if (p < 1) raf = requestAnimationFrame(tick);
-      };
-      raf = requestAnimationFrame(tick);
-    };
-
-    const onScroll = () => {
-      if (!active) {
-        active = true;
-        animateTo(0.85, 110); // 亮起来快
-      }
-      window.clearTimeout(hideTimer);
-      hideTimer = window.setTimeout(() => {
-        active = false;
-        animateTo(0.28, 420); // 淡回去慢
-      }, 600);
-    };
-
-    document.addEventListener("scroll", onScroll, true);
-    return () => {
-      document.removeEventListener("scroll", onScroll, true);
-      window.clearTimeout(hideTimer);
-      cancelAnimationFrame(raf);
-    };
-  }, []);
-
-  // 量三栏容器宽度：分栏上限由「主区最小宽度」反推，不是硬编码
-  useEffect(() => {
-    const el = layoutRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(([e]) => setLayoutW(e.contentRect.width));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  // 主视图至少占一半；分栏上限由它反推
-  const mainMin = Math.max(380, Math.round(layoutW / 2));
-  const sidebarMax = Math.max(200, layoutW - (traceOpen ? traceW : 0) - mainMin - 12);
-  const traceMax = Math.max(250, layoutW - sidebarW - mainMin - 12);
-
-  // 窗口缩小时把超出的分栏拉回来
-  useEffect(() => {
-    if (!layoutW) return;
-    setSidebarW((w) => Math.min(w, sidebarMax));
-    setTraceW((w) => Math.min(w, traceMax));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layoutW, traceOpen]);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [state.msgs, activeTabId]);
-
-
-  const openTab = useCallback((tab: Omit<Tab, "id" | "title"> & { title?: string }) => {
-    const key =
-      tab.kind === "session"
-        ? `tab-${tab.sessionId}`
-        : tab.kind === "repo"
-          ? `tab-repo-${tab.repoId}`
-          : tab.kind === "settings"
-            ? "tab-settings"
-            : `tab-pr-${tab.repoId}-${tab.prNumber}`;
-    const title =
-      tab.title ??
-      (tab.kind === "session"
-        ? (sessions.find((s) => s.id === tab.sessionId)?.title ?? "会话")
-        : tab.kind === "repo"
-          ? "项目"
-          : tab.kind === "settings"
-            ? "设置"
-            : `#${tab.prNumber}`);
-    setTabs((prev) => (prev.some((t) => t.id === key) ? prev : [...prev, { ...tab, id: key, title }]));
-    setActiveTabId(key);
-    if (tab.kind === "session" && tab.sessionId) setLastSessionId(tab.sessionId);
-  }, []);
-
-  const closeTab = useCallback((id: string) => {
-    setTabs((prev) => {
-      const idx = prev.findIndex((t) => t.id === id);
-      const next = prev.filter((t) => t.id !== id);
-      if (activeTabId === id) {
-        const fallback = next[Math.min(idx, next.length - 1)];
-        setActiveTabId(fallback?.id ?? null);
-      }
-      return next;
-    });
-  }, [activeTabId]);
-
-  const selectTab = useCallback(
-    (id: string) => {
-      setActiveTabId(id);
-      const t = tabs.find((x) => x.id === id);
-      if (t?.kind === "session" && t.sessionId) setLastSessionId(t.sessionId);
-    },
-    [tabs],
-  );
-
-  const send = useCallback(
-    (text: string) => {
-      const sid = lastSessionId;
-      const at = now();
-
-      // 用户消息先落地，真假链路都一样
-      const userMsg: Message = { id: `u-${Date.now()}`, role: "user", text, at };
-      patchSession(sid, (s) => ({
-        ...s,
-        busy: true,
-        msgs: [...s.msgs, userMsg],
-      }));
-      messagesAppend(sid, [
-        { id: userMsg.id, role: "user", kind: "text", payload: userMsg },
-      ]).catch((e) => console.warn("[db] append message failed", e));
-
-      // 已连上真 agent：走 ACP；否则退回演示数据
-      const acpSid = activeProfile ? sessionsByProfile[activeProfile.id] : undefined;
-      if (acpSid) {
-        const actId = `act-stream-${acpSid}`;
-        const turnId = `turn-live-${Date.now()}`;
-        acpToTurn.current[acpSid] = turnId;
-        // 事件回来要落到「这次发消息的那个会话」，而不是连接时的快照
-        acpToUi.current[acpSid] = sid;
-        activeAcp.current = acpSid;
-
-        patchSession(sid, (s) => ({
-          ...s,
-          acts: [
-            ...s.acts.filter((a) => a.id !== actId),
-            {
-              id: actId,
-              playerId: players[0].id,
-              kind: "thinking" as const,
-              title: "思考中",
-              status: "running" as const,
-              at,
-            },
-          ],
-          turns: [
-            ...s.turns,
-            {
-              id: turnId,
-              at,
-              userText: text,
-              branches: [
-                {
-                  playerId: players[0].id,
-                  activityIds: [actId],
-                  status: "running" as const,
-                },
-              ],
-            },
-          ],
-        }));
-
-        sessionPrompt(acpSid, text).catch((e) => {
-          const err = asCmdError(e);
-          patchSession(sid, (s) => ({
-            ...s,
-            busy: false,
-            msgs: [
-              ...s.msgs,
-              {
-                id: `err-${Date.now()}`,
-                role: "system",
-                text: `发送失败：${err.code} ${err.msg}`,
-                at,
-              },
-            ],
-          }));
-        });
-        return;
-      }
-
-      const hits = players.filter((p) => text.includes(`@${p.handle}`));
-      const targets = hits.length > 0 ? hits : [players[0]];
-      const turnId = `t-${Date.now()}`;
-      const actIds = targets.map((p, i) => `a-${Date.now()}-${i}-${p.id}`);
-
-      patchSession(sid, (s) => ({
-        ...s,
-        acts: [
-          ...s.acts,
-          ...targets.map((p, i) => ({
-            id: actIds[i],
-            playerId: p.id,
-            kind: "thinking" as const,
-            title: "思考中",
-            status: "running" as const,
-            at,
-          })),
-        ],
-        turns: [
-          ...s.turns,
-          {
-            id: turnId,
-            at,
-            userText: text,
-            branches: targets.map((p, i) => ({
-              playerId: p.id,
-              activityIds: [actIds[i]],
-              status: "running" as const,
-            })),
-          },
-        ],
-      }));
-
-      let left = targets.length;
-      targets.forEach((p, i) => {
-        const actId = actIds[i];
-        window.setTimeout(
-          () => {
-            const answer = `（演示）这条本该由 ${p.name} 的 session 回答。接入后，群聊里 ${settings.contextMessages} 条上下文会作为前缀附在 prompt 里。`;
-            patchSession(sid, (s) => ({
-              ...s,
-              acts: s.acts.map((a) =>
-                a.id === actId ? { ...a, status: "ok" as const, title: "已答复" } : a,
-              ),
-              turns: s.turns.map((t) =>
-                t.id === turnId
-                  ? {
-                      ...t,
-                      branches: t.branches.map((b) =>
-                        b.playerId === p.id
-                          ? { ...b, reply: answer, status: "done" as const }
-                          : b,
-                      ),
-                    }
-                  : t,
-              ),
-              msgs: [
-                ...s.msgs,
-                {
-                  id: `p-${Date.now()}-${p.id}`,
-                  role: "player",
-                  playerId: p.id,
-                  text: answer,
-                  at: now(),
-                },
-              ],
-              busy: false,
-            }));
-            left -= 1;
-            if (left === 0) patchSession(sid, (s) => ({ ...s, busy: false }));
-          },
-          900 + i * 700,
-        );
-      });
-    },
-    [lastSessionId, patchSession, settings.contextMessages, activeProfile, sessionsByProfile],
-  );
 
   /** 把 PR 作为引用塞进会话：优先复用已打开的会话标签 */
   const quotePr = useCallback(
@@ -710,106 +67,44 @@ export default function App() {
       const existing = tabs.find((t) => t.kind === "session");
       const sid = existing?.sessionId ?? "s-1";
       if (existing) setActiveTabId(existing.id);
-      else
-        openTab({
-          kind: "session",
-          title: sessions.find((s) => s.id === sid)?.title ?? "会话",
-          sessionId: sid,
-        });
+      else openTab({ kind: "session", title: sessions.find((s) => s.id === sid)?.title ?? "会话", sessionId: sid });
       setLastSessionId(sid);
       patchSession(sid, (s) => ({
         ...s,
-        msgs: [
-          ...s.msgs,
-          {
-            id: `u-${Date.now()}`,
-            role: "user",
-            at: now(),
-            text: "@claude 看一下这个 PR",
-            quoted: {
-              kind: "pr",
-              label: `#${pr.number} ${pr.title}`,
-              detail: `${repo.slug} · ${pr.head} → ${pr.base} · +${pr.additions} −${pr.deletions} · ${pr.files} 文件`,
-            },
-          },
-        ],
+        msgs: [...s.msgs, { id: `u-${Date.now()}`, role: "user", at: now(), text: "@claude 看一下这个 PR", quoted: { kind: "pr", label: `#${pr.number} ${pr.title}`, detail: `${repo.slug} · ${pr.head} → ${pr.base} · +${pr.additions} −${pr.deletions} · ${pr.files} 文件` } }],
       }));
     },
     [openTab, patchSession, tabs],
   );
 
-  const addRepo = useCallback((path: string) => {
-    const name = path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "新项目";
-    setRepoList((prev) => [
-      ...prev,
-      { id: `r-${Date.now()}`, name, slug: `—/${name}`, path, branch: "—", connected: false },
-    ]);
-  }, []);
-
-  const decide = useCallback(
-    (optionId: string) => {
-      setPermOpen(false);
-      patchSession(lastSessionId, (s) => ({
-        ...s,
-        pendingPerm: null,
-        msgs: [
-          ...s.msgs,
-          { id: `n-${Date.now()}`, role: "system", text: `权限决定：${optionId}`, at: now() },
-        ],
-      }));
-    },
-    [lastSessionId, patchSession],
-  );
+  const decide = useCallback((optionId: string) => {
+    setPermOpen(false);
+    patchSession(lastSessionId, (s) => ({
+      ...s,
+      pendingPerm: null,
+      msgs: [...s.msgs, { id: `n-${Date.now()}`, role: "system", text: `权限决定：${optionId}`, at: now() }],
+    }));
+  }, [lastSessionId, patchSession]);
 
   const newSession = useCallback(() => {
     const id = `s-${Date.now()}`;
-    setSessionState((prev) => ({ ...prev, [id]: emptySession() }));
+    initSession(id);
     // 必须进列表：只在 tab 里存在的话，关掉标签就再也找不回来了
-    const summary: SessionSummary = {
-      id,
-      title: "新会话",
-      cwd: activeProfile?.cwd ?? "",
-      updatedAt: "刚刚",
-      updatedAtSec: Math.floor(Date.now() / 1000),
-      group: "今天",
-      playerIds: [],
-      acpSessionId: null,
-      profileId: activeProfile?.id,
-    };
+    const summary: SessionSummary = { id, title: "新会话", cwd: activeProfile?.cwd ?? "", updatedAt: "刚刚", updatedAtSec: Math.floor(Date.now() / 1000), group: "今天", playerIds: [], acpSessionId: null, profileId: activeProfile?.id };
     setSessions((prev) => [summary, ...prev]);
-    sessionUpsert({
-      id,
-      acpSessionId: null,
-      profileId: activeProfile?.id ?? null,
-      title: summary.title,
-      cwd: summary.cwd,
-      createdAt: summary.updatedAtSec!,
-      updatedAt: summary.updatedAtSec!,
-    }).catch((e) => console.warn("[db] upsert session failed", e));
+    sessionUpsert({ id, acpSessionId: null, profileId: activeProfile?.id ?? null, title: summary.title, cwd: summary.cwd, createdAt: summary.updatedAtSec!, updatedAt: summary.updatedAtSec! }).catch((e) => console.warn("[db] upsert session failed", e));
     openTab({ kind: "session", title: "新会话", sessionId: id });
     setLastSessionId(id);
-  }, [activeProfile, openTab]);
+  }, [activeProfile, initSession, openTab, setSessions]);
 
-  const activeRepo = activeTab?.repoId
-    ? repoList.find((r) => r.id === activeTab.repoId)
-    : undefined;
-
-  const activePr = useMemo(() => {
-    if (activeTab?.kind !== "pr" || !activeTab.repoId) return undefined;
-    return (prsByRepo[activeTab.repoId] ?? []).find((p) => p.number === activeTab.prNumber);
-  }, [activeTab]);
-
-  const badgeOf = useCallback(
-    (t: Tab) => {
-      if (t.kind !== "session" || !t.sessionId) return null;
-      const st = sessionState[t.sessionId];
-      if (!st) return null;
-      if (st.pendingPerm) return "var(--warn)";
-      if (st.busy) return "var(--ok)";
-      return null;
-    },
-    [sessionState],
-  );
+  const badgeOf = useCallback((t: Tab) => {
+    if (t.kind !== "session" || !t.sessionId) return null;
+    const st = sessionState[t.sessionId];
+    if (!st) return null;
+    if (st.pendingPerm) return "var(--warn)";
+    if (st.busy) return "var(--ok)";
+    return null;
+  }, [sessionState]);
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-surface-0 text-ink-1">
@@ -860,7 +155,6 @@ export default function App() {
             setFocus(null);
           }}
         />
-
         {traceOpen && (
           <Splitter
             value={traceW}
@@ -870,7 +164,6 @@ export default function App() {
             max={traceMax}
           />
         )}
-
         <main className="sc-pane flex min-h-0 flex-1 flex-col overflow-hidden" style={{ minWidth: mainMin }}>
           <TabStrip
             tabs={tabs}
@@ -879,9 +172,7 @@ export default function App() {
             onSelect={selectTab}
             onClose={closeTab}
           />
-
           {!activeTab && <WorkspaceEmpty onNewSession={newSession} />}
-
           {activeTab?.kind === "session" && (
             <>
               <StatusBar
@@ -904,7 +195,6 @@ export default function App() {
                   />
                 }
               />
-
               <div className="flex min-h-0 flex-1">
                 <ActivityRail
                   players={players}
@@ -912,7 +202,6 @@ export default function App() {
                   filter={playerFilter}
                   onFilter={setPlayerFilter}
                 />
-
                 <div className="relative min-h-0 flex-1">
                   <div ref={scrollRef} className="h-full overflow-y-auto">
                     <div className="sc-selectable mx-auto flex max-w-3xl flex-col gap-3.5 px-4 pt-4 pb-32">
@@ -955,7 +244,6 @@ export default function App() {
                       )}
                     </div>
                   </div>
-
                   <div className="pointer-events-none absolute inset-x-0 bottom-0 px-3 pb-3">
                     <div className="mx-auto max-w-3xl">
                       {state.pendingPerm && (
@@ -989,7 +277,6 @@ export default function App() {
               </div>
             </>
           )}
-
           {activeTab?.kind === "repo" && activeRepo && (
             <RepoBrowser
               repo={activeRepo}
@@ -1005,7 +292,6 @@ export default function App() {
               }
             />
           )}
-
           {activeTab?.kind === "settings" && (
             <SettingsView
               settings={settings}
@@ -1023,13 +309,11 @@ export default function App() {
               eventLog={eventLog}
             />
           )}
-
           {activeTab?.kind === "pr" && activePr && activeRepo && (
             <PrView pr={activePr} repo={activeRepo} onQuote={() => quotePr(activePr, activeRepo)} />
           )}
         </main>
       </div>
-
       <ResizeHandles />
       {state.pendingPerm && (
         <PermissionDialog
