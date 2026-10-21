@@ -6,6 +6,7 @@
 //!    WSL 场景中间隔着 `wsl.exe` relay，需要 setsid + 自己记 pid 才能干净杀掉。
 //! 3. 协议版本显式钉 v1；`unstable_protocol_v2` 不启用。
 
+pub mod discover;
 pub mod launch;
 pub mod transport;
 

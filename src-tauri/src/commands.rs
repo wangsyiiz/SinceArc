@@ -262,6 +262,48 @@ pub struct ProbeOutcome {
     pub load_session: bool,
 }
 
+/// 扫一遍机器：哪些 agent 能当 ACP 服务端跑（docs/discovery.md）。
+///
+/// 只负责「找人」——发现到 `codex` 不等于它能起 ACP（实测 codex 没有 acp 子命令，
+/// 要靠 codex-acp 适配器）。「能不能真握手」交给 `agent_probe`。
+#[tauri::command]
+pub async fn agent_discover(
+    state: State<'_, AppState>,
+) -> Result<acp::discover::DiscoverOutcome, CmdError> {
+    let outcome = acp::discover::scan().await;
+    tracing::info!(
+        target: "sincearc::ipc", hits = outcome.found.len(),
+        warnings = outcome.warnings.len(), "discovery finished"
+    );
+    // 缓存失败不影响这次结果：用户要看的是扫描结果，不是写库是否成功
+    if let Ok(json) = serde_json::to_string(&outcome.into_cache()) {
+        if let Err(e) = state.db.meta_set("discovery", &json) {
+            tracing::warn!(target: "sincearc::ipc", error = %e, "discovery cache write failed");
+        }
+    }
+    Ok(outcome)
+}
+
+/// 读上一次扫描的缓存（启动时先渲染，不必等扫描）。
+#[tauri::command]
+pub fn agent_discovery_cached(
+    state: State<'_, AppState>,
+) -> Result<Option<acp::discover::DiscoverOutcome>, CmdError> {
+    let raw = state
+        .db
+        .meta_get("discovery")
+        .map_err(|e| CmdError::new(50000, format!("读发现缓存失败：{e}")))?;
+    let Some(raw) = raw else { return Ok(None) };
+    match serde_json::from_str::<acp::discover::DiscoveryCache>(&raw) {
+        Ok(c) => Ok(Some(acp::discover::DiscoverOutcome::from_cache(c))),
+        Err(e) => {
+            // 缓存格式变了（升级过）：当成没扫过，让用户重扫，不要报错卡住启动
+            tracing::warn!(target: "sincearc::ipc", error = %e, "discovery cache unreadable, ignoring");
+            Ok(None)
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn agent_probe(profile: ProfileDto) -> Result<ProbeOutcome, CmdError> {
     validate_launch_input(&profile)?;

@@ -41,7 +41,7 @@ pub enum Launch {
 
 /// `wsl.exe` / `ssh.exe` 用绝对路径：从资源管理器或 IDE 启动的 GUI 进程，
 /// PATH 里不一定有 System32，靠名字解析会 spawn 失败（表现为 50200）。
-fn system_tool(name: &str) -> String {
+pub(crate) fn system_tool(name: &str) -> String {
     #[cfg(windows)]
     {
         if let Ok(root) = std::env::var("SystemRoot") {

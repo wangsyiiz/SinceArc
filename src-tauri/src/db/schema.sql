@@ -75,3 +75,10 @@ CREATE TABLE IF NOT EXISTS permission_rules (
   decision      TEXT NOT NULL CHECK (decision IN ('allow', 'deny')),
   created_at    INTEGER NOT NULL
 );
+
+-- 键值元数据：目前放「agent 发现」的缓存（key = 'discovery'，value = JSON）。
+-- 单独一张表而不是塞进 profiles：它描述的是这台机器扫出了什么，不隶属任何连接。
+CREATE TABLE IF NOT EXISTS app_meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);

@@ -36,6 +36,8 @@ pub fn run() {
             app_info,
             acp::list_profiles_hint,
             commands::agent_probe,
+            commands::agent_discover,
+            commands::agent_discovery_cached,
             commands::agent_connect,
             commands::agent_disconnect,
             commands::agent_respond_request,

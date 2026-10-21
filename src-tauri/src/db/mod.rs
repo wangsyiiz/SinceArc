@@ -404,6 +404,25 @@ impl Db {
         out.reverse();
         Ok(out)
     }
+
+    /// 读一条元数据（发现结果缓存之类）。键值表的用途见 schema.sql 的 app_meta。
+    pub fn meta_get(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT value FROM app_meta WHERE key = ?1")?;
+        let mut rows = stmt.query([key])?;
+        rows.next()?.map(|r| r.get::<_, String>(0)).transpose()
+    }
+
+    /// 写一条元数据（覆盖）。
+    pub fn meta_set(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO app_meta(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [key, value],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
