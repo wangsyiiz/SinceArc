@@ -483,6 +483,13 @@ pub async fn session_new(
         .to_string();
 
     tracing::info!(target: "sincearc::ipc", profile = %profile_id, session = %session_id, "session created");
+
+    // 任何建立 ACP 会话的路径都要留一份 modes 快照 —— 否则 session_apply_mode
+    // 拿不到可选列表，只能按「不推」处理（规范 §4 兜底），用户设了什么都不会生效。
+    if let Some(modes) = acp::modes_from_response(&result) {
+        state.set_modes(session_id.clone(), modes).await;
+    }
+
     state
         .insert_session(session_id.clone(), SessionRecord { profile_id, cwd })
         .await;
