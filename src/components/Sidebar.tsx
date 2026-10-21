@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { FolderGit2, MessageSquare, Plus, Settings2 } from "lucide-react";
 import type { AgentProfile, GithubPR, GithubRepo, Player, SessionSummary } from "@/types";
 import { cn } from "@/lib/utils";
+import { profileLabel } from "@/lib/format";
 
 export type SidebarMode = "sessions" | "code";
 
@@ -157,14 +158,14 @@ export function Sidebar({
                         </span>
                         {profile && (
                           <span
-                            title={`归属：${profile.name}`}
+                            title={`归属：${profileLabel(profile)}`}
                             className={cn(
                               // 这里只说「这个会话属于谁」，不做连接状态着色 ——
                               // 状态属于当前那个会话，在标题栏里显示，列在这里会变成一堆绿灰点。
                               "ml-auto max-w-[72px] shrink-0 truncate rounded-[4px] bg-surface-3/35 px-1 py-px font-mono text-[9.5px] text-ink-3 transition-colors group-hover:bg-surface-3/55",
                             )}
                           >
-                            {profile.name}
+                            {profileLabel(profile)}
                           </span>
                         )}
                       </span>

@@ -35,25 +35,60 @@ export function usePrompt({
       const sid = lastSessionId;
       const at = now();
 
-      // 用户消息先落地，真假链路都一样
+      // 归属：会话自己的连接优先，老会话（没记 profileId）退回当前选中
+      const profileId = profileIdOf(sid) ?? activeProfile?.id ?? null;
+      let acpSid = profileId ? sessionsByProfile[profileId] : undefined;
+      /** 要现连：这条消息得先等连接，界面不能因此变成「忙碌」 */
+      const needConnect = !acpSid && !!profileId;
+      const connectNoteId = `conn-note-${Date.now()}`;
+
+      // 用户消息先落地，真假链路都一样。
+      // 只有真要发 prompt 时才置 busy —— 连接阶段置 busy 会把输入框锁住，
+      // 而连接可能要几十秒，用户会以为界面卡死了（docs/desktop-ux.md §1.6）。
       const userMsg: Message = { id: `u-${Date.now()}`, role: "user", text, at };
       patchSession(sid, (s) => ({
         ...s,
-        busy: true,
-        msgs: [...s.msgs, userMsg],
+        busy: !needConnect,
+        msgs: [
+          ...s.msgs,
+          userMsg,
+          ...(needConnect
+            ? [
+                {
+                  id: connectNoteId,
+                  role: "system" as const,
+                  text: "正在连接 agent…（连接期间可以继续操作界面）",
+                  at,
+                },
+              ]
+            : []),
+        ],
       }));
       messagesAppend(sid, [
         { id: userMsg.id, role: "user", kind: "text", payload: userMsg },
       ]).catch((e) => console.warn("[db] append message failed", e));
 
-      // 归属：会话自己的连接优先，老会话（没记 profileId）退回当前选中
-      const profileId = profileIdOf(sid) ?? activeProfile?.id ?? null;
-      let acpSid = profileId ? sessionsByProfile[profileId] : undefined;
-
-      if (!acpSid && profileId) {
+      if (needConnect && profileId) {
         // 无感启动的保底：打开会话时可能还没连上（或刚被断开），发消息这一下必须连上，
         // 否则用户会看到一条「演示」回答，而他以为自己在跟真 agent 说话。
+        // 超过 10 秒还没回来就把提示改成「还在连」，免得用户只能盯着不动的一句话。
+        const slow = window.setTimeout(() => {
+          patchSession(sid, (s) => ({
+            ...s,
+            msgs: s.msgs.map((m) =>
+              m.id === connectNoteId
+                ? { ...m, text: "还在连接 agent…（握手较慢，界面可以继续操作）" }
+                : m,
+            ),
+          }));
+        }, 10_000);
         const r = await ensureConnected(profileId);
+        window.clearTimeout(slow);
+        // 提示用完就撤，不要留在消息流里
+        patchSession(sid, (s) => ({
+          ...s,
+          msgs: s.msgs.filter((m) => m.id !== connectNoteId),
+        }));
         if (r.error) {
           patchSession(sid, (s) => ({
             ...s,
@@ -71,6 +106,8 @@ export function usePrompt({
           return;
         }
         acpSid = r.acpSid ?? undefined;
+        // 连上了，接下来真要发 prompt
+        patchSession(sid, (s) => ({ ...s, busy: true }));
       }
 
       if (acpSid) {

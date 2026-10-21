@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { ChevronDown, ShieldCheck, Waypoints } from "lucide-react";
 import type { AgentProfile } from "@/types";
 import { cn } from "@/lib/utils";
+import { profileLabel } from "@/lib/format";
 import { ModeSelect } from "@/components/ModeSelect";
 import type { ModeView } from "@/hooks/useSessionModes";
 
@@ -104,7 +105,7 @@ export function StatusBar({
             />
             {/* 名字是「这是哪个 agent」，后面那句才是「连没连上」—— 两件事分开说，
                 否则用户在会话列表里看到一堆绿灰徽标，误以为是状态 */}
-            <span className="max-w-[120px] truncate text-ink-2">{profile.name}</span>
+            <span className="max-w-[120px] truncate text-ink-2">{profileLabel(profile)}</span>
             <span className={profile.connected ? "text-ok-1" : "text-ink-3"}>
               {profile.connected ? "已连接" : "未连接"}
             </span>

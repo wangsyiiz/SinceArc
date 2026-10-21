@@ -81,6 +81,11 @@ export default function App() {
     [permissions.enqueue],
   );
   const { eventCount, lastEvent, eventLog, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ lastSessionId, patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission });
+  const activeSession = sessions.find((s) => s.id === lastSessionId);
+  // 归属跟会话走，不再跟一个全局「选中连接」走：全局选中项的唯一入口（左下角列表）
+  // 已经移除，靠它就等于靠一个永远空着的值
+  const sessionProfile = profiles.find((p) => p.id === activeSession?.profileId) ?? activeProfile;
+
   // 连接生命周期只有这一处实现：设置页手动连接、打开会话自动连接都走它
   const { connect, ensureConnected, disconnect } = useAgentConnect({
     profiles,
@@ -96,7 +101,7 @@ export default function App() {
   const { send } = usePrompt({
     lastSessionId,
     patchSession,
-    activeProfile,
+    activeProfile: sessionProfile,
     sessionsByProfile,
     contextMessages: settings.contextMessages,
     acp,
@@ -106,13 +111,12 @@ export default function App() {
   const { sidebarW, setSidebarW, traceW, setTraceW, dragging, setDragging, layoutRef, mainMin, sidebarMax, traceMax } = usePaneLayout(traceOpen);
   const { repoList, addRepo, activeRepo, activePr } = useRepos(activeTab);
 
-  const activeSession = sessions.find((s) => s.id === lastSessionId);
-  const cwd = activeSession?.cwd ?? activeProfile?.cwd ?? "";
+  const cwd = activeSession?.cwd ?? sessionProfile?.cwd ?? "";
   const activeModeView = modesBySid[lastSessionId] ?? null;
-  const activeDefaultModeLabel = activeProfile?.defaultMode
-    ? ((modesByProfile[activeProfile.id]?.available ?? activeModeView?.available ?? []).find(
-        (m) => m.id === activeProfile.defaultMode,
-      )?.name ?? activeProfile.defaultMode)
+  const activeDefaultModeLabel = sessionProfile?.defaultMode
+    ? ((modesByProfile[sessionProfile.id]?.available ?? activeModeView?.available ?? []).find(
+        (m) => m.id === sessionProfile.defaultMode,
+      )?.name ?? sessionProfile.defaultMode)
     : null;
 
   useEffect(() => {
@@ -225,12 +229,14 @@ export default function App() {
     const id = `s-${Date.now()}`;
     initSession(id);
     // 必须进列表：只在 tab 里存在的话，关掉标签就再也找不回来了
-    const summary: SessionSummary = { id, title: "新会话", cwd: activeProfile?.cwd ?? "", updatedAt: "刚刚", updatedAtSec: Math.floor(Date.now() / 1000), group: "今天", playerIds: [], acpSessionId: null, profileId: activeProfile?.id };
+    // 新会话继承「最近用的那个连接」：没有选择步骤，也不会掉到一个空归属上
+    const inheritProfile = profiles.find((p) => p.id === activeSession?.profileId) ?? activeProfile;
+    const summary: SessionSummary = { id, title: "新会话", cwd: inheritProfile?.cwd ?? "", updatedAt: "刚刚", updatedAtSec: Math.floor(Date.now() / 1000), group: "今天", playerIds: [], acpSessionId: null, profileId: inheritProfile?.id };
     setSessions((prev) => [summary, ...prev]);
-    sessionUpsert({ id, acpSessionId: null, profileId: activeProfile?.id ?? null, title: summary.title, cwd: summary.cwd, createdAt: summary.updatedAtSec!, updatedAt: summary.updatedAtSec! }).catch((e) => console.warn("[db] upsert session failed", e));
+    sessionUpsert({ id, acpSessionId: null, profileId: inheritProfile?.id ?? null, title: summary.title, cwd: summary.cwd, createdAt: summary.updatedAtSec!, updatedAt: summary.updatedAtSec! }).catch((e) => console.warn("[db] upsert session failed", e));
     openTab({ kind: "session", title: "新会话", sessionId: id });
     setLastSessionId(id);
-  }, [activeProfile, initSession, openTab, setSessions]);
+  }, [activeProfile, activeSession, profiles, initSession, openTab, setSessions]);
 
   const badgeOf = useCallback((t: Tab) => {
     if (t.kind !== "session" || !t.sessionId) return null;
@@ -243,7 +249,7 @@ export default function App() {
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-surface-0 text-ink-1">
-      <TitleBar profile={activeProfile} cwd={cwd} />
+      <TitleBar profile={sessionProfile} cwd={cwd} />
 
       <div ref={layoutRef} className="flex min-h-0 flex-1 px-1 pb-1">
         <Sidebar
@@ -310,17 +316,17 @@ export default function App() {
             <>
               <StatusBar
                 cwd={cwd}
-                profile={activeProfile}
-                sessionId={activeProfile ? sessionsByProfile[activeProfile.id] : undefined}
+                profile={sessionProfile}
+                sessionId={sessionProfile ? sessionsByProfile[sessionProfile.id] : undefined}
                 eventCount={eventCount}
                 lastEvent={lastEvent}
                 modes={activeModeView}
                 fallbackLabel={activeDefaultModeLabel}
                 onChooseMode={(modeId) => {
-                  const acpSid = activeProfile ? sessionsByProfile[activeProfile.id] : undefined;
-                  if (activeProfile && acpSid) {
+                  const acpSid = sessionProfile ? sessionsByProfile[sessionProfile.id] : undefined;
+                  if (sessionProfile && acpSid) {
                     void choose({
-                      profileId: activeProfile.id,
+                      profileId: sessionProfile.id,
                       acpSessionId: acpSid,
                       uiSessionId: lastSessionId,
                       modeId,
@@ -336,8 +342,8 @@ export default function App() {
                 }
                 right={
                   <AgentCapabilities
-                    profile={activeProfile}
-                    commands={commandsFor(activeProfile?.agentName)}
+                    profile={sessionProfile}
+                    commands={commandsFor(sessionProfile?.agentName)}
                   />
                 }
               />
