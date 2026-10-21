@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { FolderGit2, MessageSquare, Plus, Settings2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, FolderGit2, MessageSquare, Plus, Settings2 } from "lucide-react";
 import type { AgentProfile, GithubPR, GithubRepo, Player, SessionSummary } from "@/types";
 import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
@@ -17,6 +17,8 @@ interface SidebarProps {
   prsByRepo: Record<string, GithubPR[]>;
   onSelect: (id: string) => void;
   onNew: () => void;
+  /** 指定连接新建（下拉里选 agent 时用） */
+  onNewWithProfile: (profileId: string) => void;
   onOpenSettings: () => void;
   onOpenRepo: (repoId: string) => void;
   onAddRepo: (path: string) => void;
@@ -36,6 +38,7 @@ export function Sidebar({
   prsByRepo,
   onSelect,
   onNew,
+  onNewWithProfile,
   onOpenSettings,
   onOpenRepo,
   onAddRepo,
@@ -98,16 +101,7 @@ export function Sidebar({
       {mode === "sessions" ? (
         <>
           <div className="px-2.5 pb-2">
-            <button
-              onClick={onNew}
-              className="sc-control flex w-full items-center gap-2 rounded-[8px] bg-surface-3/50 px-2.5 py-2 text-[12.5px] text-ink-1 transition-colors hover:bg-surface-3/85"
-            >
-              <Plus className="size-3.5 text-ink-2" />
-              新建会话
-              <kbd className="ml-auto rounded border border-line-1/70 px-1.5 py-0.5 font-mono text-[9.5px] text-ink-3">
-                Ctrl N
-              </kbd>
-            </button>
+            <NewSessionButton profiles={profiles} onNew={onNew} onNewWithProfile={onNewWithProfile} />
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
@@ -251,5 +245,94 @@ export function Sidebar({
         </button>
       </div>
     </aside>
+  );
+}
+
+/**
+ * 「新建会话」的拆分控件：主按钮沿用最近用的连接（零步骤），只配了多个连接时
+ * 才亮出右侧下拉让用户指定。
+ *
+ * 为什么不做成「新建后去标题栏改归属」：那是把一件事拆成不连贯的两步，而且改的时候
+ * 会话已经存在，用户容易先发了一句话才发现归属不对。
+ */
+function NewSessionButton({
+  profiles,
+  onNew,
+  onNewWithProfile,
+}: {
+  profiles: AgentProfile[];
+  onNew: () => void;
+  onNewWithProfile: (profileId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const multi = profiles.length > 1;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <div className="sc-control flex w-full items-center rounded-[8px] bg-surface-3/50 transition-colors hover:bg-surface-3/85">
+        <button
+          onClick={onNew}
+          className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left text-[12.5px] text-ink-1"
+        >
+          <Plus className="size-3.5 shrink-0 text-ink-2" />
+          新建会话
+          {!multi && (
+            <kbd className="ml-auto rounded border border-line-1/70 px-1.5 py-0.5 font-mono text-[9.5px] text-ink-3">
+              Ctrl N
+            </kbd>
+          )}
+        </button>
+        {multi && (
+          <button
+            aria-label="选择 agent 新建会话"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+            className="mr-1 grid size-6 shrink-0 place-items-center rounded-[6px] text-ink-3 transition-colors hover:bg-surface-3/70 hover:text-ink-1"
+          >
+            <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
+          </button>
+        )}
+      </div>
+
+      {open && multi && (
+        <div className="sc-glass absolute top-full right-0 left-0 z-30 mt-1.5 rounded-[10px] p-1">
+          <div className="px-2 py-1.5 text-[9.5px] leading-relaxed text-ink-3">
+            选一个 agent 新建；打开后会按它自动连接
+          </div>
+          {profiles.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => {
+                onNewWithProfile(p.id);
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-2 rounded-[6px] px-2 py-1.5 text-left transition-colors hover:bg-surface-3/45"
+            >
+              <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-1">
+                {profileLabel(p)}
+              </span>
+              <span className="shrink-0 font-mono text-[9.5px] text-ink-3">{p.launch}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

@@ -225,12 +225,16 @@ export default function App() {
     permissions.dropProfile(id);
   }, [permissions.dropProfile, removeProfile]);
 
-  const newSession = useCallback(() => {
+  const newSession = useCallback((profileIdChoice?: string) => {
     const id = `s-${Date.now()}`;
     initSession(id);
     // 必须进列表：只在 tab 里存在的话，关掉标签就再也找不回来了
-    // 新会话继承「最近用的那个连接」：没有选择步骤，也不会掉到一个空归属上
-    const inheritProfile = profiles.find((p) => p.id === activeSession?.profileId) ?? activeProfile;
+    // 新会话默认继承「最近用的那个连接」：没有选择步骤，也不会掉到一个空归属上；
+    // 用户在侧栏拆分按钮的下拉里指定了连接时，以他选的为准
+    const inheritProfile =
+      (profileIdChoice ? profiles.find((p) => p.id === profileIdChoice) : undefined) ??
+      profiles.find((p) => p.id === activeSession?.profileId) ??
+      activeProfile;
     const summary: SessionSummary = { id, title: "新会话", cwd: inheritProfile?.cwd ?? "", updatedAt: "刚刚", updatedAtSec: Math.floor(Date.now() / 1000), group: "今天", playerIds: [], acpSessionId: null, profileId: inheritProfile?.id };
     setSessions((prev) => [summary, ...prev]);
     sessionUpsert({ id, acpSessionId: null, profileId: inheritProfile?.id ?? null, title: summary.title, cwd: summary.cwd, createdAt: summary.updatedAtSec!, updatedAt: summary.updatedAtSec! }).catch((e) => console.warn("[db] upsert session failed", e));
@@ -263,7 +267,8 @@ export default function App() {
           repos={repoList}
           prsByRepo={prsByRepo}
           onSelect={(id) => openTab({ kind: "session", sessionId: id })}
-          onNew={newSession}
+          onNew={() => newSession()}
+          onNewWithProfile={(pid) => newSession(pid)}
           onOpenSettings={() => openTab({ kind: "settings", title: "设置" })}
           onOpenRepo={(repoId) => {
             const repo = repoList.find((r) => r.id === repoId);
