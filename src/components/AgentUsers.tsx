@@ -86,10 +86,17 @@ export function AgentUsers({
 
   const profile = profiles.find((p) => p.id === draft?.profileId);
 
-  /** 任何字段变动都退回未测试 —— 否则会出现「用 A 的 id 测通了、改成 B 还显示通过」 */
-  const edit = (patch: Partial<Draft>) => {
+  /**
+   * 改字段要不要退回「未测试」，取决于这个字段会不会让「测试结论」失效：
+   *
+   * - **会话字段**（连接 / session id / 工作目录）→ 必须退回。否则会出现
+   *   「用 A 的 id 测通了、改成 B 还显示通过」，存下去就是死条目。
+   * - **身份字段**（名字 / @ 短名 / 颜色）→ **不退回**。它们不影响那个会话能不能用，
+   *   而退回会让用户「填完短名 → 又得重测 → 新建档还会再建一个会话」，纯属自找麻烦。
+   */
+  const edit = (patch: Partial<Draft>, opts?: { affectsSession?: boolean }) => {
     setDraft((d) => (d ? { ...d, ...patch } : d));
-    setTest({ state: "untested" });
+    if (opts?.affectsSession) setTest({ state: "untested" });
     setError(null);
   };
 
@@ -105,7 +112,7 @@ export function AgentUsers({
     setTest({ state: "testing" });
     setError(null);
     try {
-      if (mode === "new") {
+      if (mode === "new" && draft.acpSessionId.trim().length === 0) {
         // 已经连着就别再连一次：重复 agent_connect 会报「已连接」，用户会以为建会话失败
         if (!profile.connected) await ensureConnected(profile);
         const info = await sessionNew(profile.id, draft.cwd.trim() || profile.cwd || "");
@@ -117,8 +124,18 @@ export function AgentUsers({
         });
         return;
       }
+      // 无论是「已有会话」还是「新建档再点一次」，这里都是**复核**同一个 id：
+      // 测试按钮因此是幂等的 —— 第二次不会再建一个会话。
       const r = await agentUserTest(profile, draft.acpSessionId.trim(), draft.cwd.trim() || undefined);
-      setTest(r.ok ? { state: "ok", detail: r.detail } : { state: "fail", detail: r.detail });
+      setTest(
+        r.ok
+          ? {
+              state: "ok",
+              detail:
+                mode === "new" ? `复核通过（沿用已建的会话，不会再新建）· ${r.detail}` : r.detail,
+            }
+          : { state: "fail", detail: r.detail },
+      );
     } catch (e) {
       const err = asCmdError(e);
       setTest({ state: "fail", detail: `${err.code} ${err.msg}` });
@@ -292,7 +309,10 @@ export function AgentUsers({
             <ProfilePick
               profiles={profiles}
               value={draft.profileId}
-              onChange={(id) => edit({ profileId: id })}
+              // 换连接：原来那个会话不在新连接上，id 作废（新建档尤其要清）
+              onChange={(id) =>
+                edit({ profileId: id, acpSessionId: "" }, { affectsSession: true })
+              }
             />
           </div>
 
@@ -340,7 +360,7 @@ export function AgentUsers({
               <span className="text-[9.5px] text-ink-3">ACP session id</span>
               <input
                 value={draft.acpSessionId}
-                onChange={(e) => edit({ acpSessionId: e.target.value })}
+                onChange={(e) => edit({ acpSessionId: e.target.value }, { affectsSession: true })}
                 placeholder="local-… 或 agent 报的 sessionId"
                 spellCheck={false}
                 className="mt-0.5 h-7 w-full rounded-[6px] border border-line-1/60 bg-surface-2/40 px-2 font-mono text-[11px] text-ink-1 placeholder:text-ink-3 focus:border-accent-1/50 focus:outline-none"
@@ -363,7 +383,13 @@ export function AgentUsers({
             <span className="text-[9.5px] text-ink-3">工作目录（可空，默认用连接的）</span>
             <input
               value={draft.cwd}
-              onChange={(e) => edit({ cwd: e.target.value })}
+              // 工作目录只在「建会话」那一刻有意义；已经建出来了再改它不影响那个会话
+              onChange={(e) =>
+                edit(
+                  { cwd: e.target.value },
+                  { affectsSession: draft.acpSessionId.trim().length === 0 },
+                )
+              }
               placeholder="/home/you/source"
               spellCheck={false}
               className="mt-0.5 h-7 w-full rounded-[6px] border border-line-1/60 bg-surface-2/40 px-2 font-mono text-[11px] text-ink-1 placeholder:text-ink-3 focus:border-accent-1/50 focus:outline-none"
@@ -401,7 +427,7 @@ export function AgentUsers({
               {test.state === "testing" ? (mode === "new" ? "正在建会话…" : "测试中…") : "测试"}
             </button>
             {mode === "new" && draft.acpSessionId.trim().length > 0 && (
-              <span className="text-[9.5px] text-ink-3">再点一次会再建一个会话</span>
+              <span className="text-[9.5px] text-ink-3">再点只是复核，不会新建</span>
             )}
             {mode === "existing" && !canTest && (
               // 灰着不解释是最烦人的禁用：说清要先做什么
