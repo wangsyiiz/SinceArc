@@ -70,6 +70,22 @@ export function useAcpEvents({
   /** 最近一次确认过的 ACP 会话 id：chunk 没带 sessionId 时的兜底 */
   const activeAcp = useRef("");
   const flushDiag = useRef(0);
+
+  /**
+   * 每条回答必须有**自己的**消息 id。
+   *
+   * 以前是 `stream-${acpSid}`：同一个会话的每一条回答都用同一个 id，
+   * 而落库是 `ON CONFLICT(id) DO UPDATE` —— 后一条直接把前一条覆盖掉。
+   * 表现就是「前面几轮的 agent 回答凭空消失」（实测一个群 11 条消息只剩 1 条回答）。
+   * 现在按「这一轮」生成 id，promptStarted 时清空，下一轮重新开一条。
+   */
+  const streamMsgId = useRef<Record<string, string>>({});
+  const curStreamId = (acpSid: string) => {
+    if (!streamMsgId.current[acpSid]) {
+      streamMsgId.current[acpSid] = `stream-${acpSid}-${Date.now()}`;
+    }
+    return streamMsgId.current[acpSid];
+  };
   const flushTimer = useRef(0);
   const lastSidRef = useRef(lastSessionId);
   lastSidRef.current = lastSessionId;
@@ -93,7 +109,7 @@ export function useAcpEvents({
         flushDiag.current += 1;
         diag(`flush -> ${uiSid} +${text.length} 字`);
       }
-      const streamId = `stream-${acpSid}`;
+      const streamId = curStreamId(acpSid);
       patchSession(uiSid, (s) => {
         const last = s.msgs[s.msgs.length - 1];
         const msgs =
@@ -208,14 +224,19 @@ export function useAcpEvents({
         return;
       }
 
-      if (event.kind === "promptStarted") return;
+      if (event.kind === "promptStarted") {
+        // 新一轮：上一轮的消息 id 作废，第一段 chunk 会开一条新消息
+        delete streamMsgId.current[event.sessionId];
+        delete streamText.current[event.sessionId];
+        return;
+      }
 
       if (event.kind === "promptResult" || event.kind === "promptFailed") {
         flushStream();
         const uiSid = acpToUi.current[event.sessionId];
         diag(`promptResult -> ${uiSid ?? "无映射"}`);
         if (uiSid) {
-          const streamId = `stream-${event.sessionId}`;
+          const streamId = curStreamId(event.sessionId);
           const actId = `act-stream-${event.sessionId}`;
           const turnId = acpToTurn.current[event.sessionId];
           patchSession(uiSid, (s) => ({
@@ -261,7 +282,7 @@ export function useAcpEvents({
         const full = streamText.current[acpSid] ?? "";
         delete streamText.current[acpSid];
         if (uiSid && full) {
-          const id = `stream-${acpSid}`;
+          const id = curStreamId(acpSid);
           messagesAppend(uiSid, [
             {
               id,
@@ -278,6 +299,8 @@ export function useAcpEvents({
             },
           ]).catch((e) => console.warn("[db] append reply failed", e));
         }
+        // 这一轮结束：放掉 id，下一轮重新生成（否则下一轮还会覆盖这一条）
+        delete streamMsgId.current[acpSid];
         return;
       }
 
