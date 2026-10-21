@@ -93,36 +93,32 @@ export function AgentUsers({
     setError(null);
   };
 
+  /**
+   * 「测试」按模式走两条路，但用户只需要点这一个按钮（所有者定的交互）：
+   * - 新建会话：测试本身就包含建会话（ensure connect → session/new → 填 id），
+   *   不再让用户先点一次「新建」再点一次「测试」。副作用是**真的会在 agent 上建一个会话**，
+   *   所以表单里必须提前说明。
+   * - 已有会话：真跑 session/load 验这个 id 能不能恢复。
+   */
   const runTest = async () => {
     if (!draft || !profile) return;
     setTest({ state: "testing" });
     setError(null);
     try {
+      if (mode === "new") {
+        // 已经连着就别再连一次：重复 agent_connect 会报「已连接」，用户会以为建会话失败
+        if (!profile.connected) await ensureConnected(profile);
+        const info = await sessionNew(profile.id, draft.cwd.trim() || profile.cwd || "");
+        const sid = info.sessionId;
+        setDraft((d) => (d ? { ...d, acpSessionId: sid } : d));
+        setTest({
+          state: "ok",
+          detail: `已在 ${profileLabel(profile)} 上新建会话 ${sid.length > 16 ? `${sid.slice(0, 16)}…` : sid}`,
+        });
+        return;
+      }
       const r = await agentUserTest(profile, draft.acpSessionId.trim(), draft.cwd.trim() || undefined);
       setTest(r.ok ? { state: "ok", detail: r.detail } : { state: "fail", detail: r.detail });
-    } catch (e) {
-      const err = asCmdError(e);
-      setTest({ state: "fail", detail: `${err.code} ${err.msg}` });
-    }
-  };
-
-  /**
-   * 自动新建：先确保连接在，再 session/new。
-   *
-   * 为什么不在这里用「测试」那套 session/load：刚建出来的会话必然可用，再 load 一次是白跑一趟，
-   * 规范 §2 也这么写。新建成功后把 id 填进表单，用户仍然可以切到「已有会话」手动改。
-   */
-  const createSession = async () => {
-    if (!draft || !profile) return;
-    setTest({ state: "testing" });
-    setError(null);
-    try {
-      // 已经连着就别再连一次：重复 agent_connect 会报「已连接」，用户会以为建会话失败了
-      if (!profile.connected) await ensureConnected(profile);
-      const info = await sessionNew(profile.id, draft.cwd.trim() || profile.cwd || "");
-      const sid = info.sessionId;
-      setDraft((d) => (d ? { ...d, acpSessionId: sid } : d));
-      setTest({ state: "ok", detail: `已新建会话 ${sid.length > 16 ? `${sid.slice(0, 16)}…` : sid}` });
     } catch (e) {
       const err = asCmdError(e);
       setTest({ state: "fail", detail: `${err.code} ${err.msg}` });
@@ -165,14 +161,14 @@ export function AgentUsers({
     }
   };
 
-  const canTest = !!draft && !!profile && draft.acpSessionId.trim().length > 0;
+  // 新建模式下有连接就能测（id 是测试时建出来的）；已有会话模式必须先填 id
+  const canTest =
+    !!draft && !!profile && (mode === "new" || draft.acpSessionId.trim().length > 0);
   const canSave = !!draft && test.state === "ok" && draft.name.trim().length > 0 && draft.handle.trim().length > 0;
 
   const saveBlocker = (() => {
     if (!draft) return null;
-    if (test.state === "untested") {
-      return mode === "new" ? "先点上面的「在连接上新建一个会话」" : "先测试通过才能保存";
-    }
+    if (test.state === "untested") return "先测试通过才能保存";
     if (test.state === "testing") return "正在测试…";
     if (test.state === "fail") return "测试没通过，先解决上面的问题";
     if (!draft.name.trim()) return "填个名字";
@@ -331,24 +327,11 @@ export function AgentUsers({
           </div>
 
           {mode === "new" && (
-            <div className="mt-2">
-              <button
-                type="button"
-                onClick={createSession}
-                disabled={!profile || test.state === "testing"}
-                className={cn(
-                  "rounded-[6px] px-2.5 py-1 text-[10.5px] transition-colors",
-                  "sc-row-active text-ink-1 hover:brightness-110",
-                  (!profile || test.state === "testing") && "opacity-50",
-                )}
-              >
-                {test.state === "testing" ? "正在建会话…" : "在连接上新建一个会话"}
-              </button>
-              <p className="mt-1 text-[9px] leading-relaxed text-ink-3">
-                建在当前连接上（工作目录用下面那个），建完自动填好 id；取消保存的话，agent 那边会留下
-                一个没人用的空会话。
-              </p>
-            </div>
+            <p className="mt-2 rounded-[4px] bg-warn-1/[0.08] px-2 py-1 text-[9.5px] leading-relaxed text-warn-1">
+              点「测试」会<span className="text-ink-1">真的</span>在这条连接上新建一个会话
+              （会占用 agent 的一个 session）。
+              建完不保存就取消的话，那个会话会留在 agent 那边，客户端不会偷偷删它。
+            </p>
           )}
 
           <label className="mt-2 block">
@@ -392,25 +375,24 @@ export function AgentUsers({
           </div>
 
           <div className="mt-2.5 flex items-center gap-2">
-            {mode === "existing" && (
-              <>
-                <button
-                  type="button"
-                  onClick={runTest}
-                  disabled={!canTest || test.state === "testing"}
-                  className={cn(
-                    "rounded-[6px] px-2.5 py-1 text-[10.5px] transition-colors",
-                    "sc-row-active text-ink-1 hover:brightness-110",
-                    (!canTest || test.state === "testing") && "opacity-50",
-                  )}
-                >
-                  {test.state === "testing" ? "测试中…" : "测试"}
-                </button>
-                {!canTest && (
-                  // 灰着不解释是最烦人的禁用：说清要先做什么
-                  <span className="text-[9.5px] text-ink-3">先填一个 session id</span>
-                )}
-              </>
+            <button
+              type="button"
+              onClick={runTest}
+              disabled={!canTest || test.state === "testing"}
+              className={cn(
+                "rounded-[6px] px-2.5 py-1 text-[10.5px] transition-colors",
+                "sc-row-active text-ink-1 hover:brightness-110",
+                (!canTest || test.state === "testing") && "opacity-50",
+              )}
+            >
+              {test.state === "testing" ? (mode === "new" ? "正在建会话…" : "测试中…") : "测试"}
+            </button>
+            {mode === "new" && draft.acpSessionId.trim().length > 0 && (
+              <span className="text-[9.5px] text-ink-3">再点一次会再建一个会话</span>
+            )}
+            {mode === "existing" && !canTest && (
+              // 灰着不解释是最烦人的禁用：说清要先做什么
+              <span className="text-[9.5px] text-ink-3">先填一个 session id</span>
             )}
             <button
               type="button"
