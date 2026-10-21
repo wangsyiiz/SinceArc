@@ -235,6 +235,12 @@ pub async fn agent_connect(
 
     // 入站消息逐条推给界面；channel 断了说明前端不要了，停掉转发即可。
     let events = on_event.clone();
+    // 转发 task 里拿不到 State，所以把进程句柄和「待回答登记表」clone 进去：
+    // 未实现的方法要在这里当场拒答，权限请求要在这里登记 id。
+    let proc = Arc::new(proc);
+    let proc_for_task = proc.clone();
+    let pending = state.pending.clone();
+    let profile_for_task = id.clone();
     tokio::spawn(async move {
         while let Some(msg) = incoming.recv().await {
             let payload = match msg {
@@ -244,6 +250,27 @@ pub async fn agent_connect(
                 }
                 transport::Incoming::Request { id, method, params } => {
                     tracing::debug!(target: "sincearc::acp", id, %method, "agent request");
+                    if method != "session/request_permission" {
+                        // 没实现的方法必须当场拒答。JSON-RPC 里一个不回的请求会让 agent
+                        // 一直等（hermes 默认 300s 才自拒），而界面上什么都不显示 ——
+                        // 用户看到的是「卡死」。回 -32601 至少让它立刻走错误分支。
+                        tracing::warn!(
+                            target: "sincearc::acp", id, %method,
+                            "unimplemented client method -> -32601"
+                        );
+                        let _ = proc_for_task
+                            .respond(
+                                id,
+                                Err(serde_json::json!({
+                                    "code": -32601,
+                                    "message": format!("method not found: {method}"),
+                                })),
+                            )
+                            .await;
+                        continue;
+                    }
+                    // 只有登记过的 id 才允许被回答（见 agent_respond_request）
+                    pending.mark(&profile_for_task, id).await;
                     AcpEvent::Request { id, method, params }
                 }
             };
@@ -283,7 +310,7 @@ pub async fn agent_connect(
         .insert(
             id.clone(),
             Arc::new(AgentHandle {
-                proc: Arc::new(proc),
+                proc: proc.clone(),
                 outcome: outcome.clone(),
                 profile: parsed,
                 events: on_event.clone(),
@@ -569,6 +596,51 @@ pub async fn session_prompt(
     Ok(())
 }
 
+/// 回答 agent 发来的请求。目前只有 `session/request_permission`。
+///
+/// `outcome` 原样透传 ACP 的 RequestPermissionOutcome：
+/// `{"outcome":"selected","optionId":"..."}` 或 `{"outcome":"cancelled"}`。
+/// 取消语义只属于「用户中止这一轮」；超时自拒要选 reject_* 选项，不能回 cancelled。
+#[tauri::command]
+pub async fn agent_respond_request(
+    state: State<'_, AppState>,
+    profile_id: String,
+    id: u64,
+    outcome: serde_json::Value,
+) -> Result<(), CmdError> {
+    // 先摘登记再写回：同一个请求被点两次（双击、两个窗口）时，第二次必须被挡住，
+    // 否则我们会往一个 agent 已经处理完的 id 上再写一条响应。
+    if !state.pending.take(&profile_id, id).await {
+        return Err(CmdError::new(50500, "这个请求已失效或已被回答"));
+    }
+    let handle = state
+        .get(&profile_id)
+        .await
+        .ok_or_else(|| CmdError::new(50501, "连接已断开，无法回答这个请求"))?;
+    match handle
+        .proc
+        .respond(id, Ok(serde_json::json!({ "outcome": outcome })))
+        .await
+    {
+        Ok(()) => {
+            tracing::info!(
+                target: "sincearc::ipc", profile = %profile_id, id,
+                "permission answered"
+            );
+            Ok(())
+        }
+        Err(e) => {
+            // 写不进去就把登记还回去：用户可能想再点一次，别让请求凭空消失。
+            state.pending.mark(&profile_id, id).await;
+            tracing::warn!(
+                target: "sincearc::ipc", profile = %profile_id, id, error = %e,
+                "respond failed"
+            );
+            Err(CmdError::new(50502, format!("写回决定失败：{e}")))
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn agent_disconnect(
     state: State<'_, AppState>,
@@ -576,6 +648,8 @@ pub async fn agent_disconnect(
 ) -> Result<(), CmdError> {
     // 会话跟着进程一起死：先摘记录，别让 prompt 打到已关闭的进程上
     let dead = state.drop_sessions_of(&profile_id).await;
+    // 进程没了，挂在它上面的权限请求也答不了了，登记表一并清掉
+    state.pending.clear(&profile_id).await;
     if !dead.is_empty() {
         tracing::info!(target: "sincearc::ipc", profile = %profile_id, sessions = dead.len(), "drop sessions on disconnect");
     }

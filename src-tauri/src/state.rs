@@ -3,7 +3,7 @@
 //! 只放「进程 + 握手结果」。会话、消息、权限请求属于会话层（E2 起），不放这里 ——
 //! 一个 profile 可以连多个 session，两者的生命周期不同。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -34,8 +34,41 @@ pub struct AppState {
     sessions: Mutex<HashMap<String, SessionRecord>>,
     /// 每个 ACP 会话打开时 agent 报上来的可选模式；推值前要拿它校验（规范 §4 规则 2）
     modes: Mutex<HashMap<String, SessionModes>>,
+    /// 等用户回答的 agent 请求（目前只有 session/request_permission）
+    pub pending: PendingRequests,
     /// 配置与会话记账（同步 SQLite，操作都是毫秒级，直接锁用）
     pub db: Arc<crate::db::Db>,
+}
+
+/// 待回答的 agent 请求登记表。
+///
+/// 单独包一层是因为事件转发 task 里拿不到 `State`，却要把「这个 id 还能不能答」记下来。
+/// 有了它，重复点按钮、应答过期请求、以及断连后残留的 id 都能被显式挡住，
+/// 而不是往 agent 那边写一条它已经不认的响应。
+#[derive(Clone, Default)]
+pub struct PendingRequests(Arc<Mutex<HashMap<String, HashSet<u64>>>>);
+
+impl PendingRequests {
+    pub async fn mark(&self, profile_id: &str, id: u64) {
+        self.0
+            .lock()
+            .await
+            .entry(profile_id.to_string())
+            .or_default()
+            .insert(id);
+    }
+
+    /// 取出并移除。返回 false = 这个 id 不在册（已被回答过，或本来就不是我们发的）。
+    pub async fn take(&self, profile_id: &str, id: u64) -> bool {
+        let mut map = self.0.lock().await;
+        map.get_mut(profile_id)
+            .map(|set| set.remove(&id))
+            .unwrap_or(false)
+    }
+
+    pub async fn clear(&self, profile_id: &str) {
+        self.0.lock().await.remove(profile_id);
+    }
 }
 
 impl AppState {
@@ -44,6 +77,7 @@ impl AppState {
             agents: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             modes: Mutex::new(HashMap::new()),
+            pending: PendingRequests::default(),
             db: Arc::new(db),
         }
     }
@@ -96,5 +130,45 @@ impl AppState {
             modes.remove(k);
         }
         dead
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PendingRequests;
+
+    #[tokio::test]
+    async fn pending_is_single_use() {
+        let pending = PendingRequests::default();
+        pending.mark("p1", 7).await;
+
+        // 第一次取走算成功
+        assert!(pending.take("p1", 7).await);
+        // 第二次必须是 false：界面双击不能往 agent 写第二条响应
+        assert!(!pending.take("p1", 7).await);
+    }
+
+    #[tokio::test]
+    async fn pending_is_scoped_per_profile() {
+        let pending = PendingRequests::default();
+        pending.mark("p1", 7).await;
+        // 同一个 id 号在另一个连接上不算数（JSON-RPC id 只在单条连接内唯一）
+        assert!(!pending.take("p2", 7).await);
+        assert!(pending.take("p1", 7).await);
+    }
+
+    #[tokio::test]
+    async fn clear_drops_everything_of_a_profile() {
+        let pending = PendingRequests::default();
+        pending.mark("p1", 1).await;
+        pending.mark("p1", 2).await;
+        pending.mark("p2", 1).await;
+
+        pending.clear("p1").await;
+
+        // 断连后残留的 id 一律答不出去
+        assert!(!pending.take("p1", 1).await);
+        assert!(!pending.take("p1", 2).await);
+        assert!(pending.take("p2", 1).await);
     }
 }

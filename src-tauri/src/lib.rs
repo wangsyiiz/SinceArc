@@ -37,6 +37,7 @@ pub fn run() {
             acp::list_profiles_hint,
             commands::agent_connect,
             commands::agent_disconnect,
+            commands::agent_respond_request,
             commands::session_new,
             commands::session_prompt,
             commands::profiles_load,

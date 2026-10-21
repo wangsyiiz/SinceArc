@@ -219,9 +219,12 @@ pub async fn initialize(
 
     let params = serde_json::json!({
         "protocolVersion": 1,
+        // 能力要照实报：`fs/*` 和 `terminal/*` 我们一行实现都没有。报 true 等于请 agent
+        // 把文件读写和终端执行甩给客户端，然后它去等一个永远不会来的响应 —— 表现是
+        // 整轮 prompt 卡住直到超时，而且看起来像 agent 的问题。
         "clientCapabilities": {
-            "fs": { "readTextFile": true, "writeTextFile": true },
-            "terminal": true
+            "fs": { "readTextFile": false, "writeTextFile": false },
+            "terminal": false
         }
     });
 
