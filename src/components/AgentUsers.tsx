@@ -40,6 +40,15 @@ interface Draft {
   cwd: string;
 }
 
+/** 必填记号：颜色点一下，别让用户靠「保存按钮为什么灰着」反推哪些是必填 */
+function Req() {
+  return (
+    <span className="ml-0.5 text-danger-1" aria-hidden title="必填">
+      *
+    </span>
+  );
+}
+
 const emptyDraft = (profiles: AgentProfile[]): Draft => ({
   name: "",
   handle: "",
@@ -188,8 +197,11 @@ export function AgentUsers({
     if (test.state === "untested") return "先测试通过才能保存";
     if (test.state === "testing") return "正在测试…";
     if (test.state === "fail") return "测试没通过，先解决上面的问题";
-    if (!draft.name.trim()) return "填个名字";
-    if (!draft.handle.trim()) return "填个 @ 短名";
+    const missing = [
+      !draft.name.trim() ? "名字" : null,
+      !draft.handle.trim() ? "@ 短名" : null,
+    ].filter(Boolean);
+    if (missing.length > 0) return `还缺：${missing.join("、")}`;
     return null;
   })();
 
@@ -284,18 +296,26 @@ export function AgentUsers({
 
           <div className="mt-2 grid grid-cols-2 gap-2">
             <label className="block">
-              <span className="text-[9.5px] text-ink-3">名字</span>
+              <span className="text-[9.5px] text-ink-3">
+                名字
+                <Req />
+              </span>
               <input
                 value={draft.name}
+                aria-required
                 onChange={(e) => edit({ name: e.target.value })}
                 placeholder="后端-2"
                 className="mt-0.5 h-7 w-full rounded-[6px] border border-line-1/60 bg-surface-2/40 px-2 text-[11px] text-ink-1 placeholder:text-ink-3 focus:border-accent-1/50 focus:outline-none"
               />
             </label>
             <label className="block">
-              <span className="text-[9.5px] text-ink-3">@ 短名</span>
+              <span className="text-[9.5px] text-ink-3">
+                @ 短名
+                <Req />
+              </span>
               <input
                 value={draft.handle}
+                aria-required
                 onChange={(e) => edit({ handle: e.target.value })}
                 placeholder="backend"
                 spellCheck={false}
@@ -305,7 +325,10 @@ export function AgentUsers({
           </div>
 
           <div className="mt-2">
-            <span className="text-[9.5px] text-ink-3">连接</span>
+            <span className="text-[9.5px] text-ink-3">
+              连接
+              <Req />
+            </span>
             <ProfilePick
               profiles={profiles}
               value={draft.profileId}
@@ -357,9 +380,13 @@ export function AgentUsers({
           {/* 已有会话才有输入框：新建档的 id 是测试时建出来的，只该「显示」，不该「可填」 */}
           {mode === "existing" ? (
             <label className="mt-2 block">
-              <span className="text-[9.5px] text-ink-3">ACP session id</span>
+              <span className="text-[9.5px] text-ink-3">
+                ACP session id
+                <Req />
+              </span>
               <input
                 value={draft.acpSessionId}
+                aria-required
                 onChange={(e) => edit({ acpSessionId: e.target.value }, { affectsSession: true })}
                 placeholder="local-… 或 agent 报的 sessionId"
                 spellCheck={false}
