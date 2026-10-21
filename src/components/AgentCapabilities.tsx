@@ -109,7 +109,7 @@ export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps)
           {commands.length > 0 && (
             <>
               <div className="mt-1 border-t border-line-1/40 px-2 py-1.5 text-[9.5px] tracking-wide text-ink-3">
-                ACP 之外的 {commands.length} 项
+                ACP 之外的 {commands.length} 项（预览，未接线）
               </div>
               {commands.map((c) => {
                 const active = picked?.id === c.id;
@@ -142,7 +142,7 @@ export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps)
                 <div className="mt-1 border-t border-line-1/40 px-2 py-2">
                   <div className="text-[9.5px] text-ink-3">将执行</div>
                   <code className="mt-1 block break-all font-mono text-[10px] leading-relaxed text-ink-2">
-                    {previewCommand(profile, picked.argv)}
+                    {previewCommand(profile, picked)}
                   </code>
                   <p className="mt-1.5 text-[9.5px] leading-relaxed text-ink-3">
                     未接线：目前只显示命令形态，不发起调用。

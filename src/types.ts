@@ -45,6 +45,12 @@ export interface AgentProfile {
 
 /** ACP 之外的能力（agent 自己的 CLI），不属于协议本体 */
 export interface AgentCommand {
+  /**
+   * 跑这条子命令用的**二进制**（如 hermes / codex）。
+   * 注意它不一定等于 profile.program：codex 的 ACP 是通过 `npx …codex-acp` 起的，
+   * 但它的 CLI 叫 `codex`。预览必须按这个字段拼，否则会拼出一条跑不通的命令。
+   */
+  binary: string;
   id: string;
   label: string;
   argv: string[];
