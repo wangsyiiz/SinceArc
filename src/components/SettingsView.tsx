@@ -15,9 +15,6 @@ import type { AgentProfile, LaunchKind, SshAuth, ThemeMode, ThreadSettings } fro
 import { cn } from "@/lib/utils";
 import {
   asCmdError,
-  connectAgent,
-  disconnectAgent,
-  type AcpEvent,
   type ModesSnapshot,
 } from "@/lib/ipc";
 import { ModeSelect } from "@/components/ModeSelect";
@@ -27,11 +24,11 @@ interface SettingsViewProps {
   theme: ThemeMode;
   profiles: AgentProfile[];
   onUpdateProfile: (next: AgentProfile) => void;
+  /** 连接/断开都走 App 里的那一份实现（并发去重、状态回写都在那边） */
+  onConnect: (p: AgentProfile) => Promise<string>;
+  onDisconnect: (profileId: string) => Promise<void>;
   onAddProfile: () => void;
   onRemoveProfile: (id: string) => void;
-  /** agent 推来的事件（S2：只做计数与日志，S3 起进消息流） */
-  onAgentEvent: (profileId: string, event: AcpEvent) => void;
-  onSession: (profileId: string, sessionId: string, snapshot?: ModesSnapshot | null) => void;
   /** 连接已经断开：App 用它清掉这个连接下待答的权限请求 */
   onDisconnected?: (profileId: string) => void;
   /** 设置页只能读到最近一次连接报上来的模式快照（可选列表 + agent 当前值） */
@@ -102,10 +99,10 @@ export function SettingsView({
   theme,
   profiles,
   onUpdateProfile,
+  onConnect,
+  onDisconnect,
   onAddProfile,
   onRemoveProfile,
-  onAgentEvent,
-  onSession,
   onDisconnected,
   modesFor,
   onChangeContext,
@@ -149,23 +146,8 @@ export function SettingsView({
     setBusy(p.id);
     setErrors((e) => ({ ...e, [p.id]: "" }));
     try {
-      const out = await connectAgent(p, (e) => onAgentEvent(p.id, e));
-      onUpdateProfile({
-        ...p,
-        connected: true,
-        agentName: `${out.agentName} ${out.agentVersion}`,
-        protocolVersion: out.protocolVersion,
-      });
-
-      // 会话由后端在连接时决定：优先复用上次的（session/load），没有再新建。
-      // 这样每连一次不会在 agent 侧留下一个空会话。
-      try {
-        if (!out.sessionId) throw new Error("agent 没有给出会话");
-        onSession(p.id, out.sessionId, out.modes ?? null);
-      } catch (e) {
-        const err = asCmdError(e);
-        setErrors((prev) => ({ ...prev, [p.id]: `会话创建失败：${err.code} ${err.msg}` }));
-      }
+      // 连接、状态回写、会话绑定都在 useAgentConnect 里，这里只负责把错误显示出来
+      await onConnect(p);
     } catch (e) {
       const err = asCmdError(e);
       setErrors((prev) => ({ ...prev, [p.id]: `${err.code} ${err.msg}` }));
@@ -178,8 +160,7 @@ export function SettingsView({
     setBusy(p.id);
     setErrors((e) => ({ ...e, [p.id]: "" }));
     try {
-      await disconnectAgent(p.id);
-      onUpdateProfile({ ...p, connected: false, agentName: null, protocolVersion: null });
+      await onDisconnect(p.id);
       onDisconnected?.(p.id);
     } catch (e) {
       const err = asCmdError(e);

@@ -58,5 +58,9 @@ export function useProfileStore() {
     return () => clearTimeout(t);
   }, [profiles, profilesLoaded]);
 
-  return { profiles, setProfiles, profilesLoaded, activeProfile, activeProfileId, setActiveProfileId, addProfile, removeProfile };
+  /** 只替换同 id 的那一条；连接状态、握手结果都靠它回写 */
+  const updateProfile = (next: AgentProfile) =>
+    setProfiles((list) => list.map((p) => (p.id === next.id ? next : p)));
+
+  return { profiles, setProfiles, profilesLoaded, activeProfile, activeProfileId, setActiveProfileId, addProfile, updateProfile, removeProfile };
 }

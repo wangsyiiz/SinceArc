@@ -25,6 +25,7 @@ import { isWrite, now } from "@/lib/format";
 import { useAcpEvents } from "@/hooks/useAcpEvents";
 import { usePaneLayout } from "@/hooks/usePaneLayout";
 import { usePermissions } from "@/hooks/usePermissions";
+import { useAgentConnect } from "@/hooks/useAgentConnect";
 import { useProfileStore } from "@/hooks/useProfileStore";
 import { usePrompt } from "@/hooks/usePrompt";
 import { useRepos } from "@/hooks/useRepos";
@@ -46,7 +47,7 @@ export default function App() {
   const [permOpen, setPermOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const { profiles, setProfiles, activeProfile, activeProfileId, setActiveProfileId, addProfile, removeProfile } = useProfileStore();
+  const { profiles, activeProfile, addProfile, updateProfile, removeProfile } = useProfileStore();
   const { sessions, setSessions } = useSessionList();
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
   const { state, patchSession, writeLock, initSession, sessionState } = useSessionState(lastSessionId);
@@ -80,7 +81,28 @@ export default function App() {
     [permissions.enqueue],
   );
   const { eventCount, lastEvent, eventLog, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ lastSessionId, patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission });
-  const { send } = usePrompt({ lastSessionId, patchSession, activeProfile, sessionsByProfile, contextMessages: settings.contextMessages, acp });
+  // 连接生命周期只有这一处实现：设置页手动连接、打开会话自动连接都走它
+  const { connect, ensureConnected, disconnect } = useAgentConnect({
+    profiles,
+    sessionsByProfile,
+    onUpdateProfile: updateProfile,
+    onAgentEvent,
+    onSession,
+  });
+  const profileIdOf = useCallback(
+    (uiSid: string) => sessions.find((s) => s.id === uiSid)?.profileId ?? null,
+    [sessions],
+  );
+  const { send } = usePrompt({
+    lastSessionId,
+    patchSession,
+    activeProfile,
+    sessionsByProfile,
+    contextMessages: settings.contextMessages,
+    acp,
+    profileIdOf,
+    ensureConnected,
+  });
   const { sidebarW, setSidebarW, traceW, setTraceW, dragging, setDragging, layoutRef, mainMin, sidebarMax, traceMax } = usePaneLayout(traceOpen);
   const { repoList, addRepo, activeRepo, activePr } = useRepos(activeTab);
 
@@ -104,6 +126,37 @@ export default function App() {
   useEffect(() => {
     setPermOpen(permHead !== null);
   }, [permHead]);
+
+  // 无感启动：切到某个会话标签（含从侧栏点开）就把它的 agent 拉起来。
+  //
+  // 尝试记录记的是「会话 + 当时的连接状态」而不是单纯的会话 id：失败之后状态不变，
+  // 所以不会每次重渲染都重试（否则消息流会被同一条错误刷屏）；而断开一次状态就变了，
+  // 用户再点回来就能重连 —— 断开是「现在别连」，不是「永久别连」（docs/desktop-ux.md §1.5）。
+  const autoTried = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    if (activeTab?.kind !== "session" || !activeTab.sessionId) return;
+    const sid = activeTab.sessionId;
+    const pid = sessions.find((s) => s.id === sid)?.profileId ?? activeProfile?.id ?? null;
+    if (!pid) return;
+    const attemptKey = `${pid}:${sessionsByProfile[pid] ?? "-"}`;
+    if (autoTried.current.get(sid) === attemptKey) return;
+    autoTried.current.set(sid, attemptKey);
+    void ensureConnected(pid).then((r) => {
+      if (!r.error) return;
+      patchSession(sid, (s) => ({
+        ...s,
+        msgs: [
+          ...s.msgs,
+          {
+            id: `conn-err-${Date.now()}`,
+            role: "system",
+            text: `连接失败：${r.error!.code} ${r.error!.msg}`,
+            at: now(),
+          },
+        ],
+      }));
+    });
+  }, [activeTab, ensureConnected, sessions, activeProfile, sessionsByProfile, patchSession]);
 
   /** 把 PR 作为引用塞进会话：优先复用已打开的会话标签 */
   const quotePr = useCallback(
@@ -201,12 +254,10 @@ export default function App() {
           activeId={lastSessionId}
           profiles={profiles}
           players={players}
-          activeProfileId={activeProfileId}
           repos={repoList}
           prsByRepo={prsByRepo}
           onSelect={(id) => openTab({ kind: "session", sessionId: id })}
           onNew={newSession}
-          onSelectProfile={setActiveProfileId}
           onOpenSettings={() => openTab({ kind: "settings", title: "设置" })}
           onOpenRepo={(repoId) => {
             const repo = repoList.find((r) => r.id === repoId);
@@ -392,13 +443,11 @@ export default function App() {
               settings={settings}
               profiles={profiles}
               theme={theme}
-              onUpdateProfile={(next) =>
-                setProfiles((list) => list.map((p) => (p.id === next.id ? next : p)))
-              }
+              onUpdateProfile={updateProfile}
               onAddProfile={addProfile}
               onRemoveProfile={removeProfileAndPerms}
-              onAgentEvent={onAgentEvent}
-              onSession={onSession}
+              onConnect={connect}
+              onDisconnect={disconnect}
               onDisconnected={permissions.dropProfile}
               modesFor={(pid) => modesByProfile[pid] ?? null}
               onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}

@@ -222,6 +222,9 @@ body {
 /* 对话框：玻璃 + 无外投影 */
 dialog.sc-dialog {
   padding: 0;
+  /* Tailwind 的 preflight 把 `*` 的 margin 清成 0，而 <dialog> 靠 margin:auto 居中，
+     一清就贴到视窗左上角。这里显式写回来。 */
+  margin: auto;
   border: 1px solid var(--l1);
   border-radius: 14px;
   background: var(--glass-1);

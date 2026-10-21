@@ -3,6 +3,7 @@ import { asCmdError, messagesAppend, sessionPrompt } from "@/lib/ipc";
 import { now } from "@/lib/format";
 import { players } from "@/mock/data";
 import type { AgentProfile, Message } from "@/types";
+import type { EnsureResult } from "./useAgentConnect";
 import type { AcpRefs } from "./useAcpEvents";
 import type { PatchSession } from "./useSessionState";
 
@@ -13,6 +14,8 @@ export function usePrompt({
   sessionsByProfile,
   contextMessages,
   acp,
+  profileIdOf,
+  ensureConnected,
 }: {
   lastSessionId: string;
   patchSession: PatchSession;
@@ -20,11 +23,15 @@ export function usePrompt({
   sessionsByProfile: Record<string, string>;
   contextMessages: number;
   acp: AcpRefs;
+  /** 会话归属哪个连接（老会话没记录时返回 null） */
+  profileIdOf: (uiSid: string) => string | null;
+  /** 无感启动：没连就现连，永不抛异常 */
+  ensureConnected: (profileId: string | null | undefined) => Promise<EnsureResult>;
 }) {
   const { acpToUi, acpToTurn, activeAcp } = acp;
 
   const send = useCallback(
-    (text: string) => {
+    async (text: string) => {
       const sid = lastSessionId;
       const at = now();
 
@@ -39,8 +46,33 @@ export function usePrompt({
         { id: userMsg.id, role: "user", kind: "text", payload: userMsg },
       ]).catch((e) => console.warn("[db] append message failed", e));
 
-      // 已连上真 agent：走 ACP；否则退回演示数据
-      const acpSid = activeProfile ? sessionsByProfile[activeProfile.id] : undefined;
+      // 归属：会话自己的连接优先，老会话（没记 profileId）退回当前选中
+      const profileId = profileIdOf(sid) ?? activeProfile?.id ?? null;
+      let acpSid = profileId ? sessionsByProfile[profileId] : undefined;
+
+      if (!acpSid && profileId) {
+        // 无感启动的保底：打开会话时可能还没连上（或刚被断开），发消息这一下必须连上，
+        // 否则用户会看到一条「演示」回答，而他以为自己在跟真 agent 说话。
+        const r = await ensureConnected(profileId);
+        if (r.error) {
+          patchSession(sid, (s) => ({
+            ...s,
+            busy: false,
+            msgs: [
+              ...s.msgs,
+              {
+                id: `conn-err-${Date.now()}`,
+                role: "system",
+                text: `连接失败：${r.error!.code} ${r.error!.msg}`,
+                at: now(),
+              },
+            ],
+          }));
+          return;
+        }
+        acpSid = r.acpSid ?? undefined;
+      }
+
       if (acpSid) {
         const actId = `act-stream-${acpSid}`;
         const turnId = `turn-live-${Date.now()}`;
@@ -98,6 +130,8 @@ export function usePrompt({
         return;
       }
 
+      // 走到这里说明这个会话根本没有可用的连接配置：保留演示链路，
+      // 这样「刚装好还没配连接」的新用户也有东西可看。
       const hits = players.filter((p) => text.includes(`@${p.handle}`));
       const targets = hits.length > 0 ? hits : [players[0]];
       const turnId = `t-${Date.now()}`;
@@ -173,7 +207,16 @@ export function usePrompt({
         );
       });
     },
-    [lastSessionId, patchSession, contextMessages, activeProfile, sessionsByProfile, acp],
+    [
+      lastSessionId,
+      patchSession,
+      contextMessages,
+      activeProfile,
+      sessionsByProfile,
+      acp,
+      profileIdOf,
+      ensureConnected,
+    ],
   );
 
   return { send };

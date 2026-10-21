@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { FolderGit2, MessageSquare, Plus, Settings2, Terminal } from "lucide-react";
+import { FolderGit2, MessageSquare, Plus, Settings2 } from "lucide-react";
 import type { AgentProfile, GithubPR, GithubRepo, Player, SessionSummary } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -12,12 +12,10 @@ interface SidebarProps {
   activeId: string | null;
   profiles: AgentProfile[];
   players: Player[];
-  activeProfileId: string;
   repos: GithubRepo[];
   prsByRepo: Record<string, GithubPR[]>;
   onSelect: (id: string) => void;
   onNew: () => void;
-  onSelectProfile: (id: string) => void;
   onOpenSettings: () => void;
   onOpenRepo: (repoId: string) => void;
   onAddRepo: (path: string) => void;
@@ -33,12 +31,10 @@ export function Sidebar({
   activeId,
   profiles,
   players,
-  activeProfileId,
   repos,
   prsByRepo,
   onSelect,
   onNew,
-  onSelectProfile,
   onOpenSettings,
   onOpenRepo,
   onAddRepo,
@@ -121,6 +117,10 @@ export function Sidebar({
                 </div>
                 {items.map((s) => {
                   const active = s.id === activeId;
+                  // 老会话可能没有 profileId；查不到配置时直接不渲染，避免「未知」噪音
+                  const profile = s.profileId
+                    ? profiles.find((p) => p.id === s.profileId)
+                    : undefined;
                   return (
                     <button
                       key={s.id}
@@ -140,7 +140,7 @@ export function Sidebar({
                       >
                         {s.title}
                       </span>
-                      <span className="flex items-center gap-1">
+                      <span className="flex min-w-0 items-center gap-1">
                         {s.playerIds.slice(0, 3).map((pid) => {
                           const pl = players.find((x) => x.id === pid);
                           return pl ? (
@@ -152,7 +152,20 @@ export function Sidebar({
                             />
                           ) : null;
                         })}
-                        <span className="truncate font-mono text-[10px] text-ink-3">{s.cwd}</span>
+                        <span className="min-w-0 truncate font-mono text-[10px] text-ink-3">
+                          {s.cwd}
+                        </span>
+                        {profile && (
+                          <span
+                            title={profile.name}
+                            className={cn(
+                              "ml-auto max-w-[72px] shrink-0 truncate rounded-[4px] bg-surface-3/35 px-1 py-px font-mono text-[9.5px] transition-colors group-hover:bg-surface-3/55",
+                              profile.connected ? "text-ok-1" : "text-ink-3",
+                            )}
+                          >
+                            {profile.name}
+                          </span>
+                        )}
                       </span>
                     </button>
                   );
@@ -227,26 +240,6 @@ export function Sidebar({
       )}
 
       <div className="border-t border-line-1/80 p-2">
-        <div className="mb-1 px-1.5 text-[10px] text-ink-3">Agent</div>
-        {profiles.map((p) => (
-          <button
-            key={p.id}
-            onClick={() => onSelectProfile(p.id)}
-            className={cn(
-              "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left transition-colors",
-              p.id === activeProfileId ? "bg-surface-3/55" : "hover:bg-surface-3/35",
-            )}
-          >
-            <span
-              className={cn("size-1.5 shrink-0 rounded-full", p.connected ? "bg-ok-1" : "bg-ink-3")}
-            />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[11.5px] text-ink-1">{p.name}</span>
-              <span className="block truncate font-mono text-[9.5px] text-ink-3">{p.detail}</span>
-            </span>
-            {p.launch === "wsl" && <Terminal className="size-3 shrink-0 text-ink-3" />}
-          </button>
-        ))}
         <button
           onClick={onOpenSettings}
           className="mt-0.5 flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-[11.5px] text-ink-3 transition-colors hover:bg-surface-3/35 hover:text-ink-2"
