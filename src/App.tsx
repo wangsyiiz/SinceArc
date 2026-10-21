@@ -20,7 +20,7 @@ import { TracePanel } from "@/components/TracePanel";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
 import { players, prsByRepo } from "@/mock/data";
 import type { GithubPR, GithubRepo, SessionSummary, Tab, ThreadSettings } from "@/types";
-import { sessionUpsert } from "@/lib/ipc";
+import { sessionUpsert, type ModesSnapshot } from "@/lib/ipc";
 import { isWrite, now } from "@/lib/format";
 import { useAcpEvents } from "@/hooks/useAcpEvents";
 import { usePaneLayout } from "@/hooks/usePaneLayout";
@@ -30,6 +30,7 @@ import { useRepos } from "@/hooks/useRepos";
 import { useScrollFade } from "@/hooks/useScrollFade";
 import { useSessionList } from "@/hooks/useSessionList";
 import { useSessionState } from "@/hooks/useSessionState";
+import { useSessionModes } from "@/hooks/useSessionModes";
 import { useTabs } from "@/hooks/useTabs";
 import { useTheme } from "@/hooks/useTheme";
 
@@ -48,13 +49,35 @@ export default function App() {
   const { sessions, setSessions } = useSessionList();
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
   const { state, patchSession, writeLock, initSession, sessionState } = useSessionState(lastSessionId);
-  const { eventCount, lastEvent, eventLog, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ lastSessionId, patchSession, setSessions });
+  const { bySid: modesBySid, byProfile: modesByProfile, applyFor, choose, noteAgentSwitch } = useSessionModes();
+  const onSessionBound = useCallback(
+    (args: {
+      profileId: string;
+      acpSessionId: string;
+      uiSessionId: string;
+      snapshot: ModesSnapshot | null;
+    }) => {
+      void applyFor(args);
+    },
+    [applyFor],
+  );
+  const onAgentSwitch = useCallback(
+    (uiSessionId: string, modeId: string) => noteAgentSwitch(uiSessionId, modeId),
+    [noteAgentSwitch],
+  );
+  const { eventCount, lastEvent, eventLog, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ lastSessionId, patchSession, setSessions, onSessionBound, onAgentSwitch });
   const { send } = usePrompt({ lastSessionId, patchSession, activeProfile, sessionsByProfile, contextMessages: settings.contextMessages, acp });
   const { sidebarW, setSidebarW, traceW, setTraceW, dragging, setDragging, layoutRef, mainMin, sidebarMax, traceMax } = usePaneLayout(traceOpen);
   const { repoList, addRepo, activeRepo, activePr } = useRepos(activeTab);
 
   const activeSession = sessions.find((s) => s.id === lastSessionId);
   const cwd = activeSession?.cwd ?? activeProfile?.cwd ?? "";
+  const activeModeView = modesBySid[lastSessionId] ?? null;
+  const activeDefaultModeLabel = activeProfile?.defaultMode
+    ? ((modesByProfile[activeProfile.id]?.available ?? activeModeView?.available ?? []).find(
+        (m) => m.id === activeProfile.defaultMode,
+      )?.name ?? activeProfile.defaultMode)
+    : null;
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -181,6 +204,19 @@ export default function App() {
                 sessionId={activeProfile ? sessionsByProfile[activeProfile.id] : undefined}
                 eventCount={eventCount}
                 lastEvent={lastEvent}
+                modes={activeModeView}
+                fallbackLabel={activeDefaultModeLabel}
+                onChooseMode={(modeId) => {
+                  const acpSid = activeProfile ? sessionsByProfile[activeProfile.id] : undefined;
+                  if (activeProfile && acpSid) {
+                    void choose({
+                      profileId: activeProfile.id,
+                      acpSessionId: acpSid,
+                      uiSessionId: lastSessionId,
+                      modeId,
+                    });
+                  }
+                }}
                 traceOpen={traceOpen}
                 onToggleTrace={() =>
                   setTraceOpen((v) => {
@@ -304,6 +340,7 @@ export default function App() {
               onRemoveProfile={removeProfile}
               onAgentEvent={onAgentEvent}
               onSession={onSession}
+              modesFor={(pid) => modesByProfile[pid] ?? null}
               onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}
               onCycleTheme={setTheme}
               eventLog={eventLog}

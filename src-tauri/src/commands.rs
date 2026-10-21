@@ -719,7 +719,15 @@ async fn push_mode(
             Duration::from_secs(60),
         )
         .await
-        .map(|_| ())
+        .map(|_| {
+            // 成功路径也要留痕：界面显示是一回事，日志能证明「我们确实推了这个值」
+            tracing::info!(
+                target: "sincearc::ipc",
+                session = acp_session_id,
+                mode = mode_id,
+                "mode pushed"
+            );
+        })
         .map_err(|e| {
             tracing::warn!(
                 target: "sincearc::ipc",

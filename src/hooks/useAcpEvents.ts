@@ -4,6 +4,7 @@ import {
   messagesAppend,
   sessionBindAcp,
   type AcpEvent,
+  type ModesSnapshot,
 } from "@/lib/ipc";
 import { now } from "@/lib/format";
 import { players } from "@/mock/data";
@@ -21,11 +22,22 @@ export function useAcpEvents({
   lastSessionId,
   patchSession,
   setSessions,
+  onSessionBound,
+  onAgentSwitch,
 }: {
   lastSessionId: string;
   patchSession: PatchSession;
   /** 会话绑定 ACP session 后要回写列表（acpSessionId / profileId） */
   setSessions: Dispatch<SetStateAction<SessionSummary[]>>;
+  /** 绑定完成后再推模式：这时后端才拿得到本次会话的 modes 快照 */
+  onSessionBound?: (args: {
+    profileId: string;
+    acpSessionId: string;
+    uiSessionId: string;
+    snapshot: ModesSnapshot | null;
+  }) => void;
+  /** agent 自己切模式：只更新界面，不写存储 */
+  onAgentSwitch?: (uiSessionId: string, modeId: string) => void;
 }) {
   const [sessionsByProfile, setSessionsByProfile] = useState<Record<string, string>>({});
   const [eventCount, setEventCount] = useState(0);
@@ -134,6 +146,14 @@ export function useAcpEvents({
             ? event.method
             : event.kind,
       );
+      if (su?.update?.sessionUpdate === "current_mode_update") {
+        const uiSid = acpToUi.current[su.sessionId ?? activeAcp.current];
+        const modeId = su.update.currentModeId;
+        if (uiSid && modeId) onAgentSwitch?.(uiSid, modeId);
+        // 这条通知只是状态同步，没有正文，不能继续落进消息流
+        return;
+      }
+
       if (su?.update?.sessionUpdate === "agent_message_chunk") {
         const acpSid = su.sessionId || activeAcp.current;
         if (!su.sessionId) diag("chunk 缺 sessionId，回退到最近活跃会话");
@@ -221,10 +241,10 @@ export function useAcpEvents({
 
       console.debug("[acp]", profileId, event);
     },
-    [flushStream, patchSession],
+    [flushStream, onAgentSwitch, patchSession],
   );
 
-  const onSession = useCallback((profileId: string, sessionId: string) => {
+  const onSession = useCallback((profileId: string, sessionId: string, snapshot?: ModesSnapshot | null) => {
     setSessionsByProfile((m) => ({ ...m, [profileId]: sessionId }));
     // 建立映射：agent 回的事件带的是 ACP sessionId
     acpToUi.current[sessionId] = lastSidRef.current;
@@ -241,7 +261,13 @@ export function useAcpEvents({
         ),
       );
     }
-  }, [setSessions]);
+    onSessionBound?.({
+      profileId,
+      acpSessionId: sessionId,
+      uiSessionId: lastSidRef.current,
+      snapshot: snapshot ?? null,
+    });
+  }, [onSessionBound, setSessions]);
 
   const acp = useMemo<AcpRefs>(() => ({ acpToUi, acpToTurn, activeAcp, streamText }), []);
 

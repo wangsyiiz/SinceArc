@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 import { ChevronDown, ShieldCheck, Waypoints } from "lucide-react";
 import type { AgentProfile } from "@/types";
 import { cn } from "@/lib/utils";
+import { ModeSelect } from "@/components/ModeSelect";
+import type { ModeView } from "@/hooks/useSessionModes";
 
 interface StatusBarProps {
   cwd: string;
@@ -13,6 +15,11 @@ interface StatusBarProps {
   /** 调试用：累计收到的 inbound 事件数与其方法名 */
   eventCount?: number;
   lastEvent?: string;
+  /** 当前会话的审批模式；为空时状态栏不显示选择器 */
+  modes?: ModeView | null;
+  onChooseMode?: (modeId: string | null) => void;
+  /** 跟随连接默认时，副标题显示哪个模式；由上层查 profile 后传入 */
+  fallbackLabel?: string | null;
   /** 右侧插槽：agent 能力入口等 */
   right?: ReactNode;
 }
@@ -25,6 +32,9 @@ export function StatusBar({
   sessionId,
   eventCount = 0,
   lastEvent,
+  modes,
+  onChooseMode,
+  fallbackLabel,
   right,
 }: StatusBarProps) {
   return (
@@ -46,6 +56,17 @@ export function StatusBar({
       </button>
 
       <div className="ml-auto flex items-center gap-0.5">
+        {modes && onChooseMode && (
+          <ModeSelect
+            compact
+            current={modes.current}
+            available={modes.available}
+            following={modes.following}
+            fallbackLabel={fallbackLabel}
+            warning={modes.warning}
+            onChoose={onChooseMode}
+          />
+        )}
         {right}
         {sessionId && (
           <span

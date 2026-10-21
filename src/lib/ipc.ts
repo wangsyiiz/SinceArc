@@ -53,10 +53,29 @@ export interface ConnectOutcome {
   loadSession: boolean;
   imagePrompts: boolean;
   authMethods: string[];
-  modes?: {
-    available: { id: string; name: string; description?: string | null }[];
-    current: string;
-  } | null;
+  modes?: ModesSnapshot | null;
+}
+
+export interface ModeOption {
+  id: string;
+  name: string;
+  description?: string | null;
+}
+
+/**
+ * 打开/恢复会话时 agent 报上来的模式快照。
+ * `current` 是 agent 当时的生效值 —— 界面初值必须用它，
+ * 不能拿 available[0] 顶（规范 §5.2：跟随且没有连接默认时要显示 agent 的值）。
+ */
+export interface ModesSnapshot {
+  available: ModeOption[];
+  current: string;
+}
+
+export interface ModeChoice {
+  applied: string | null;
+  following: boolean;
+  warning?: string | null;
 }
 
 export function isTauri(): boolean {
@@ -216,6 +235,7 @@ export interface SessionUpdate {
   sessionId?: string;
   update?: {
     sessionUpdate?: string;
+    currentModeId?: string;
     content?: { type?: string; text?: string };
     [k: string]: unknown;
   };
@@ -229,6 +249,28 @@ export function asSessionUpdate(e: AcpEvent): SessionUpdate | null {
 
 export function disconnectAgent(profileId: string): Promise<void> {
   return invoke<void>("agent_disconnect", { profileId });
+}
+
+export function sessionApplyMode(
+  profileId: string,
+  acpSessionId: string,
+  uiSessionId: string,
+): Promise<ModeChoice> {
+  return invoke<ModeChoice>("session_apply_mode", { profileId, acpSessionId, uiSessionId });
+}
+
+export function sessionChooseMode(
+  profileId: string,
+  acpSessionId: string,
+  uiSessionId: string,
+  modeId: string | null,
+): Promise<ModeChoice> {
+  return invoke<ModeChoice>("session_choose_mode", {
+    profileId,
+    acpSessionId,
+    uiSessionId,
+    modeId,
+  });
 }
 
 export function listConnected(): Promise<string[]> {

@@ -13,7 +13,14 @@ import {
 } from "lucide-react";
 import type { AgentProfile, LaunchKind, SshAuth, ThemeMode, ThreadSettings } from "@/types";
 import { cn } from "@/lib/utils";
-import { asCmdError, connectAgent, disconnectAgent, type AcpEvent } from "@/lib/ipc";
+import {
+  asCmdError,
+  connectAgent,
+  disconnectAgent,
+  type AcpEvent,
+  type ModesSnapshot,
+} from "@/lib/ipc";
+import { ModeSelect } from "@/components/ModeSelect";
 
 interface SettingsViewProps {
   settings: ThreadSettings;
@@ -24,7 +31,9 @@ interface SettingsViewProps {
   onRemoveProfile: (id: string) => void;
   /** agent 推来的事件（S2：只做计数与日志，S3 起进消息流） */
   onAgentEvent: (profileId: string, event: AcpEvent) => void;
-  onSession: (profileId: string, sessionId: string) => void;
+  onSession: (profileId: string, sessionId: string, snapshot?: ModesSnapshot | null) => void;
+  /** 设置页只能读到最近一次连接报上来的模式快照（可选列表 + agent 当前值） */
+  modesFor: (profileId: string) => ModesSnapshot | null;
   onChangeContext: (n: number) => void;
   onCycleTheme: (t: ThemeMode) => void;
   /** 最近收到的 ACP 事件（诊断用：确认通道到底通不通） */
@@ -95,6 +104,7 @@ export function SettingsView({
   onRemoveProfile,
   onAgentEvent,
   onSession,
+  modesFor,
   onChangeContext,
   onCycleTheme,
   eventLog = [],
@@ -148,7 +158,7 @@ export function SettingsView({
       // 这样每连一次不会在 agent 侧留下一个空会话。
       try {
         if (!out.sessionId) throw new Error("agent 没有给出会话");
-        onSession(p.id, out.sessionId);
+        onSession(p.id, out.sessionId, out.modes ?? null);
       } catch (e) {
         const err = asCmdError(e);
         setErrors((prev) => ({ ...prev, [p.id]: `会话创建失败：${err.code} ${err.msg}` }));
@@ -228,6 +238,8 @@ export function SettingsView({
               )}
               {profiles.map((p) => {
                 const ssh = p.ssh;
+                const snapshot = modesFor(p.id);
+                const availableModes = snapshot?.available ?? [];
                 return (
                   <div key={p.id} className="rounded-[8px] border border-line-1/60 p-3">
                     <div className="flex items-center justify-between gap-2">
@@ -303,6 +315,26 @@ export function SettingsView({
                         </button>
                       ))}
                     </div>
+
+                    <div className="mt-2.5 flex items-center justify-between gap-3">
+                      <span className="shrink-0 text-[9.5px] text-ink-3">默认文件编辑审批</span>
+                      <ModeSelect
+                        compact
+                        // 跟随且没有连接默认时，显示 agent 报的当前值（规范 §5.2）
+                        current={p.defaultMode ?? snapshot?.current ?? null}
+                        available={availableModes}
+                        following={p.defaultMode == null}
+                        onChoose={(modeId) => onUpdateProfile({ ...p, defaultMode: modeId })}
+                      />
+                    </div>
+                    {availableModes.length === 0 && (
+                      <p className="mt-1 text-right text-[9.5px] text-ink-3">
+                        连接一次之后才能选
+                      </p>
+                    )}
+                    <p className="mt-1 text-[9.5px] leading-relaxed text-ink-3">
+                      每次打开会话都会按这里重新应用；agent 在会话内自己切走的模式，重开后回到这里的设置。
+                    </p>
 
                     {p.launch === "ssh" && ssh && (
                       <div className="mt-2.5 grid grid-cols-2 gap-2">
