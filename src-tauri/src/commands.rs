@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
+use tauri::Manager;
 use tauri::State;
 
 use crate::acp::launch::{AgentProfile, Launch, SshAuth, SshSpec};
@@ -1198,6 +1199,33 @@ pub async fn session_bind_acp(
         .db
         .bind_acp_session(&id, &acp_session_id)
         .map_err(|e| CmdError::new(50000, format!("绑定会话失败：{e}")))
+}
+
+/// 客户端侧日志：追到应用数据目录下的 sincearc.log。
+///
+/// 为什么需要它：回答"到底有没有回复、有没有写进库"这类问题，只靠 console.warn
+/// 在重启后就什么都没有了（实测踩过：界面里明明有回答，库里没有，谁也说不清哪一步断的）。
+#[tauri::command]
+pub async fn client_log(app: tauri::AppHandle, tag: String, text: String) -> Result<(), CmdError> {
+    use std::io::Write;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| CmdError::new(50700, format!("拿不到应用数据目录：{e}")))?;
+    std::fs::create_dir_all(&dir).map_err(|e| CmdError::new(50700, format!("建目录失败：{e}")))?;
+    let path = dir.join("sincearc.log");
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| CmdError::new(50700, format!("打开日志失败：{e}")))?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    writeln!(f, "{ts}\t{tag}\t{text}")
+        .map_err(|e| CmdError::new(50700, format!("写日志失败：{e}")))?;
+    Ok(())
 }
 
 #[tauri::command]

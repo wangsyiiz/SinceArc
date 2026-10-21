@@ -8,6 +8,8 @@ import {
 } from "@/lib/ipc";
 import { denyPermission, parsePermissionOptions } from "@/hooks/usePermissions";
 import { now } from "@/lib/format";
+import { clog } from "@/lib/log";
+import { pushSystemNotice } from "@/lib/notices";
 import type { SessionSummary } from "@/types";
 import { MAIN_AGENT_ID } from "./usePrompt";
 import type { PatchSession } from "./useSessionState";
@@ -108,6 +110,7 @@ export function useAcpEvents({
       if (flushDiag.current < 12) {
         flushDiag.current += 1;
         diag(`flush -> ${uiSid} +${text.length} 字`);
+        clog("FLUSH", `acp=${acpSid} ui=${uiSid} +${text.length}`);
       }
       const streamId = curStreamId(acpSid);
       patchSession(uiSid, (s) => {
@@ -233,7 +236,11 @@ export function useAcpEvents({
 
       if (event.kind === "promptResult" || event.kind === "promptFailed") {
         flushStream();
-        const uiSid = acpToUi.current[event.sessionId];
+        // 与 flushStream 保持同一套兜底：映射缺失就落到当前会话。
+        // 这里以前是硬取映射，取不到就整块跳过 —— 回答在界面里看得见、却一行都没落库。
+        const mapped = acpToUi.current[event.sessionId];
+        const uiSid = mapped ?? lastSidRef.current;
+        if (!mapped) clog("RESULT-NOMAP", `acp=${event.sessionId} fallback=${uiSid}`);
         diag(`promptResult -> ${uiSid ?? "无映射"}`);
         if (uiSid) {
           const streamId = curStreamId(event.sessionId);
@@ -277,6 +284,7 @@ export function useAcpEvents({
         }
         if (event.kind === "promptFailed") {
           console.warn("[acp] prompt failed", event.msg);
+          clog("FAIL", `acp=${event.sessionId} ui=${uiSid ?? "-"} ${event.msg}`);
           // 失败原因也要落库：否则恢复会话后就是「问了没人答」，看不出当时是失败
           if (uiSid) {
             const id = `perr-${Date.now()}`;
@@ -293,8 +301,25 @@ export function useAcpEvents({
 
         // 这一轮整条落库（同一 id 重复写是幂等的）
         const acpSid = event.sessionId;
-        const full = streamText.current[acpSid] ?? "";
+        let full = streamText.current[acpSid] ?? "";
         delete streamText.current[acpSid];
+        if (!full) {
+          // 兜底：chunk 事件里的 sessionId 与 prompt 用的不一致时，
+          // 文本会累积在另一个 key 下 —— 界面照样显示（flush 有兜底），
+          // 但这里读 `acpSid` 会得到空串，于是**一行都不落库**。
+          // 这条路径此前完全静默，正是「界面有回答、库里没有」最可能的成因。
+          for (const [k, v] of Object.entries(streamText.current)) {
+            if (!v || k === acpSid) continue;
+            const kUi = acpToUi.current[k] ?? lastSidRef.current;
+            if (kUi === uiSid) {
+              full = v;
+              delete streamText.current[k];
+              clog("RESULT-ID-MISMATCH", `prompt=${acpSid} streamed=${k} ui=${uiSid} len=${v.length}`);
+              break;
+            }
+          }
+        }
+        clog("RESULT", `acp=${acpSid} ui=${uiSid ?? "-"} kind=${event.kind} len=${full.length}`);
         if (uiSid && full) {
           const id = curStreamId(acpSid);
           messagesAppend(uiSid, [
@@ -311,7 +336,14 @@ export function useAcpEvents({
                 streaming: false,
               },
             },
-          ]).catch((e) => console.warn("[db] append reply failed", e));
+          ])
+            .then(() => clog("DB-OK", `ui=${uiSid} id=${id} len=${full.length}`))
+            .catch((e) => {
+              console.warn("[db] append reply failed", e);
+              clog("DB-ERR", `ui=${uiSid} id=${id} ${String(e)}`);
+              // 写不进库必须让用户看见：否则他下次恢复会话又会以为「回答丢了」
+              pushSystemNotice(patchSession, uiSid, `这条回答没能写入历史：${String(e)}`);
+            });
         }
         // 这一轮结束：放掉 id，下一轮重新生成（否则下一轮还会覆盖这一条）
         delete streamMsgId.current[acpSid];

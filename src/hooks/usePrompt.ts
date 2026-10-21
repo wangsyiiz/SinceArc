@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { asCmdError, messagesAppend, sessionLoad, sessionPrompt } from "@/lib/ipc";
 import { now } from "@/lib/format";
 import { pushSystemNotice } from "@/lib/notices";
+import { clog } from "@/lib/log";
 import type { AgentProfile, Message } from "@/types";
 import type { EnsureResult } from "./useAgentConnect";
 import type { AcpRefs } from "./useAcpEvents";
@@ -167,6 +168,10 @@ export function usePrompt({
           ],
         }));
 
+        clog(
+          "SEND",
+          `acp=${acpSid} ui=${sid} target=${target ? `member:${target.authorId}` : "main"} len=${text.length}`,
+        );
         sessionPrompt(acpSid, text).catch((e) => {
           const err = asCmdError(e);
           setBusy(sid, false);

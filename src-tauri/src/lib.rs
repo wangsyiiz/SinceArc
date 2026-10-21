@@ -60,6 +60,7 @@ pub fn run() {
             commands::session_apply_mode,
             commands::session_choose_mode,
             commands::messages_append,
+            commands::client_log,
             commands::messages_load,
             commands::agent_list_connected,
         ])
