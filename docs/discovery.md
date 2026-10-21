@@ -84,9 +84,20 @@
 | 启动先读缓存、没有才后台扫 | ✅ `useDiscovery`（挂载即跑，不阻塞界面） |
 | 设置页「重新扫描」+ 分组列表 + 逐条验证 | ✅ 连接区底部 |
 | 「用它建连接」（带上 program/args/环境/家目录） | ✅ |
-| SSH 扫描（只扫已存连接的 host） | ❌ 未做，需要先能列出已存连接 |
+| SSH 扫描（只扫已存连接的 host） | ✅ 复用启动层；⚠️ 真机未验（本机 sshd 只有密码认证，需要真实凭据） |
 
-## 7. 验收
+## 7. 两个把扫描打回零结果的坑（实测）
+
+1. **`sh -lc` 不能用**：WSL 的 `/etc/profile` 会把 Windows 的 PATH 拼进来，里面有
+   `Program Files (x86)`，未加引号 → `syntax error near unexpected token '('`，
+   脚本后半段整段不执行。表现是「明明装了 agent，扫出 0 个」。改成 `sh -s` + 自己拼 PATH。
+2. **多行脚本不能当 `-c` 的单个参数穿过 `wsl.exe`**：`\t` 与 `\"` 会被它的参数转义吃掉，
+   结果是 `sh` 静默 `exit 1`、什么都不输出。同样的脚本写成文件执行则完全正常 ——
+   所以问题在参数传递，不在脚本。现在统一走 **stdin**（`sh -s`），SSH 那条路径也一样。
+
+换句话说：跨 `wsl.exe` / `ssh.exe` 的探测脚本，一律用 stdin 喂，不要拼进命令行。
+
+## 8. 验收
 
 1. 本机装了 `hermes`、没装 `gemini` → 扫描结果：hermes 已发现（native），gemini 未安装。
 2. WSL 里装了 `hermes`、Windows 侧没有 → 结果里标 `wsl:fedora`，不是 `local`。

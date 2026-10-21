@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { AgentProfile } from "@/types";
 import {
   agentDiscover,
   agentDiscoveryCached,
@@ -17,7 +18,10 @@ import {
  * 扫描是慢操作（要起 wsl.exe、逐个发行版问 PATH），所以永远不阻塞界面：
  * 只有 scanning 标记，列表保持上一次的结果。
  */
-export function useDiscovery() {
+export function useDiscovery(profiles: AgentProfile[] = []) {
+  // 扫描要带上 SSH 连接配置；用 ref 拿最新值，避免 profiles 变化时重建 scan 回调
+  const profilesRef = useRef<AgentProfile[]>(profiles);
+  profilesRef.current = profiles;
   const [outcome, setOutcome] = useState<DiscoveryOutcome | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,7 +34,7 @@ export function useDiscovery() {
     setScanning(true);
     setError(null);
     try {
-      setOutcome(await agentDiscover());
+      setOutcome(await agentDiscover(profilesRef.current));
     } catch (e) {
       const err = asCmdError(e);
       setError(`${err.code} ${err.msg}`);

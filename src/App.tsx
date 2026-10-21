@@ -55,7 +55,7 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { profiles, activeProfile, addProfile, updateProfile, removeProfile } = useProfileStore();
-  const discovery = useDiscovery();
+  const discovery = useDiscovery(profiles);
   const { sessions, setSessions } = useSessionList();
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
   const { state, patchSession, writeLock, initSession, sessionState } = useSessionState(lastSessionId);

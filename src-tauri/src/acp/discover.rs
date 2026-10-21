@@ -182,36 +182,90 @@ async fn wsl_distros() -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// 在一条环境里找某个命令：返回路径。
-async fn find_in_wsl(distro: &str, binary: &str) -> Option<String> {
-    // login shell 不读 .zshrc，hermes 这种装在 ~/.local/bin 的会漏，所以要额外看一眼
-    let script = format!(
-        "command -v {b} 2>/dev/null || (test -x \"$HOME/.local/bin/{b}\" && printf '%s\\n' \"$HOME/.local/bin/{b}\") || true",
-        b = binary
+/// 一次问完：所有候选命令的路径 + 家目录。
+///
+/// 为什么不用「每条命令起一次 wsl.exe」：7 条候选 × N 个发行版，每个进程 200–300ms，
+/// 加起来就是两三秒的纯等待。一个脚本在同一个 shell 里跑完，只要一次往返。
+///
+/// 输出格式稳定为 `键<TAB>值` 两种行：
+///   `bin:<命令名>\t<绝对路径>`
+///   `home\t<家目录>`
+pub(crate) fn scan_script() -> String {
+    // 两个坑，实测踩过：
+    // 1. **不能用 `sh -lc`**：WSL 的 /etc/profile 会把 Windows 的 PATH 拼进来，里面有
+    //    `Program Files (x86)`，未加引号 → `syntax error near unexpected token '('`，
+    //    脚本后半段整段不执行（表现为「明明装了 agent 却扫出 0 个」）。
+    // 2. login shell 也不保证带 ~/.local/bin（hermes / codex 就装在那儿），
+    //    所以 PATH 自己拼，不指望环境。
+    let mut lines = String::new();
+    lines.push_str(
+        "export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH\"\n",
     );
-    let mut cmd = tokio::process::Command::new(crate::acp::launch::system_tool("wsl.exe"));
-    cmd.args(["-d", distro, "--", "sh", "-lc", &script])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000);
-    let out = tokio::time::timeout(Duration::from_secs(12), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
-    first_line(&String::from_utf8_lossy(&out.stdout))
+
+    for c in CANDIDATES {
+        let b = c.binary;
+        // login shell 不读 .zshrc，装在 ~/.local/bin 的命令要额外看一眼
+        lines.push_str(&format!(
+            "p=$(command -v {b} 2>/dev/null); \
+if [ -z \"$p\" ] && [ -x \"$HOME/.local/bin/{b}\" ]; then p=\"$HOME/.local/bin/{b}\"; fi; \
+[ -n \"$p\" ] && printf 'bin:{b}\t%s\n' \"$p\"; \
+"
+        ));
+    }
+    lines.push_str("printf 'home\t%s\n' \"$HOME\"\n");
+    lines
 }
 
-/// 取某个 WSL 发行版的家目录（新建连接要一个绝对 cwd）
-async fn wsl_home(distro: &str) -> Option<String> {
+/// 解析扫描脚本的输出。坏行直接忽略：这是探测，不是协议。
+pub(crate) fn parse_scan_output(stdout: &str) -> (Option<String>, Vec<(String, String)>) {
+    let mut home = None;
+    let mut hits = Vec::new();
+    for line in stdout.replace('\0', "").lines() {
+        let Some((k, v)) = line.trim().split_once('\t') else {
+            continue;
+        };
+        let v = v.trim();
+        if v.is_empty() {
+            continue;
+        }
+        match k.trim() {
+            "home" => home = Some(v.to_string()),
+            other => {
+                if let Some(bin) = other.strip_prefix("bin:") {
+                    hits.push((bin.to_string(), v.to_string()));
+                }
+            }
+        }
+    }
+    (home, hits)
+}
+
+/// 在一条环境里找某个命令：返回路径。
+async fn find_in_wsl(distro: &str) -> Result<(Option<String>, Vec<(String, String)>), String> {
+    use tokio::io::AsyncWriteExt;
+
+    // 脚本从 **stdin** 喂给 `sh -s`，不走 `-c` 参数。
+    // 实测：把多行脚本当 `-c` 的单个参数穿过 wsl.exe，`\t` 与 `\"` 会被它的参数转义吃掉，
+    // 结果是 `sh` 静默 exit 1、什么都不输出（看起来像「这台机器没装任何 agent」）。
+    // 同样的脚本写成文件执行则完全正常 —— 所以问题在参数传递，不在脚本。
     let mut cmd = tokio::process::Command::new(crate::acp::launch::system_tool("wsl.exe"));
-    cmd.args(["-d", distro, "--", "sh", "-lc", "printf %s \"$HOME\""])
+    cmd.args(["-d", distro, "--", "sh", "-s"])
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
-    let out = tokio::time::timeout(Duration::from_secs(10), cmd.output()).await.ok()?.ok()?;
-    first_line(&String::from_utf8_lossy(&out.stdout))
+    let mut child = cmd.spawn().map_err(|e| format!("{distro} 起不来：{e}"))?;
+    if let Some(mut si) = child.stdin.take() {
+        let _ = si.write_all(scan_script().as_bytes()).await;
+        // 显式关掉 stdin：sh -s 读到 EOF 才开始跑，不关会一直等
+        drop(si);
+    }
+    let out = tokio::time::timeout(Duration::from_secs(20), child.wait_with_output())
+        .await
+        .map_err(|_| format!("{distro} 扫描超时"))?
+        .map_err(|e| format!("{distro} 扫描失败：{e}"))?;
+    Ok(parse_scan_output(&String::from_utf8_lossy(&out.stdout)))
 }
 
 /// Windows 本机：`where`（走 cmd 是因为它是 cmd 内建）
@@ -260,17 +314,21 @@ pub async fn scan() -> DiscoverOutcome {
     match wsl_distros().await {
         Ok(distros) => {
             for d in distros {
-                // 每个发行版只问一次家目录，别每个候选都问
-                let home = wsl_home(&d).await;
-                for c in CANDIDATES {
-                    if let Some(path) = find_in_wsl(&d, c.binary).await {
-                        found.push(Found {
-                            candidate_id: c.id.to_string(),
-                            host: format!("wsl:{d}"),
-                            path,
-                            home: home.clone(),
-                        });
+                match find_in_wsl(&d).await {
+                    Ok((home, hits)) => {
+                        for (bin, path) in hits {
+                            // 脚本按命令名回报，这里翻回候选 id
+                            if let Some(c) = CANDIDATES.iter().find(|c| c.binary == bin) {
+                                found.push(Found {
+                                    candidate_id: c.id.to_string(),
+                                    host: format!("wsl:{d}"),
+                                    path,
+                                    home: home.clone(),
+                                });
+                            }
+                        }
                     }
+                    Err(e) => warnings.push(e),
                 }
             }
         }
@@ -288,6 +346,39 @@ pub async fn scan() -> DiscoverOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 解析扫描输出_认得两种行() {
+        let out = "bin:hermes\t/home/j/.local/bin/hermes\nbin:codex\t/usr/local/bin/codex\nhome\t/home/j\n";
+        let (home, hits) = parse_scan_output(out);
+        assert_eq!(home.as_deref(), Some("/home/j"));
+        assert_eq!(hits.len(), 2);
+        assert_eq!(
+            hits[0],
+            (
+                "hermes".to_string(),
+                "/home/j/.local/bin/hermes".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn 解析扫描输出_坏行不影响好行() {
+        // 远端 shell 可能打 banner、也可能给空值；探测不该因为一行怪东西就整体失败
+        let out = "Welcome to Fedora\r\nbin:gemini\t\n\t\nbin:goose\t/opt/goose\r\n";
+        let (home, hits) = parse_scan_output(out);
+        assert_eq!(home, None);
+        assert_eq!(hits, vec![("goose".to_string(), "/opt/goose".to_string())]);
+    }
+
+    #[test]
+    fn 扫描脚本覆盖全部候选() {
+        let script = scan_script();
+        for c in CANDIDATES {
+            assert!(script.contains(c.binary), "脚本漏了 {}", c.binary);
+        }
+        assert!(script.contains("home"));
+    }
 
     #[test]
     fn 候选表没有重复的_binary() {

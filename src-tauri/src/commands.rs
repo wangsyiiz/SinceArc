@@ -262,6 +262,135 @@ pub struct ProbeOutcome {
     pub load_session: bool,
 }
 
+/// SSH 只扫**用户已经存了连接配置**的 host（docs/discovery.md §3）。
+///
+/// 不去扫未知主机：那会和用户的 known_hosts 打架，而且可能是别人的机器。
+/// 复用启动层（同一个 ssh 命令、同一套 askpass/密钥处理），只是把远端命令换成扫描脚本 ——
+/// 这样密码档也能扫，不用为探测单写一套认证。
+async fn scan_ssh(profiles: &[ProfileDto]) -> (Vec<acp::discover::Found>, Vec<String>) {
+    let mut found = Vec::new();
+    let mut warnings = Vec::new();
+    for p in profiles.iter().filter(|p| p.launch == "ssh") {
+        let label = p
+            .ssh_host
+            .clone()
+            .filter(|h| !h.trim().is_empty())
+            .unwrap_or_else(|| p.name.clone());
+        if label.trim().is_empty() {
+            continue; // 没填 host 的连接本来就没配好，不必当成扫描失败
+        }
+        let mut probe = p.clone();
+        probe.program = "sh".into();
+        // 脚本走 stdin（`sh -s`），不拼进远端命令行：
+        // 多行脚本里既有单引号又有双引号，穿一层 Windows 参数转义再加一层远端 shell 解析，
+        // 太容易被打散（WSL 那条路径就是这么踩的，见 discover::scan_script 注释）。
+        probe.args = vec!["-s".into()];
+        if probe.cwd.trim().is_empty() {
+            probe.cwd = "/tmp".into(); // cd '' 会失败；探测不关心目录，只要起得来
+        }
+        let parsed = match to_profile(&probe) {
+            Ok(x) => x,
+            Err(e) => {
+                warnings.push(format!("{label} 未扫描：{} {}", e.code, e.msg));
+                continue;
+            }
+        };
+        let spec = match parsed.command_line(&probe.cwd) {
+            Ok(x) => x,
+            Err(e) => {
+                warnings.push(format!("{label} 未扫描：{e}"));
+                continue;
+            }
+        };
+        let mut cmd = tokio::process::Command::new(&spec.program);
+        cmd.args(&spec.args);
+        for (k, v) in &spec.env {
+            cmd.env(k, v);
+        }
+        cmd.stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000);
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                if let Some(c) = spec.cleanup {
+                    let _ = std::fs::remove_file(c);
+                }
+                warnings.push(format!("{label} 未扫描：{e}"));
+                continue;
+            }
+        };
+        if let Some(mut si) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let _ = si.write_all(acp::discover::scan_script().as_bytes()).await;
+            drop(si); // 显式关：sh -s 读到 EOF 才开始跑
+        }
+        let out =
+            match tokio::time::timeout(Duration::from_secs(25), child.wait_with_output()).await {
+                Ok(Ok(o)) => o,
+                Ok(Err(e)) => {
+                    if let Some(c) = spec.cleanup {
+                        let _ = std::fs::remove_file(c);
+                    }
+                    warnings.push(format!("{label} 未扫描：{e}"));
+                    continue;
+                }
+                Err(_) => {
+                    warnings.push(format!("{label} 未扫描：25 秒超时"));
+                    continue;
+                }
+            };
+        if let Some(c) = spec.cleanup {
+            let _ = std::fs::remove_file(c);
+        }
+        if !out.status.success() {
+            warnings.push(format!(
+                "{label} 未扫描：退出码 {:?} {}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+            ));
+            continue;
+        }
+        let (home, hits) = acp::discover::parse_scan_output(&String::from_utf8_lossy(&out.stdout));
+        for (bin, path) in hits {
+            if let Some(c) = acp::discover::CANDIDATES.iter().find(|c| c.binary == bin) {
+                found.push(acp::discover::Found {
+                    candidate_id: c.id.to_string(),
+                    host: format!("ssh:{label}"),
+                    path,
+                    home: home.clone(),
+                });
+            }
+        }
+    }
+    (found, warnings)
+}
+
+/// 本机 + WSL + 已存连接的 SSH，一次扫完。
+/// 命令与测试都走这里，避免「测试验的是一条路、界面跑的是另一条」。
+async fn discover_all(ssh_profiles: Vec<ProfileDto>) -> acp::discover::DiscoverOutcome {
+    let mut outcome = acp::discover::scan().await;
+    if !ssh_profiles.is_empty() {
+        let (hits, warns) = scan_ssh(&ssh_profiles).await;
+        outcome.found.extend(hits);
+        outcome.warnings.extend(warns);
+    }
+    outcome
+}
+
+/// 测试入口：不起 Tauri、不写缓存。
+pub async fn agent_discover_for_test(
+    ssh_profiles: Vec<ProfileDto>,
+) -> acp::discover::DiscoverOutcome {
+    discover_all(ssh_profiles).await
+}
+
 /// 扫一遍机器：哪些 agent 能当 ACP 服务端跑（docs/discovery.md）。
 ///
 /// 只负责「找人」——发现到 `codex` 不等于它能起 ACP（实测 codex 没有 acp 子命令，
@@ -269,8 +398,9 @@ pub struct ProbeOutcome {
 #[tauri::command]
 pub async fn agent_discover(
     state: State<'_, AppState>,
+    ssh_profiles: Option<Vec<ProfileDto>>,
 ) -> Result<acp::discover::DiscoverOutcome, CmdError> {
-    let outcome = acp::discover::scan().await;
+    let outcome = discover_all(ssh_profiles.unwrap_or_default()).await;
     tracing::info!(
         target: "sincearc::ipc", hits = outcome.found.len(),
         warnings = outcome.warnings.len(), "discovery finished"

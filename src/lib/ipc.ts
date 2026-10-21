@@ -253,8 +253,11 @@ export interface DiscoveryOutcome {
  * 只回答「装没装」。装了的也不一定能用 —— `codex` 在 PATH 上不代表它能起 ACP
  * （实测没有 acp 子命令，要靠适配器）。要确认能不能握手，得用 agentProbe。
  */
-export function agentDiscover(): Promise<DiscoveryOutcome> {
-  return invoke<DiscoveryOutcome>("agent_discover", {});
+export function agentDiscover(profiles: AgentProfile[] = []): Promise<DiscoveryOutcome> {
+  // SSH 只扫用户已经存了连接配置的 host（规范 §3）：不去碰未知主机。
+  // 扫的是配置，不是密码本身 —— 后端复用启动层的同一套认证。
+  const sshProfiles = profiles.filter((p) => p.launch === "ssh").map(toDto);
+  return invoke<DiscoveryOutcome>("agent_discover", { sshProfiles });
 }
 
 /** 上一次扫描的结果（启动时先渲染，不必等扫描跑完） */
