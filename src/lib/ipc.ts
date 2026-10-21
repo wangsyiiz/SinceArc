@@ -167,6 +167,15 @@ export function sessionNew(profileId: string, cwd: string): Promise<SessionInfo>
 }
 
 /** 发一轮消息。立即返回：内容从事件流回来，不在这里等生成完。 */
+/** 把某个已存会话 load 进已连接的进程（向群成员发消息前必须先做） */
+export function sessionLoad(
+  profileId: string,
+  acpSessionId: string,
+  cwd: string,
+): Promise<ModesSnapshot | null> {
+  return invoke<ModesSnapshot | null>("session_load", { profileId, acpSessionId, cwd });
+}
+
 export function sessionPrompt(sessionId: string, text: string): Promise<void> {
   return invoke<void>("session_prompt", { sessionId, text });
 }

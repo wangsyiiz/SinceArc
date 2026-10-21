@@ -113,7 +113,19 @@ session_members (
 - 成员的角色与工具白名单（ACP 没有这个语义）。
 - 跨群共享上下文、成员之间互相 `@`。
 
-## 7. 验收
+## 7. 实现进度（第一刀）
+
+| 项 | 状态 |
+|---|---|
+| `agent_users` / `session_members` / `messages.author_id` | ✅ schema v4 |
+| 成员 CRUD + `session/load` 验真 | ✅ 后端；设置 → 成员（测试状态机）✅ |
+| 群里 `@handle` 投递 | ✅ `session_load` 把成员会话 load 进已连接进程，再 `session/prompt` |
+| 回答归属（名字 + 颜色） | ✅ `acpToAuthor` 映射 → 消息 `playerId`；群里有成员时玩家表由成员派生 |
+| `@` 不在群里 → 明确失败 | ✅ 写一条 system 说明，不投给主 agent |
+| 输入框 `@` 自动补全 | ❌ 未做（要手打 handle；成员名在设置 → 成员里看） |
+| 自动 `session/new` 创建成员 | ❌ 第二刀（要先验连接层并发） |
+
+## 8. 验收
 
 1. 设置里新建 agent user：随便填个假 id → 测试失败，保存按钮禁用，原因写清。
 2. 填一个真实可恢复的 sessionId → 测试通过 → 保存 → 出现在群里。

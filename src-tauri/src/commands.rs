@@ -962,6 +962,55 @@ const PROMPT_TIMEOUT: Duration = Duration::from_secs(600);
 /// 发一轮消息。**立即返回** —— 流式内容走 `session/update` 通知，
 /// 结束信号走 `PromptResult` / `PromptFailed` 事件。
 /// 这里不 await 那一轮，否则 UI 会把整个生成过程当一次卡顿。
+/// 把某个已存的 ACP 会话 load 进**当前已连接**的 agent 进程。
+///
+/// 为什么需要它：群成员各自锚在一个 acp_session_id 上，向它发 prompt 前，这个会话必须在
+/// 那个进程里是「活着」的 —— 否则 agent 只会回 not_found。而且这一步要幂等：
+/// 界面可能在多个成员之间来回切，不能每次换人都把进程重起一遍。
+#[tauri::command]
+pub async fn session_load(
+    state: State<'_, AppState>,
+    profile_id: String,
+    acp_session_id: String,
+    cwd: String,
+) -> Result<Option<acp::SessionModes>, CmdError> {
+    if acp_session_id.trim().is_empty() {
+        return Err(CmdError::new(50602, "session id 不能为空"));
+    }
+    let handle = state
+        .get(&profile_id)
+        .await
+        .ok_or_else(|| CmdError::new(50400, "这条连接还没建立 —— 先连接它，再向成员发消息"))?;
+    let params = serde_json::json!({
+        "sessionId": acp_session_id,
+        "cwd": cwd,
+        "mcpServers": [],
+    });
+    let v = handle
+        .proc
+        .request("session/load", params, Duration::from_secs(120))
+        .await
+        .map_err(|e| CmdError::new(50402, format!("session/load 失败：{e}")))?;
+    let modes = acp::modes_from_response(&v);
+    if let Some(m) = &modes {
+        state.set_modes(acp_session_id.clone(), m.clone()).await;
+    }
+    state
+        .insert_session(
+            acp_session_id.clone(),
+            SessionRecord {
+                profile_id: profile_id.clone(),
+                cwd,
+            },
+        )
+        .await;
+    tracing::info!(
+        target: "sincearc::ipc", profile = %profile_id, session = %acp_session_id,
+        "member session loaded"
+    );
+    Ok(modes)
+}
+
 #[tauri::command]
 pub async fn session_prompt(
     state: State<'_, AppState>,

@@ -45,6 +45,7 @@ pub fn run() {
             commands::session_members,
             commands::session_member_add,
             commands::session_member_remove,
+            commands::session_load,
             commands::agent_connect,
             commands::agent_disconnect,
             commands::agent_respond_request,

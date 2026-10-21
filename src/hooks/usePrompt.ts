@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { asCmdError, messagesAppend, sessionPrompt } from "@/lib/ipc";
+import { asCmdError, messagesAppend, sessionLoad, sessionPrompt } from "@/lib/ipc";
 import { now } from "@/lib/format";
 import { players } from "@/mock/data";
 import type { AgentProfile, Message } from "@/types";
@@ -28,18 +28,26 @@ export function usePrompt({
   /** 无感启动：没连就现连，永不抛异常 */
   ensureConnected: (profileId: string | null | undefined) => Promise<EnsureResult>;
 }) {
-  const { acpToUi, acpToTurn, activeAcp } = acp;
+  const { acpToUi, acpToTurn, acpToAuthor, activeAcp } = acp;
 
   const send = useCallback(
-    async (text: string) => {
+    async (
+      text: string,
+      /** 指定投递目标（群里 @ 了某个成员）：这时不再投主 agent */
+      target?: { profileId: string; acpSessionId: string; authorId: string; cwd: string },
+    ) => {
       const sid = lastSessionId;
       const at = now();
 
-      // 归属：会话自己的连接优先，老会话（没记 profileId）退回当前选中
-      const profileId = profileIdOf(sid) ?? activeProfile?.id ?? null;
-      let acpSid = profileId ? sessionsByProfile[profileId] : undefined;
-      /** 要现连：这条消息得先等连接，界面不能因此变成「忙碌」 */
-      const needConnect = !acpSid && !!profileId;
+      // 归属：会话自己的连接优先，老会话（没记 profileId）退回当前选中。
+      // @ 了成员时，归属变成那个成员所在的连接。
+      const profileId = target?.profileId ?? profileIdOf(sid) ?? activeProfile?.id ?? null;
+      let acpSid = target ? target.acpSessionId : profileId ? sessionsByProfile[profileId] : undefined;
+      /** 要现连：这条消息得先等连接，界面不能因此变成「忙碌」。
+       *  @成员时只要那条连接没建立就要连（成员自己的 session 还要单独 load）。 */
+      const needConnect = target
+        ? !sessionsByProfile[target.profileId]
+        : !acpSid && !!profileId;
       const connectNoteId = `conn-note-${Date.now()}`;
 
       // 用户消息先落地，真假链路都一样。
@@ -105,9 +113,34 @@ export function usePrompt({
           }));
           return;
         }
-        acpSid = r.acpSid ?? undefined;
+        acpSid = target ? target.acpSessionId : (r.acpSid ?? undefined);
         // 连上了，接下来真要发 prompt
         patchSession(sid, (s) => ({ ...s, busy: true }));
+      }
+
+      if (acpSid && target) {
+        // 成员的会话必须在那个进程里「活着」，否则 prompt 只会拿到 not_found。
+        // 放在这里而不是连接时做：成员可能来自别的会话，连接阶段并不知道要 load 谁。
+        try {
+          await sessionLoad(target.profileId, target.acpSessionId, target.cwd);
+        } catch (e) {
+          const err = asCmdError(e);
+          patchSession(sid, (s) => ({
+            ...s,
+            busy: false,
+            msgs: [
+              ...s.msgs,
+              {
+                id: `load-err-${Date.now()}`,
+                role: "system",
+                text: `无法恢复成员会话：${err.code} ${err.msg}`,
+                at: now(),
+              },
+            ],
+          }));
+          return;
+        }
+        acpToAuthor.current[acpSid] = target.authorId;
       }
 
       if (acpSid) {
@@ -124,7 +157,7 @@ export function usePrompt({
             ...s.acts.filter((a) => a.id !== actId),
             {
               id: actId,
-              playerId: players[0].id,
+              playerId: target?.authorId ?? players[0].id,
               kind: "thinking" as const,
               title: "思考中",
               status: "running" as const,
@@ -139,7 +172,7 @@ export function usePrompt({
               userText: text,
               branches: [
                 {
-                  playerId: players[0].id,
+                  playerId: target?.authorId ?? players[0].id,
                   activityIds: [actId],
                   status: "running" as const,
                 },

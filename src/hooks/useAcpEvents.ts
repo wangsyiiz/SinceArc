@@ -15,6 +15,8 @@ import type { PatchSession } from "./useSessionState";
 export interface AcpRefs {
   acpToUi: RefObject<Record<string, string>>;
   acpToTurn: RefObject<Record<string, string>>;
+  /** ACP 会话 -> 该会话的发言者（agent user id）。主 agent 不在这张表里 */
+  acpToAuthor: RefObject<Record<string, string>>;
   activeAcp: RefObject<string>;
   streamText: RefObject<Record<string, string>>;
 }
@@ -58,6 +60,8 @@ export function useAcpEvents({
 
   // ACP sessionId -> UI 会话 id（mock 的 s-1 之类）。S3 阶段只有一个活跃会话，够用。
   const acpToUi = useRef<Record<string, string>>({});
+  /** ACP 会话 -> 发言的 agent user id（群成员的回答要记在它名下，docs/group-chat.md §4） */
+  const acpToAuthor = useRef<Record<string, string>>({});
   const streamBuf = useRef<Record<string, string>>({});
   /** 本轮已累积的完整回复（定稿时整条落库，不用再去 state 里翻） */
   const streamText = useRef<Record<string, string>>({});
@@ -100,7 +104,8 @@ export function useAcpEvents({
                 {
                   id: streamId,
                   role: "player" as const,
-                  playerId: players[0].id,
+                  // 成员的回答记在它名下；主 agent 的回答仍是默认玩家
+                  playerId: acpToAuthor.current[acpSid] ?? players[0].id,
                   text,
                   at: now(),
                   streaming: true,
@@ -265,7 +270,7 @@ export function useAcpEvents({
               payload: {
                 id,
                 role: "player",
-                playerId: players[0].id,
+                playerId: acpToAuthor.current[acpSid] ?? players[0].id,
                 text: full,
                 at: now(),
                 streaming: false,
@@ -306,7 +311,10 @@ export function useAcpEvents({
     });
   }, [onSessionBound, setSessions]);
 
-  const acp = useMemo<AcpRefs>(() => ({ acpToUi, acpToTurn, activeAcp, streamText }), []);
+  const acp = useMemo<AcpRefs>(
+    () => ({ acpToUi, acpToTurn, acpToAuthor, activeAcp, streamText }),
+    [],
+  );
 
   return { eventCount, lastEvent, eventLog, diag, sessionsByProfile, flushStream, onAgentEvent, onSession, acp };
 }

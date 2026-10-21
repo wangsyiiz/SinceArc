@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityRail } from "@/components/ActivityRail";
 import { Composer } from "@/components/Composer";
 import { EmptyState } from "@/components/EmptyState";
@@ -18,11 +18,13 @@ import { ThinkingRow } from "@/components/ThinkingRow";
 import { TitleBar } from "@/components/TitleBar";
 import { TracePanel } from "@/components/TracePanel";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
-import { players, prsByRepo } from "@/mock/data";
+import { players as mockPlayers, prsByRepo } from "@/mock/data";
 import type { GithubPR, GithubRepo, PermissionRequest, SessionSummary, Tab, ThreadSettings } from "@/types";
 import {
   asCmdError,
+  sessionMembers,
   sessionUpsert,
+  type AgentUser,
   type DiscoveryCandidate,
   type DiscoveryHit,
   type ModesSnapshot,
@@ -56,9 +58,47 @@ export default function App() {
 
   const { profiles, activeProfile, addProfile, updateProfile, removeProfile } = useProfileStore();
   const discovery = useDiscovery(profiles);
+  /** 当前群的成员（docs/group-chat.md §1） */
+  const [members, setMembers] = useState<AgentUser[]>([]);
+
+  /**
+   * 玩家列表：群里有成员就用成员（真实的 Agent User），没有成员才退回 mock。
+   * 之所以直接覆盖 `players` 这个名字：轨迹栏、@ 高亮、头像、权限弹窗全都按它取人，
+   * 一处派生比到处塞 prop 更不容易漏。
+   */
+  const players = useMemo(
+    () =>
+      members.length > 0
+        ? members.map((u) => ({
+            id: u.id,
+            name: u.name,
+            handle: u.handle,
+            color: u.color,
+            profileId: u.profileId,
+            busy: false,
+          }))
+        : mockPlayers,
+    [members],
+  );
   const { sessions, setSessions } = useSessionList();
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
   const { state, patchSession, writeLock, initSession, sessionState } = useSessionState(lastSessionId);
+
+  // 成员跟着「当前会话」走：换群就换一批人
+  useEffect(() => {
+    let alive = true;
+    if (!lastSessionId) {
+      setMembers([]);
+      return;
+    }
+    sessionMembers(lastSessionId)
+      .then((list) => alive && setMembers(list))
+      .catch((e) => console.warn("[group] load members failed", e));
+    return () => {
+      alive = false;
+    };
+  }, [lastSessionId]);
+
   const { bySid: modesBySid, byProfile: modesByProfile, applyFor, choose, noteAgentSwitch } = useSessionModes();
   const onSessionBound = useCallback(
     (args: {
@@ -260,6 +300,47 @@ export default function App() {
   }, [sessionState]);
 
   /**
+   * 群里的发送：`@handle（docs/group-chat.md §3）`。
+   *
+   * - 没有 @ → 照旧投主 agent；
+   * - @ 到本群成员 → 只投给那个成员（它自己的连接、它自己的 ACP 会话）；
+   * - @ 了不在群里的人 → **明确失败**，不把这条消息当普通文本投给主 agent，
+   *   否则用户以为成员收到了，其实是群主替他答的。
+   */
+  const sendInGroup = useCallback(
+    async (raw: string) => {
+      const m = /@([a-zA-Z][\w-]*)/.exec(raw);
+      if (!m) return send(raw);
+      const handle = m[1].toLowerCase();
+      const who = members.find((u) => u.handle.toLowerCase() === handle);
+      if (!who) {
+        const at = now();
+        patchSession(lastSessionId, (s) => ({
+          ...s,
+          msgs: [
+            ...s.msgs,
+            {
+              id: `at-miss-${Date.now()}`,
+              role: "system" as const,
+              text: `@${m[1]} 不在这个群里 —— 这条消息没有发出去（要加人请到设置 → 成员）`,
+              at,
+            },
+          ],
+        }));
+        return;
+      }
+      const prof = profiles.find((p) => p.id === who.profileId);
+      return send(raw, {
+        profileId: who.profileId,
+        acpSessionId: who.acpSessionId,
+        authorId: who.id,
+        cwd: prof?.cwd ?? "",
+      });
+    },
+    [members, profiles, send, lastSessionId, patchSession],
+  );
+
+  /**
    * 用发现到的命令直接建连接：program / args / 环境 / 工作目录都已经知道，
    * 让用户再手填一遍是白费功夫（也最容易填错）。
    */
@@ -446,7 +527,7 @@ export default function App() {
                       <div className="pointer-events-auto">
                         <Composer
                           busy={state.busy}
-                          onSend={send}
+                          onSend={sendInGroup}
                           onStop={() => patchSession(lastSessionId, (s) => ({ ...s, busy: false }))}
                           placeholder="输入消息，@ 玩家提问…"
                           players={players}
