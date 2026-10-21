@@ -13,6 +13,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { MAIN_AGENT_ID } from "@/hooks/usePrompt";
 import { profileLabel } from "@/lib/format";
 import { findMention, mentionToken } from "@/lib/mentions";
+import { pushSystemNotice } from "@/lib/notices";
 import { commandLineOf, commandsFor } from "@/extensions/registry";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
@@ -373,19 +374,11 @@ export default function App() {
         // 敲了 @ 却一个成员都对不上：说清敲的是什么，不静默投给主 agent
         const token = mentionToken(raw);
         if (!token) return send(raw);
-        const at = now();
-        patchSession(lastSessionId, (s) => ({
-          ...s,
-          msgs: [
-            ...s.msgs,
-            {
-              id: `at-miss-${Date.now()}`,
-              role: "system" as const,
-              text: `@${token} 不在这个群里 —— 这条消息没有发出去（要加人请到左栏的 + 或设置 → 成员）`,
-              at,
-            },
-          ],
-        }));
+        pushSystemNotice(
+          patchSession,
+          lastSessionId,
+          `@${token} 不在这个群里 —— 这条消息没有发出去（要加人请到左栏的 + 或设置 → 成员）`,
+        );
         return;
       }
       // findMention 只在 members 的短名里命中，所以一定能找到人

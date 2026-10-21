@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { asCmdError, messagesAppend, sessionLoad, sessionPrompt } from "@/lib/ipc";
 import { now } from "@/lib/format";
+import { pushSystemNotice } from "@/lib/notices";
 import type { AgentProfile, Message } from "@/types";
 import type { EnsureResult } from "./useAgentConnect";
 import type { AcpRefs } from "./useAcpEvents";
@@ -31,6 +32,10 @@ export function usePrompt({
   ensureConnected: (profileId: string | null | undefined) => Promise<EnsureResult>;
 }) {
   const { acpToUi, acpToTurn, acpToAuthor, activeAcp } = acp;
+
+  /** 只翻 busy 标记：失败时界面要让用户能接着发 */
+  const setBusy = (sid: string, busy: boolean) =>
+    patchSession(sid, (s) => ({ ...s, busy }));
 
   const send = useCallback(
     async (
@@ -100,19 +105,9 @@ export function usePrompt({
           msgs: s.msgs.filter((m) => m.id !== connectNoteId),
         }));
         if (r.error) {
-          patchSession(sid, (s) => ({
-            ...s,
-            busy: false,
-            msgs: [
-              ...s.msgs,
-              {
-                id: `conn-err-${Date.now()}`,
-                role: "system",
-                text: `连接失败：${r.error!.code} ${r.error!.msg}`,
-                at: now(),
-              },
-            ],
-          }));
+          setBusy(sid, false);
+          // 失败原因必须落库，否则恢复会话后只剩一条没人答的提问
+          pushSystemNotice(patchSession, sid, `连接失败：${r.error!.code} ${r.error!.msg}`);
           return;
         }
         acpSid = target ? target.acpSessionId : (r.acpSid ?? undefined);
@@ -127,19 +122,8 @@ export function usePrompt({
           await sessionLoad(target.profileId, target.acpSessionId, target.cwd);
         } catch (e) {
           const err = asCmdError(e);
-          patchSession(sid, (s) => ({
-            ...s,
-            busy: false,
-            msgs: [
-              ...s.msgs,
-              {
-                id: `load-err-${Date.now()}`,
-                role: "system",
-                text: `无法恢复成员会话：${err.code} ${err.msg}`,
-                at: now(),
-              },
-            ],
-          }));
+          setBusy(sid, false);
+          pushSystemNotice(patchSession, sid, `无法恢复成员会话：${err.code} ${err.msg}`);
           return;
         }
         acpToAuthor.current[acpSid] = target.authorId;
@@ -185,19 +169,8 @@ export function usePrompt({
 
         sessionPrompt(acpSid, text).catch((e) => {
           const err = asCmdError(e);
-          patchSession(sid, (s) => ({
-            ...s,
-            busy: false,
-            msgs: [
-              ...s.msgs,
-              {
-                id: `err-${Date.now()}`,
-                role: "system",
-                text: `发送失败：${err.code} ${err.msg}`,
-                at,
-              },
-            ],
-          }));
+          setBusy(sid, false);
+          pushSystemNotice(patchSession, sid, `发送失败：${err.code} ${err.msg}`);
         });
         return;
       }
@@ -205,19 +178,12 @@ export function usePrompt({
       // 走到这里说明这个会话根本没有可用的连接配置。
       // 以前这里会走「演示链路」编几条假回答 —— 那是在骗用户：他看着像群里有 agent 说话，
       // 其实一个字都没发出去。现在直接说清楚，并把他引到设置页。
-      patchSession(sid, (s) => ({
-        ...s,
-        busy: false,
-        msgs: [
-          ...s.msgs,
-          {
-            id: `noconf-${Date.now()}`,
-            role: "system" as const,
-            text: "这个会话没有可用的连接配置 —— 去「设置 → 连接」加一条并连上，再发一次。",
-            at,
-          },
-        ],
-      }));
+      setBusy(sid, false);
+      pushSystemNotice(
+        patchSession,
+        sid,
+        "这个会话没有可用的连接配置 —— 去「设置 → 连接」加一条并连上，再发一次。",
+      );
     },
     [
       lastSessionId,

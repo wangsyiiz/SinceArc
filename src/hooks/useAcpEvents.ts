@@ -275,7 +275,21 @@ export function useAcpEvents({
                   ),
           }));
         }
-        if (event.kind === "promptFailed") console.warn("[acp] prompt failed", event.msg);
+        if (event.kind === "promptFailed") {
+          console.warn("[acp] prompt failed", event.msg);
+          // 失败原因也要落库：否则恢复会话后就是「问了没人答」，看不出当时是失败
+          if (uiSid) {
+            const id = `perr-${Date.now()}`;
+            messagesAppend(uiSid, [
+              {
+                id,
+                role: "system",
+                kind: "text",
+                payload: { id, role: "system", text: `这一轮失败：${event.msg}`, at: now() },
+              },
+            ]).catch((e) => console.warn("[db] append failure notice failed", e));
+          }
+        }
 
         // 这一轮整条落库（同一 id 重复写是幂等的）
         const acpSid = event.sessionId;
