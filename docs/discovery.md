@@ -75,7 +75,18 @@
 - 不自动 `npm install` / 下载 binary。装软件是用户机器上的副作用（同 `docs/agents.md` §3）。
 - 不去扫未知 SSH 主机（会和用户的 known_hosts 打架，也可能是别人的机器）。
 
-## 6. 验收
+## 6. 实现进度
+
+| 项 | 状态 |
+|---|---|
+| 候选表（7 条）+ 扫描本机 / 各 WSL 发行版 | ✅ `src-tauri/src/acp/discover.rs` |
+| 结果缓存进 `app_meta` | ✅ 只存扫出来的结果，候选表来自代码 const |
+| 启动先读缓存、没有才后台扫 | ✅ `useDiscovery`（挂载即跑，不阻塞界面） |
+| 设置页「重新扫描」+ 分组列表 + 逐条验证 | ✅ 连接区底部 |
+| 「用它建连接」（带上 program/args/环境/家目录） | ✅ |
+| SSH 扫描（只扫已存连接的 host） | ❌ 未做，需要先能列出已存连接 |
+
+## 7. 验收
 
 1. 本机装了 `hermes`、没装 `gemini` → 扫描结果：hermes 已发现（native），gemini 未安装。
 2. WSL 里装了 `hermes`、Windows 侧没有 → 结果里标 `wsl:fedora`，不是 `local`。

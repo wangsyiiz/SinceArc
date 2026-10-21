@@ -17,6 +17,9 @@ import { cn } from "@/lib/utils";
 import {
   agentProbe,
   asCmdError,
+  type DiscoveryCandidate,
+  type DiscoveryHit,
+  type DiscoveryOutcome,
   type ModesSnapshot,
   type ProbeOutcome,
 } from "@/lib/ipc";
@@ -47,6 +50,13 @@ interface SettingsViewProps {
   onCycleTheme: (t: ThemeMode) => void;
   /** 最近收到的 ACP 事件（诊断用：确认通道到底通不通） */
   eventLog?: { at: number; text: string }[];
+  /** agent 发现（docs/discovery.md）：缓存结果、是否在扫、手动重扫 */
+  discovery?: DiscoveryOutcome | null;
+  discoveryScanning?: boolean;
+  discoveryError?: string | null;
+  onScanDiscovery?: () => void;
+  /** 用发现到的命令直接建一个连接（program/args/cwd 都带好，用户不用手填） */
+  onUseDiscovered?: (candidate: DiscoveryCandidate, hit: DiscoveryHit) => void;
 }
 
 const THEMES: { id: ThemeMode; label: string }[] = [
@@ -227,6 +237,11 @@ export function SettingsView({
   onChangeContext,
   onCycleTheme,
   eventLog = [],
+  discovery = null,
+  discoveryScanning = false,
+  discoveryError = null,
+  onScanDiscovery,
+  onUseDiscovered,
 }: SettingsViewProps) {
   const [active, setActive] = useState<SectionId>("chat");
   const [busy, setBusy] = useState<string | null>(null);
@@ -238,6 +253,10 @@ export function SettingsView({
   const [commandEditing, setCommandEditing] = useState<Record<string, boolean>>({});
   const refs = useRef<Partial<Record<SectionId, HTMLElement | null>>>({});
   const [copied, setCopied] = useState(false);
+  /** 发现列表里逐条「验证」的结果，key = candidateId@host */
+  const [discoveryProbe, setDiscoveryProbe] = useState<
+    Record<string, { busy?: boolean; ok?: string; error?: string }>
+  >({});
 
   /** 诊断内容是用来贴给别人看的，不能只让人截图 */
   const copyDiagnostics = async () => {
@@ -366,6 +385,46 @@ export function SettingsView({
   };
 
   /** 左侧导航只做锚点跳转：内容始终整页可见 */
+  /** 把「发现到的一条命令 + 它所在的环境」翻译成一条可探测/可保存的连接配置 */
+  const profileFromHit = (c: DiscoveryCandidate, hit: DiscoveryHit): AgentProfile => {
+    const wsl = hit.host.startsWith("wsl:");
+    return {
+      id: "p-discovery",
+      name: "",
+      launch: wsl ? "wsl" : "local",
+      detail: "",
+      connected: false,
+      agentName: null,
+      protocolVersion: null,
+      program: c.acpProgram,
+      args: [...c.acpArgs],
+      // cd '<cwd>' 里的 ~ 不会被展开，所以必须用扫出来的绝对家目录
+      cwd: hit.home ?? "",
+      distro: wsl ? hit.host.slice("wsl:".length) : undefined,
+      shell: wsl ? "zsh" : undefined,
+      ssh: { host: "", port: 22, user: "", auth: "key" },
+    };
+  };
+
+  /**
+   * 扫到 ≠ 能用：这里真起一次 initialize（与连接卡片上的「探测」同一条路径、同一套错误码）。
+   * 两层分开的意义就在这儿 —— 扫描可以很快很宽，验证只对用户真想要的那一个做。
+   */
+  const handleDiscoveryProbe = async (c: DiscoveryCandidate, hit: DiscoveryHit) => {
+    const key = `${c.id}@${hit.host}`;
+    setDiscoveryProbe((prev) => ({ ...prev, [key]: { busy: true } }));
+    try {
+      const out = await agentProbe(profileFromHit(c, hit));
+      setDiscoveryProbe((prev) => ({
+        ...prev,
+        [key]: { ok: `${out.agentName} ${out.agentVersion} · 协议 v${out.protocolVersion}` },
+      }));
+    } catch (e) {
+      const err = asCmdError(e);
+      setDiscoveryProbe((prev) => ({ ...prev, [key]: { error: `${err.code} ${err.msg}` } }));
+    }
+  };
+
   const jump = (id: SectionId) => {
     setActive(id);
     refs.current[id]?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -698,6 +757,131 @@ export function SettingsView({
                   </div>
                 );
               })}
+            </div>
+            <div className="mt-2 rounded-[8px] border border-line-1/60 p-3.5">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[12px] text-ink-1">这台机器上的 ACP agent</span>
+                <button
+                  type="button"
+                  onClick={() => onScanDiscovery?.()}
+                  disabled={discoveryScanning}
+                  className={cn(
+                    "shrink-0 rounded-[6px] px-2 py-1 text-[10.5px] transition-colors",
+                    "sc-row-active text-ink-1 hover:brightness-110",
+                    discoveryScanning && "opacity-60",
+                  )}
+                >
+                  {discoveryScanning ? "扫描中…" : "重新扫描"}
+                </button>
+              </div>
+              <p className="mt-1 text-[9.5px] leading-relaxed text-ink-3">
+                {discovery
+                  ? `上次扫描 ${new Date(discovery.scannedAt).toLocaleTimeString("zh-CN", {
+                      hour12: false,
+                    })}`
+                  : discoveryScanning
+                    ? "正在找本机已装的 agent…"
+                    : "还没扫过"}
+                ：扫到的只是「这个命令装没装」，能不能起 ACP 要按「验证」真连一次。
+              </p>
+              {discoveryError && (
+                <p className="mt-1 break-all font-mono text-[9.5px] leading-relaxed text-danger-1">
+                  {discoveryError}
+                </p>
+              )}
+              {discovery?.warnings.map((w) => (
+                <p
+                  key={w}
+                  className="mt-1 break-all font-mono text-[9.5px] leading-relaxed text-warn-1"
+                >
+                  {w}
+                </p>
+              ))}
+
+              <div className="mt-1.5 divide-y divide-line-1/40">
+                {discovery?.candidates.map((c) => {
+                  const hits = discovery.found.filter((h) => h.candidateId === c.id);
+                  return (
+                    <div key={c.id} className="py-2">
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className={cn(
+                            "text-[11.5px]",
+                            hits.length > 0 ? "text-ink-1" : "text-ink-3",
+                          )}
+                        >
+                          {c.name}
+                        </span>
+                        <span
+                          className={cn(
+                            "rounded-[4px] px-1 py-px font-mono text-[9px]",
+                            c.mode === "native" ? "text-ok-1" : "text-warn-1",
+                          )}
+                          title={c.note}
+                        >
+                          {c.mode === "native" ? "原生 ACP" : "需适配器"}
+                        </span>
+                        {hits.length === 0 && (
+                          <span className="text-[9.5px] text-ink-3">未安装</span>
+                        )}
+                      </div>
+                      <p className="mt-0.5 truncate font-mono text-[9.5px] text-ink-3">
+                        {c.acpProgram} {c.acpArgs.join(" ")}
+                      </p>
+                      {c.mode === "adapter" && hits.length > 0 && (
+                        <p className="mt-0.5 text-[9.5px] leading-relaxed text-warn-1">{c.note}</p>
+                      )}
+                      {hits.map((h) => {
+                        const key = `${c.id}@${h.host}`;
+                        const pr = discoveryProbe[key];
+                        return (
+                          <div key={key} className="mt-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="shrink-0 font-mono text-[9.5px] text-ink-2">
+                                {h.host}
+                              </span>
+                              <span
+                                title={h.path}
+                                className="min-w-0 flex-1 truncate font-mono text-[9.5px] text-ink-3"
+                              >
+                                {h.path}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleDiscoveryProbe(c, h)}
+                                disabled={pr?.busy}
+                                className={cn(
+                                  "shrink-0 rounded-[6px] px-2 py-0.5 text-[10px] text-ink-2 transition-colors hover:bg-surface-3/45 hover:text-ink-1",
+                                  pr?.busy && "opacity-60",
+                                )}
+                              >
+                                {pr?.busy ? "验证中…" : "验证"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => onUseDiscovered?.(c, h)}
+                                className="shrink-0 rounded-[6px] px-2 py-0.5 text-[10px] text-accent-1 transition-colors hover:bg-surface-3/45"
+                              >
+                                用它建连接
+                              </button>
+                            </div>
+                            {(pr?.ok || pr?.error) && (
+                              <p
+                                className={cn(
+                                  "mt-0.5 break-all font-mono text-[9.5px] leading-relaxed",
+                                  pr.ok ? "text-ok-1" : "text-danger-1",
+                                )}
+                              >
+                                {pr.ok ?? pr.error}
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
             <p className="mt-2 text-[10.5px] leading-relaxed text-ink-3">
               本地与远程是同一条 SSH 路径，只差 host：本地填 <code className="font-mono">localhost</code>{" "}

@@ -215,6 +215,53 @@ export function agentProbe(p: AgentProfile): Promise<ProbeOutcome> {
   return invoke<ProbeOutcome>("agent_probe", { profile: toDto(p) });
 }
 
+/* ---------- agent 发现（docs/discovery.md） ---------- */
+
+export type AcpMode = "native" | "adapter";
+
+export interface DiscoveryCandidate {
+  id: string;
+  name: string;
+  /** 判断「装没装」用的命令名 */
+  binary: string;
+  mode: AcpMode;
+  /** 真起服务端的命令 */
+  acpProgram: string;
+  acpArgs: string[];
+  note: string;
+}
+
+export interface DiscoveryHit {
+  candidateId: string;
+  /** `local` / `wsl:<distro>` / `ssh:<host>` */
+  host: string;
+  path: string;
+  home: string | null;
+}
+
+export interface DiscoveryOutcome {
+  scannedAt: number;
+  candidates: DiscoveryCandidate[];
+  found: DiscoveryHit[];
+  /** 某些环境没扫成（wsl.exe 不在之类）：要让用户看到，而不是静默少几行 */
+  warnings: string[];
+}
+
+/**
+ * 扫一遍机器：这台机器上哪些 agent 能当 ACP 服务端跑。
+ *
+ * 只回答「装没装」。装了的也不一定能用 —— `codex` 在 PATH 上不代表它能起 ACP
+ * （实测没有 acp 子命令，要靠适配器）。要确认能不能握手，得用 agentProbe。
+ */
+export function agentDiscover(): Promise<DiscoveryOutcome> {
+  return invoke<DiscoveryOutcome>("agent_discover", {});
+}
+
+/** 上一次扫描的结果（启动时先渲染，不必等扫描跑完） */
+export function agentDiscoveryCached(): Promise<DiscoveryOutcome | null> {
+  return invoke<DiscoveryOutcome | null>("agent_discovery_cached", {});
+}
+
 /* ---------- 会话与消息 ---------- */
 
 export interface SessionRowDto {

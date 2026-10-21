@@ -14,7 +14,7 @@ export function useProfileStore() {
   const activeProfile =
     profiles.find((p) => p.id === activeProfileId) ?? profiles[0];
 
-  const addProfile = () =>
+  const addProfile = (draft?: Partial<AgentProfile>) =>
     setProfiles((list) => [
       ...list,
       {
@@ -29,6 +29,8 @@ export function useProfileStore() {
         args: ["acp"],
         cwd: "",
         ssh: { host: "", port: 22, user: "", auth: "key" },
+        // 发现结果可以直接带完整启动配置进来，用户不必再手填 program/args
+        ...draft,
       },
     ]);
   const removeProfile = (id: string) => setProfiles((list) => list.filter((p) => p.id !== id));

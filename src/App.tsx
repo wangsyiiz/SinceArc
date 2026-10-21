@@ -20,12 +20,19 @@ import { TracePanel } from "@/components/TracePanel";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
 import { players, prsByRepo } from "@/mock/data";
 import type { GithubPR, GithubRepo, PermissionRequest, SessionSummary, Tab, ThreadSettings } from "@/types";
-import { asCmdError, sessionUpsert, type ModesSnapshot } from "@/lib/ipc";
+import {
+  asCmdError,
+  sessionUpsert,
+  type DiscoveryCandidate,
+  type DiscoveryHit,
+  type ModesSnapshot,
+} from "@/lib/ipc";
 import { isWrite, now } from "@/lib/format";
 import { useAcpEvents } from "@/hooks/useAcpEvents";
 import { usePaneLayout } from "@/hooks/usePaneLayout";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useAgentConnect } from "@/hooks/useAgentConnect";
+import { useDiscovery } from "@/hooks/useDiscovery";
 import { useProfileStore } from "@/hooks/useProfileStore";
 import { usePrompt } from "@/hooks/usePrompt";
 import { useRepos } from "@/hooks/useRepos";
@@ -48,6 +55,7 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { profiles, activeProfile, addProfile, updateProfile, removeProfile } = useProfileStore();
+  const discovery = useDiscovery();
   const { sessions, setSessions } = useSessionList();
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
   const { state, patchSession, writeLock, initSession, sessionState } = useSessionState(lastSessionId);
@@ -250,6 +258,23 @@ export default function App() {
     if (st.busy) return "var(--ok)";
     return null;
   }, [sessionState]);
+
+  /**
+   * 用发现到的命令直接建连接：program / args / 环境 / 工作目录都已经知道，
+   * 让用户再手填一遍是白费功夫（也最容易填错）。
+   */
+  const useDiscovered = (c: DiscoveryCandidate, hit: DiscoveryHit) => {
+    const wsl = hit.host.startsWith("wsl:");
+    addProfile({
+      launch: wsl ? "wsl" : "local",
+      distro: wsl ? hit.host.slice("wsl:".length) : undefined,
+      shell: wsl ? "zsh" : undefined,
+      program: c.acpProgram,
+      args: [...c.acpArgs],
+      // 远端命令是 cd '<cwd>'，~ 不会被展开，所以用扫出来的绝对家目录
+      cwd: hit.home ?? "",
+    });
+  };
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-surface-0 text-ink-1">
@@ -455,7 +480,12 @@ export default function App() {
               profiles={profiles}
               theme={theme}
               onUpdateProfile={updateProfile}
-              onAddProfile={addProfile}
+              onAddProfile={() => addProfile()}
+              discovery={discovery.outcome}
+              discoveryScanning={discovery.scanning}
+              discoveryError={discovery.error}
+              onScanDiscovery={discovery.scan}
+              onUseDiscovered={useDiscovered}
               onRemoveProfile={removeProfileAndPerms}
               onConnect={connect}
               onDisconnect={disconnect}

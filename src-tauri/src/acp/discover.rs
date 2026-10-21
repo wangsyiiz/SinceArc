@@ -102,6 +102,9 @@ pub struct Found {
     /// `local` / `wsl:<distro>` / `ssh:<host>`，界面按它分组
     pub host: String,
     pub path: String,
+    /// 该环境下的家目录，用作新建连接的默认工作目录。
+    /// 必须是绝对路径：远端命令是 `cd '<cwd>'`，带引号的 `~` 不会被 shell 展开。
+    pub home: Option<String>,
 }
 
 /// 落库的形态：**只存扫出来的结果**，候选表始终来自代码里的 const。
@@ -199,6 +202,18 @@ async fn find_in_wsl(distro: &str, binary: &str) -> Option<String> {
     first_line(&String::from_utf8_lossy(&out.stdout))
 }
 
+/// 取某个 WSL 发行版的家目录（新建连接要一个绝对 cwd）
+async fn wsl_home(distro: &str) -> Option<String> {
+    let mut cmd = tokio::process::Command::new(crate::acp::launch::system_tool("wsl.exe"));
+    cmd.args(["-d", distro, "--", "sh", "-lc", "printf %s \"$HOME\""])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let out = tokio::time::timeout(Duration::from_secs(10), cmd.output()).await.ok()?.ok()?;
+    first_line(&String::from_utf8_lossy(&out.stdout))
+}
+
 /// Windows 本机：`where`（走 cmd 是因为它是 cmd 内建）
 async fn find_local(binary: &str) -> Option<String> {
     let mut cmd = tokio::process::Command::new(crate::acp::launch::system_tool("cmd.exe"));
@@ -236,6 +251,7 @@ pub async fn scan() -> DiscoverOutcome {
                 candidate_id: c.id.to_string(),
                 host: "local".into(),
                 path,
+                home: std::env::var("USERPROFILE").ok(),
             });
         }
     }
@@ -244,12 +260,15 @@ pub async fn scan() -> DiscoverOutcome {
     match wsl_distros().await {
         Ok(distros) => {
             for d in distros {
+                // 每个发行版只问一次家目录，别每个候选都问
+                let home = wsl_home(&d).await;
                 for c in CANDIDATES {
                     if let Some(path) = find_in_wsl(&d, c.binary).await {
                         found.push(Found {
                             candidate_id: c.id.to_string(),
                             host: format!("wsl:{d}"),
                             path,
+                            home: home.clone(),
                         });
                     }
                 }
