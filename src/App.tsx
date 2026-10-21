@@ -109,6 +109,16 @@ export default function App() {
     };
   }, [activeProfile]);
 
+  /**
+   * 渲染用的完整玩家表 = 群成员 + 主 agent。
+   * 消息和思考行都必须用它：思考行的 playerId 对主 agent 是 `MAIN_AGENT_ID`，
+   * 只在成员表里查会落空，之前的表现就是「发消息之后思考组件不出现」。
+   */
+  const renderPlayers = useMemo<Player[]>(
+    () => [...players, mainAgentPlayer],
+    [players, mainAgentPlayer],
+  );
+
   const { sessions, setSessions } = useSessionList();
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
   const { state, patchSession, writeLock, initSession, sessionState } = useSessionState(lastSessionId);
@@ -548,20 +558,20 @@ export default function App() {
                             <MessageItem
                               key={m.id}
                               message={m}
-                              players={[...players, mainAgentPlayer]}
+                              players={renderPlayers}
                             />
                           ))}
                           {state.acts
                             .filter((a) => a.status === "running")
                             .map((a) => {
-                              const p = players.find((x) => x.id === a.playerId);
+                              const p = renderPlayers.find((x) => x.id === a.playerId);
                               if (!p) return null;
                               const queued =
                                 writeLock && writeLock.id !== a.id && isWrite(a)
                                   ? {
                                       holder:
-                                        players.find((x) => x.id === writeLock.playerId)?.name ??
-                                        "agent",
+                                        renderPlayers.find((x) => x.id === writeLock.playerId)
+                                          ?.name ?? "agent",
                                     }
                                   : null;
                               return (
