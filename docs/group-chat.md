@@ -1,0 +1,157 @@
+# 群聊成员模型（E2.1）
+
+把「群聊」从 mock 变成真实模型：**agent user 是全局实体**（固定在某个 agent 的一个 session 上），
+**聊天 session 是群**，成员多对多。用户在群里 `@` 某个成员时，那条消息额外投递给它。
+
+当前实现的差距（动代码前先认清）：
+
+- `Player` 是静态 mock，连 `acpSessionId` 都没有，两个玩家还能挂同一个 profile；
+- 真实链路只跑一个会话，回复一律渲染成 `players[0]`；
+- `@handle` 只在 mock 分支生效。
+
+---
+
+## 1. 实体
+
+| 实体 | 是什么 | 落在哪 |
+|---|---|---|
+| 连接（profile） | 「在哪台机器上跑哪个 agent」 | `profiles` |
+| agent user | 一个可加入群聊的**玩家**：某条连接上某个 ACP 会话的人格 | `agent_users` |
+| 群 | 一条聊天会话；它自己的 `acp_session_id` 是「主 agent」 | `sessions` |
+| 成员关系 | 谁在哪个群里 | `session_members` |
+
+要点：
+
+- agent user **全局**，不属于某个群 —— 同一个玩家可以同时进多个群。
+- `UNIQUE (profile_id, acp_session_id)`：同一条连接上的同一个 ACP 会话只能是一个人。否则「两个人其实是同一个会话」，
+  群聊语义当场崩掉（现在的 mock 就有这个毛病）。
+- `sessions` 表结构不动。它自己的 `profile_id` + `acp_session_id` 就是群的主 agent。
+
+### 数据模型
+
+```sql
+agent_users (
+  id             TEXT PRIMARY KEY,          -- 我们自己的 id
+  profile_id     TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  acp_session_id TEXT NOT NULL,             -- 玩家的锚点，也是投递的地址
+  name           TEXT NOT NULL,             -- 显示名
+  handle         TEXT NOT NULL,             -- @ 用的短名，全局唯一（大小写不敏感）
+  color          TEXT NOT NULL,             -- 头像/名字配色
+  created_at     INTEGER NOT NULL,
+  UNIQUE (profile_id, acp_session_id)
+);
+
+session_members (
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  user_id    TEXT NOT NULL REFERENCES agent_users(id) ON DELETE CASCADE,
+  added_at   INTEGER NOT NULL,
+  PRIMARY KEY (session_id, user_id)
+);
+```
+
+`messages` 加一列：`author_id TEXT`（`agent_users.id`，仅 `role='player'` 时有值）。
+不这么做的话，多 agent 群里所有回复都长得一样，只能靠猜。
+
+---
+
+## 2. 创建流程（设置 → Agent Users）
+
+前提：**必须先指定一条可用的连接（profile）**。没有连接的 sessionId 没法验证，也就没法保存。
+
+两种入口**都已实现**，表单顶部是二选一：
+
+1. **新建会话**（默认）—— 点「测试」时**顺带**调 `session/new` 在当前连接上真建一个，建完自动填 id
+   并按「刚建成必然可用」置为通过：不再让用户先点「新建」再点「测试」两步（所有者定的交互）。
+   副作用必须在表单里提前写明：**点测试会真的占用 agent 的一个 session**；
+   建完不保存就取消，那个会话会留在 agent 那边（不回收，也不该由客户端偷偷删）；
+   在同一个表单里再点一次测试，会再建一个（界面会提示）。
+   新建档**不显示** id 输入框：id 是测试时建出来的，只该「显示」不该「可填」
+   （测试完成后单列一行只读的 id；想手改就切到「已有会话」）。
+2. **已有会话** —— 手动填一个已存在的 sessionId，必须 `session/load` 验过才能保存。
+   适合「我在别的客户端里开过这个 agent 会话，想把它的上下文搬进来」。
+
+### 保存前必须通过测试
+
+- 「已有会话」这一档才有「测试」按钮（新建那一档不需要，隐藏而不是灰着 —— 灰按钮点了没反应，
+  用户会当成 bug）。状态机：`未测试 → 测试中 → 通过 / 失败（带原因）`。
+- 测试动作 = 拿这个 id **真跑一次 `session/load`**。
+  **不要**用 `session/list` 判断：它只返回 agent 记着的列表，未必与用户输入一致，也判不出「这个 id 能不能恢复」。
+- **只有「会话字段」变动才退回「未测试」**：连接 / session id / 工作目录变了，测试结论就作废
+  （否则会出现「用 A 的 id 测通了、改成 B 还显示通过」，存下去就是死条目）。
+  **名字 / @ 短名 / 颜色不影响**，改了不退 —— 这两个字段本来就是保存前才想好的，
+  退回去会逼用户「填完短名再重测一遍」，毫无意义。
+- **「测试」是幂等的**：新建档里第一次点会建会话；之后再点只对**同一个 id** 做 `session/load` 复核，
+  不会再建第二个。反复点测试不该在 agent 上堆空会话。
+- 没通过时保存按钮禁用，并写清为什么（不是灰着不解释）。
+
+---
+
+## 3. @ 投递规则
+
+| 用户发的消息 | 投给谁 |
+|---|---|
+| 没有 `@` | 群的主 agent（`sessions.acp_session_id`） |
+| `@handle` | 该成员所在连接的该 ACP 会话；主 agent 不参与 |
+| `@` 了不存在的 handle | **明确报错**并把这条标成失败，不当普通文本投出去 |
+
+细节：
+
+- **一条消息只投一个目标**（第一刀）。多 `@` 扇出、主 agent 与成员同时回答，都要先想清「谁在读谁的回答」，不在这一刀。
+- 成员那条连接不在线 → 先走无感连接（`ensureConnected`）；连不上就把原因写进这条消息的失败原因，不静默重试。
+- 投递前**不**做「成员是否在群里」之外的权限判断：ACP 没有「只读成员」这种语义，别自己发明。
+- 输入框里敲 `@` 会列出**本群成员**（候选就是 `players`，即 `session_members` 的结果）：
+  空群里会直接说「群里还没有成员 —— 点左栏的 + 把人拉进来」，而不是静静地什么都不弹。
+  `@` 前必须是行首或空白，所以 `john@example.com` 这种不会误触发补全。
+- **短名可以是中文**，所以解析不用字符集正则 —— 它在 `members` 的短名表里找 `@handle`，
+  最早命中者胜、同位置取更长者。用 `/@([a-zA-Z][\w-]*)/` 会把 `@hermes-测试2` 截成
+  `@hermes-`（`\w` 只认 ASCII），表现为「输入框里显示正常、一发送就说不在群里」。
+- 短名里不许有空格：解析靠空白断词，带空格的短名永远 @ 不到（保存时前后端都拦）。
+- `sessions.contextMessages` 仍然有效：`@` 时附带最近 N 条记录（数字在设置 → 群聊里，现在是 3）。
+
+---
+
+## 4. 消息归属与渲染
+
+- 收到某成员的回答，写成 `role='player', author_id=<user_id>` 的消息；渲染时显示该成员的 name + color。
+- `author_id` 指向已删除的 user（`ON DELETE CASCADE` 会让消息留空引用）→ 显示 agent 名，不留空洞。
+- 主 agent 的回复保持 `role='agent'`（群主视角）。
+- 失败消息 `role='system'`，正文写清「谁、为什么没投出去」，例如：
+  `@后端-2 投递失败：连接 hermes · fedora 未连接（50200 启动失败）`。
+
+## 5. 并发前提（写在这里，避免以后争论）
+
+- 一条连接 = 一个 ACP 进程；同一进程内可以有多个 ACP 会话（`session/new` 多次），这是 ACP 的常规用法。
+- 不同成员可以落在不同连接上 → 需要多条连接同时在线。前端 `useAgentConnect` 已经是按 profile 管理，
+  后端 `state.agents` 也按 profile 存，结构上支持；**但没有实测过「两个连接同时跑长任务」**，
+  这属于第二刀要验的事，第一刀只用一条连接内的多个会话。
+
+## 6. 这一刀不做
+
+- 自动 `session/new` 创建成员（连接层并发验证单独立卡）。
+- 一条消息扇出给多个成员 / 让主 agent 旁听成员回答。
+- 成员的角色与工具白名单（ACP 没有这个语义）。
+- 跨群共享上下文、成员之间互相 `@`。
+
+## 7. 实现进度（第一刀）
+
+| 项 | 状态 |
+|---|---|
+| `agent_users` / `session_members` / `messages.author_id` | ✅ schema v4 |
+| 成员 CRUD + `session/load` 验真 | ✅ 后端；设置 → 成员（测试状态机）✅ |
+| 左栏「群成员」入口（拉人进群 / 移出） | ✅ `MembersMenu`，每次打开重拉全局玩家表 |
+| 群里 `@handle` 投递 | ✅ `session_load` 把成员会话 load 进已连接进程，再 `session/prompt` |
+| 回答归属（名字 + 颜色） | ✅ `acpToAuthor` 映射 → 消息 `playerId`；群里有成员时玩家表由成员派生 |
+| `@` 不在群里 → 明确失败 | ✅ 写一条 system 说明，不投给主 agent |
+| 「创建了成员」≠「在群里」 | ✅ `@` 只在本群成员里找；拉人进群是左栏入口的事 |
+| 输入框 `@` 自动补全 | ✅ 输入 `@` 弹出**本群成员**（与投递规则同源）；方向键选、Enter/Tab 确认、Esc 关掉 |
+| 自动 `session/new` 创建成员 | ❌ 第二刀（要先验连接层并发） |
+
+## 8. 验收
+
+1. 设置里新建 agent user：随便填个假 id → 测试失败，保存按钮禁用，原因写清。
+2. 填一个真实可恢复的 sessionId → 测试通过 → 保存 → 出现在群里。
+3. 改一个字段（比如换了连接）→ 状态退回「未测试」，保存重新禁用。
+4. 群里 `@` 成员发一句话 → 该成员的连接收到 prompt，回答记在它名下（名字 + 颜色）。
+5. 不 `@` 直接发 → 投给主 agent。
+6. `@不存在的人` → 这条消息标失败并说明原因，主 agent 收不到它。
+7. 成员连接断开状态下 `@` 它 → 自动尝试连接；连不上就失败并说明，不重试三遍、不假装成功。

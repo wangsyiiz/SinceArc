@@ -28,9 +28,16 @@ export interface AgentProfile {
   ssh?: SshConfig;
   /** 远端命令的工作目录（ssh 时是远端路径） */
   cwd?: string;
-  /** 启动命令，v1 固定 hermes acp，但显式写出来而不是藏在代码里 */
+  /** 连接的默认编辑审批模式；null/undefined = 不推，跟随 agent 默认 */
+  defaultMode?: string | null;
+  /** 启动命令（如 hermes acp / npx -y @agentclientprotocol/codex-acp） */
   program?: string;
   args?: string[];
+  /**
+   * 握手报上来的协议能力键（loadSession / image / list / fork …）。
+   * 只有真连过一次才有值；它是「这个 agent 支持什么」的唯一可信来源。
+   */
+  capabilities?: string[];
   /** WSL 场景 */
   distro?: string;
   shell?: string;
@@ -38,6 +45,12 @@ export interface AgentProfile {
 
 /** ACP 之外的能力（agent 自己的 CLI），不属于协议本体 */
 export interface AgentCommand {
+  /**
+   * 跑这条子命令用的**二进制**（如 hermes / codex）。
+   * 注意它不一定等于 profile.program：codex 的 ACP 是通过 `npx …codex-acp` 起的，
+   * 但它的 CLI 叫 `codex`。预览必须按这个字段拼，否则会拼出一条跑不通的命令。
+   */
+  binary: string;
   id: string;
   label: string;
   argv: string[];

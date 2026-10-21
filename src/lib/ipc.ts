@@ -13,14 +13,27 @@ export interface CmdError {
 }
 
 /** 后端推来的事件。tag = kind，与 Rust 的 AcpEvent 对齐 */
+/**
+ * 归属信息：后端按会话记录填好，前端**不许**用「当前打开的会话」去补。
+ * 缺失就代表这条事件确实不属于任何界面会话（例如设置页里为成员新建的会话）。
+ */
+interface EventRoute {
+  /** ACP 会话 id */
+  sessionId?: string | null;
+  /** 该投给哪个界面会话 */
+  uiSessionId?: string | null;
+  /** 发言者：群成员 id；主 agent 时为 null */
+  authorId?: string | null;
+}
+
 export type AcpEvent =
-  | { kind: "notification"; method: string; params: unknown }
-  | { kind: "request"; id: number; method: string; params: unknown }
+  | ({ kind: "notification"; method: string; params: unknown } & EventRoute)
+  | ({ kind: "request"; id: number; method: string; params: unknown } & EventRoute)
   | { kind: "hello" }
   | { kind: "exited" }
-  | { kind: "promptStarted"; sessionId: string }
-  | { kind: "promptResult"; sessionId: string; result: unknown }
-  | { kind: "promptFailed"; sessionId: string; msg: string };
+  | ({ kind: "promptStarted"; } & EventRoute & { sessionId: string })
+  | ({ kind: "promptResult"; result: unknown } & EventRoute & { sessionId: string })
+  | ({ kind: "promptFailed"; msg: string } & EventRoute & { sessionId: string });
 
 export interface SessionInfo {
   sessionId: string;
@@ -33,6 +46,7 @@ export interface ProfileDto {
   program: string;
   args: string[];
   cwd: string;
+  defaultMode?: string | null;
   distro?: string | null;
   shell?: string | null;
   sshHost?: string | null;
@@ -52,6 +66,31 @@ export interface ConnectOutcome {
   loadSession: boolean;
   imagePrompts: boolean;
   authMethods: string[];
+  /** 协议能力键，来自 initialize 的 agentCapabilities */
+  capabilities: string[];
+  modes?: ModesSnapshot | null;
+}
+
+export interface ModeOption {
+  id: string;
+  name: string;
+  description?: string | null;
+}
+
+/**
+ * 打开/恢复会话时 agent 报上来的模式快照。
+ * `current` 是 agent 当时的生效值 —— 界面初值必须用它，
+ * 不能拿 available[0] 顶（规范 §5.2：跟随且没有连接默认时要显示 agent 的值）。
+ */
+export interface ModesSnapshot {
+  available: ModeOption[];
+  current: string;
+}
+
+export interface ModeChoice {
+  applied: string | null;
+  following: boolean;
+  warning?: string | null;
 }
 
 export function isTauri(): boolean {
@@ -75,6 +114,7 @@ function toDto(p: AgentProfile) {
     program: p.program ?? "hermes",
     args: p.args ?? ["acp"],
     cwd: p.cwd ?? "",
+    defaultMode: p.defaultMode ?? null,
     distro: p.distro ?? "fedora",
     shell: p.shell ?? "zsh",
     sshHost: p.ssh?.host,
@@ -113,6 +153,7 @@ export function fromDto(d: ProfileDto): AgentProfile {
           : d.program,
     connected: false,
     cwd: d.cwd,
+    defaultMode: d.defaultMode ?? null,
     program: d.program,
     args: d.args,
     distro: d.distro ?? undefined,
@@ -124,6 +165,7 @@ export function fromDto(d: ProfileDto): AgentProfile {
 export async function connectAgent(
   profile: AgentProfile,
   onEvent?: (e: AcpEvent) => void,
+  uiSessionId?: string,
 ): Promise<ConnectOutcome> {
   if (!isTauri()) {
     throw { code: 50900, msg: "当前不在 Tauri 运行环境里（浏览器直开无法调用后端）" } as CmdError;
@@ -131,16 +173,61 @@ export async function connectAgent(
   const { Channel } = await import("@tauri-apps/api/core");
   const channel = new Channel<AcpEvent>();
   if (onEvent) channel.onmessage = onEvent;
-  return invoke<ConnectOutcome>("agent_connect", { profile: toDto(profile), onEvent: channel });
+  return invoke<ConnectOutcome>("agent_connect", {
+    profile: toDto(profile),
+    onEvent: channel,
+    uiSessionId,
+  });
 }
 
-export function sessionNew(profileId: string, cwd: string): Promise<SessionInfo> {
-  return invoke<SessionInfo>("session_new", { profileId, cwd });
+export function sessionNew(
+  profileId: string,
+  cwd: string,
+  uiSessionId?: string,
+): Promise<SessionInfo> {
+  return invoke<SessionInfo>("session_new", { profileId, cwd, uiSessionId });
 }
 
 /** 发一轮消息。立即返回：内容从事件流回来，不在这里等生成完。 */
-export function sessionPrompt(sessionId: string, text: string): Promise<void> {
-  return invoke<void>("session_prompt", { sessionId, text });
+/** 把某个已存会话 load 进已连接的进程（向群成员发消息前必须先做） */
+export function sessionLoad(
+  profileId: string,
+  acpSessionId: string,
+  cwd: string,
+  uiSessionId?: string,
+): Promise<ModesSnapshot | null> {
+  return invoke<ModesSnapshot | null>("session_load", {
+    profileId,
+    acpSessionId,
+    cwd,
+    uiSessionId,
+  });
+}
+
+export function sessionPrompt(
+  sessionId: string,
+  text: string,
+  uiSessionId?: string,
+): Promise<void> {
+  return invoke<void>("session_prompt", { sessionId, text, uiSessionId });
+}
+
+/**
+ * 回答 agent 发来的权限请求。
+ *
+ * `cancelled` 只表示用户中止了这一轮；有拒绝选项时应当回 `selected`，
+ * 否则 agent 那边会把它当成「整轮被取消」而不是「这次操作被拒绝」。
+ */
+export type RespondOutcome =
+  | { outcome: "selected"; optionId: string }
+  | { outcome: "cancelled" };
+
+export function agentRespondRequest(
+  profileId: string,
+  id: number,
+  outcome: RespondOutcome,
+): Promise<void> {
+  return invoke<void>("agent_respond_request", { profileId, id, outcome });
 }
 
 /** 读回本机存的连接配置 */
@@ -153,11 +240,140 @@ export function profilesSave(profiles: AgentProfile[]): Promise<void> {
   return invoke<void>("profiles_save", { profiles: profiles.map(toDto) });
 }
 
+/** 探测结果：真跑一次 initialize，agent 自报的名字/版本 */
+export interface ProbeOutcome {
+  agentName: string;
+  agentVersion: string;
+  protocolVersion: number;
+  loadSession: boolean;
+  /** 握手报上来的能力键；保存连接之前就能看到这个 agent 支持什么 */
+  capabilities: string[];
+}
+
+/**
+ * 只握手、不保留进程：用来回答「这条命令到底是不是 ACP agent」。
+ * 命令写得对不对、装没装、要不要登录，都会在这里暴露出来。
+ */
+export function agentProbe(p: AgentProfile): Promise<ProbeOutcome> {
+  return invoke<ProbeOutcome>("agent_probe", { profile: toDto(p) });
+}
+
+/* ---------- agent 发现（docs/discovery.md） ---------- */
+
+export type AcpMode = "native" | "adapter";
+
+export interface DiscoveryCandidate {
+  id: string;
+  name: string;
+  /** 判断「装没装」用的命令名 */
+  binary: string;
+  mode: AcpMode;
+  /** 真起服务端的命令 */
+  acpProgram: string;
+  acpArgs: string[];
+  note: string;
+}
+
+export interface DiscoveryHit {
+  candidateId: string;
+  /** `local` / `wsl:<distro>` / `ssh:<host>` */
+  host: string;
+  path: string;
+  home: string | null;
+}
+
+export interface DiscoveryOutcome {
+  scannedAt: number;
+  candidates: DiscoveryCandidate[];
+  found: DiscoveryHit[];
+  /** 某些环境没扫成（wsl.exe 不在之类）：要让用户看到，而不是静默少几行 */
+  warnings: string[];
+}
+
+/**
+ * 扫一遍机器：这台机器上哪些 agent 能当 ACP 服务端跑。
+ *
+ * 只回答「装没装」。装了的也不一定能用 —— `codex` 在 PATH 上不代表它能起 ACP
+ * （实测没有 acp 子命令，要靠适配器）。要确认能不能握手，得用 agentProbe。
+ */
+export function agentDiscover(profiles: AgentProfile[] = []): Promise<DiscoveryOutcome> {
+  // SSH 只扫用户已经存了连接配置的 host（规范 §3）：不去碰未知主机。
+  // 扫的是配置，不是密码本身 —— 后端复用启动层的同一套认证。
+  const sshProfiles = profiles.filter((p) => p.launch === "ssh").map(toDto);
+  return invoke<DiscoveryOutcome>("agent_discover", { sshProfiles });
+}
+
+/** 上一次扫描的结果（启动时先渲染，不必等扫描跑完） */
+export function agentDiscoveryCached(): Promise<DiscoveryOutcome | null> {
+  return invoke<DiscoveryOutcome | null>("agent_discovery_cached", {});
+}
+
+/* ---------- 群聊成员（docs/group-chat.md） ---------- */
+
+export interface AgentUser {
+  id: string;
+  profileId: string;
+  /** 投递地址：该成员在自己那条连接上的 ACP 会话 */
+  acpSessionId: string;
+  name: string;
+  /** @ 用的短名，大小写不敏感、全局唯一 */
+  handle: string;
+  color: string;
+  createdAt: number;
+}
+
+export interface AgentUserTestResult {
+  ok: boolean;
+  /** 成功是会话信息，失败是**原因** */
+  detail: string;
+}
+
+/**
+ * 测试一个 sessionId 能不能当玩家：真跑 `session/load`。
+ * 不用 session/list 判断 —— 它只回 agent 记着的列表，判不出「这个 id 能不能恢复」。
+ */
+export function agentUserTest(
+  profile: AgentProfile,
+  acpSessionId: string,
+  cwd?: string,
+): Promise<AgentUserTestResult> {
+  return invoke<AgentUserTestResult>("agent_user_test", {
+    profile: toDto(profile),
+    acpSessionId,
+    cwd: cwd ?? null,
+  });
+}
+
+export function agentUsersList(): Promise<AgentUser[]> {
+  return invoke<AgentUser[]>("agent_users_list", {});
+}
+
+export function agentUserSave(user: AgentUser): Promise<void> {
+  return invoke<void>("agent_user_save", { user });
+}
+
+export function agentUserDelete(id: string): Promise<void> {
+  return invoke<void>("agent_user_delete", { id });
+}
+
+export function sessionMembers(sessionId: string): Promise<AgentUser[]> {
+  return invoke<AgentUser[]>("session_members", { sessionId });
+}
+
+export function sessionMemberAdd(sessionId: string, userId: string): Promise<void> {
+  return invoke<void>("session_member_add", { sessionId, userId });
+}
+
+export function sessionMemberRemove(sessionId: string, userId: string): Promise<void> {
+  return invoke<void>("session_member_remove", { sessionId, userId });
+}
+
 /* ---------- 会话与消息 ---------- */
 
 export interface SessionRowDto {
   id: string;
   acpSessionId?: string | null;
+  modeOverride?: string | null;
   profileId?: string | null;
   title: string;
   cwd: string;
@@ -208,6 +424,7 @@ export interface SessionUpdate {
   sessionId?: string;
   update?: {
     sessionUpdate?: string;
+    currentModeId?: string;
     content?: { type?: string; text?: string };
     [k: string]: unknown;
   };
@@ -221,6 +438,28 @@ export function asSessionUpdate(e: AcpEvent): SessionUpdate | null {
 
 export function disconnectAgent(profileId: string): Promise<void> {
   return invoke<void>("agent_disconnect", { profileId });
+}
+
+export function sessionApplyMode(
+  profileId: string,
+  acpSessionId: string,
+  uiSessionId: string,
+): Promise<ModeChoice> {
+  return invoke<ModeChoice>("session_apply_mode", { profileId, acpSessionId, uiSessionId });
+}
+
+export function sessionChooseMode(
+  profileId: string,
+  acpSessionId: string,
+  uiSessionId: string,
+  modeId: string | null,
+): Promise<ModeChoice> {
+  return invoke<ModeChoice>("session_choose_mode", {
+    profileId,
+    acpSessionId,
+    uiSessionId,
+    modeId,
+  });
 }
 
 export function listConnected(): Promise<string[]> {

@@ -9,6 +9,10 @@ interface PermissionDialogProps {
   player?: Player;
   open: boolean;
   onDecide: (optionId: string) => void;
+  /** Esc / 关闭：由上层按 kind 找拒绝项，不能在对话框里硬编码 optionId */
+  onCancel: () => void;
+  /** 队列里还剩多少条（含当前这条） */
+  queued?: number;
 }
 
 const TONE = {
@@ -28,8 +32,16 @@ const TONE = {
   },
 } as const;
 
-export function PermissionDialog({ request, player, open, onDecide }: PermissionDialogProps) {
+export function PermissionDialog({
+  request,
+  player,
+  open,
+  onDecide,
+  onCancel,
+  queued = 1,
+}: PermissionDialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
+  const hasAlways = request.options.some((opt) => opt.tone === "always");
 
   useEffect(() => {
     const el = ref.current;
@@ -44,7 +56,7 @@ export function PermissionDialog({ request, player, open, onDecide }: Permission
       className="sc-dialog"
       onCancel={(e) => {
         e.preventDefault();
-        onDecide("reject");
+        onCancel();
       }}
     >
       <div className="p-5">
@@ -55,6 +67,9 @@ export function PermissionDialog({ request, player, open, onDecide }: Permission
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className="text-[14px] font-medium text-ink-1">{request.title}</span>
+              {queued > 1 && (
+                <span className="shrink-0 text-[10px] text-ink-3">还有 {queued - 1} 个</span>
+              )}
               {player && (
                 <span className="flex items-center gap-1 rounded-full bg-surface-3/45 py-0.5 pl-0.5 pr-2">
                   <PlayerAvatar player={player} size={14} />
@@ -99,7 +114,8 @@ export function PermissionDialog({ request, player, open, onDecide }: Permission
         </div>
 
         <div className="mt-3.5 text-center text-[10px] text-ink-3">
-          Esc 视为拒绝 · 该决定只对本次请求生效
+          Esc 视为拒绝 ·{" "}
+          {hasAlways ? "选择「始终允许」会对后续同类请求生效" : "该决定只对本次请求生效"}
         </div>
       </div>
     </dialog>

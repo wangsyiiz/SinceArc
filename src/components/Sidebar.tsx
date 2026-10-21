@@ -1,7 +1,9 @@
-import { useMemo, useState } from "react";
-import { FolderGit2, MessageSquare, Plus, Settings2, Terminal } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, FolderGit2, MessageSquare, Plus, Settings2, Trash2 } from "lucide-react";
 import type { AgentProfile, GithubPR, GithubRepo, Player, SessionSummary } from "@/types";
 import { cn } from "@/lib/utils";
+import { profileLabel } from "@/lib/format";
+import { MoreMenu } from "./MoreMenu";
 
 export type SidebarMode = "sessions" | "code";
 
@@ -12,13 +14,17 @@ interface SidebarProps {
   activeId: string | null;
   profiles: AgentProfile[];
   players: Player[];
-  activeProfileId: string;
   repos: GithubRepo[];
   prsByRepo: Record<string, GithubPR[]>;
   onSelect: (id: string) => void;
   onNew: () => void;
-  onSelectProfile: (id: string) => void;
+  /** 指定连接新建（下拉里选 agent 时用） */
+  onNewWithProfile: (profileId: string) => void;
   onOpenSettings: () => void;
+  /** 删除会话（App 负责确认与落库；这里只发起） */
+  onDeleteSession: (s: SessionSummary) => void;
+  /** 这一轮还在跑的会话：不允许删（还没有 session/cancel，删了会留下没人看的 agent） */
+  isSessionBusy?: (id: string) => boolean;
   onOpenRepo: (repoId: string) => void;
   onAddRepo: (path: string) => void;
   width?: number;
@@ -33,13 +39,14 @@ export function Sidebar({
   activeId,
   profiles,
   players,
-  activeProfileId,
   repos,
   prsByRepo,
   onSelect,
   onNew,
-  onSelectProfile,
+  onNewWithProfile,
   onOpenSettings,
+  onDeleteSession,
+  isSessionBusy,
   onOpenRepo,
   onAddRepo,
   width = 260,
@@ -101,16 +108,7 @@ export function Sidebar({
       {mode === "sessions" ? (
         <>
           <div className="px-2.5 pb-2">
-            <button
-              onClick={onNew}
-              className="sc-control flex w-full items-center gap-2 rounded-[8px] bg-surface-3/50 px-2.5 py-2 text-[12.5px] text-ink-1 transition-colors hover:bg-surface-3/85"
-            >
-              <Plus className="size-3.5 text-ink-2" />
-              新建会话
-              <kbd className="ml-auto rounded border border-line-1/70 px-1.5 py-0.5 font-mono text-[9.5px] text-ink-3">
-                Ctrl N
-              </kbd>
-            </button>
+            <NewSessionButton profiles={profiles} onNew={onNew} onNewWithProfile={onNewWithProfile} />
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
@@ -121,17 +119,23 @@ export function Sidebar({
                 </div>
                 {items.map((s) => {
                   const active = s.id === activeId;
+                  // 老会话可能没有 profileId；查不到配置时直接不渲染，避免「未知」噪音
+                  const profile = s.profileId
+                    ? profiles.find((p) => p.id === s.profileId)
+                    : undefined;
+                  const busy = isSessionBusy?.(s.id) ?? false;
                   return (
-                    <button
+                    <div
                       key={s.id}
-                      onClick={() => onSelect(s.id)}
                       className={cn(
-                        "group mb-0.5 flex w-full flex-col gap-0.5 rounded-[8px] px-2.5 py-2 text-left transition-colors",
-                        active
-                          ? "sc-row-active"
-                          : "hover:bg-surface-3/35",
+                        "group relative mb-0.5 rounded-[8px] transition-colors",
+                        active ? "sc-row-active" : "hover:bg-surface-3/35",
                       )}
                     >
+                      <button
+                        onClick={() => onSelect(s.id)}
+                        className="flex w-full flex-col gap-0.5 rounded-[8px] px-2.5 py-2 pr-7 text-left"
+                      >
                       <span
                         className={cn(
                           "truncate text-[12px]",
@@ -140,7 +144,7 @@ export function Sidebar({
                       >
                         {s.title}
                       </span>
-                      <span className="flex items-center gap-1">
+                      <span className="flex min-w-0 items-center gap-1">
                         {s.playerIds.slice(0, 3).map((pid) => {
                           const pl = players.find((x) => x.id === pid);
                           return pl ? (
@@ -152,9 +156,39 @@ export function Sidebar({
                             />
                           ) : null;
                         })}
-                        <span className="truncate font-mono text-[10px] text-ink-3">{s.cwd}</span>
+                        <span className="min-w-0 truncate font-mono text-[10px] text-ink-3">
+                          {s.cwd}
+                        </span>
+                        {profile && (
+                          <span
+                            title={`归属：${profileLabel(profile)}`}
+                            className={cn(
+                              // 这里只说「这个会话属于谁」，不做连接状态着色 ——
+                              // 状态属于当前那个会话，在标题栏里显示，列在这里会变成一堆绿灰点。
+                              "ml-auto max-w-[72px] shrink-0 truncate rounded-[4px] bg-surface-3/35 px-1 py-px font-mono text-[9.5px] text-ink-3 transition-colors group-hover:bg-surface-3/55",
+                            )}
+                          >
+                            {profileLabel(profile)}
+                          </span>
+                        )}
                       </span>
-                    </button>
+                      </button>
+                      {/* hover 才出现：删除是低频破坏性操作，不该一直挂在那儿等误点 */}
+                      <div className="absolute right-1 top-1.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                        <MoreMenu
+                          items={[
+                            {
+                              label: "删除会话",
+                              icon: <Trash2 size={12} />,
+                              danger: true,
+                              disabled: busy,
+                              hint: busy ? "这一轮还在跑，等它结束再删" : undefined,
+                              onSelect: () => onDeleteSession(s),
+                            },
+                          ]}
+                        />
+                      </div>
+                    </div>
                   );
                 })}
               </div>
@@ -227,26 +261,6 @@ export function Sidebar({
       )}
 
       <div className="border-t border-line-1/80 p-2">
-        <div className="mb-1 px-1.5 text-[10px] text-ink-3">Agent</div>
-        {profiles.map((p) => (
-          <button
-            key={p.id}
-            onClick={() => onSelectProfile(p.id)}
-            className={cn(
-              "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left transition-colors",
-              p.id === activeProfileId ? "bg-surface-3/55" : "hover:bg-surface-3/35",
-            )}
-          >
-            <span
-              className={cn("size-1.5 shrink-0 rounded-full", p.connected ? "bg-ok-1" : "bg-ink-3")}
-            />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[11.5px] text-ink-1">{p.name}</span>
-              <span className="block truncate font-mono text-[9.5px] text-ink-3">{p.detail}</span>
-            </span>
-            {p.launch === "wsl" && <Terminal className="size-3 shrink-0 text-ink-3" />}
-          </button>
-        ))}
         <button
           onClick={onOpenSettings}
           className="mt-0.5 flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-[11.5px] text-ink-3 transition-colors hover:bg-surface-3/35 hover:text-ink-2"
@@ -256,5 +270,94 @@ export function Sidebar({
         </button>
       </div>
     </aside>
+  );
+}
+
+/**
+ * 「新建会话」的拆分控件：主按钮沿用最近用的连接（零步骤），只配了多个连接时
+ * 才亮出右侧下拉让用户指定。
+ *
+ * 为什么不做成「新建后去标题栏改归属」：那是把一件事拆成不连贯的两步，而且改的时候
+ * 会话已经存在，用户容易先发了一句话才发现归属不对。
+ */
+function NewSessionButton({
+  profiles,
+  onNew,
+  onNewWithProfile,
+}: {
+  profiles: AgentProfile[];
+  onNew: () => void;
+  onNewWithProfile: (profileId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const multi = profiles.length > 1;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <div className="sc-control flex w-full items-center rounded-[8px] bg-surface-3/50 transition-colors hover:bg-surface-3/85">
+        <button
+          onClick={onNew}
+          className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left text-[12.5px] text-ink-1"
+        >
+          <Plus className="size-3.5 shrink-0 text-ink-2" />
+          新建会话
+          {!multi && (
+            <kbd className="ml-auto rounded border border-line-1/70 px-1.5 py-0.5 font-mono text-[9.5px] text-ink-3">
+              Ctrl N
+            </kbd>
+          )}
+        </button>
+        {multi && (
+          <button
+            aria-label="选择 agent 新建会话"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+            className="mr-1 grid size-6 shrink-0 place-items-center rounded-[6px] text-ink-3 transition-colors hover:bg-surface-3/70 hover:text-ink-1"
+          >
+            <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
+          </button>
+        )}
+      </div>
+
+      {open && multi && (
+        <div className="sc-glass absolute top-full right-0 left-0 z-30 mt-1.5 rounded-[10px] p-1">
+          <div className="px-2 py-1.5 text-[9.5px] leading-relaxed text-ink-3">
+            选一个 agent 新建；打开后会按它自动连接
+          </div>
+          {profiles.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => {
+                onNewWithProfile(p.id);
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-2 rounded-[6px] px-2 py-1.5 text-left transition-colors hover:bg-surface-3/45"
+            >
+              <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-1">
+                {profileLabel(p)}
+              </span>
+              <span className="shrink-0 font-mono text-[9.5px] text-ink-3">{p.launch}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

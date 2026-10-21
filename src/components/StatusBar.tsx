@@ -2,6 +2,9 @@ import type { ReactNode } from "react";
 import { ChevronDown, ShieldCheck, Waypoints } from "lucide-react";
 import type { AgentProfile } from "@/types";
 import { cn } from "@/lib/utils";
+import { profileLabel } from "@/lib/format";
+import { ModeSelect } from "@/components/ModeSelect";
+import type { ModeView } from "@/hooks/useSessionModes";
 
 interface StatusBarProps {
   cwd: string;
@@ -13,6 +16,11 @@ interface StatusBarProps {
   /** 调试用：累计收到的 inbound 事件数与其方法名 */
   eventCount?: number;
   lastEvent?: string;
+  /** 当前会话的审批模式；为空时状态栏不显示选择器 */
+  modes?: ModeView | null;
+  onChooseMode?: (modeId: string | null) => void;
+  /** 跟随连接默认时，副标题显示哪个模式；由上层查 profile 后传入 */
+  fallbackLabel?: string | null;
   /** 右侧插槽：agent 能力入口等 */
   right?: ReactNode;
 }
@@ -25,6 +33,9 @@ export function StatusBar({
   sessionId,
   eventCount = 0,
   lastEvent,
+  modes,
+  onChooseMode,
+  fallbackLabel,
   right,
 }: StatusBarProps) {
   return (
@@ -46,6 +57,17 @@ export function StatusBar({
       </button>
 
       <div className="ml-auto flex items-center gap-0.5">
+        {modes && onChooseMode && (
+          <ModeSelect
+            compact
+            current={modes.current}
+            available={modes.available}
+            following={modes.following}
+            fallbackLabel={fallbackLabel}
+            warning={modes.warning}
+            onChoose={onChooseMode}
+          />
+        )}
         {right}
         {sessionId && (
           <span
@@ -69,12 +91,24 @@ export function StatusBar({
             className={cn(
               "mr-1 flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px]",
               profile.connected
-                ? "border-ok-1/20 bg-ok-1/[0.08] text-ok-1"
-                : "border-line-1 bg-surface-2/50 text-ink-3",
+                ? "border-ok-1/20 bg-ok-1/[0.08]"
+                : "border-line-1 bg-surface-2/50",
             )}
+            title={
+              profile.connected
+                ? `${profile.agentName ?? "agent"} · 协议 v${profile.protocolVersion ?? 1}`
+                : "这个会话还没有连上 agent（打开会话会自动连）"
+            }
           >
-            <ShieldCheck className="size-2.5" />
-            {profile.connected ? `${profile.agentName ?? "已连接"} · v${profile.protocolVersion ?? 1}` : "未连接"}
+            <ShieldCheck
+              className={cn("size-2.5 shrink-0", profile.connected ? "text-ok-1" : "text-ink-3")}
+            />
+            {/* 名字是「这是哪个 agent」，后面那句才是「连没连上」—— 两件事分开说，
+                否则用户在会话列表里看到一堆绿灰徽标，误以为是状态 */}
+            <span className="max-w-[120px] truncate text-ink-2">{profileLabel(profile)}</span>
+            <span className={profile.connected ? "text-ok-1" : "text-ink-3"}>
+              {profile.connected ? "已连接" : "未连接"}
+            </span>
           </div>
         )}
 
