@@ -93,6 +93,8 @@ pub struct ProfileDto {
     pub args: Vec<String>,
     pub cwd: String,
     #[serde(default)]
+    pub default_mode: Option<String>,
+    #[serde(default)]
     pub distro: Option<String>,
     #[serde(default)]
     pub shell: Option<String>,
@@ -126,6 +128,7 @@ pub struct ConnectOutcome {
     /// 前端直接用它，不必再发一次 session/new（那样每连一次就多一个空会话）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    pub modes: Option<acp::SessionModes>,
 }
 
 /// SSH 的必填项缺失时逐个点名，不给默认值 ——
@@ -290,7 +293,10 @@ pub async fn agent_connect(
 
     // 会话归属：优先复用上次的（agent 侧因此不会每连一次就多一个空会话）
     let handle = state.get(&id).await.expect("just inserted");
-    let session_id = attach_session(&state, &id, &handle, &cwd).await;
+    let (session_id, modes) = match attach_session(&state, &id, &handle, &cwd).await {
+        Some((session_id, modes)) => (Some(session_id), modes),
+        None => (None, None),
+    };
 
     // 自检：这条如果前端也没收到，问题在 Channel 本身而不是 ACP 事件
     tracing::info!(target: "sincearc::ipc", "hello -> webview");
@@ -306,6 +312,7 @@ pub async fn agent_connect(
         image_prompts: outcome.image_prompts,
         auth_methods: outcome.auth_methods,
         session_id,
+        modes,
     })
 }
 
@@ -318,7 +325,7 @@ async fn attach_session(
     profile_id: &str,
     handle: &AgentHandle,
     cwd: &str,
-) -> Option<String> {
+) -> Option<(String, Option<acp::SessionModes>)> {
     let mut warnings: Vec<String> = Vec::new();
 
     if handle.outcome.load_session {
@@ -334,7 +341,11 @@ async fn attach_session(
                     .request("session/load", params, Duration::from_secs(120))
                     .await
                 {
-                    Ok(_) => {
+                    Ok(v) => {
+                        let modes = acp::modes_from_response(&v);
+                        if let Some(m) = &modes {
+                            state.set_modes(prev.clone(), m.clone()).await;
+                        }
                         tracing::info!(
                             target: "sincearc::ipc",
                             session = %prev,
@@ -349,7 +360,7 @@ async fn attach_session(
                                 },
                             )
                             .await;
-                        return Some(prev);
+                        return Some((prev, modes));
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -379,6 +390,10 @@ async fn attach_session(
     match created {
         Ok(v) => {
             let sid = v["sessionId"].as_str()?.to_string();
+            let modes = acp::modes_from_response(&v);
+            if let Some(m) = &modes {
+                state.set_modes(sid.clone(), m.clone()).await;
+            }
             tracing::info!(target: "sincearc::ipc", session = %sid, "session created");
             state
                 .insert_session(
@@ -389,7 +404,7 @@ async fn attach_session(
                     },
                 )
                 .await;
-            Some(sid)
+            Some((sid, modes))
         }
         Err(e) => {
             tracing::warn!(target: "sincearc::ipc", error = %e, "session/new failed");
@@ -640,4 +655,210 @@ pub async fn messages_load(
         .db
         .load_messages(&session_id, limit.unwrap_or(200))
         .map_err(|e| CmdError::new(50000, format!("读取消息失败：{e}")))
+}
+
+/* ---------------- 会话审批模式（编辑审批） ---------------- */
+// 判据与顺序见 docs/modes-spec.md §4 / §5.1。两条铁律：
+//   1. 手动选择：校验通过、且 set_mode 成功之后，才写 mode_override
+//   2. 没有目标值 / 连接不支持 → 一律「不推」，不猜一个值推上去
+// 错误码分区（规范 §6 要求把「配置问题」和「运行期失败」分开）：
+//   50400 连接已断开   50401 连接不支持该模式   50402 set_mode 调用失败   50403 会话没报上来可选模式
+
+/// 一次模式动作的结果。`Ok` 表示存储层已按用户意图写好；`warning` 说明为什么没推成。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModeChoice {
+    /// 这次真正推给 agent 并成功的模式；None = 没推
+    pub applied: Option<String>,
+    /// 动作完成后该会话是否处于「跟随连接默认」
+    pub following: bool,
+    /// 没推成的原因（配置问题，不是运行期错误）
+    pub warning: Option<String>,
+}
+
+impl ModeChoice {
+    fn skipped(following: bool, why: impl Into<String>) -> Self {
+        Self {
+            applied: None,
+            following,
+            warning: Some(why.into()),
+        }
+    }
+}
+
+/// 读连接的默认模式。profile 不在库里就按「没设置」处理 ——
+/// 配置可能刚被删掉，这时不该拦住会话层面的动作。
+fn profile_default_mode(state: &AppState, profile_id: &str) -> Option<String> {
+    state
+        .db
+        .load_profiles()
+        .ok()?
+        .into_iter()
+        .find(|p| p.id == profile_id)?
+        .default_mode
+}
+
+/// 把模式推给 agent。失败一律是运行期错误。
+async fn push_mode(
+    handle: &AgentHandle,
+    acp_session_id: &str,
+    mode_id: &str,
+) -> Result<(), CmdError> {
+    handle
+        .proc
+        .request(
+            "session/set_mode",
+            serde_json::json!({ "sessionId": acp_session_id, "modeId": mode_id }),
+            Duration::from_secs(60),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            tracing::warn!(
+                target: "sincearc::ipc",
+                session = acp_session_id,
+                mode = mode_id,
+                error = %e,
+                "set_mode failed"
+            );
+            CmdError::new(
+                50402,
+                format!("切换模式失败：{mode_id}（该连接可能不支持这个模式）"),
+            )
+        })
+}
+
+/// 打开/恢复会话之后按存储推一次值（规范 §4）。**不写存储** ——
+/// 它只负责把已经记下的意图落到 agent 上，意图本身由 session_choose_mode 写。
+#[tauri::command]
+pub async fn session_apply_mode(
+    state: State<'_, AppState>,
+    profile_id: String,
+    acp_session_id: String,
+    ui_session_id: String,
+) -> Result<ModeChoice, CmdError> {
+    let override_mode = state
+        .db
+        .mode_override(&ui_session_id)
+        .map_err(|e| CmdError::new(50000, format!("读取会话模式失败：{e}")))?;
+    let following = override_mode.is_none();
+
+    // 兜底（§4 末条）：两个来源都空就什么都不推，沿用 agent 报的 currentModeId
+    let Some(target) = override_mode.or_else(|| profile_default_mode(&state, &profile_id)) else {
+        return Ok(ModeChoice {
+            applied: None,
+            following,
+            warning: None,
+        });
+    };
+
+    let Some(modes) = state.modes_of(&acp_session_id).await else {
+        return Ok(ModeChoice::skipped(
+            following,
+            "这个会话没有报上来可选模式，按不推处理",
+        ));
+    };
+    if !modes.available.iter().any(|m| m.id == target) {
+        return Ok(ModeChoice::skipped(
+            following,
+            format!("该连接不支持模式 {target}，已保留你的设置"),
+        ));
+    }
+
+    let handle = state
+        .get(&profile_id)
+        .await
+        .ok_or_else(|| CmdError::new(50400, "连接已断开，改不了模式"))?;
+    match push_mode(&handle, &acp_session_id, &target).await {
+        Ok(()) => Ok(ModeChoice {
+            applied: Some(target),
+            following,
+            warning: None,
+        }),
+        // 打开会话时的推送失败不该让整个连接流程失败：降级成 warning，界面显示即可
+        Err(e) => Ok(ModeChoice::skipped(
+            following,
+            format!("推送模式 {target} 失败：{}", e.msg),
+        )),
+    }
+}
+
+/// 用户在会话内改模式（规范 §5.1）。`mode_id` 为 None = 改回「跟随连接默认」。
+///
+/// 手动选择走「校验 → 推 agent → 成功才落库」；先落库会让 agent 拒绝时
+/// 留下一个从没生效过的值，下次打开再失败一次。
+#[tauri::command]
+pub async fn session_choose_mode(
+    state: State<'_, AppState>,
+    profile_id: String,
+    acp_session_id: String,
+    ui_session_id: String,
+    mode_id: Option<String>,
+) -> Result<ModeChoice, CmdError> {
+    let handle = state
+        .get(&profile_id)
+        .await
+        .ok_or_else(|| CmdError::new(50400, "连接已断开，改不了模式"))?;
+
+    match mode_id {
+        Some(m) => {
+            // 用户当场选的：不支持就当场拒绝，一个字节都不写
+            let modes = state
+                .modes_of(&acp_session_id)
+                .await
+                .ok_or_else(|| CmdError::new(50403, "这个会话没有报上来可选模式，无法切换"))?;
+            if !modes.available.iter().any(|x| x.id == m) {
+                return Err(CmdError::new(50401, format!("这个连接不支持模式 {m}")));
+            }
+            push_mode(&handle, &acp_session_id, &m).await?;
+            state
+                .db
+                .set_mode_override(&ui_session_id, Some(&m))
+                .map_err(|e| CmdError::new(50000, format!("保存会话模式失败：{e}")))?;
+            Ok(ModeChoice {
+                applied: Some(m),
+                following: false,
+                warning: None,
+            })
+        }
+        None => {
+            // 改回跟随：记账的是「跟随」这个意图本身，不是某个值，
+            // 所以即便后面推不动也照记 —— 不违反 §5.1 的「先切成功再落库」
+            state
+                .db
+                .set_mode_override(&ui_session_id, None)
+                .map_err(|e| CmdError::new(50000, format!("保存会话模式失败：{e}")))?;
+
+            let Some(target) = profile_default_mode(&state, &profile_id) else {
+                return Ok(ModeChoice {
+                    applied: None,
+                    following: true,
+                    warning: None,
+                });
+            };
+            let Some(modes) = state.modes_of(&acp_session_id).await else {
+                return Ok(ModeChoice::skipped(
+                    true,
+                    "这个会话没有报上来可选模式，按不推处理",
+                ));
+            };
+            if !modes.available.iter().any(|x| x.id == target) {
+                return Ok(ModeChoice::skipped(
+                    true,
+                    format!("连接默认模式 {target} 不受此连接支持"),
+                ));
+            }
+            match push_mode(&handle, &acp_session_id, &target).await {
+                Ok(()) => Ok(ModeChoice {
+                    applied: Some(target),
+                    following: true,
+                    warning: None,
+                }),
+                Err(e) => Ok(ModeChoice::skipped(
+                    true,
+                    format!("推送模式 {target} 失败：{}", e.msg),
+                )),
+            }
+        }
+    }
 }

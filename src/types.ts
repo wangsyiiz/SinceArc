@@ -28,6 +28,8 @@ export interface AgentProfile {
   ssh?: SshConfig;
   /** 远端命令的工作目录（ssh 时是远端路径） */
   cwd?: string;
+  /** 连接的默认编辑审批模式；null/undefined = 不推，跟随 agent 默认 */
+  defaultMode?: string | null;
   /** 启动命令，v1 固定 hermes acp，但显式写出来而不是藏在代码里 */
   program?: string;
   args?: string[];

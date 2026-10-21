@@ -11,6 +11,7 @@ pub mod transport;
 
 use std::time::Duration;
 
+use serde::Serialize;
 use serde_json::Value;
 
 use launch::AgentProfile;
@@ -67,6 +68,122 @@ impl InitializeOutcome {
                 .unwrap_or(false),
             auth_methods: auth,
         }
+    }
+}
+
+/// agent 报上来的一个可选模式。只留 UI 要展示的字段。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModeOption {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// 打开会话时的模式快照：`available` 用于校验目标值，`current` 是 agent 当时的生效值。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionModes {
+    pub available: Vec<ModeOption>,
+    pub current: String,
+}
+
+/// 从 session/new、session/load 的响应里取 modes。
+/// 规范 §2 要求将来 configOptions(category=="mode") 优先，但 hermes 现阶段只下发
+/// modes（configOptions 为空），所以先只解析 modes，留一条 TODO 注明升级点。
+pub fn modes_from_response(v: &Value) -> Option<SessionModes> {
+    // TODO: configOptions(category=="mode") 出现后，这里要先解析它，缺失再回落到 modes。
+    let modes = v.get("modes")?;
+    let raw = modes.get("availableModes")?.as_array()?;
+    if raw.is_empty() {
+        return None;
+    }
+
+    let available: Vec<ModeOption> = raw
+        .iter()
+        .filter_map(|m| {
+            let id = m.get("id")?.as_str()?.to_string();
+            let name = m.get("name")?.as_str()?.to_string();
+            // 可缺省；但显式给了非字符串值说明这一项不可信，整项跳过。
+            let description = match m.get("description") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(s)) => Some(s.clone()),
+                Some(_) => return None,
+            };
+            Some(ModeOption {
+                id,
+                name,
+                description,
+            })
+        })
+        .collect();
+
+    if available.is_empty() {
+        return None;
+    }
+
+    let current = modes
+        .get("currentModeId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| available[0].id.clone());
+
+    Some(SessionModes { available, current })
+}
+
+#[cfg(test)]
+mod modes_tests {
+    use super::modes_from_response;
+    use serde_json::json;
+
+    /// 真实返回（2026-10-21 实测 hermes-agent 0.22.2）裁成三档
+    #[test]
+    fn parses_real_shape() {
+        let v = json!({
+            "sessionId": "local-abc",
+            "modes": {
+                "currentModeId": "default",
+                "availableModes": [
+                    { "id": "default", "name": "Default", "description": "Ask before edits." },
+                    { "id": "accept_edits", "name": "Accept Edits", "description": "Auto-allow workspace and temp-dir edits; still asks for sensitive paths." },
+                    { "id": "dont_ask", "name": "Don't Ask", "description": "Auto-allow file edits for this session except sensitive paths." }
+                ]
+            }
+        });
+        let m = modes_from_response(&v).expect("应当解析出来");
+        assert_eq!(m.current, "default");
+        assert_eq!(m.available.len(), 3);
+        assert_eq!(m.available[2].id, "dont_ask");
+    }
+
+    /// 没有 modes / 空列表 → None：上层据此「不推」（规范 §4 兜底）
+    #[test]
+    fn absent_or_empty_gives_none() {
+        assert!(modes_from_response(&json!({ "sessionId": "s" })).is_none());
+        assert!(modes_from_response(&json!({ "modes": { "availableModes": [] } })).is_none());
+        assert!(modes_from_response(&json!({ "modes": {} })).is_none());
+    }
+
+    /// 缺 currentModeId 时用第一档兜底，不要 panic
+    #[test]
+    fn current_falls_back_to_first() {
+        let v = json!({ "modes": { "availableModes": [{ "id": "ask", "name": "Ask" }] } });
+        let m = modes_from_response(&v).expect("应当解析出来");
+        assert_eq!(m.current, "ask");
+        assert!(m.available[0].description.is_none());
+    }
+
+    /// 单条坏数据只跳过自己，不影响整份快照
+    #[test]
+    fn bad_entry_is_skipped_not_fatal() {
+        let v = json!({ "modes": { "currentModeId": "b", "availableModes": [
+            { "id": "a", "name": "A", "description": 42 },
+            { "name": "缺 id" },
+            { "id": "b", "name": "B" }
+        ]}});
+        let m = modes_from_response(&v).expect("应当解析出来");
+        assert_eq!(m.available.len(), 1);
+        assert_eq!(m.available[0].id, "b");
     }
 }
 

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::acp::launch::AgentProfile;
-use crate::acp::{transport, InitializeOutcome};
+use crate::acp::{transport, InitializeOutcome, SessionModes};
 use crate::commands::AcpEvent;
 
 pub struct AgentHandle {
@@ -32,6 +32,8 @@ pub struct SessionRecord {
 pub struct AppState {
     agents: Mutex<HashMap<String, Arc<AgentHandle>>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
+    /// 每个 ACP 会话打开时 agent 报上来的可选模式；推值前要拿它校验（规范 §4 规则 2）
+    modes: Mutex<HashMap<String, SessionModes>>,
     /// 配置与会话记账（同步 SQLite，操作都是毫秒级，直接锁用）
     pub db: Arc<crate::db::Db>,
 }
@@ -41,6 +43,7 @@ impl AppState {
         Self {
             agents: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
+            modes: Mutex::new(HashMap::new()),
             db: Arc::new(db),
         }
     }
@@ -70,6 +73,14 @@ impl AppState {
         self.sessions.lock().await.get(session_id).cloned()
     }
 
+    pub async fn set_modes(&self, acp_session_id: String, modes: SessionModes) {
+        self.modes.lock().await.insert(acp_session_id, modes);
+    }
+
+    pub async fn modes_of(&self, acp_session_id: &str) -> Option<SessionModes> {
+        self.modes.lock().await.get(acp_session_id).cloned()
+    }
+
     /// 断连时把该 profile 名下的会话一并摘掉（进程没了，会话不可能还活着）
     pub async fn drop_sessions_of(&self, profile_id: &str) -> Vec<String> {
         let mut map = self.sessions.lock().await;
@@ -78,8 +89,11 @@ impl AppState {
             .filter(|(_, r)| r.profile_id == profile_id)
             .map(|(k, _)| k.clone())
             .collect();
+        let mut modes = self.modes.lock().await;
         for k in &dead {
             map.remove(k);
+            // 进程没了，这份快照就过期了，不能留给下一次同 id 的会话复用。
+            modes.remove(k);
         }
         dead
     }

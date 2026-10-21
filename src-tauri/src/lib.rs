@@ -45,6 +45,8 @@ pub fn run() {
             commands::session_upsert,
             commands::session_delete,
             commands::session_bind_acp,
+            commands::session_apply_mode,
+            commands::session_choose_mode,
             commands::messages_append,
             commands::messages_load,
             commands::agent_list_connected,

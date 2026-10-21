@@ -19,7 +19,7 @@ use crate::commands::ProfileDto;
 pub const SCHEMA: &str = include_str!("schema.sql");
 
 /// 结构版本：与 schema.sql 不符时整表重建（自用工具，会话数据可再生）
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -30,6 +30,7 @@ pub struct Db {
 pub struct SessionRow {
     pub id: String,
     pub acp_session_id: Option<String>,
+    pub mode_override: Option<String>,
     /// 还没绑定连接配置的草稿会话为 None
     pub profile_id: Option<String>,
     pub title: String,
@@ -72,6 +73,20 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
+/// CREATE TABLE IF NOT EXISTS 不会给旧表补列；每加一列都要在这里登记一次，
+/// 否则老库打开后一查新列就报 no such column。
+fn ensure_column(conn: &Connection, table: &str, column: &str, decl: &str) -> rusqlite::Result<()> {
+    let exists: i64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
+        params![column],
+        |r| r.get(0),
+    )?;
+    if exists == 0 {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
+    }
+    Ok(())
+}
+
 impl Db {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
@@ -104,6 +119,8 @@ impl Db {
         }
 
         conn.execute_batch(SCHEMA)?;
+        ensure_column(&conn, "profiles", "default_mode", "TEXT")?;
+        ensure_column(&conn, "sessions", "mode_override", "TEXT")?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
 
         Ok(Self {
@@ -117,7 +134,8 @@ impl Db {
         let conn = self.conn.lock().expect("db poisoned");
         let mut stmt = conn.prepare(
             "SELECT id, name, launch_kind, program, args_json, default_cwd,
-                    distro, shell, ssh_host, ssh_port, ssh_user, ssh_auth, ssh_key_path
+                    distro, shell, ssh_host, ssh_port, ssh_user, ssh_auth, ssh_key_path,
+                    default_mode
              FROM profiles ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -129,6 +147,7 @@ impl Db {
                 program: r.get(3)?,
                 args: serde_json::from_str(&args_json).unwrap_or_default(),
                 cwd: r.get(5)?,
+                default_mode: r.get(13)?,
                 distro: r.get(6)?,
                 shell: r.get(7)?,
                 ssh_host: r.get(8)?,
@@ -154,14 +173,15 @@ impl Db {
             tx.execute(
                 "INSERT INTO profiles
                    (id, name, launch_kind, distro, shell, program, args_json, env_json,
-                    default_cwd, ssh_host, ssh_port, ssh_user, ssh_auth, ssh_key_path,
+                    default_cwd, default_mode, ssh_host, ssh_port, ssh_user, ssh_auth, ssh_key_path,
                     created_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,'{}',?8,?9,?10,?11,?12,?13,?14,?14)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'{}',?8,?9,?10,?11,?12,?13,?14,?15,?15)
                  ON CONFLICT(id) DO UPDATE SET
                    name=excluded.name, launch_kind=excluded.launch_kind,
                    distro=excluded.distro, shell=excluded.shell,
                    program=excluded.program, args_json=excluded.args_json,
-                   default_cwd=excluded.default_cwd, ssh_host=excluded.ssh_host,
+                   default_cwd=excluded.default_cwd, default_mode=excluded.default_mode,
+                   ssh_host=excluded.ssh_host,
                    ssh_port=excluded.ssh_port, ssh_user=excluded.ssh_user,
                    ssh_auth=excluded.ssh_auth, ssh_key_path=excluded.ssh_key_path,
                    updated_at=excluded.updated_at",
@@ -174,6 +194,7 @@ impl Db {
                     p.program,
                     args,
                     p.cwd,
+                    p.default_mode,
                     p.ssh_host,
                     p.ssh_port.map(|v| v as i64),
                     p.ssh_user,
@@ -218,7 +239,8 @@ impl Db {
 
     pub fn list_sessions(&self, profile_id: Option<&str>) -> rusqlite::Result<Vec<SessionRow>> {
         let conn = self.conn.lock().expect("db poisoned");
-        let sql = "SELECT id, acp_session_id, profile_id, title, cwd, created_at, updated_at
+        let sql = "SELECT id, acp_session_id, profile_id, title, cwd, created_at, updated_at,
+                          mode_override
                    FROM sessions
                    WHERE (?1 IS NULL OR profile_id = ?1)
                    ORDER BY updated_at DESC, created_at DESC";
@@ -232,6 +254,7 @@ impl Db {
                 cwd: r.get(4)?,
                 created_at: r.get(5)?,
                 updated_at: r.get(6)?,
+                mode_override: r.get(7)?,
             })
         })?;
         rows.collect()
@@ -240,14 +263,17 @@ impl Db {
     pub fn upsert_session(&self, row: &SessionRow) -> rusqlite::Result<()> {
         let conn = self.conn.lock().expect("db poisoned");
         conn.execute(
-            "INSERT INTO sessions (id, acp_session_id, profile_id, title, cwd, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7)
+            "INSERT INTO sessions (id, acp_session_id, profile_id, title, cwd, created_at, updated_at,
+                                   mode_override)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
              ON CONFLICT(id) DO UPDATE SET
                -- 绑定过的 ACP id 不能被一次空值覆盖掉
                acp_session_id = COALESCE(excluded.acp_session_id, sessions.acp_session_id),
                profile_id = excluded.profile_id,
                title = excluded.title,
                cwd = excluded.cwd,
+               -- mode_override 只由 set_mode_override 在用户手切成功后写；
+               -- 普通会话保存不带该字段，跟着 excluded 更新会把覆盖值误清成 NULL。
                updated_at = excluded.updated_at",
             params![
                 row.id,
@@ -256,7 +282,8 @@ impl Db {
                 row.title,
                 row.cwd,
                 row.created_at,
-                row.updated_at
+                row.updated_at,
+                row.mode_override
             ],
         )?;
         Ok(())
@@ -267,6 +294,30 @@ impl Db {
         conn.execute(
             "UPDATE sessions SET acp_session_id = ?2, updated_at = ?3 WHERE id = ?1",
             params![id, acp_session_id, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn mode_override(&self, ui_session_id: &str) -> rusqlite::Result<Option<String>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.query_row(
+            "SELECT mode_override FROM sessions WHERE id = ?1",
+            params![ui_session_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|v| v.flatten())
+    }
+
+    pub fn set_mode_override(
+        &self,
+        ui_session_id: &str,
+        value: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "UPDATE sessions SET mode_override = ?2, updated_at = ?3 WHERE id = ?1",
+            params![ui_session_id, value, now()],
         )?;
         Ok(())
     }
@@ -371,6 +422,62 @@ mod tests {
         (Db::open(&path).expect("open temp db"), path)
     }
 
+    /// 加列之前的旧库：CREATE TABLE IF NOT EXISTS 不会补列，
+    /// 所以 open() 必须靠 ensure_column 补齐，而且不能顺手把会话清掉。
+    #[test]
+    fn old_db_gains_mode_columns_without_losing_sessions() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "sincearc-db-migrate-{}-{nanos}.db",
+            std::process::id()
+        ));
+
+        {
+            let conn = Connection::open(&path).expect("raw open");
+            // 关键：保留 acp_session_id（否则会被判定为需要整表重建），但两列都还没有
+            conn.execute_batch(
+                "CREATE TABLE profiles (
+                   id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                   launch_kind TEXT NOT NULL CHECK (launch_kind IN ('local','wsl','ssh')),
+                   distro TEXT, shell TEXT, program TEXT NOT NULL,
+                   args_json TEXT NOT NULL DEFAULT '[]', env_json TEXT NOT NULL DEFAULT '{}',
+                   default_cwd TEXT NOT NULL,
+                   ssh_host TEXT, ssh_port INTEGER, ssh_user TEXT, ssh_auth TEXT, ssh_key_path TEXT,
+                   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 CREATE TABLE sessions (
+                   id TEXT PRIMARY KEY, acp_session_id TEXT,
+                   profile_id TEXT REFERENCES profiles(id) ON DELETE CASCADE,
+                   title TEXT NOT NULL DEFAULT '新会话', cwd TEXT NOT NULL DEFAULT '',
+                   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 INSERT INTO sessions (id, acp_session_id, title, cwd, created_at, updated_at)
+                   VALUES ('s-old', 'acp-old', '老会话', '/tmp', 1, 1);",
+            )
+            .expect("seed old schema");
+        }
+
+        let db = Db::open(&path).expect("迁移后应当能打开");
+
+        let rows = db.list_sessions(None).expect("list");
+        assert_eq!(rows.len(), 1, "旧会话不该被清掉");
+        assert_eq!(rows[0].id, "s-old");
+        assert_eq!(rows[0].mode_override, None);
+
+        db.set_mode_override("s-old", Some("dont_ask"))
+            .expect("写入覆盖值");
+        assert_eq!(
+            db.mode_override("s-old").expect("读回").as_deref(),
+            Some("dont_ask")
+        );
+
+        db.set_mode_override("s-old", None).expect("改回跟随");
+        assert_eq!(db.mode_override("s-old").expect("读回"), None);
+
+        std::fs::remove_file(&path).ok();
+    }
+
     fn sample() -> ProfileDto {
         ProfileDto {
             id: "p1".into(),
@@ -379,6 +486,7 @@ mod tests {
             program: "hermes".into(),
             args: vec!["acp".into()],
             cwd: "/mnt/c/source/sincearc".into(),
+            default_mode: None,
             distro: Some("fedora".into()),
             shell: Some("zsh".into()),
             ssh_host: None,
@@ -394,6 +502,7 @@ mod tests {
         SessionRow {
             id: id.into(),
             acp_session_id: acp.map(|s| s.to_string()),
+            mode_override: None,
             profile_id: Some("p1".into()),
             title: "新会话".into(),
             cwd: "/mnt/c/source/sincearc".into(),

@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS profiles (
   args_json     TEXT NOT NULL DEFAULT '[]',
   env_json      TEXT NOT NULL DEFAULT '{}',
   default_cwd   TEXT NOT NULL,
+  -- 连接的默认编辑审批模式；NULL = 不推
+  default_mode  TEXT,
   -- SSH 凭证：密码不在这张表里（只在内存过一手）
   ssh_host      TEXT,
   ssh_port      INTEGER,
@@ -37,6 +39,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
 CREATE TABLE IF NOT EXISTS sessions (
   id             TEXT PRIMARY KEY,          -- UI 侧会话 id
   acp_session_id TEXT,                      -- agent 侧 id；还没连过就是 NULL
+  -- 会话覆盖值；NULL = 跟随连接默认
+  mode_override  TEXT,
   profile_id     TEXT REFERENCES profiles(id) ON DELETE CASCADE,  -- 草稿会话可以为空
   title          TEXT NOT NULL DEFAULT '新会话',
   cwd            TEXT NOT NULL DEFAULT '',

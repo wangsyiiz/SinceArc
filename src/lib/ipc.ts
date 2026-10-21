@@ -33,6 +33,7 @@ export interface ProfileDto {
   program: string;
   args: string[];
   cwd: string;
+  defaultMode?: string | null;
   distro?: string | null;
   shell?: string | null;
   sshHost?: string | null;
@@ -52,6 +53,10 @@ export interface ConnectOutcome {
   loadSession: boolean;
   imagePrompts: boolean;
   authMethods: string[];
+  modes?: {
+    available: { id: string; name: string; description?: string | null }[];
+    current: string;
+  } | null;
 }
 
 export function isTauri(): boolean {
@@ -75,6 +80,7 @@ function toDto(p: AgentProfile) {
     program: p.program ?? "hermes",
     args: p.args ?? ["acp"],
     cwd: p.cwd ?? "",
+    defaultMode: p.defaultMode ?? null,
     distro: p.distro ?? "fedora",
     shell: p.shell ?? "zsh",
     sshHost: p.ssh?.host,
@@ -113,6 +119,7 @@ export function fromDto(d: ProfileDto): AgentProfile {
           : d.program,
     connected: false,
     cwd: d.cwd,
+    defaultMode: d.defaultMode ?? null,
     program: d.program,
     args: d.args,
     distro: d.distro ?? undefined,
@@ -158,6 +165,7 @@ export function profilesSave(profiles: AgentProfile[]): Promise<void> {
 export interface SessionRowDto {
   id: string;
   acpSessionId?: string | null;
+  modeOverride?: string | null;
   profileId?: string | null;
   title: string;
   cwd: string;
