@@ -21,7 +21,7 @@ interface ModeSelectProps {
   /** 状态栏用紧凑尺寸，设置页用常规尺寸 */
   compact?: boolean;
   /**
-   * session = 会话内选择器，带「文件编辑审批 / 命令仍逐条询问」说明块；
+   * session = 会话内选择器，带「只管文件编辑」说明块；
    * connection = 连接默认选择器，**不带**说明块 —— 那里用户在配这个值本身，
    * 一行不可选的分组标题只是噪音。
    */
@@ -108,7 +108,7 @@ export function ModeSelect({
             <div className="px-2 py-1.5">
               <div className="text-[10.5px] text-ink-2">文件编辑审批</div>
               <div className="mt-0.5 text-[9.5px] leading-relaxed text-ink-3">
-                命令执行仍逐条询问；敏感路径永远询问
+                只管文件编辑；命令是否询问由 agent 自己的审批策略决定
               </div>
             </div>
           )}
