@@ -8,27 +8,37 @@ interface ModeSelectProps {
   current: string | null;
   /** 可选模式；空数组 = 这个连接没报上来，按钮要显示「不支持」并禁用 */
   available: ModeOption[];
-  /** 是否处于「跟随连接默认」（规范 §5.2：这个状态必须能看出来，不能只显示当前值） */
+  /** 是否处于「跟随 / 不指定」状态（规范 §5.2：这个状态必须能看出来，不能只显示当前值） */
   following: boolean;
-  /** 跟随状态下生效的是哪个模式（用来在「跟随」那一行显示副标题） */
+  /** 「跟随」那一行的标题：会话里是「跟随连接默认」，设置页是「不指定」 */
+  followLabel?: string;
+  /** 跟随状态下实际生效的是哪个模式 —— 显示在那一行的行尾（对勾之前） */
   fallbackLabel?: string | null;
   warning?: string | null;
-  /** null = 改回跟随连接默认 */
+  /** null = 改回跟随 / 不指定 */
   onChoose: (modeId: string | null) => void;
   disabled?: boolean;
   /** 状态栏用紧凑尺寸，设置页用常规尺寸 */
   compact?: boolean;
+  /**
+   * session = 会话内选择器，带「文件编辑审批 / 命令仍逐条询问」说明块；
+   * connection = 连接默认选择器，**不带**说明块 —— 那里用户在配这个值本身，
+   * 一行不可选的分组标题只是噪音。
+   */
+  variant?: "session" | "connection";
 }
 
 export function ModeSelect({
   current,
   available,
   following,
+  followLabel = "跟随连接默认",
   fallbackLabel,
   warning,
   onChoose,
   disabled,
   compact,
+  variant = "session",
 }: ModeSelectProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -92,12 +102,16 @@ export function ModeSelect({
             compact ? "w-[260px]" : "w-[320px]",
           )}
         >
-          <div className="px-2 py-1.5">
-            <div className="text-[10.5px] text-ink-2">文件编辑审批</div>
-            <div className="mt-0.5 text-[9.5px] leading-relaxed text-ink-3">
-              命令执行仍逐条询问；敏感路径永远询问
+          {/* 说明块只在会话里出现：它解释的是「这个下拉管什么」；连接默认选择器里
+              用户在配这个值本身，一行不可选的分组标题只是噪音 */}
+          {variant === "session" && (
+            <div className="px-2 py-1.5">
+              <div className="text-[10.5px] text-ink-2">文件编辑审批</div>
+              <div className="mt-0.5 text-[9.5px] leading-relaxed text-ink-3">
+                命令执行仍逐条询问；敏感路径永远询问
+              </div>
             </div>
-          </div>
+          )}
 
           <button
             type="button"
@@ -106,23 +120,27 @@ export function ModeSelect({
               setOpen(false);
             }}
             className={cn(
-              "flex w-full items-start gap-2 rounded-[6px] px-2 py-1.5 text-left transition-colors",
+              "flex w-full items-center gap-2 rounded-[6px] px-2 py-1.5 text-left transition-colors",
               following ? "sc-row-active" : "hover:bg-surface-3/45",
             )}
           >
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[11.5px] text-ink-1">跟随连接默认</span>
-              <span className="mt-0.5 block truncate text-[10px] text-ink-3">
-                {fallbackLabel ?? "agent 默认"}
-              </span>
+            <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-1">
+              {followLabel}
             </span>
-            <span className="mt-0.5 grid size-3.5 shrink-0 place-items-center">
+            {/* 继承到的实际值放行尾、对勾之前：这样「跟随」被选中时用户看到的是
+                「跟随 → 目前是 Default」，而不是下面某一项同时被打勾 */}
+            <span className="shrink-0 font-mono text-[9.5px] text-ink-3">
+              {fallbackLabel ?? "agent 默认"}
+            </span>
+            <span className="grid size-3.5 shrink-0 place-items-center">
               {following && <Check className="size-3.5 text-accent-1" />}
             </span>
           </button>
 
           {available.map((m) => {
-            const active = m.id === current;
+            // 全场只允许一个勾：跟随态下具体项一律不打勾，
+            // 否则「跟随」和某一项同时选中，用户会以为选了两个。
+            const active = !following && m.id === current;
             return (
               <button
                 key={m.id}

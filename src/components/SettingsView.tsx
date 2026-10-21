@@ -240,6 +240,10 @@ export function SettingsView({
                 const ssh = p.ssh;
                 const snapshot = modesFor(p.id);
                 const availableModes = snapshot?.available ?? [];
+                // snapshot.current 是 session/new 那一刻 agent 自己的值（那时我们还没推值），
+                // 正好就是「不指定」时实际会生效的模式
+                const agentDefault = availableModes.find((m) => m.id === snapshot?.current);
+                const agentDefaultLabel = agentDefault?.name ?? snapshot?.current ?? null;
                 return (
                   <div key={p.id} className="rounded-[8px] border border-line-1/60 p-3">
                     <div className="flex items-center justify-between gap-2">
@@ -320,7 +324,10 @@ export function SettingsView({
                       <span className="shrink-0 text-[9.5px] text-ink-3">默认文件编辑审批</span>
                       <ModeSelect
                         compact
-                        // 跟随且没有连接默认时，显示 agent 报的当前值（规范 §5.2）
+                        variant="connection"
+                        followLabel="不指定（随 agent 默认）"
+                        fallbackLabel={agentDefaultLabel}
+                        // 跟随且没有连接默认时，按钮上显示 agent 报的当前值（规范 §5.2）
                         current={p.defaultMode ?? snapshot?.current ?? null}
                         available={availableModes}
                         following={p.defaultMode == null}
