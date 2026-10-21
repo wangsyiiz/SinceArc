@@ -7,6 +7,7 @@ import {
   agentUserSave,
   agentUsersList,
   agentUserTest,
+  sessionNew,
   asCmdError,
   type AgentUser,
 } from "@/lib/ipc";
@@ -51,16 +52,25 @@ const emptyDraft = (profiles: AgentProfile[]): Draft => ({
 export function AgentUsers({
   profiles,
   onChanged,
+  ensureConnected,
 }: {
   profiles: AgentProfile[];
   /** 成员变化后让外面知道（群成员列表要跟着刷新） */
   onChanged?: () => void;
+  /** 「新建会话」要先确保这条连接是连着的（session/new 要求进程在线） */
+  ensureConnected: (p: AgentProfile) => Promise<void>;
 }) {
   const [users, setUsers] = useState<AgentUser[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [test, setTest] = useState<TestState>({ state: "untested" });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /**
+   * 两种入口（docs/group-chat.md §2）：
+   * - new：在 agent 侧真建一个新会话（session/new 成功即视为测试通过 —— 刚建成必然可用）
+   * - existing：手动填一个已存在的 sessionId，必须 session/load 验过才算数
+   */
+  const [mode, setMode] = useState<"new" | "existing">("new");
 
   const reload = async () => {
     try {
@@ -90,6 +100,28 @@ export function AgentUsers({
     try {
       const r = await agentUserTest(profile, draft.acpSessionId.trim(), draft.cwd.trim() || undefined);
       setTest(r.ok ? { state: "ok", detail: r.detail } : { state: "fail", detail: r.detail });
+    } catch (e) {
+      const err = asCmdError(e);
+      setTest({ state: "fail", detail: `${err.code} ${err.msg}` });
+    }
+  };
+
+  /**
+   * 自动新建：先确保连接在，再 session/new。
+   *
+   * 为什么不在这里用「测试」那套 session/load：刚建出来的会话必然可用，再 load 一次是白跑一趟，
+   * 规范 §2 也这么写。新建成功后把 id 填进表单，用户仍然可以切到「已有会话」手动改。
+   */
+  const createSession = async () => {
+    if (!draft || !profile) return;
+    setTest({ state: "testing" });
+    setError(null);
+    try {
+      await ensureConnected(profile);
+      const info = await sessionNew(profile.id, draft.cwd.trim() || profile.cwd || "");
+      const sid = info.sessionId;
+      setDraft((d) => (d ? { ...d, acpSessionId: sid } : d));
+      setTest({ state: "ok", detail: `已新建会话 ${sid.length > 16 ? `${sid.slice(0, 16)}…` : sid}` });
     } catch (e) {
       const err = asCmdError(e);
       setTest({ state: "fail", detail: `${err.code} ${err.msg}` });
@@ -262,12 +294,58 @@ export function AgentUsers({
             />
           </div>
 
+          <div className="mt-2 flex gap-1 rounded-[6px] border border-line-1/60 p-0.5">
+            {([
+              { id: "new" as const, label: "新建会话" },
+              { id: "existing" as const, label: "已有会话" },
+            ]).map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => {
+                  if (m.id === mode) return;
+                  setMode(m.id);
+                  // 换了入口就把「通过」清掉：新建出来的 id 和手填的 id 不是一回事
+                  setTest({ state: "untested" });
+                }}
+                className={cn(
+                  "flex-1 rounded-[4px] px-2 py-1 text-[10.5px] transition-colors",
+                  mode === m.id ? "sc-row-active text-ink-1" : "text-ink-3 hover:text-ink-2",
+                )}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+
+          {mode === "new" && (
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={createSession}
+                disabled={!profile || test.state === "testing"}
+                className={cn(
+                  "rounded-[6px] px-2.5 py-1 text-[10.5px] transition-colors",
+                  "sc-row-active text-ink-1 hover:brightness-110",
+                  (!profile || test.state === "testing") && "opacity-50",
+                )}
+              >
+                {test.state === "testing" ? "正在建会话…" : "在连接上新建一个会话"}
+              </button>
+              <p className="mt-1 text-[9px] leading-relaxed text-ink-3">
+                建在当前连接上（工作目录用下面那个），建完自动填好 id；取消保存的话，agent 那边会留下
+                一个没人用的空会话。
+              </p>
+            </div>
+          )}
+
           <label className="mt-2 block">
             <span className="text-[9.5px] text-ink-3">ACP session id</span>
             <input
               value={draft.acpSessionId}
+              readOnly={mode === "new"}
               onChange={(e) => edit({ acpSessionId: e.target.value })}
-              placeholder="local-… 或 agent 报的 sessionId"
+              placeholder={mode === "new" ? "点上面的按钮自动生成" : "local-… 或 agent 报的 sessionId"}
               spellCheck={false}
               className="mt-0.5 h-7 w-full rounded-[6px] border border-line-1/60 bg-surface-2/40 px-2 font-mono text-[11px] text-ink-1 placeholder:text-ink-3 focus:border-accent-1/50 focus:outline-none"
             />
@@ -305,7 +383,7 @@ export function AgentUsers({
             <button
               type="button"
               onClick={runTest}
-              disabled={!canTest || test.state === "testing"}
+              disabled={!canTest || test.state === "testing" || mode === "new"}
               className={cn(
                 "rounded-[6px] px-2.5 py-1 text-[10.5px] transition-colors",
                 "sc-row-active text-ink-1 hover:brightness-110",

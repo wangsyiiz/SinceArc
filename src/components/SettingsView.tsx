@@ -965,7 +965,13 @@ export function SettingsView({
             className="mt-7 scroll-mt-4"
           >
             <h2 className="text-[12px] font-medium text-ink-2">成员</h2>
-            <AgentUsers profiles={profiles} />
+            <AgentUsers
+              profiles={profiles}
+              ensureConnected={async (p) => {
+                // 复用设置页那条连接路径（连接生命周期、状态回写都在 useAgentConnect 里）
+                await onConnect(p);
+              }}
+            />
           </section>
 
           <section
