@@ -83,6 +83,33 @@ ssh + 没填 host              → 50300 SSH 主机未填（更早一步就被�
 local + hermes（Windows 侧）  → FAIL spawn `hermes` failed: program not found
 ```
 
+## 4.2 能力面板：协议能力 vs CLI 扩展
+
+标题栏那颗「能力」按钮里其实是两块东西，来源完全不同，不能混：
+
+| 区块 | 来源 | 覆盖范围 |
+|---|---|---|
+| 协议能力 | 握手 `initialize` 的 `agentCapabilities` | **每个** agent 都有，换 agent 后跟着变 |
+| ACP 之外的 CLI 扩展 | 代码里按 agent 名配的表（`src/extensions/registry.ts`） | 目前只有 hermes 有 |
+
+早期实现只做了第二块，而且按钮以「有 CLI 扩展」为渲染条件 —— 于是 Codex / Claude 这类 agent
+连入口都没有，而它们的协议能力恰恰是用户最想知道的。
+
+现在的处理：
+
+- 后端把 `agentCapabilities` 摊平成一组稳定的键（`loadSession / image / audio / embeddedContext /
+  list / fork / resume / delete / mcp`），只认协议里定义的字段，不认识的丢弃；
+- 前端把键翻成中文，支持的打勾、不支持的画横线（「不支持」本身也是信息）；
+- 还没连过时按钮不出现；连过之后即使只有协议能力也会出现，并显示「能力 N」。
+- 顺带修了 `previewCommand` 里写死 `hermes` 的问题：换成别的 agent，命令预览会照实拼。
+
+实测（`tests/agent_probe.rs`）：
+
+```
+hermes-agent 0.22.2 · protocol v1
+capabilities = ["loadSession", "image", "fork", "list", "resume"]
+```
+
 ## 5. 已知限制
 
 - `npx` 预设首次运行要下载包，探测会因此慢（甚至超时）。这是 `npx` 的性质，不是探测的问题 ——

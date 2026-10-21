@@ -30,9 +30,14 @@ export interface AgentProfile {
   cwd?: string;
   /** 连接的默认编辑审批模式；null/undefined = 不推，跟随 agent 默认 */
   defaultMode?: string | null;
-  /** 启动命令，v1 固定 hermes acp，但显式写出来而不是藏在代码里 */
+  /** 启动命令（如 hermes acp / npx -y @agentclientprotocol/codex-acp） */
   program?: string;
   args?: string[];
+  /**
+   * 握手报上来的协议能力键（loadSession / image / list / fork …）。
+   * 只有真连过一次才有值；它是「这个 agent 支持什么」的唯一可信来源。
+   */
+  capabilities?: string[];
   /** WSL 场景 */
   distro?: string;
   shell?: string;

@@ -48,14 +48,16 @@ export function commandsFor(agentName: string | null | undefined): AgentCommand[
 /** 面板里显示「这条命令实际会怎么跑」，不同 launch 的形态不同 */
 export function previewCommand(profile: AgentProfile | undefined, argv: string[]): string {
   if (!profile) return argv.join(" ");
+  // 以前这里写死成 hermes：换成别的 agent 之后预览会骗人
+  const base = [profile.program ?? "", ...(profile.args ?? []), ...argv].filter(Boolean).join(" ");
   if (profile.launch === "ssh" && profile.ssh) {
     const { user, host, port } = profile.ssh;
     const portArg = port && port !== 22 ? ` -p ${port}` : "";
     const cwd = profile.cwd ? `cd ${profile.cwd} && ` : "";
-    return `ssh -T${portArg} ${user}@${host} "${cwd}hermes ${argv.join(" ")}"`;
+    return `ssh -T${portArg} ${user}@${host} "${cwd}${base}"`;
   }
   if (profile.launch === "wsl") {
-    return `wsl.exe -- zsh -lc "hermes ${argv.join(" ")}"`;
+    return `wsl.exe -- ${profile.shell ?? "zsh"} -lc "${base}"`;
   }
-  return `hermes ${argv.join(" ")}`;
+  return base;
 }

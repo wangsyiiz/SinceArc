@@ -53,6 +53,8 @@ export interface ConnectOutcome {
   loadSession: boolean;
   imagePrompts: boolean;
   authMethods: string[];
+  /** 协议能力键，来自 initialize 的 agentCapabilities */
+  capabilities: string[];
   modes?: ModesSnapshot | null;
 }
 

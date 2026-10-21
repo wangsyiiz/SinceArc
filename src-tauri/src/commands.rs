@@ -124,6 +124,9 @@ pub struct ConnectOutcome {
     pub load_session: bool,
     pub image_prompts: bool,
     pub auth_methods: Vec<String>,
+    /// 握手报上来的协议能力键（loadSession / image / list / fork …）。
+    /// 通用客户端靠它显示「这个 agent 支持什么」，而不是按名字查表。
+    pub capabilities: Vec<String>,
     /// 本次连接落到的会话：复用了旧的就还是旧的，没有就新建。
     /// 前端直接用它，不必再发一次 session/new（那样每连一次就多一个空会话）。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -417,6 +420,7 @@ pub async fn agent_connect(
         load_session: outcome.load_session,
         image_prompts: outcome.image_prompts,
         auth_methods: outcome.auth_methods,
+        capabilities: outcome.capabilities,
         session_id,
         modes,
     })

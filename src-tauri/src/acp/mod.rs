@@ -25,6 +25,9 @@ pub struct InitializeOutcome {
     pub load_session: bool,
     pub image_prompts: bool,
     pub auth_methods: Vec<String>,
+    /// 握手报上来的协议能力，归一成一组稳定的键（见 `capability_keys`）。
+    /// 界面上「这个 agent 能做什么」应该来自这里，而不是按 agent 名硬编码一张表。
+    pub capabilities: Vec<String>,
 }
 
 impl InitializeOutcome {
@@ -67,8 +70,56 @@ impl InitializeOutcome {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             auth_methods: auth,
+            capabilities: capability_keys(caps),
         }
     }
+}
+
+/// 把 `agentCapabilities` 里「有就是 true」的字段摊平成键列表。
+///
+/// 只认协议里定义的字段；不认识的忽略 —— 猜一个能力出来比不显示更糟。
+fn capability_keys(caps: Option<&Value>) -> Vec<String> {
+    let Some(caps) = caps else { return Vec::new() };
+    let mut out = Vec::new();
+    let flag = |path: &[&str]| {
+        let mut cur = caps;
+        for key in path {
+            match cur.get(*key) {
+                Some(next) => cur = next,
+                None => return false,
+            }
+        }
+        cur.as_bool().unwrap_or(false)
+    };
+    if flag(&["loadSession"]) {
+        out.push("loadSession".to_string());
+    }
+    for (key, path) in [
+        ("image", &["promptCapabilities", "image"][..]),
+        ("audio", &["promptCapabilities", "audio"][..]),
+        (
+            "embeddedContext",
+            &["promptCapabilities", "embeddedContext"][..],
+        ),
+    ] {
+        if flag(path) {
+            out.push(key.to_string());
+        }
+    }
+    // 会话级能力：有的实现是 `{}`（存在即支持），有的是 true
+    if let Some(sessions) = caps.get("sessionCapabilities") {
+        for key in ["fork", "list", "resume", "delete"] {
+            if let Some(v) = sessions.get(key) {
+                if v.as_bool().unwrap_or(true) {
+                    out.push(key.to_string());
+                }
+            }
+        }
+    }
+    if caps.get("mcp").is_some() {
+        out.push("mcp".to_string());
+    }
+    out
 }
 
 /// agent 报上来的一个可选模式。只留 UI 要展示的字段。
