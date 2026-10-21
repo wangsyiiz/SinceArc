@@ -334,17 +334,30 @@ export function AgentUsers({
             </p>
           )}
 
-          <label className="mt-2 block">
-            <span className="text-[9.5px] text-ink-3">ACP session id</span>
-            <input
-              value={draft.acpSessionId}
-              readOnly={mode === "new"}
-              onChange={(e) => edit({ acpSessionId: e.target.value })}
-              placeholder={mode === "new" ? "点上面的按钮自动生成" : "local-… 或 agent 报的 sessionId"}
-              spellCheck={false}
-              className="mt-0.5 h-7 w-full rounded-[6px] border border-line-1/60 bg-surface-2/40 px-2 font-mono text-[11px] text-ink-1 placeholder:text-ink-3 focus:border-accent-1/50 focus:outline-none"
-            />
-          </label>
+          {/* 已有会话才有输入框：新建档的 id 是测试时建出来的，只该「显示」，不该「可填」 */}
+          {mode === "existing" ? (
+            <label className="mt-2 block">
+              <span className="text-[9.5px] text-ink-3">ACP session id</span>
+              <input
+                value={draft.acpSessionId}
+                onChange={(e) => edit({ acpSessionId: e.target.value })}
+                placeholder="local-… 或 agent 报的 sessionId"
+                spellCheck={false}
+                className="mt-0.5 h-7 w-full rounded-[6px] border border-line-1/60 bg-surface-2/40 px-2 font-mono text-[11px] text-ink-1 placeholder:text-ink-3 focus:border-accent-1/50 focus:outline-none"
+              />
+            </label>
+          ) : (
+            draft.acpSessionId.trim().length > 0 && (
+              <p className="mt-2 text-[9.5px] leading-relaxed text-ink-3">
+                会话 id{" "}
+                <span className="font-mono text-ink-2" title={draft.acpSessionId}>
+                  {draft.acpSessionId.length > 28
+                    ? `${draft.acpSessionId.slice(0, 28)}…`
+                    : draft.acpSessionId}
+                </span>
+              </p>
+            )
+          )}
 
           <label className="mt-2 block">
             <span className="text-[9.5px] text-ink-3">工作目录（可空，默认用连接的）</span>
