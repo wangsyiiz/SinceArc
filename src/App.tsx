@@ -44,6 +44,7 @@ import {
   type ModesSnapshot,
 } from "@/lib/ipc";
 import { isWrite, now } from "@/lib/format";
+import { clog } from "@/lib/log";
 import { useAcpEvents } from "@/hooks/useAcpEvents";
 import { usePaneLayout } from "@/hooks/usePaneLayout";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -69,6 +70,13 @@ export default function App() {
   const [settings, setSettings] = useState<ThreadSettings>({ contextMessages: 5 });
   const [permOpen, setPermOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
+  /**
+   * 底部浮层的实际高度。消息列表要留出这么多空间，否则最后一条会被输入框盖住 ——
+   * 以前这里写死 `pb-32`（128px），输入框一高过 128px（多行输入、权限提示条、
+   * 并行成本提示），最新那条回答就藏在浮层底下，看起来像「没有显示」。
+   */
+  const [composerH, setComposerH] = useState(128);
 
   const { profiles, activeProfile, addProfile, updateProfile, removeProfile } = useProfileStore();
   const discovery = useDiscovery(profiles);
@@ -207,10 +215,44 @@ export default function App() {
       )?.name ?? sessionProfile.defaultMode)
     : null;
 
+  /**
+   * 新消息到了就滚到底。以前只设一次 `scrollTop`，字体/图片/长表格量完高度往往晚一帧，
+   * 结果停在中间偏上（表现为「最后一条看不见」）。改成下一帧再补一次。
+   */
   useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        const el = scrollRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
+    };
   }, [state.msgs, activeTabId]);
+
+  /**
+   * 渲染侧对账：界面上到底拿到几条、最后一条是什么。
+   * 只记条数与末尾消息的 id/角色/长度，不记正文（日志不该变成对话备份）。
+   */
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setComposerH(el.offsetHeight));
+    ro.observe(el);
+    setComposerH(el.offsetHeight);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const last = state.msgs[state.msgs.length - 1];
+    clog(
+      "RENDER",
+      `ui=${lastSessionId} n=${state.msgs.length} last=${last ? `${last.role}:${last.id.slice(0, 18)}` : "-"} len=${last?.text?.length ?? 0}`,
+    );
+  }, [state.msgs, lastSessionId]);
 
   // 队头就是当前要回答的请求：入队后自动弹出；队列清空后自动收起。
   const permHead = permissions.current(lastSessionId);
@@ -548,7 +590,10 @@ export default function App() {
                 />
                 <div className="relative min-h-0 flex-1">
                   <div ref={scrollRef} className="h-full overflow-y-auto">
-                    <div className="sc-selectable mx-auto flex max-w-3xl flex-col gap-3.5 px-4 pt-4 pb-32">
+                    <div
+                      className="sc-selectable mx-auto flex max-w-3xl flex-col gap-3.5 px-4 pt-4"
+                      style={{ paddingBottom: composerH + 16 }}
+                    >
                       {state.msgs.length === 0 ? (
                         <div className="py-12">
                           <EmptyState cwd={cwd} onPick={send} />
@@ -592,7 +637,10 @@ export default function App() {
                       )}
                     </div>
                   </div>
-                  <div className="pointer-events-none absolute inset-x-0 bottom-0 px-3 pb-3">
+                  <div
+                    ref={composerRef}
+                    className="pointer-events-none absolute inset-x-0 bottom-0 px-3 pb-3"
+                  >
                     <div className="mx-auto max-w-3xl">
                       {state.pendingPerm && (
                         <button
