@@ -9,7 +9,7 @@ import { RepoBrowser } from "@/components/RepoBrowser";
 import { ResizeHandles } from "@/components/ResizeHandles";
 import { SettingsView } from "@/components/SettingsView";
 import { AgentCapabilities } from "@/components/AgentCapabilities";
-import { commandsFor } from "@/extensions/registry";
+import { commandLineOf, commandsFor } from "@/extensions/registry";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
 import { StatusBar } from "@/components/StatusBar";
@@ -348,7 +348,7 @@ export default function App() {
                 right={
                   <AgentCapabilities
                     profile={sessionProfile}
-                    commands={commandsFor(sessionProfile?.agentName)}
+                    commands={commandsFor(sessionProfile?.agentName, commandLineOf(sessionProfile))}
                   />
                 }
               />

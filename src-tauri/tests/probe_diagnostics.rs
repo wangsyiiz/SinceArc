@@ -70,6 +70,18 @@ async fn which_configurations_produce_50200() {
             ),
         ),
         (
+            "wsl + codex-acp（看它 agentInfo.name 到底是什么）",
+            profile(
+                "g",
+                "wsl",
+                "npx",
+                &["-y", "@agentclientprotocol/codex-acp@2.2.2"],
+                "/home/jerry/source",
+                Some("fedora"),
+                None,
+            ),
+        ),
+        (
             "wsl + 不存在的程序",
             profile(
                 "d",

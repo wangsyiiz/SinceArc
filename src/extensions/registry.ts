@@ -85,11 +85,41 @@ const REGISTRY: Record<string, AgentCommand[]> = {
   codex: CODEX,
 };
 
-/** agentInfo.name 形如 "hermes-agent 0.22.2" / "codex-acp 2.2.2"，取第一段做 key */
-export function commandsFor(agentName: string | null | undefined): AgentCommand[] {
-  if (!agentName) return [];
-  const key = agentName.trim().split(/[\s\-_]/)[0].toLowerCase();
-  return REGISTRY[key] ?? [];
+/**
+ * 从一段文本里认出是哪个 agent。
+ *
+ * 不能取「第一段」：agentInfo.name 各家格式完全不同，实测
+ *   hermes-agent 0.22.2
+ *   @agentclientprotocol/codex-acp 2.2.2   ← 第一段是 "@agentclientprotocol/codex"，永远匹配不到
+ *   gemini-cli 0.65.0
+ * 所以改成「文本里是否出现已知 agent 的关键词」，前后要求非字母边界，避免将来
+ * 某个 agent 名字里恰好含有别人关键词的子串。
+ */
+function pickKey(text: string): string | null {
+  const lower = text.toLowerCase();
+  for (const key of Object.keys(REGISTRY)) {
+    if (new RegExp(`(^|[^a-z])${key}([^a-z]|$)`).test(lower)) return key;
+  }
+  return null;
+}
+
+/** profile 的启动命令行，用作「还没连过、拿不到 agentInfo」时的兜底识别依据 */
+export function commandLineOf(profile: { program?: string; args?: string[] } | undefined): string {
+  return [profile?.program ?? "", ...(profile?.args ?? [])].filter(Boolean).join(" ");
+}
+
+/**
+ * 这个 agent 有哪些 CLI 扩展。
+ *
+ * 优先按握手报的名字认；还没连过（没有 agentName）时退回按启动命令行认 ——
+ * 否则用户刚配好 codex、还没连，面板里一条都看不到，会以为没做。
+ */
+export function commandsFor(
+  agentName: string | null | undefined,
+  commandLine?: string,
+): AgentCommand[] {
+  const key = (agentName ? pickKey(agentName) : null) ?? (commandLine ? pickKey(commandLine) : null);
+  return key ? REGISTRY[key] : [];
 }
 
 /**
