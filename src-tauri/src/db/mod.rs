@@ -19,7 +19,7 @@ use crate::commands::ProfileDto;
 pub const SCHEMA: &str = include_str!("schema.sql");
 
 /// 结构版本：与 schema.sql 不符时整表重建（自用工具，会话数据可再生）
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -45,9 +45,24 @@ pub struct MessageRow {
     pub id: String,
     pub seq: i64,
     pub role: String,
+    pub author_id: Option<String>,
     pub kind: String,
     /// 原始消息对象（前端 `Message` 的形状），不做有损转换
     pub payload: serde_json::Value,
+    pub created_at: i64,
+}
+
+/// 一个可加入群聊的玩家（docs/group-chat.md §1）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUserRow {
+    pub id: String,
+    pub profile_id: String,
+    /// 投递地址：该成员在自己那条连接上的 ACP 会话
+    pub acp_session_id: String,
+    pub name: String,
+    pub handle: String,
+    pub color: String,
     pub created_at: i64,
 }
 
@@ -57,6 +72,9 @@ pub struct MessageRow {
 pub struct MessageInput {
     pub id: String,
     pub role: String,
+    /// 仅 role = 'player' 时有值：这条回答出自哪个 agent user（docs/group-chat.md §4）
+    #[serde(default)]
+    pub author_id: Option<String>,
     #[serde(default = "default_kind")]
     pub kind: String,
     pub payload: serde_json::Value,
@@ -121,6 +139,8 @@ impl Db {
         conn.execute_batch(SCHEMA)?;
         ensure_column(&conn, "profiles", "default_mode", "TEXT")?;
         ensure_column(&conn, "sessions", "mode_override", "TEXT")?;
+        // 群聊里的消息要能指认「谁说的」：不加这列，多 agent 群所有回复长得一样（docs/group-chat.md §4）
+        ensure_column(&conn, "messages", "author_id", "TEXT")?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
 
         Ok(Self {
@@ -358,12 +378,14 @@ impl Db {
         let ts = now();
         for (i, m) in msgs.iter().enumerate() {
             tx.execute(
-                "INSERT INTO messages (id, session_id, seq, role, kind, payload_json, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "INSERT INTO messages
+                   (id, session_id, seq, role, kind, payload_json, created_at, author_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT(id) DO UPDATE SET
                    payload_json = excluded.payload_json,
                    role = excluded.role,
-                   kind = excluded.kind",
+                   kind = excluded.kind,
+                   author_id = excluded.author_id",
                 params![
                     m.id,
                     session_id,
@@ -371,7 +393,8 @@ impl Db {
                     m.role,
                     m.kind,
                     m.payload.to_string(),
-                    ts
+                    ts,
+                    m.author_id
                 ],
             )?;
         }
@@ -386,7 +409,7 @@ impl Db {
     pub fn load_messages(&self, session_id: &str, limit: i64) -> rusqlite::Result<Vec<MessageRow>> {
         let conn = self.conn.lock().expect("db poisoned");
         let mut stmt = conn.prepare(
-            "SELECT id, seq, role, kind, payload_json, created_at
+            "SELECT id, seq, role, kind, payload_json, created_at, author_id
              FROM messages WHERE session_id = ?1 ORDER BY seq DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![session_id, limit], |r| {
@@ -398,6 +421,7 @@ impl Db {
                 kind: r.get(3)?,
                 payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
                 created_at: r.get(5)?,
+                author_id: r.get(6)?,
             })
         })?;
         let mut out: Vec<MessageRow> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -411,6 +435,121 @@ impl Db {
         let mut stmt = conn.prepare("SELECT value FROM app_meta WHERE key = ?1")?;
         let mut rows = stmt.query([key])?;
         rows.next()?.map(|r| r.get::<_, String>(0)).transpose()
+    }
+
+    /* ---------- 群聊成员（docs/group-chat.md） ---------- */
+
+    pub fn list_agent_users(&self) -> rusqlite::Result<Vec<AgentUserRow>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, profile_id, acp_session_id, name, handle, color, created_at
+             FROM agent_users ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(AgentUserRow {
+                id: r.get(0)?,
+                profile_id: r.get(1)?,
+                acp_session_id: r.get(2)?,
+                name: r.get(3)?,
+                handle: r.get(4)?,
+                color: r.get(5)?,
+                created_at: r.get(6)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// 新增或更新一个玩家。handle 与 (profile, acp_session) 都是唯一键 ——
+    /// 冲突时把约束名带出来，让调用方能给出「这个 @ 已经被占了」这种准确的话。
+    pub fn upsert_agent_user(&self, row: &AgentUserRow) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "INSERT INTO agent_users
+               (id, profile_id, acp_session_id, name, handle, color, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(id) DO UPDATE SET
+               profile_id=excluded.profile_id, acp_session_id=excluded.acp_session_id,
+               name=excluded.name, handle=excluded.handle, color=excluded.color",
+            rusqlite::params![
+                row.id,
+                row.profile_id,
+                row.acp_session_id,
+                row.name,
+                row.handle,
+                row.color,
+                row.created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_agent_user(&self, id: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute("DELETE FROM agent_users WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn session_members(&self, session_id: &str) -> rusqlite::Result<Vec<AgentUserRow>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT u.id, u.profile_id, u.acp_session_id, u.name, u.handle, u.color, u.created_at
+             FROM session_members m JOIN agent_users u ON u.id = m.user_id
+             WHERE m.session_id = ?1 ORDER BY m.added_at ASC",
+        )?;
+        let rows = stmt.query_map([session_id], |r| {
+            Ok(AgentUserRow {
+                id: r.get(0)?,
+                profile_id: r.get(1)?,
+                acp_session_id: r.get(2)?,
+                name: r.get(3)?,
+                handle: r.get(4)?,
+                color: r.get(5)?,
+                created_at: r.get(6)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// 幂等：重复拉同一个人进群不是错误
+    pub fn add_member(&self, session_id: &str, user_id: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "INSERT OR IGNORE INTO session_members (session_id, user_id, added_at)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![session_id, user_id, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_member(&self, session_id: &str, user_id: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "DELETE FROM session_members WHERE session_id = ?1 AND user_id = ?2",
+            rusqlite::params![session_id, user_id],
+        )?;
+        Ok(())
+    }
+
+    /// 按 handle 找成员（`@` 投递用）；大小写不敏感
+    pub fn find_by_handle(&self, handle: &str) -> rusqlite::Result<Option<AgentUserRow>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, profile_id, acp_session_id, name, handle, color, created_at
+             FROM agent_users WHERE handle = ?1 COLLATE NOCASE",
+        )?;
+        let mut rows = stmt.query([handle.trim_start_matches('@')])?;
+        match rows.next()? {
+            Some(r) => Ok(Some(AgentUserRow {
+                id: r.get(0)?,
+                profile_id: r.get(1)?,
+                acp_session_id: r.get(2)?,
+                name: r.get(3)?,
+                handle: r.get(4)?,
+                color: r.get(5)?,
+                created_at: r.get(6)?,
+            })),
+            None => Ok(None),
+        }
     }
 
     /// 写一条元数据（覆盖）。
@@ -495,6 +634,102 @@ mod tests {
         assert_eq!(db.mode_override("s-old").expect("读回"), None);
 
         std::fs::remove_file(&path).ok();
+    }
+
+    fn user(id: &str, handle: &str, session: &str) -> AgentUserRow {
+        AgentUserRow {
+            id: id.into(),
+            profile_id: "p1".into(),
+            acp_session_id: session.into(),
+            name: format!("玩家{id}"),
+            handle: handle.into(),
+            color: "#8ab4f8".into(),
+            created_at: 1,
+        }
+    }
+
+    #[test]
+    fn agent_user_的_handle_大小写不敏感且唯一() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).unwrap();
+        db.upsert_agent_user(&user("u1", "backend", "s-acp-1"))
+            .unwrap();
+        // 大小写不同不算另一个人：@BackEnd 和 @backend 会打给同一个人
+        let err = db
+            .upsert_agent_user(&user("u2", "BackEnd", "s-acp-2"))
+            .unwrap_err();
+        assert!(err.to_string().contains("handle"), "got: {err}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn 同一连接的同一个会话只能是一个玩家() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).unwrap();
+        db.upsert_agent_user(&user("u1", "a", "s-acp-1")).unwrap();
+        // 两个人其实是同一个会话 → 群聊语义当场崩，必须拒绝
+        let err = db
+            .upsert_agent_user(&user("u2", "b", "s-acp-1"))
+            .unwrap_err();
+        assert!(err.to_string().contains("acp_session_id"), "got: {err}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn 群成员可以重复拉且能移出() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).unwrap();
+        let s = SessionRow {
+            id: "s1".into(),
+            acp_session_id: None,
+            mode_override: None,
+            profile_id: Some("p1".into()),
+            title: "群".into(),
+            cwd: "/tmp".into(),
+            created_at: 1,
+            updated_at: 1,
+        };
+        db.upsert_session(&s).unwrap();
+        db.upsert_agent_user(&user("u1", "a", "s-acp-1")).unwrap();
+
+        db.add_member("s1", "u1").unwrap();
+        db.add_member("s1", "u1").unwrap(); // 幂等：重复拉不是错误
+        assert_eq!(db.session_members("s1").unwrap().len(), 1);
+
+        db.remove_member("s1", "u1").unwrap();
+        assert!(db.session_members("s1").unwrap().is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn 消息带作者_读回来还在() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).unwrap();
+        let s = SessionRow {
+            id: "s1".into(),
+            acp_session_id: None,
+            mode_override: None,
+            profile_id: Some("p1".into()),
+            title: "群".into(),
+            cwd: "/tmp".into(),
+            created_at: 1,
+            updated_at: 1,
+        };
+        db.upsert_session(&s).unwrap();
+        db.append_messages(
+            "s1",
+            &[MessageInput {
+                id: "m1".into(),
+                role: "player".into(),
+                kind: "text".into(),
+                payload: serde_json::json!({"text": "在"}),
+                author_id: Some("u1".into()),
+            }],
+        )
+        .unwrap();
+        let rows = db.load_messages("s1", 10).unwrap();
+        assert_eq!(rows[0].author_id.as_deref(), Some("u1"));
+        let _ = std::fs::remove_file(path);
     }
 
     fn sample() -> ProfileDto {
@@ -584,6 +819,7 @@ mod tests {
 
         let mk = |id: &str, text: &str| MessageInput {
             id: id.into(),
+            author_id: None,
             role: "player".into(),
             kind: "text".into(),
             payload: serde_json::json!({ "id": id, "text": text }),

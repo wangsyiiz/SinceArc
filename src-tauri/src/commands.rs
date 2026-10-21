@@ -265,6 +265,180 @@ pub struct ProbeOutcome {
     pub capabilities: Vec<String>,
 }
 
+/* ---------- 群聊成员（docs/group-chat.md） ---------- */
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUserTestOutcome {
+    pub ok: bool,
+    /// 成功时是 agent 报回来的会话信息，失败时是**原因**（不是「失败」两个字）
+    pub detail: String,
+}
+
+/// 测试一个 sessionId 能不能当玩家的锚点。
+///
+/// 规范 §2：必须真跑 `session/load`，不能用 `session/list` 判断 —— list 只返回 agent 记着的列表，
+/// 既未必与用户输入一致，也判不出「这个 id 能不能恢复」。
+#[tauri::command]
+pub async fn agent_user_test(
+    profile: ProfileDto,
+    acp_session_id: String,
+    cwd: Option<String>,
+) -> Result<AgentUserTestOutcome, CmdError> {
+    validate_launch_input(&profile)?;
+    if acp_session_id.trim().is_empty() {
+        return Err(CmdError::new(50602, "session id 不能为空"));
+    }
+    let parsed = to_profile(&profile)?;
+    let cwd = cwd
+        .filter(|c| !c.trim().is_empty())
+        .unwrap_or_else(|| profile.cwd.clone());
+    let (proc, _incoming, outcome) = acp::initialize(&parsed, &cwd, Duration::from_secs(20))
+        .await
+        .map_err(|e| launch_error(&profile, e))?;
+
+    if !outcome.load_session {
+        proc.kill().await;
+        return Ok(AgentUserTestOutcome {
+            ok: false,
+            detail: format!(
+                "{} 没报 loadSession 能力，恢复不了已有会话 —— 换个 sessionId 没用，这条连接起不了玩家",
+                outcome.agent_name
+            ),
+        });
+    }
+
+    let params = serde_json::json!({
+        "sessionId": acp_session_id,
+        "cwd": cwd,
+        "mcpServers": [],
+    });
+    let res = proc
+        .request("session/load", params, Duration::from_secs(120))
+        .await;
+    proc.kill().await;
+
+    match res {
+        Ok(v) => {
+            tracing::info!(
+                target: "sincearc::ipc", session = %acp_session_id,
+                agent = %outcome.agent_name, "agent user test ok"
+            );
+            Ok(AgentUserTestOutcome {
+                ok: true,
+                detail: describe_loaded_session(&v, &outcome.agent_name),
+            })
+        }
+        Err(e) => Ok(AgentUserTestOutcome {
+            ok: false,
+            detail: format!("session/load 失败：{e}"),
+        }),
+    }
+}
+
+/// 把 session/load 的响应说成人话：尽量给出「恢复了什么」，而不是「成功」。
+fn describe_loaded_session(v: &serde_json::Value, agent: &str) -> String {
+    let modes = acp::modes_from_response(v);
+    let mode = modes
+        .as_ref()
+        .map(|m| m.current.clone())
+        .unwrap_or_else(|| "未报".into());
+    format!("已恢复到 {agent} 的会话（当前模式 {mode}）")
+}
+
+#[tauri::command]
+pub fn agent_users_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::db::AgentUserRow>, CmdError> {
+    state
+        .db
+        .list_agent_users()
+        .map_err(|e| CmdError::new(50000, format!("读 agent user 失败：{e}")))
+}
+
+/// 保存玩家。handle 与 (连接, 会话) 都是唯一键 —— 冲突要说清楚是哪一个，
+/// 否则用户只会看到一句 SQLite 的英文。
+#[tauri::command]
+pub fn agent_user_save(
+    state: State<'_, AppState>,
+    user: crate::db::AgentUserRow,
+) -> Result<(), CmdError> {
+    if user.name.trim().is_empty() {
+        return Err(CmdError::new(50602, "名字不能为空"));
+    }
+    if user.handle.trim().trim_start_matches('@').is_empty() {
+        return Err(CmdError::new(50602, "handle 不能为空"));
+    }
+    if user.acp_session_id.trim().is_empty() {
+        return Err(CmdError::new(
+            50602,
+            "session id 不能为空：先测试通过再保存",
+        ));
+    }
+    match state.db.upsert_agent_user(&user) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("agent_users.handle") {
+                Err(CmdError::new(
+                    50600,
+                    format!("@{} 已经被占用了", user.handle.trim_start_matches('@')),
+                ))
+            } else if msg.contains("profile_id, acp_session_id") {
+                Err(CmdError::new(
+                    50601,
+                    "这条连接上这个会话已经是另一个玩家了 —— 同一个人不能同时有两个身份",
+                ))
+            } else {
+                Err(CmdError::new(50000, format!("保存失败：{msg}")))
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn agent_user_delete(state: State<'_, AppState>, id: String) -> Result<(), CmdError> {
+    state
+        .db
+        .delete_agent_user(&id)
+        .map_err(|e| CmdError::new(50000, format!("删除失败：{e}")))
+}
+
+#[tauri::command]
+pub fn session_members(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<crate::db::AgentUserRow>, CmdError> {
+    state
+        .db
+        .session_members(&session_id)
+        .map_err(|e| CmdError::new(50000, format!("读群成员失败：{e}")))
+}
+
+#[tauri::command]
+pub fn session_member_add(
+    state: State<'_, AppState>,
+    session_id: String,
+    user_id: String,
+) -> Result<(), CmdError> {
+    state
+        .db
+        .add_member(&session_id, &user_id)
+        .map_err(|e| CmdError::new(50000, format!("拉人进群失败：{e}")))
+}
+
+#[tauri::command]
+pub fn session_member_remove(
+    state: State<'_, AppState>,
+    session_id: String,
+    user_id: String,
+) -> Result<(), CmdError> {
+    state
+        .db
+        .remove_member(&session_id, &user_id)
+        .map_err(|e| CmdError::new(50000, format!("移出群失败：{e}")))
+}
+
 /// SSH 只扫**用户已经存了连接配置**的 host（docs/discovery.md §3）。
 ///
 /// 不去扫未知主机：那会和用户的 known_hosts 打架，而且可能是别人的机器。

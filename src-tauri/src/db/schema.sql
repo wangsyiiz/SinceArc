@@ -82,3 +82,25 @@ CREATE TABLE IF NOT EXISTS app_meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- 群聊成员模型（docs/group-chat.md）：agent user 是全局实体，锚在某条连接的一个 ACP 会话上。
+-- 同一个 (连接, 会话) 只能是一个人 —— 否则「两个人其实同一个会话」，群聊语义当场崩掉。
+CREATE TABLE IF NOT EXISTS agent_users (
+  id             TEXT PRIMARY KEY,
+  profile_id     TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  acp_session_id TEXT NOT NULL,
+  name           TEXT NOT NULL,
+  handle         TEXT NOT NULL COLLATE NOCASE,
+  color          TEXT NOT NULL,
+  created_at     INTEGER NOT NULL,
+  UNIQUE (profile_id, acp_session_id),
+  UNIQUE (handle)
+);
+
+-- 群成员：一个 agent user 可以同时进多个群
+CREATE TABLE IF NOT EXISTS session_members (
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  user_id    TEXT NOT NULL REFERENCES agent_users(id) ON DELETE CASCADE,
+  added_at   INTEGER NOT NULL,
+  PRIMARY KEY (session_id, user_id)
+);
