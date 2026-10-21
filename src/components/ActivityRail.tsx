@@ -27,7 +27,9 @@ export function ActivityRail({
   group,
 }: ActivityRailProps) {
   return (
-    <aside className="flex w-11 shrink-0 flex-col items-center gap-2.5 border-r border-line-1/50 py-3">
+    <aside className="flex w-11 shrink-0 flex-col items-center border-r border-line-1/50 py-3">
+      {/* 成员多了要能滚，否则底部那个「+」会被顶出可视区（实测过） */}
+      <div className="flex w-full min-h-0 flex-1 flex-col items-center gap-2.5 overflow-y-auto px-0.5">
       {players.map((p) => {
         const mine = activities.filter((a) => a.playerId === p.id);
         const running = mine.find((a) => a.status === "running");
@@ -53,8 +55,9 @@ export function ActivityRail({
           </button>
         );
       })}
+      </div>
       {group && (
-        <div className="mt-auto mb-2">
+        <div className="mt-2 shrink-0">
           <MembersMenu
             sessionId={group.sessionId}
             members={group.members}
@@ -63,7 +66,7 @@ export function ActivityRail({
           />
         </div>
       )}
-      <div className={cn("text-[9px] tracking-widest text-ink-3 [writing-mode:vertical-rl]", !group && "mt-auto")}>
+      <div className={cn("mt-2 shrink-0 text-[9px] tracking-widest text-ink-3 [writing-mode:vertical-rl]")}>
         {filter ?? "AGENTS"}
       </div>
     </aside>

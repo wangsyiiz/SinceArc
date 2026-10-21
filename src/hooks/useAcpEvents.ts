@@ -8,8 +8,8 @@ import {
 } from "@/lib/ipc";
 import { denyPermission, parsePermissionOptions } from "@/hooks/usePermissions";
 import { now } from "@/lib/format";
-import { players } from "@/mock/data";
 import type { SessionSummary } from "@/types";
+import { MAIN_AGENT_ID } from "./usePrompt";
 import type { PatchSession } from "./useSessionState";
 
 export interface AcpRefs {
@@ -105,7 +105,7 @@ export function useAcpEvents({
                   id: streamId,
                   role: "player" as const,
                   // 成员的回答记在它名下；主 agent 的回答仍是默认玩家
-                  playerId: acpToAuthor.current[acpSid] ?? players[0].id,
+                  playerId: acpToAuthor.current[acpSid] ?? MAIN_AGENT_ID,
                   text,
                   at: now(),
                   streaming: true,
@@ -270,7 +270,7 @@ export function useAcpEvents({
               payload: {
                 id,
                 role: "player",
-                playerId: acpToAuthor.current[acpSid] ?? players[0].id,
+                playerId: acpToAuthor.current[acpSid] ?? MAIN_AGENT_ID,
                 text: full,
                 at: now(),
                 streaming: false,

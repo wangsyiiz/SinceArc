@@ -1,11 +1,13 @@
 import { useCallback } from "react";
 import { asCmdError, messagesAppend, sessionLoad, sessionPrompt } from "@/lib/ipc";
 import { now } from "@/lib/format";
-import { players } from "@/mock/data";
 import type { AgentProfile, Message } from "@/types";
 import type { EnsureResult } from "./useAgentConnect";
 import type { AcpRefs } from "./useAcpEvents";
 import type { PatchSession } from "./useSessionState";
+
+/** 主 agent 的发言用一个固定 id：玩家表里没有它时，消息会渲染成「agent」 */
+export const MAIN_AGENT_ID = "agent";
 
 export function usePrompt({
   lastSessionId,
@@ -157,7 +159,7 @@ export function usePrompt({
             ...s.acts.filter((a) => a.id !== actId),
             {
               id: actId,
-              playerId: target?.authorId ?? players[0].id,
+              playerId: target?.authorId ?? MAIN_AGENT_ID,
               kind: "thinking" as const,
               title: "思考中",
               status: "running" as const,
@@ -172,7 +174,7 @@ export function usePrompt({
               userText: text,
               branches: [
                 {
-                  playerId: target?.authorId ?? players[0].id,
+                  playerId: target?.authorId ?? MAIN_AGENT_ID,
                   activityIds: [actId],
                   status: "running" as const,
                 },
@@ -200,82 +202,22 @@ export function usePrompt({
         return;
       }
 
-      // 走到这里说明这个会话根本没有可用的连接配置：保留演示链路，
-      // 这样「刚装好还没配连接」的新用户也有东西可看。
-      const hits = players.filter((p) => text.includes(`@${p.handle}`));
-      const targets = hits.length > 0 ? hits : [players[0]];
-      const turnId = `t-${Date.now()}`;
-      const actIds = targets.map((p, i) => `a-${Date.now()}-${i}-${p.id}`);
-
+      // 走到这里说明这个会话根本没有可用的连接配置。
+      // 以前这里会走「演示链路」编几条假回答 —— 那是在骗用户：他看着像群里有 agent 说话，
+      // 其实一个字都没发出去。现在直接说清楚，并把他引到设置页。
       patchSession(sid, (s) => ({
         ...s,
-        acts: [
-          ...s.acts,
-          ...targets.map((p, i) => ({
-            id: actIds[i],
-            playerId: p.id,
-            kind: "thinking" as const,
-            title: "思考中",
-            status: "running" as const,
-            at,
-          })),
-        ],
-        turns: [
-          ...s.turns,
+        busy: false,
+        msgs: [
+          ...s.msgs,
           {
-            id: turnId,
+            id: `noconf-${Date.now()}`,
+            role: "system" as const,
+            text: "这个会话没有可用的连接配置 —— 去「设置 → 连接」加一条并连上，再发一次。",
             at,
-            userText: text,
-            branches: targets.map((p, i) => ({
-              playerId: p.id,
-              activityIds: [actIds[i]],
-              status: "running" as const,
-            })),
           },
         ],
       }));
-
-      let left = targets.length;
-      targets.forEach((p, i) => {
-        const actId = actIds[i];
-        window.setTimeout(
-          () => {
-            const answer = `（演示）这条本该由 ${p.name} 的 session 回答。接入后，群聊里 ${contextMessages} 条上下文会作为前缀附在 prompt 里。`;
-            patchSession(sid, (s) => ({
-              ...s,
-              acts: s.acts.map((a) =>
-                a.id === actId ? { ...a, status: "ok" as const, title: "已答复" } : a,
-              ),
-              turns: s.turns.map((t) =>
-                t.id === turnId
-                  ? {
-                      ...t,
-                      branches: t.branches.map((b) =>
-                        b.playerId === p.id
-                          ? { ...b, reply: answer, status: "done" as const }
-                          : b,
-                      ),
-                    }
-                  : t,
-              ),
-              msgs: [
-                ...s.msgs,
-                {
-                  id: `p-${Date.now()}-${p.id}`,
-                  role: "player",
-                  playerId: p.id,
-                  text: answer,
-                  at: now(),
-                },
-              ],
-              busy: false,
-            }));
-            left -= 1;
-            if (left === 0) patchSession(sid, (s) => ({ ...s, busy: false }));
-          },
-          900 + i * 700,
-        );
-      });
     },
     [
       lastSessionId,

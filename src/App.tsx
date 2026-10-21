@@ -10,6 +10,8 @@ import { ResizeHandles } from "@/components/ResizeHandles";
 import { SettingsView } from "@/components/SettingsView";
 import { AgentCapabilities } from "@/components/AgentCapabilities";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { MAIN_AGENT_ID } from "@/hooks/usePrompt";
+import { profileLabel } from "@/lib/format";
 import { commandLineOf, commandsFor } from "@/extensions/registry";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
@@ -19,8 +21,16 @@ import { ThinkingRow } from "@/components/ThinkingRow";
 import { TitleBar } from "@/components/TitleBar";
 import { TracePanel } from "@/components/TracePanel";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
-import { players as mockPlayers, prsByRepo } from "@/mock/data";
-import type { GithubPR, GithubRepo, PermissionRequest, SessionSummary, Tab, ThreadSettings } from "@/types";
+import { prsByRepo } from "@/mock/data";
+import type {
+  GithubPR,
+  GithubRepo,
+  PermissionRequest,
+  Player,
+  SessionSummary,
+  Tab,
+  ThreadSettings,
+} from "@/types";
 import {
   asCmdError,
   sessionDelete,
@@ -70,18 +80,33 @@ export default function App() {
    */
   const players = useMemo(
     () =>
-      members.length > 0
-        ? members.map((u) => ({
-            id: u.id,
-            name: u.name,
-            handle: u.handle,
-            color: u.color,
-            profileId: u.profileId,
-            busy: false,
-          }))
-        : mockPlayers,
+      members.map((u) => ({
+        id: u.id,
+        name: u.name,
+        handle: u.handle,
+        color: u.color,
+        profileId: u.profileId,
+        busy: false,
+      })),
     [members],
   );
+  /**
+   * 主 agent 自己的身份（只用于渲染它说过的话）。
+   * 不进左栏：左栏列的是群成员，主 agent 不是成员 —— 但它的回复也该有名字，
+   * 否则界面上会显示成光秃秃的「agent」。
+   */
+  const mainAgentPlayer = useMemo<Player>(() => {
+    const prof = activeProfile;
+    return {
+      id: MAIN_AGENT_ID,
+      name: prof ? profileLabel(prof) : "agent",
+      handle: "agent",
+      color: "#9aa4b2",
+      profileId: prof?.id ?? "",
+      busy: false,
+    };
+  }, [activeProfile]);
+
   const { sessions, setSessions } = useSessionList();
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
   const { state, patchSession, writeLock, initSession, sessionState } = useSessionState(lastSessionId);
@@ -519,7 +544,11 @@ export default function App() {
                       ) : (
                         <>
                           {state.msgs.map((m) => (
-                            <MessageItem key={m.id} message={m} players={players} />
+                            <MessageItem
+                              key={m.id}
+                              message={m}
+                              players={[...players, mainAgentPlayer]}
+                            />
                           ))}
                           {state.acts
                             .filter((a) => a.status === "running")

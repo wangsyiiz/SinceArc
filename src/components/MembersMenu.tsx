@@ -37,9 +37,18 @@ export function MembersMenu({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  /** 弹层用 fixed：左栏只有 44px 宽，父容器还带 overflow —— absolute 会被裁掉一半 */
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
   useEffect(() => {
     if (!open) return;
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) {
+      // 面板高约 320px：底部放不下就往上收，别让它掉出视口
+      const top = Math.max(8, Math.min(r.top, window.innerHeight - 336));
+      setPos({ left: r.right + 8, top });
+    }
     setError(null);
     agentUsersList()
       .then(setUsers)
@@ -52,11 +61,16 @@ export function MembersMenu({
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onMove = () => setOpen(false);
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
     return () => {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
     };
   }, [open]);
 
@@ -80,6 +94,7 @@ export function MembersMenu({
   return (
     <div ref={ref} className="relative">
       <button
+        ref={btnRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         title="群成员：拉人进这个会话"
@@ -93,7 +108,10 @@ export function MembersMenu({
       </button>
 
       {open && (
-        <div className="sc-glass absolute left-11 top-0 z-30 w-64 rounded-[8px] border border-line-1/60 p-2">
+        <div
+          className="sc-glass fixed z-50 w-64 rounded-[8px] border border-line-1/60 p-2"
+          style={{ left: pos?.left ?? 0, top: pos?.top ?? 0 }}
+        >
           <div className="flex items-center gap-1.5 px-1 pb-1.5">
             <Users size={12} className="text-ink-3" />
             <span className="text-[10.5px] text-ink-1">群成员</span>
