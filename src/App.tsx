@@ -9,6 +9,7 @@ import { RepoBrowser } from "@/components/RepoBrowser";
 import { ResizeHandles } from "@/components/ResizeHandles";
 import { SettingsView } from "@/components/SettingsView";
 import { AgentCapabilities } from "@/components/AgentCapabilities";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { commandLineOf, commandsFor } from "@/extensions/registry";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
@@ -22,6 +23,7 @@ import { players as mockPlayers, prsByRepo } from "@/mock/data";
 import type { GithubPR, GithubRepo, PermissionRequest, SessionSummary, Tab, ThreadSettings } from "@/types";
 import {
   asCmdError,
+  sessionDelete,
   sessionMembers,
   sessionUpsert,
   type AgentUser,
@@ -300,6 +302,32 @@ export default function App() {
     return null;
   }, [sessionState]);
 
+  /** 待确认删除的会话（删除不可逆：确认框负责把后果说准） */
+  const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null);
+  /** 删除失败时把原因留在确认框里，而不是弹一个系统 alert */
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  /**
+   * 删除会话：**只删本软件里的**（消息、会话行、群成员关系）。
+   * agent 侧那个会话原样留着 —— 用户能在别处接着用它，这一点必须在确认框里写明。
+   */
+  const confirmDeleteSession = async () => {
+    const target = pendingDelete;
+    if (!target) return;
+    setDeleteError(null);
+    try {
+      await sessionDelete(target.id);
+      setSessions((list) => list.filter((x) => x.id !== target.id));
+      const tab = tabs.find((t) => t.kind === "session" && t.sessionId === target.id);
+      if (tab) closeTab(tab.id);
+      setPendingDelete(null);
+    } catch (e) {
+      const err = asCmdError(e);
+      // 失败就留在框里说清楚：没删成，别让用户以为删了
+      setDeleteError(`${err.code} ${err.msg}`);
+    }
+  };
+
   /**
    * 群里的发送：`@handle（docs/group-chat.md §3）`。
    *
@@ -377,6 +405,11 @@ export default function App() {
           onNew={() => newSession()}
           onNewWithProfile={(pid) => newSession(pid)}
           onOpenSettings={() => openTab({ kind: "settings", title: "设置" })}
+          onDeleteSession={(x) => {
+            setDeleteError(null);
+            setPendingDelete(x);
+          }}
+          isSessionBusy={(id) => !!sessionState[id]?.busy}
           onOpenRepo={(repoId) => {
             const repo = repoList.find((r) => r.id === repoId);
             openTab({ kind: "repo", title: repo?.name ?? "项目", repoId });
@@ -604,6 +637,33 @@ export default function App() {
           queued={permQueued}
         />
       )}
+
+        <ConfirmDialog
+          open={!!pendingDelete}
+          title={`删除会话「${pendingDelete?.title ?? ""}」？`}
+          body={
+            <ul className="list-disc space-y-0.5 pl-4">
+              <li>会删掉本软件里的这条会话记录和它的全部消息（不可恢复）。</li>
+              <li>群成员关系一并消失；其他会话不受影响。</li>
+              <li>
+                <span className="text-ink-1">agent 那一侧的会话不会被删</span>
+                ，你在别处仍然能接着用它。
+              </li>
+              {deleteError && (
+                <li className="list-none break-all font-mono text-[10.5px] text-danger-1">
+                  没删成：{deleteError}
+                </li>
+              )}
+            </ul>
+          }
+          confirmLabel="删除"
+          onConfirm={confirmDeleteSession}
+          onCancel={() => {
+            setPendingDelete(null);
+            setDeleteError(null);
+          }}
+        />
+
     </div>
   );
 }

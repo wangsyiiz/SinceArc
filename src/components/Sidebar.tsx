@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, FolderGit2, MessageSquare, Plus, Settings2 } from "lucide-react";
+import { ChevronDown, FolderGit2, MessageSquare, Plus, Settings2, Trash2 } from "lucide-react";
 import type { AgentProfile, GithubPR, GithubRepo, Player, SessionSummary } from "@/types";
 import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
+import { MoreMenu } from "./MoreMenu";
 
 export type SidebarMode = "sessions" | "code";
 
@@ -20,6 +21,10 @@ interface SidebarProps {
   /** 指定连接新建（下拉里选 agent 时用） */
   onNewWithProfile: (profileId: string) => void;
   onOpenSettings: () => void;
+  /** 删除会话（App 负责确认与落库；这里只发起） */
+  onDeleteSession: (s: SessionSummary) => void;
+  /** 这一轮还在跑的会话：不允许删（还没有 session/cancel，删了会留下没人看的 agent） */
+  isSessionBusy?: (id: string) => boolean;
   onOpenRepo: (repoId: string) => void;
   onAddRepo: (path: string) => void;
   width?: number;
@@ -40,6 +45,8 @@ export function Sidebar({
   onNew,
   onNewWithProfile,
   onOpenSettings,
+  onDeleteSession,
+  isSessionBusy,
   onOpenRepo,
   onAddRepo,
   width = 260,
@@ -116,17 +123,19 @@ export function Sidebar({
                   const profile = s.profileId
                     ? profiles.find((p) => p.id === s.profileId)
                     : undefined;
+                  const busy = isSessionBusy?.(s.id) ?? false;
                   return (
-                    <button
+                    <div
                       key={s.id}
-                      onClick={() => onSelect(s.id)}
                       className={cn(
-                        "group mb-0.5 flex w-full flex-col gap-0.5 rounded-[8px] px-2.5 py-2 text-left transition-colors",
-                        active
-                          ? "sc-row-active"
-                          : "hover:bg-surface-3/35",
+                        "group relative mb-0.5 rounded-[8px] transition-colors",
+                        active ? "sc-row-active" : "hover:bg-surface-3/35",
                       )}
                     >
+                      <button
+                        onClick={() => onSelect(s.id)}
+                        className="flex w-full flex-col gap-0.5 rounded-[8px] px-2.5 py-2 pr-7 text-left"
+                      >
                       <span
                         className={cn(
                           "truncate text-[12px]",
@@ -163,7 +172,23 @@ export function Sidebar({
                           </span>
                         )}
                       </span>
-                    </button>
+                      </button>
+                      {/* hover 才出现：删除是低频破坏性操作，不该一直挂在那儿等误点 */}
+                      <div className="absolute right-1 top-1.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                        <MoreMenu
+                          items={[
+                            {
+                              label: "删除会话",
+                              icon: <Trash2 size={12} />,
+                              danger: true,
+                              disabled: busy,
+                              hint: busy ? "这一轮还在跑，等它结束再删" : undefined,
+                              onSelect: () => onDeleteSession(s),
+                            },
+                          ]}
+                        />
+                      </div>
+                    </div>
                   );
                 })}
               </div>
