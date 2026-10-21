@@ -19,11 +19,12 @@ import { TitleBar } from "@/components/TitleBar";
 import { TracePanel } from "@/components/TracePanel";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
 import { players, prsByRepo } from "@/mock/data";
-import type { GithubPR, GithubRepo, SessionSummary, Tab, ThreadSettings } from "@/types";
-import { sessionUpsert, type ModesSnapshot } from "@/lib/ipc";
+import type { GithubPR, GithubRepo, PermissionRequest, SessionSummary, Tab, ThreadSettings } from "@/types";
+import { asCmdError, sessionUpsert, type ModesSnapshot } from "@/lib/ipc";
 import { isWrite, now } from "@/lib/format";
 import { useAcpEvents } from "@/hooks/useAcpEvents";
 import { usePaneLayout } from "@/hooks/usePaneLayout";
+import { usePermissions } from "@/hooks/usePermissions";
 import { useProfileStore } from "@/hooks/useProfileStore";
 import { usePrompt } from "@/hooks/usePrompt";
 import { useRepos } from "@/hooks/useRepos";
@@ -65,7 +66,20 @@ export default function App() {
     (uiSessionId: string, modeId: string) => noteAgentSwitch(uiSessionId, modeId),
     [noteAgentSwitch],
   );
-  const { eventCount, lastEvent, eventLog, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ lastSessionId, patchSession, setSessions, onSessionBound, onAgentSwitch });
+  const onPermHead = useCallback(
+    (uiSid: string, request: PermissionRequest | null) => {
+      patchSession(uiSid, (s) => ({ ...s, pendingPerm: request }));
+    },
+    [patchSession],
+  );
+  const permissions = usePermissions({ onHead: onPermHead });
+  const onPermission = useCallback(
+    (args: { uiSid: string; profileId: string; requestId: number; params: unknown }) => {
+      permissions.enqueue(args.uiSid, args.profileId, args.requestId, args.params);
+    },
+    [permissions.enqueue],
+  );
+  const { eventCount, lastEvent, eventLog, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ lastSessionId, patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission });
   const { send } = usePrompt({ lastSessionId, patchSession, activeProfile, sessionsByProfile, contextMessages: settings.contextMessages, acp });
   const { sidebarW, setSidebarW, traceW, setTraceW, dragging, setDragging, layoutRef, mainMin, sidebarMax, traceMax } = usePaneLayout(traceOpen);
   const { repoList, addRepo, activeRepo, activePr } = useRepos(activeTab);
@@ -84,6 +98,13 @@ export default function App() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [state.msgs, activeTabId]);
 
+  // 队头就是当前要回答的请求：入队后自动弹出；队列清空后自动收起。
+  const permHead = permissions.current(lastSessionId);
+  const permQueued = permissions.count(lastSessionId);
+  useEffect(() => {
+    setPermOpen(permHead !== null);
+  }, [permHead]);
+
   /** 把 PR 作为引用塞进会话：优先复用已打开的会话标签 */
   const quotePr = useCallback(
     (pr: GithubPR, repo: GithubRepo) => {
@@ -100,14 +121,52 @@ export default function App() {
     [openTab, patchSession, tabs],
   );
 
-  const decide = useCallback((optionId: string) => {
-    setPermOpen(false);
-    patchSession(lastSessionId, (s) => ({
-      ...s,
-      pendingPerm: null,
-      msgs: [...s.msgs, { id: `n-${Date.now()}`, role: "system", text: `权限决定：${optionId}`, at: now() }],
-    }));
-  }, [lastSessionId, patchSession]);
+  const decide = useCallback(async (optionId: string | null) => {
+    const uiSid = lastSessionId;
+    try {
+      // null 表示用户取消/Esc：由队列按 kind 找拒绝项，不能硬编码 optionId。
+      const chosen = await permissions.decide(uiSid, optionId);
+      patchSession(uiSid, (s) => ({
+        ...s,
+        msgs: [
+          ...s.msgs,
+          {
+            id: `perm-${Date.now()}`,
+            role: "system",
+            text: `权限决定：${chosen?.label ?? "取消"}`,
+            at: now(),
+          },
+        ],
+      }));
+    } catch (e) {
+      const err = asCmdError(e);
+      // 应答没写出去时队头仍在，界面继续显示请求，同时把原因留在消息流里。
+      patchSession(uiSid, (s) => ({
+        ...s,
+        msgs: [
+          ...s.msgs,
+          {
+            id: `perm-err-${Date.now()}`,
+            role: "system",
+            text: `权限决定失败：${err.code} ${err.msg}`,
+            at: now(),
+          },
+        ],
+      }));
+    }
+  }, [lastSessionId, patchSession, permissions.decide]);
+
+  const closeSessionTab = useCallback((id: string) => {
+    const tab = tabs.find((t) => t.id === id);
+    closeTab(id);
+    // 标签关掉后这条会话不会再有界面来回答权限请求，队列一并丢弃。
+    if (tab?.kind === "session" && tab.sessionId) permissions.dropSession(tab.sessionId);
+  }, [closeTab, permissions.dropSession, tabs]);
+
+  const removeProfileAndPerms = useCallback((id: string) => {
+    removeProfile(id);
+    permissions.dropProfile(id);
+  }, [permissions.dropProfile, removeProfile]);
 
   const newSession = useCallback(() => {
     const id = `s-${Date.now()}`;
@@ -193,7 +252,7 @@ export default function App() {
             activeId={activeTabId}
             badgeOf={badgeOf}
             onSelect={selectTab}
-            onClose={closeTab}
+            onClose={closeSessionTab}
           />
           {!activeTab && <WorkspaceEmpty onNewSession={newSession} />}
           {activeTab?.kind === "session" && (
@@ -337,9 +396,10 @@ export default function App() {
                 setProfiles((list) => list.map((p) => (p.id === next.id ? next : p)))
               }
               onAddProfile={addProfile}
-              onRemoveProfile={removeProfile}
+              onRemoveProfile={removeProfileAndPerms}
               onAgentEvent={onAgentEvent}
               onSession={onSession}
+              onDisconnected={permissions.dropProfile}
               modesFor={(pid) => modesByProfile[pid] ?? null}
               onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}
               onCycleTheme={setTheme}
@@ -357,7 +417,9 @@ export default function App() {
           request={state.pendingPerm}
           player={players.find((x) => x.id === state.pendingPerm?.playerId)}
           open={permOpen}
-          onDecide={decide}
+          onDecide={(optionId) => void decide(optionId)}
+          onCancel={() => void decide(null)}
+          queued={permQueued}
         />
       )}
     </div>

@@ -6,6 +6,7 @@ import {
   type AcpEvent,
   type ModesSnapshot,
 } from "@/lib/ipc";
+import { denyPermission, parsePermissionOptions } from "@/hooks/usePermissions";
 import { now } from "@/lib/format";
 import { players } from "@/mock/data";
 import type { SessionSummary } from "@/types";
@@ -24,6 +25,7 @@ export function useAcpEvents({
   setSessions,
   onSessionBound,
   onAgentSwitch,
+  onPermission,
 }: {
   lastSessionId: string;
   patchSession: PatchSession;
@@ -38,6 +40,13 @@ export function useAcpEvents({
   }) => void;
   /** agent 自己切模式：只更新界面，不写存储 */
   onAgentSwitch?: (uiSessionId: string, modeId: string) => void;
+  /** agent 发来需要用户回答的请求（目前只有 session/request_permission） */
+  onPermission?: (args: {
+    uiSid: string;
+    profileId: string;
+    requestId: number;
+    params: unknown;
+  }) => void;
 }) {
   const [sessionsByProfile, setSessionsByProfile] = useState<Record<string, string>>({});
   const [eventCount, setEventCount] = useState(0);
@@ -146,6 +155,34 @@ export function useAcpEvents({
             ? event.method
             : event.kind,
       );
+
+      if (event.kind === "request" && event.method === "session/request_permission") {
+        const params = (event.params ?? {}) as { sessionId?: unknown };
+        const acpSid =
+          typeof params.sessionId === "string" && params.sessionId
+            ? params.sessionId
+            : activeAcp.current;
+        const uiSid = acpToUi.current[acpSid];
+        if (!uiSid) {
+          diag(`权限请求 #${event.id} 找不到会话映射（${acpSid || "无 sessionId"}），按拒绝作答`);
+          // 丢弃不等于可以不管：没人回答 agent 会一直等。按拒绝收尾是最保守的选择。
+          denyPermission(
+            profileId,
+            event.id,
+            parsePermissionOptions(event.params),
+          );
+        } else {
+          onPermission?.({
+            uiSid,
+            profileId,
+            requestId: event.id,
+            params: event.params,
+          });
+        }
+        // 权限请求的 params 不是对话正文，不能继续落到消息/流式分支里。
+        return;
+      }
+
       if (su?.update?.sessionUpdate === "current_mode_update") {
         const uiSid = acpToUi.current[su.sessionId ?? activeAcp.current];
         const modeId = su.update.currentModeId;
@@ -241,7 +278,7 @@ export function useAcpEvents({
 
       console.debug("[acp]", profileId, event);
     },
-    [flushStream, onAgentSwitch, patchSession],
+    [diag, flushStream, onAgentSwitch, onPermission, patchSession],
   );
 
   const onSession = useCallback((profileId: string, sessionId: string, snapshot?: ModesSnapshot | null) => {

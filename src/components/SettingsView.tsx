@@ -32,6 +32,8 @@ interface SettingsViewProps {
   /** agent 推来的事件（S2：只做计数与日志，S3 起进消息流） */
   onAgentEvent: (profileId: string, event: AcpEvent) => void;
   onSession: (profileId: string, sessionId: string, snapshot?: ModesSnapshot | null) => void;
+  /** 连接已经断开：App 用它清掉这个连接下待答的权限请求 */
+  onDisconnected?: (profileId: string) => void;
   /** 设置页只能读到最近一次连接报上来的模式快照（可选列表 + agent 当前值） */
   modesFor: (profileId: string) => ModesSnapshot | null;
   onChangeContext: (n: number) => void;
@@ -104,6 +106,7 @@ export function SettingsView({
   onRemoveProfile,
   onAgentEvent,
   onSession,
+  onDisconnected,
   modesFor,
   onChangeContext,
   onCycleTheme,
@@ -177,6 +180,7 @@ export function SettingsView({
     try {
       await disconnectAgent(p.id);
       onUpdateProfile({ ...p, connected: false, agentName: null, protocolVersion: null });
+      onDisconnected?.(p.id);
     } catch (e) {
       const err = asCmdError(e);
       setErrors((prev) => ({ ...prev, [p.id]: `${err.code} ${err.msg}` }));

@@ -169,6 +169,24 @@ export function sessionPrompt(sessionId: string, text: string): Promise<void> {
   return invoke<void>("session_prompt", { sessionId, text });
 }
 
+/**
+ * 回答 agent 发来的权限请求。
+ *
+ * `cancelled` 只表示用户中止了这一轮；有拒绝选项时应当回 `selected`，
+ * 否则 agent 那边会把它当成「整轮被取消」而不是「这次操作被拒绝」。
+ */
+export type RespondOutcome =
+  | { outcome: "selected"; optionId: string }
+  | { outcome: "cancelled" };
+
+export function agentRespondRequest(
+  profileId: string,
+  id: number,
+  outcome: RespondOutcome,
+): Promise<void> {
+  return invoke<void>("agent_respond_request", { profileId, id, outcome });
+}
+
 /** 读回本机存的连接配置 */
 export function profilesLoad(): Promise<ProfileDto[]> {
   return invoke<ProfileDto[]>("profiles_load", {});
