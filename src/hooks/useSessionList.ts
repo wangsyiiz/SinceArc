@@ -1,10 +1,12 @@
-import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import { sessionsList, type SessionRowDto } from "@/lib/ipc";
 import type { SessionSummary } from "@/types";
 
 export function useSessionList(): {
   sessions: SessionSummary[];
   setSessions: Dispatch<SetStateAction<SessionSummary[]>>;
+  /** 重新读库：首条消息落地后标题会变（后端按第一条用户消息命名） */
+  reload: () => Promise<void>;
 } {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
 
@@ -30,6 +32,15 @@ export function useSessionList(): {
     };
   };
 
+  const reload = useCallback(async () => {
+    try {
+      const rows = await sessionsList();
+      setSessions(rows.map(toSummary));
+    } catch {
+      // 非 Tauri 环境：保持现状
+    }
+  }, []);
+
   // 库里的会话列表：启动读一次，之后每次变更都回写
   useEffect(() => {
     let alive = true;
@@ -46,5 +57,5 @@ export function useSessionList(): {
     };
   }, []);
 
-  return { sessions, setSessions };
+  return { sessions, setSessions, reload };
 }

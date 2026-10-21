@@ -127,7 +127,7 @@ export default function App() {
     [players, mainAgentPlayer],
   );
 
-  const { sessions, setSessions } = useSessionList();
+  const { sessions, setSessions, reload: reloadSessions } = useSessionList();
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
   const { state, patchSession, writeLock, initSession, sessionState } = useSessionState(lastSessionId);
 
@@ -416,6 +416,11 @@ export default function App() {
    * - @ 了不在群里的人 → **明确失败**，不把这条消息当普通文本投给主 agent，
    *   否则用户以为成员收到了，其实是群主替他答的。
    */
+  /** 首条消息落地后后端会把标题改成正文，这里把列表读回来（否则侧栏还是「新会话」） */
+  const refreshTitles = useCallback(() => {
+    void reloadSessions();
+  }, [reloadSessions]);
+
   const sendInGroup = useCallback(
     async (raw: string) => {
       // 用已知短名去文本里找（短名可能含中文，字符集正则会把它截断）
@@ -426,7 +431,11 @@ export default function App() {
       if (!hit) {
         // 敲了 @ 却一个成员都对不上：说清敲的是什么，不静默投给主 agent
         const token = mentionToken(raw);
-        if (!token) return send(raw);
+        if (!token) {
+          await send(raw);
+          refreshTitles();
+          return;
+        }
         pushSystemNotice(
           patchSession,
           lastSessionId,
@@ -438,14 +447,16 @@ export default function App() {
       const who = members.find((u) => u.handle === hit.handle);
       if (!who) return;
       const prof = profiles.find((p) => p.id === who.profileId);
-      return send(raw, {
+      const r = await send(raw, {
         profileId: who.profileId,
         acpSessionId: who.acpSessionId,
         authorId: who.id,
         cwd: prof?.cwd ?? "",
       });
+      refreshTitles();
+      return r;
     },
-    [members, profiles, send, lastSessionId, patchSession],
+    [members, profiles, send, lastSessionId, patchSession, refreshTitles],
   );
 
   /**
@@ -596,7 +607,12 @@ export default function App() {
                     >
                       {state.msgs.length === 0 ? (
                         <div className="py-12">
-                          <EmptyState cwd={cwd} onPick={send} />
+                          <EmptyState
+                            cwd={cwd}
+                            onPick={(t) => {
+                              void send(t).then(refreshTitles);
+                            }}
+                          />
                         </div>
                       ) : (
                         <>

@@ -376,6 +376,29 @@ impl Db {
             |r| r.get(0),
         )?;
         let ts = now();
+        // 会话标题：默认是「新会话」，所有会话都同名就分不清谁是谁（实测过：
+        // 两个都叫「新会话」，用户在一个里找另一个的最后一条回复）。
+        // 第一条用户消息落地时用它做标题 —— 属于业务规则，所以放在后端。
+        if let Some(first) = msgs.iter().find(|m| m.role == "user") {
+            let text = first
+                .payload
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim();
+            if !text.is_empty() {
+                let title: String = text.chars().take(30).collect();
+                tx.execute(
+                    "UPDATE sessions SET title = ?1
+                     WHERE id = ?2 AND (title IS NULL OR title = '' OR title = '新会话')",
+                    params![title, session_id],
+                )?;
+            }
+        }
+
         for (i, m) in msgs.iter().enumerate() {
             tx.execute(
                 "INSERT INTO messages
@@ -833,6 +856,34 @@ mod tests {
             db.last_acp_session("p1").expect("last").as_deref(),
             Some("local-abc")
         );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn first_user_message_becomes_the_session_title() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+
+        let user = |id: &str, text: &str| MessageInput {
+            id: id.into(),
+            author_id: None,
+            role: "user".into(),
+            kind: "text".into(),
+            payload: serde_json::json!({ "id": id, "text": text }),
+        };
+        // 首条用户消息的第一行成为标题（默认「新会话」所有人同名，分不清谁是谁）
+        db.append_messages("s-1", &[user("u1", "第一行标题\n第二行不要")])
+            .expect("a");
+        let t = db.list_sessions(None).expect("list")[0].title.clone();
+        assert_eq!(t, "第一行标题");
+
+        // 后续消息不许再改标题
+        db.append_messages("s-1", &[user("u2", "第二条完全不同的话")])
+            .expect("b");
+        let t2 = db.list_sessions(None).expect("list")[0].title.clone();
+        assert_eq!(t2, "第一行标题");
+
         std::fs::remove_file(&path).ok();
     }
 
