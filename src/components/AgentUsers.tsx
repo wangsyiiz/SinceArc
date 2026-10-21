@@ -117,7 +117,8 @@ export function AgentUsers({
     setTest({ state: "testing" });
     setError(null);
     try {
-      await ensureConnected(profile);
+      // 已经连着就别再连一次：重复 agent_connect 会报「已连接」，用户会以为建会话失败了
+      if (!profile.connected) await ensureConnected(profile);
       const info = await sessionNew(profile.id, draft.cwd.trim() || profile.cwd || "");
       const sid = info.sessionId;
       setDraft((d) => (d ? { ...d, acpSessionId: sid } : d));
@@ -169,7 +170,9 @@ export function AgentUsers({
 
   const saveBlocker = (() => {
     if (!draft) return null;
-    if (test.state === "untested") return "先测试通过才能保存";
+    if (test.state === "untested") {
+      return mode === "new" ? "先点上面的「在连接上新建一个会话」" : "先测试通过才能保存";
+    }
     if (test.state === "testing") return "正在测试…";
     if (test.state === "fail") return "测试没通过，先解决上面的问题";
     if (!draft.name.trim()) return "填个名字";
@@ -185,6 +188,7 @@ export function AgentUsers({
           type="button"
           onClick={() => {
             setDraft(emptyDraft(profiles));
+            setMode("new");
             setTest({ state: "untested" });
             setError(null);
           }}
@@ -229,7 +233,9 @@ export function AgentUsers({
                     acpSessionId: u.acpSessionId,
                     cwd: "",
                   });
-                  // 编辑已有成员也要重新测：改没改是用户的事，能不能用是事实
+                  // 编辑已有成员也从「已有会话」进：它的 id 是既有的，不该让人以为要重建
+                  setMode("existing");
+                  // 改没改是用户的事，能不能用是事实 —— 进来一律重新测
                   setTest({ state: "untested" });
                 }}
                 className="shrink-0 rounded-[6px] px-2 py-0.5 text-[10px] text-ink-2 transition-colors hover:bg-surface-3/45 hover:text-ink-1"
@@ -293,6 +299,12 @@ export function AgentUsers({
               onChange={(id) => edit({ profileId: id })}
             />
           </div>
+
+          {profiles.length === 0 && (
+            <p className="mt-2 rounded-[4px] bg-warn-1/[0.08] px-2 py-1 text-[9.5px] leading-relaxed text-warn-1">
+              还没有连接配置 —— 先去「连接」加一条，成员必须挂在某条连接上。
+            </p>
+          )}
 
           <div className="mt-2 flex gap-1 rounded-[6px] border border-line-1/60 p-0.5">
             {([
@@ -380,18 +392,26 @@ export function AgentUsers({
           </div>
 
           <div className="mt-2.5 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={runTest}
-              disabled={!canTest || test.state === "testing" || mode === "new"}
-              className={cn(
-                "rounded-[6px] px-2.5 py-1 text-[10.5px] transition-colors",
-                "sc-row-active text-ink-1 hover:brightness-110",
-                (!canTest || test.state === "testing") && "opacity-50",
-              )}
-            >
-              {test.state === "testing" ? "测试中…" : "测试"}
-            </button>
+            {mode === "existing" && (
+              <>
+                <button
+                  type="button"
+                  onClick={runTest}
+                  disabled={!canTest || test.state === "testing"}
+                  className={cn(
+                    "rounded-[6px] px-2.5 py-1 text-[10.5px] transition-colors",
+                    "sc-row-active text-ink-1 hover:brightness-110",
+                    (!canTest || test.state === "testing") && "opacity-50",
+                  )}
+                >
+                  {test.state === "testing" ? "测试中…" : "测试"}
+                </button>
+                {!canTest && (
+                  // 灰着不解释是最烦人的禁用：说清要先做什么
+                  <span className="text-[9.5px] text-ink-3">先填一个 session id</span>
+                )}
+              </>
+            )}
             <button
               type="button"
               onClick={save}
