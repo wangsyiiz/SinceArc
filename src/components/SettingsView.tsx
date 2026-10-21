@@ -11,6 +11,7 @@ import {
   Plus,
   SlidersHorizontal,
   Trash2,
+  Users,
 } from "lucide-react";
 import type { AgentProfile, LaunchKind, SshAuth, ThemeMode, ThreadSettings } from "@/types";
 import { cn } from "@/lib/utils";
@@ -31,6 +32,7 @@ import {
   type AgentPreset,
 } from "@/lib/agentPresets";
 import { ModeSelect } from "@/components/ModeSelect";
+import { AgentUsers } from "@/components/AgentUsers";
 import { CAPABILITY_LABEL } from "@/components/AgentCapabilities";
 
 interface SettingsViewProps {
@@ -69,6 +71,7 @@ const THEMES: { id: ThemeMode; label: string }[] = [
 const SECTIONS = [
   { id: "connection", label: "连接", icon: Plug },
   { id: "chat", label: "群聊", icon: MessageSquare },
+  { id: "members", label: "成员", icon: Users },
   { id: "appearance", label: "外观", icon: Palette },
   { id: "session", label: "会话", icon: SlidersHorizontal },
   { id: "diagnostics", label: "诊断", icon: Activity },
@@ -953,6 +956,16 @@ export function SettingsView({
                 </p>
               )}
             </div>
+          </section>
+
+          <section
+            ref={(el) => {
+              refs.current.members = el;
+            }}
+            className="mt-7 scroll-mt-4"
+          >
+            <h2 className="text-[12px] font-medium text-ink-2">成员</h2>
+            <AgentUsers profiles={profiles} />
           </section>
 
           <section

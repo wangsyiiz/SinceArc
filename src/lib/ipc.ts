@@ -267,6 +267,66 @@ export function agentDiscoveryCached(): Promise<DiscoveryOutcome | null> {
   return invoke<DiscoveryOutcome | null>("agent_discovery_cached", {});
 }
 
+/* ---------- 群聊成员（docs/group-chat.md） ---------- */
+
+export interface AgentUser {
+  id: string;
+  profileId: string;
+  /** 投递地址：该成员在自己那条连接上的 ACP 会话 */
+  acpSessionId: string;
+  name: string;
+  /** @ 用的短名，大小写不敏感、全局唯一 */
+  handle: string;
+  color: string;
+  createdAt: number;
+}
+
+export interface AgentUserTestResult {
+  ok: boolean;
+  /** 成功是会话信息，失败是**原因** */
+  detail: string;
+}
+
+/**
+ * 测试一个 sessionId 能不能当玩家：真跑 `session/load`。
+ * 不用 session/list 判断 —— 它只回 agent 记着的列表，判不出「这个 id 能不能恢复」。
+ */
+export function agentUserTest(
+  profile: AgentProfile,
+  acpSessionId: string,
+  cwd?: string,
+): Promise<AgentUserTestResult> {
+  return invoke<AgentUserTestResult>("agent_user_test", {
+    profile: toDto(profile),
+    acpSessionId,
+    cwd: cwd ?? null,
+  });
+}
+
+export function agentUsersList(): Promise<AgentUser[]> {
+  return invoke<AgentUser[]>("agent_users_list", {});
+}
+
+export function agentUserSave(user: AgentUser): Promise<void> {
+  return invoke<void>("agent_user_save", { user });
+}
+
+export function agentUserDelete(id: string): Promise<void> {
+  return invoke<void>("agent_user_delete", { id });
+}
+
+export function sessionMembers(sessionId: string): Promise<AgentUser[]> {
+  return invoke<AgentUser[]>("session_members", { sessionId });
+}
+
+export function sessionMemberAdd(sessionId: string, userId: string): Promise<void> {
+  return invoke<void>("session_member_add", { sessionId, userId });
+}
+
+export function sessionMemberRemove(sessionId: string, userId: string): Promise<void> {
+  return invoke<void>("session_member_remove", { sessionId, userId });
+}
+
 /* ---------- 会话与消息 ---------- */
 
 export interface SessionRowDto {
