@@ -210,6 +210,42 @@ pub fn to_profile(dto: &ProfileDto) -> Result<AgentProfile, CmdError> {
     })
 }
 
+/// 起进程之前的静态校验。
+///
+/// 这些错误以前都会掉进 50200「启动或握手失败」那个兜底码里，用户看到的是一句
+/// 「agent closed stdout」—— 空 cwd 和命令不存在长得一模一样，根本没法排查。
+fn validate_launch_input(profile: &ProfileDto) -> Result<(), CmdError> {
+    if profile.program.trim().is_empty() {
+        return Err(CmdError::new(
+            50202,
+            "agent 命令为空：先在「Agent」里选一个，或填一条能起 ACP 的命令",
+        ));
+    }
+    if profile.cwd.trim().is_empty() {
+        return Err(CmdError::new(
+            50201,
+            "工作目录为空：agent 会在空路径下启动并立刻退出，先把工作目录填上",
+        ));
+    }
+    Ok(())
+}
+
+/// 把「起不来」的原因连同**跑的是什么命令、在哪个目录**一起报出去。
+fn launch_error(profile: &ProfileDto, e: transport::TransportError) -> CmdError {
+    let cmd = std::iter::once(profile.program.as_str())
+        .chain(profile.args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+    CmdError::new(
+        50200,
+        format!(
+            "启动失败：`{cmd}`（{} · 工作目录 {}）
+{e}",
+            profile.launch, profile.cwd
+        ),
+    )
+}
+
 /// 探测一条连接配置能不能起 ACP agent。
 ///
 /// 只做握手，不留进程 —— 设置页要回答的是「这条命令到底是不是 ACP agent」，
@@ -225,14 +261,18 @@ pub struct ProbeOutcome {
 
 #[tauri::command]
 pub async fn agent_probe(profile: ProfileDto) -> Result<ProbeOutcome, CmdError> {
+    validate_launch_input(&profile)?;
     let parsed = to_profile(&profile)?;
     let cwd = profile.cwd.clone();
     // 比正常连接短：用户点了「探测」就在等结果，等太久不如直接报错
     let (proc, _incoming, outcome) = acp::initialize(&parsed, &cwd, Duration::from_secs(20))
         .await
         .map_err(|e| {
-            tracing::warn!(target: "sincearc::ipc", profile = %profile.id, error = %e, "probe failed");
-            CmdError::from(e)
+            tracing::warn!(
+                target: "sincearc::ipc", profile = %profile.id, program = %profile.program,
+                cwd = %profile.cwd, error = %e, "probe failed"
+            );
+            launch_error(&profile, e)
         })?;
     proc.kill().await;
     tracing::info!(
@@ -255,6 +295,7 @@ pub async fn agent_connect(
     on_event: Channel<AcpEvent>,
 ) -> Result<ConnectOutcome, CmdError> {
     let id = profile.id.clone();
+    validate_launch_input(&profile)?;
     let parsed = to_profile(&profile)?;
 
     // 重连语义：先摘掉旧的（幂等），再起新的。不静默复用旧进程 ——
@@ -268,7 +309,7 @@ pub async fn agent_connect(
         .await
         .map_err(|e| {
             tracing::warn!(target: "sincearc::ipc", profile = %id, error = %e, "handshake failed");
-            CmdError::from(e)
+            launch_error(&profile, e)
         })?;
 
     // 入站消息逐条推给界面；channel 断了说明前端不要了，停掉转发即可。
@@ -987,5 +1028,49 @@ pub async fn session_choose_mode(
                 )),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod launch_input_tests {
+    use super::{validate_launch_input, ProfileDto};
+
+    fn dto(program: &str, cwd: &str) -> ProfileDto {
+        ProfileDto {
+            id: "p".into(),
+            name: "p".into(),
+            launch: "wsl".into(),
+            program: program.into(),
+            args: vec!["acp".into()],
+            cwd: cwd.into(),
+            default_mode: None,
+            distro: Some("fedora".into()),
+            shell: Some("zsh".into()),
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: None,
+            ssh_auth: None,
+            ssh_key_path: None,
+            ssh_password: None,
+        }
+    }
+
+    #[test]
+    fn empty_cwd_is_rejected_with_its_own_code() {
+        // 空 cwd 以前会掉进 50200，只报「agent closed stdout」，和命令写错无法区分
+        let err = validate_launch_input(&dto("hermes", "  ")).expect_err("空 cwd 必须被拦");
+        assert_eq!(err.code, 50201);
+        assert!(err.msg.contains("工作目录"));
+    }
+
+    #[test]
+    fn empty_program_is_rejected() {
+        let err = validate_launch_input(&dto("  ", "/home/jerry")).expect_err("空命令必须被拦");
+        assert_eq!(err.code, 50202);
+    }
+
+    #[test]
+    fn normal_input_passes() {
+        assert!(validate_launch_input(&dto("hermes", "/home/jerry")).is_ok());
     }
 }

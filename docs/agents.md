@@ -54,6 +54,35 @@ AgentProfile = { launch, distro/shell | ssh, cwd, program, args, defaultMode }
   `handshake failed: agent closed stdout` + `zsh:1: command not found: definitely-not-an-acp-agent`；
   program 正确时报 `hermes-agent 0.22.2 · protocol v1`（`tests/agent_probe.rs` 是可执行版本）。
 
+## 4.1 起不来时，错误必须自证原因
+
+`50200` 是「启动或握手失败」的兜底码，它会把三种完全不同的原因糊成同一句话：
+
+| 真实原因 | 以前看到的 |
+|---|---|
+| 工作目录是空串（新建 profile 的默认值） | `handshake failed: agent closed stdout` |
+| 命令不在 PATH 上 | 同一句 |
+| agent 起来了但立刻退出 | 同一句 |
+
+所以起进程前先做静态校验，并且把**跑的是什么命令、在哪个目录**写进错误里：
+
+| 码 | 含义 | 用户该做什么 |
+|---|---|---|
+| `50201` | 工作目录为空 | 填工作目录 |
+| `50202` | agent 命令为空 | 选一个预设或填命令 |
+| `50200` | 真的起不来 | 看错误里带出的命令行、目录和 agent 的 stderr |
+
+实测（`tests/probe_diagnostics.rs`，同一套代码路径各跑一遍）：
+
+```
+wsl + hermes + 正常 cwd      → OK  hermes-agent 0.22.2
+wsl + hermes + 空 cwd        → FAIL handshake failed: agent closed stdout   ← 这就是 50200 的来源
+wsl + npx gemini 预设        → OK  gemini-cli 0.65.0
+wsl + 不存在的程序            → FAIL 附带 zsh:1: command not found: no-such-agent
+ssh + 没填 host              → 50300 SSH 主机未填（更早一步就被拦下）
+local + hermes（Windows 侧）  → FAIL spawn `hermes` failed: program not found
+```
+
 ## 5. 已知限制
 
 - `npx` 预设首次运行要下载包，探测会因此慢（甚至超时）。这是 `npx` 的性质，不是探测的问题 ——
