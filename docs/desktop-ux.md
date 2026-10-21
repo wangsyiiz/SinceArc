@@ -120,3 +120,11 @@ manifest 上不做自动断连：进程随应用退出。用户主动「断开�
   既看不出是失败了还是回答丢了。
 - 回答落库的消息 id 必须**每轮唯一**（`stream-${acpSid}-${时间戳}`）。曾经用
   `stream-${acpSid}`，而写入是 `ON CONFLICT(id) DO UPDATE`，后一轮直接把前一轮覆盖掉。
+
+### 事件路由：只认显式映射，不猜「当前打开的会话」
+
+- `session/update` 与 `promptResult` 只按 `acpToUi[acpSessionId]` 的映射投递；
+  映射必须由发起方给出（`connect(p, uiSid)` → `onSession(..., uiSid)`）。
+- **禁止**「映射缺失就落到 lastSessionId」这类兜底：这就是消息串到别的会话、以及
+  成员的回答出现在当前群里的成因。缺失时丢弃并记 `DROP-NOMAP` / `RESULT-NOMAP` 日志。
+- 在设置页新建成员会话这类「不属于任何界面会话」的连接，按设计**不建立映射**（记 `BIND-NOUI`）。

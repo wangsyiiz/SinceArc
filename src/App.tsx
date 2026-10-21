@@ -233,7 +233,8 @@ export default function App() {
     const attemptKey = `${pid}:${sessionsByProfile[pid] ?? "-"}`;
     if (autoTried.current.get(sid) === attemptKey) return;
     autoTried.current.set(sid, attemptKey);
-    void ensureConnected(pid).then((r) => {
+    // 带上当前会话：映射要靠它，不能靠「渲染时谁打开着」
+    void ensureConnected(pid, sid).then((r) => {
       if (!r.error) return;
       patchSession(sid, (s) => ({
         ...s,

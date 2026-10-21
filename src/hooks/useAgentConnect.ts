@@ -21,7 +21,12 @@ interface Deps {
   sessionsByProfile: Record<string, string>;
   onUpdateProfile: (p: AgentProfile) => void;
   onAgentEvent: (profileId: string, event: AcpEvent) => void;
-  onSession: (profileId: string, acpSessionId: string, snapshot: ModesSnapshot | null) => void;
+  onSession: (
+    profileId: string,
+    acpSessionId: string,
+    snapshot: ModesSnapshot | null,
+    uiSid?: string,
+  ) => void;
 }
 
 /**
@@ -46,7 +51,7 @@ export function useAgentConnect({
   }, [profiles, sessionsByProfile, onUpdateProfile, onAgentEvent, onSession]);
 
   /** 显式连接（设置页按钮）。失败抛 CmdError，由调用方决定怎么显示。 */
-  const connect = useCallback(async (p: AgentProfile): Promise<string> => {
+  const connect = useCallback(async (p: AgentProfile, uiSid?: string): Promise<string> => {
     const s = stateRef.current;
     const out = await connectAgent(p, (e) => s.onAgentEvent(p.id, e));
     s.onUpdateProfile({
@@ -61,7 +66,7 @@ export function useAgentConnect({
       // 握上手但没会话：后端认为连上了，实际没法发消息，必须当失败处理
       throw new Error("agent 没有给出会话");
     }
-    s.onSession(p.id, out.sessionId, out.modes ?? null);
+    s.onSession(p.id, out.sessionId, out.modes ?? null, uiSid);
     return out.sessionId;
   }, []);
 
@@ -70,7 +75,7 @@ export function useAgentConnect({
    * 因为这条路径是用户点开会话顺手触发的，用模态框打断他不对。
    */
   const ensureConnected = useCallback(
-    (profileId: string | null | undefined): Promise<EnsureResult> => {
+    (profileId: string | null | undefined, uiSid?: string): Promise<EnsureResult> => {
       if (!profileId) return Promise.resolve({ acpSid: null, error: null });
 
       // 已经有 ACP 会话：直接复用，不重连
@@ -88,7 +93,7 @@ export function useAgentConnect({
         });
       }
 
-      const task = connect(profile)
+      const task = connect(profile, uiSid)
         .then((acpSid) => ({ acpSid, error: null }))
         .catch((e): EnsureResult => ({ acpSid: null, error: asCmdError(e) }))
         .finally(() => {

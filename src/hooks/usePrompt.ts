@@ -30,7 +30,7 @@ export function usePrompt({
   /** 会话归属哪个连接（老会话没记录时返回 null） */
   profileIdOf: (uiSid: string) => string | null;
   /** 无感启动：没连就现连，永不抛异常 */
-  ensureConnected: (profileId: string | null | undefined) => Promise<EnsureResult>;
+  ensureConnected: (profileId: string | null | undefined, uiSid?: string) => Promise<EnsureResult>;
 }) {
   const { acpToUi, acpToTurn, acpToAuthor, activeAcp } = acp;
 
@@ -98,7 +98,8 @@ export function usePrompt({
             ),
           }));
         }, 10_000);
-        const r = await ensureConnected(profileId);
+        // 带上本次发消息的会话：连接成功后的映射指到这里，而不是「当前打开的那个」
+        const r = await ensureConnected(profileId, sid);
         window.clearTimeout(slow);
         // 提示用完就撤，不要留在消息流里
         patchSession(sid, (s) => ({

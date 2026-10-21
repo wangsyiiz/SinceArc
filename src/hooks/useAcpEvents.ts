@@ -100,9 +100,13 @@ export function useAcpEvents({
     for (const [acpSid, text] of Object.entries(buf)) {
       // 映射缺失时退回当前会话：同一时刻只有一条 prompt 在跑，
       // 「这条流式内容属于我现在看的会话」这个判断不需要一张表也能成立。
-      const mapped = acpToUi.current[acpSid];
-      const uiSid = mapped ?? lastSidRef.current;
-      if (!mapped) diag(`映射缺失，退回当前会话 ${uiSid}`);
+      const uiSid = acpToUi.current[acpSid];
+      if (!uiSid) {
+        // 不作「落到当前会话」的猜测：那正是消息串到别的会话的原因。
+        // 没有映射就丢弃（并留痕），宁可少显示一条，也不能把别人的历史染了。
+        clog("DROP-NOMAP", `chunk acp=${acpSid} len=${text.length}`);
+        continue;
+      }
       if (uiSid !== lastSidRef.current) {
         diag(`写入 ${uiSid}（当前看的是 ${lastSidRef.current}）`);
       }
@@ -238,9 +242,8 @@ export function useAcpEvents({
         flushStream();
         // 与 flushStream 保持同一套兜底：映射缺失就落到当前会话。
         // 这里以前是硬取映射，取不到就整块跳过 —— 回答在界面里看得见、却一行都没落库。
-        const mapped = acpToUi.current[event.sessionId];
-        const uiSid = mapped ?? lastSidRef.current;
-        if (!mapped) clog("RESULT-NOMAP", `acp=${event.sessionId} fallback=${uiSid}`);
+        const uiSid = acpToUi.current[event.sessionId];
+        if (!uiSid) clog("RESULT-NOMAP", `acp=${event.sessionId}（丢弃，不猜会话）`);
         diag(`promptResult -> ${uiSid ?? "无映射"}`);
         if (uiSid) {
           const streamId = curStreamId(event.sessionId);
@@ -310,8 +313,8 @@ export function useAcpEvents({
           // 这条路径此前完全静默，正是「界面有回答、库里没有」最可能的成因。
           for (const [k, v] of Object.entries(streamText.current)) {
             if (!v || k === acpSid) continue;
-            const kUi = acpToUi.current[k] ?? lastSidRef.current;
-            if (kUi === uiSid) {
+            const kUi = acpToUi.current[k];
+            if (kUi && kUi === uiSid) {
               full = v;
               delete streamText.current[k];
               clog("RESULT-ID-MISMATCH", `prompt=${acpSid} streamed=${k} ui=${uiSid} len=${v.length}`);
@@ -355,13 +358,27 @@ export function useAcpEvents({
     [diag, flushStream, onAgentSwitch, onPermission, patchSession],
   );
 
-  const onSession = useCallback((profileId: string, sessionId: string, snapshot?: ModesSnapshot | null) => {
+  const onSession = useCallback(
+    (
+      profileId: string,
+      sessionId: string,
+      snapshot?: ModesSnapshot | null,
+      /** 这次连接是为哪个界面会话发起的。**必须由调用方给出**，不能用「当前打开的那个」猜：
+       *  猜出来的结果是事件串到别的会话里（实测：在设置页新建成员会话，会把成员的回答
+       *  绑到当时打开的那个群；切会话时同理）。 */
+      uiSid?: string,
+    ) => {
     setSessionsByProfile((m) => ({ ...m, [profileId]: sessionId }));
     // 建立映射：agent 回的事件带的是 ACP sessionId
-    acpToUi.current[sessionId] = lastSidRef.current;
+    if (uiSid) {
+      acpToUi.current[sessionId] = uiSid;
+    } else {
+      delete acpToUi.current[sessionId];
+      clog("BIND-NOUI", `acp=${sessionId} profile=${profileId}（没有界面会话，先不映射）`);
+    }
     activeAcp.current = sessionId;
 
-    const uiId = lastSidRef.current;
+    const uiId = uiSid;
     if (uiId) {
       sessionBindAcp(uiId, sessionId).catch((e) =>
         console.warn("[db] bind acp session failed", e),
