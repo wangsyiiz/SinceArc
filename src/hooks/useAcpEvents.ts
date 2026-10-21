@@ -75,6 +75,15 @@ export function useAcpEvents({
 
   /** ACP 会话 -> 这一轮的流式状态（每条回答一个独立 msgId，绝不重复使用） */
   const streams = useRef<Record<string, StreamState>>({});
+  /**
+   * 这个 ACP 会话当前有没有「我们自己发起的一轮」在跑。
+   *
+   * 为什么必须有：agent 在 `session/load` 之后会把上一轮**重放**一遍 ——
+   * 那些 chunk 和真回答长得一模一样。以前它们会被当成新回答塞进界面（还会再落一次库），
+   * 表现就是「历史里多出来一条」「切回会话看到刚说过的回答又冒出来」。
+   * 现在只有 promptStarted 之后的 chunk 才算真回答，重放记 DROP-REPLAY。
+   */
+  const awaiting = useRef<Record<string, boolean>>({});
   const acpToTurn = useRef<Record<string, string>>({});
   const flushTimer = useRef(0);
   const flushDiag = useRef(0);
@@ -192,6 +201,11 @@ export function useAcpEvents({
           clog("DROP-NOMAP", `acp=${acpSid ?? "-"} ui=- len=${text.length}`);
           return;
         }
+        if (!awaiting.current[acpSid]) {
+          // 没有我们发起的一轮：这是 session/load 之后的重放，数据库里已经有这条了
+          clog("DROP-REPLAY", `acp=${acpSid} ui=${uiSid} len=${text.length}`);
+          return;
+        }
         const st = (streams.current[acpSid] ??= {
           uiSid,
           authorId,
@@ -211,6 +225,7 @@ export function useAcpEvents({
 
       if (event.kind === "promptStarted") {
         if (!acpSid) return;
+        awaiting.current[acpSid] = true;
         // 上一轮如果没收到 promptResult（进程崩了、连接断了），文本会留在这里。
         // 新一轮开始时先把它落库，别悄悄丢掉已经显示给用户的内容。
         const stale = streams.current[acpSid];
@@ -244,7 +259,10 @@ export function useAcpEvents({
         if (!uiSid) {
           clog("RESULT-NOUI", `acp=${acpSid ?? "-"} kind=${event.kind}`);
           diag(`promptResult 无归属会话（acp=${acpSid ?? "-"}）`);
-          if (acpSid) delete streams.current[acpSid];
+          if (acpSid) {
+            delete streams.current[acpSid];
+            delete awaiting.current[acpSid];
+          }
           return;
         }
         const st = acpSid ? streams.current[acpSid] : undefined;
@@ -320,7 +338,10 @@ export function useAcpEvents({
               pushSystemNotice(patchSession, uiSid, `这条回答没能写入历史：${String(e)}`);
             });
         }
-        if (acpSid) delete streams.current[acpSid];
+        if (acpSid) {
+          delete streams.current[acpSid];
+          delete awaiting.current[acpSid];
+        }
         return;
       }
 
