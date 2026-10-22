@@ -12,8 +12,9 @@ use std::process::Stdio;
 use std::time::Duration;
 
 /// 单条候选：一个「可能能当 ACP 服务端」的 agent。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct Candidate {
     pub id: &'static str,
     pub name: &'static str,
@@ -95,8 +96,9 @@ pub const CANDIDATES: &[Candidate] = &[
 ];
 
 /// 一处命中：在哪个环境、哪条路径。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct Found {
     pub candidate_id: String,
     /// `local` / `wsl:<distro>` / `ssh:<host>`，界面按它分组
@@ -118,9 +120,11 @@ pub struct DiscoveryCache {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct DiscoverOutcome {
+    #[ts(type = "number")]
     pub scanned_at: i64,
     pub candidates: Vec<Candidate>,
     pub found: Vec<Found>,

@@ -124,8 +124,9 @@ fn capability_keys(caps: Option<&Value>) -> Vec<String> {
 }
 
 /// agent 报上来的一个可选模式。只留 UI 要展示的字段。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct ModeOption {
     pub id: String,
     pub name: String,
@@ -133,8 +134,9 @@ pub struct ModeOption {
 }
 
 /// 打开会话时的模式快照：`available` 用于校验目标值，`current` 是 agent 当时的生效值。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct SessionModes {
     pub available: Vec<ModeOption>,
     pub current: String,

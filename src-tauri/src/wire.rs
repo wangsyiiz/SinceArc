@@ -43,23 +43,33 @@ impl Meta {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct WireEvent {
     pub v: u8,
+    // JSON 里就是普通数字（IPC 走 serde_json），不是 bigint —— 前端拿到的也是 number。
+    #[ts(type = "number")]
     pub seq: u64,
+    #[ts(type = "number")]
     pub ts: i64,
     pub topic: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
     pub profile_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
     pub ui_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
     pub author_id: Option<String>,
     /// 拥塞时是否可以丢弃。终态事件（prompt result/failed）必须为 true。
     pub lossless: bool,
+    /// 前端按 topic 各自解释；这里只能给 unknown，具体形状由各 topic 自己的生成类型约束。
+    #[ts(type = "unknown")]
     pub payload: serde_json::Value,
 }
 

@@ -27,31 +27,41 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// 推给界面的事件。UI 只认这个枚举，不直接看 ACP 的 JSON ——
 /// 协议类型收敛在 acp 模块里（见 acp/mod.rs 的约束 1）。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub enum AcpEvent {
     /// 单向通知，例如 `session/update`
     Notification {
         method: String,
+        #[ts(type = "unknown")]
         params: serde_json::Value,
         /// 事件所属的 ACP 会话（agent 没给就是 None）
+        #[ts(optional = nullable)]
         session_id: Option<String>,
         /// 该投给哪个界面会话 —— 由后端按会话归属填，前端不许猜
+        #[ts(optional = nullable)]
         ui_session_id: Option<String>,
         /// 发言者（群成员身份）；主 agent 时为 None
+        #[ts(optional = nullable)]
         author_id: Option<String>,
     },
     /// agent 发来的请求，需要回响应（S4 起接线）
     Request {
+        #[ts(type = "number")]
         id: u64,
         method: String,
+        #[ts(type = "unknown")]
         params: serde_json::Value,
+        #[ts(optional = nullable)]
         session_id: Option<String>,
+        #[ts(optional = nullable)]
         ui_session_id: Option<String>,
+        #[ts(optional = nullable)]
         author_id: Option<String>,
     },
     /// 连接建立后的自检：前端收到它就说明事件通道是通的
@@ -61,20 +71,27 @@ pub enum AcpEvent {
     /// 一轮 prompt 开始了（UI 用来进入生成态；此时还没有任何 chunk）
     PromptStarted {
         session_id: String,
+        #[ts(optional = nullable)]
         ui_session_id: Option<String>,
+        #[ts(optional = nullable)]
         author_id: Option<String>,
     },
     /// 一轮 prompt 正常结束（带 stopReason 等原始结果）
     PromptResult {
         session_id: String,
+        #[ts(optional = nullable)]
         ui_session_id: Option<String>,
+        #[ts(optional = nullable)]
         author_id: Option<String>,
+        #[ts(type = "unknown")]
         result: serde_json::Value,
     },
     /// 一轮 prompt 失败（超时、进程没了、agent 报错）
     PromptFailed {
         session_id: String,
+        #[ts(optional = nullable)]
         ui_session_id: Option<String>,
+        #[ts(optional = nullable)]
         author_id: Option<String>,
         msg: String,
     },
@@ -103,8 +120,9 @@ impl From<transport::TransportError> for CmdError {
 
 /// 前端传来的 profile。字段与 `AgentProfile` 不同 —— 那是内部结构，
 /// 这里只接 UI 真正会填的那几项。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct ProfileDto {
     pub id: String,
     pub name: String,
@@ -137,11 +155,13 @@ pub struct ProfileDto {
     pub ssh_password: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct ConnectOutcome {
     pub agent_name: String,
     pub agent_version: String,
+    #[ts(type = "number")]
     pub protocol_version: i64,
     pub load_session: bool,
     pub image_prompts: bool,
@@ -152,6 +172,7 @@ pub struct ConnectOutcome {
     /// 本次连接落到的会话：复用了旧的就还是旧的，没有就新建。
     /// 前端直接用它，不必再发一次 session/new（那样每连一次就多一个空会话）。
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
     pub session_id: Option<String>,
     pub modes: Option<acp::SessionModes>,
 }
@@ -275,11 +296,13 @@ fn launch_error(profile: &ProfileDto, e: transport::TransportError) -> CmdError 
 ///
 /// 只做握手，不留进程 —— 设置页要回答的是「这条命令到底是不是 ACP agent」，
 /// 这件事只有真跑一次 initialize 才算证明过，靠命令名猜是猜不出来的。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct ProbeOutcome {
     pub agent_name: String,
     pub agent_version: String,
+    #[ts(type = "number")]
     pub protocol_version: i64,
     pub load_session: bool,
     /// 握手报上来的能力键（拍平后）。探测的价值一半在这里：
@@ -289,8 +312,9 @@ pub struct ProbeOutcome {
 
 /* ---------- 群聊成员（docs/group-chat.md） ---------- */
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct AgentUserTestOutcome {
     pub ok: bool,
     /// 成功时是 agent 报回来的会话信息，失败时是**原因**（不是「失败」两个字）
@@ -1251,8 +1275,9 @@ pub async fn profiles_save(
         .map_err(|e| CmdError::new(50000, format!("保存配置失败：{e}")))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct SessionInfo {
     pub session_id: String,
 }
@@ -1818,8 +1843,9 @@ pub async fn messages_load(
 //   50400 连接已断开   50401 连接不支持该模式   50402 set_mode 调用失败   50403 会话没报上来可选模式
 
 /// 一次模式动作的结果。`Ok` 表示存储层已按用户意图写好；`warning` 说明为什么没推成。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct ModeChoice {
     /// 这次真正推给 agent 并成功的模式；None = 没推
     pub applied: Option<String>,
