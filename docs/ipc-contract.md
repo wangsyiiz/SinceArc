@@ -187,7 +187,11 @@ domain service：规范化 → 校验 → 缓存（TTL）→ 分页游标 → �
 - **M3 实现完成**：正文合批搬到 Rust（`src-tauri/src/coalesce.rs`，30ms tick 或 ≥4KB 立刻发；
   换会话/换作者/收到非正文事件前先冲缓冲，保证顺序）。前端删掉自己的 40ms 定时器
   （`useAcpEvents` 直接落界面）。事件形状不变，前端无需区分「是否合并过」。
-- M4–M6 未开始。
+- **M4 实现完成**：`session_bindings`（历史）+ `sessions.acp_state`；绑定入口只有
+  `session/new`（created）、验证成功的 `session/load`（loaded）、显式 `session_rebind`（replaced）。
+  同 id 重复绑定幂等；换 id 归档旧绑定；`mark_acp_invalid` 只标状态、保留凭证，
+  且只在 agent **明确拒绝**时触发（超时/断连不算凭证失效）。
+- M5–M6 未开始。
 
 ## 10. 迁移路径（不许一次性大改）
 
