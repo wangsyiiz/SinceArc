@@ -2009,7 +2009,7 @@ pub async fn sessions_list(
 #[tauri::command]
 pub async fn session_upsert(
     state: State<'_, AppState>,
-    row: db::SessionRow,
+    row: db::SessionUpsert,
 ) -> Result<(), CmdError> {
     state
         .db

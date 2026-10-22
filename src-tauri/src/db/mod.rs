@@ -43,6 +43,34 @@ pub struct SessionRow {
     pub created_at: i64,
     #[ts(type = "number")]
     pub updated_at: i64,
+    /// 今天 / 昨天 / 更早 —— 由后端按机器本地时区判定，前端只做展示
+    pub day_bucket: String,
+    /// 供侧栏直接显示的简短时间：今天→`14:32`，更早→`10-21`
+    pub display_time: String,
+}
+
+/// 写会话时用的模型：**只含真实列**。
+///
+/// `SessionRow` 带着 `day_bucket` / `display_time` 两个派生字段（SQL 里算出来的），
+/// 拿它当写入入参会让「派生值」混进写路径 —— 于是要给它们加 `serde(default)`、
+/// 前端类型还要标可选，谁都能往里塞一个不会落库的字段。读写分开就不用打这些补丁。
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct SessionUpsert {
+    pub id: String,
+    #[ts(optional = nullable)]
+    pub acp_session_id: Option<String>,
+    #[ts(optional = nullable)]
+    pub mode_override: Option<String>,
+    #[ts(optional = nullable)]
+    pub profile_id: Option<String>,
+    pub title: String,
+    pub cwd: String,
+    #[ts(type = "number")]
+    pub created_at: i64,
+    #[ts(type = "number")]
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
@@ -374,7 +402,17 @@ impl Db {
     pub fn list_sessions(&self, profile_id: Option<&str>) -> rusqlite::Result<Vec<SessionRow>> {
         let conn = self.conn.lock().expect("db poisoned");
         let sql = "SELECT id, acp_session_id, profile_id, title, cwd, created_at, updated_at,
-                          mode_override
+                          mode_override,
+                          CASE
+                            WHEN date(updated_at,'unixepoch','localtime') = date('now','localtime') THEN 'today'
+                            WHEN date(updated_at,'unixepoch','localtime') = date('now','localtime','-1 day') THEN 'yesterday'
+                            ELSE 'earlier'
+                          END AS day_bucket,
+                          CASE
+                            WHEN date(updated_at,'unixepoch','localtime') = date('now','localtime')
+                              THEN strftime('%H:%M', updated_at,'unixepoch','localtime')
+                            ELSE strftime('%m-%d', updated_at,'unixepoch','localtime')
+                          END AS display_time
                    FROM sessions
                    WHERE (?1 IS NULL OR profile_id = ?1)
                    ORDER BY updated_at DESC, created_at DESC";
@@ -389,12 +427,14 @@ impl Db {
                 created_at: r.get(5)?,
                 updated_at: r.get(6)?,
                 mode_override: r.get(7)?,
+                day_bucket: r.get(8)?,
+                display_time: r.get(9)?,
             })
         })?;
         rows.collect()
     }
 
-    pub fn upsert_session(&self, row: &SessionRow) -> rusqlite::Result<()> {
+    pub fn upsert_session(&self, row: &SessionUpsert) -> rusqlite::Result<()> {
         let conn = self.conn.lock().expect("db poisoned");
         conn.execute(
             "INSERT INTO sessions (id, acp_session_id, profile_id, title, cwd, created_at, updated_at,
@@ -1166,7 +1206,7 @@ mod tests {
     fn 群成员可以重复拉且能移出() {
         let (db, path) = temp_db();
         db.save_profiles(&[sample()]).unwrap();
-        let s = SessionRow {
+        let s = SessionUpsert {
             id: "s1".into(),
             acp_session_id: None,
             mode_override: None,
@@ -1192,7 +1232,7 @@ mod tests {
     fn 消息带作者_读回来还在() {
         let (db, path) = temp_db();
         db.save_profiles(&[sample()]).unwrap();
-        let s = SessionRow {
+        let s = SessionUpsert {
             id: "s1".into(),
             acp_session_id: None,
             mode_override: None,
@@ -1239,8 +1279,9 @@ mod tests {
         }
     }
 
-    fn session(id: &str, acp: Option<&str>) -> SessionRow {
-        SessionRow {
+    /// 写入用的模型（只含真实列）
+    fn session(id: &str, acp: Option<&str>) -> SessionUpsert {
+        SessionUpsert {
             id: id.into(),
             acp_session_id: acp.map(|s| s.to_string()),
             mode_override: None,
@@ -1250,6 +1291,14 @@ mod tests {
             created_at: now(),
             updated_at: now(),
         }
+    }
+
+    /// 测试专用：把会话放在指定秒数上，分组/排序都只看 updated_at。
+    fn session_at(id: &str, updated_at: i64) -> SessionUpsert {
+        let mut row = session(id, None);
+        row.created_at = updated_at;
+        row.updated_at = updated_at;
+        row
     }
 
     fn acp_state(db: &Db, id: &str) -> Option<String> {
@@ -1288,6 +1337,112 @@ mod tests {
         // 删配置 -> 它的会话一起没了
         db.save_profiles(&[]).expect("clear");
         assert!(db.list_sessions(None).expect("list").is_empty());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn day_bucket_today_yesterday_earlier() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        let now = now();
+        for (id, updated_at) in [
+            ("s-today", now),
+            // 日历日语义：now - 86400 在绝大多数时区都是昨天；若测试恰逢
+            // 时区切换/零点边界，下面断言会打印实际 bucket 与 now 便于判断。
+            ("s-yesterday", now - 86_400),
+            ("s-earlier", now - 10 * 86_400),
+        ] {
+            db.upsert_session(&session_at(id, updated_at))
+                .expect("insert session");
+        }
+
+        let rows = db.list_sessions(None).expect("list");
+        let row = |id: &str| {
+            rows.iter()
+                .find(|r| r.id == id)
+                .unwrap_or_else(|| panic!("missing {id}; now={now}"))
+        };
+        assert_eq!(
+            row("s-today").day_bucket,
+            "today",
+            "today bucket; now={now}"
+        );
+        assert_eq!(
+            row("s-yesterday").day_bucket,
+            "yesterday",
+            "yesterday bucket; now={now}"
+        );
+        assert_eq!(
+            row("s-earlier").day_bucket,
+            "earlier",
+            "earlier bucket; now={now}"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn display_time_is_time_for_today_and_date_before() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        let now = now();
+        db.upsert_session(&session_at("s-today", now))
+            .expect("insert today");
+        db.upsert_session(&session_at("s-earlier", now - 10 * 86_400))
+            .expect("insert earlier");
+
+        let rows = db.list_sessions(None).expect("list");
+        let row = |id: &str| {
+            rows.iter()
+                .find(|r| r.id == id)
+                .unwrap_or_else(|| panic!("missing {id}; now={now}"))
+        };
+        let shape = |value: &str, sep: u8| {
+            value.len() == 5
+                && value.as_bytes()[2] == sep
+                && value
+                    .as_bytes()
+                    .iter()
+                    .enumerate()
+                    .all(|(i, b)| i == 2 || b.is_ascii_digit())
+        };
+        assert!(
+            shape(&row("s-today").display_time, b':'),
+            "today display_time={} now={now}",
+            row("s-today").display_time
+        );
+        assert!(
+            shape(&row("s-earlier").display_time, b'-'),
+            "earlier display_time={} now={now}",
+            row("s-earlier").display_time
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn list_still_orders_newest_first() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        let now = now();
+        for (id, updated_at) in [
+            ("s-old", now - 10 * 86_400),
+            ("s-mid", now - 86_400),
+            ("s-new", now),
+        ] {
+            db.upsert_session(&session_at(id, updated_at))
+                .expect("insert session");
+        }
+
+        let ids: Vec<String> = db
+            .list_sessions(None)
+            .expect("list")
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        let expected: Vec<String> = ["s-new", "s-mid", "s-old"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        assert_eq!(ids, expected, "now={now}");
         std::fs::remove_file(&path).ok();
     }
 

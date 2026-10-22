@@ -4,4 +4,12 @@ export type SessionRow = { id: string, acpSessionId?: string | null, modeOverrid
 /**
  * 还没绑定连接配置的草稿会话为 None
  */
-profileId?: string | null, title: string, cwd: string, createdAt: number, updatedAt: number, };
+profileId?: string | null, title: string, cwd: string, createdAt: number, updatedAt: number, 
+/**
+ * 今天 / 昨天 / 更早 —— 由后端按机器本地时区判定，前端只做展示
+ */
+dayBucket: string, 
+/**
+ * 供侧栏直接显示的简短时间：今天→`14:32`，更早→`10-21`
+ */
+displayTime: string, };

@@ -17,10 +17,12 @@ export type {
   SessionInfo,
   SessionModes as ModesSnapshot,
   SessionRow as SessionRowDto,
+  SessionUpsert,
   TraceItem as TraceItemDto,
   TraceTurn as TraceTurnDto,
   TurnRow,
 } from "./types.gen";
+
 
 export interface EventRoute {
   /** ACP 会话 id */
