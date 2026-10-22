@@ -1,9 +1,11 @@
 import type { ReactNode } from "react";
-import { ChevronDown, ShieldCheck, Waypoints } from "lucide-react";
+import { ChevronDown, Waypoints } from "lucide-react";
 import type { AgentProfile } from "@/types";
 import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
 import { ModeSelect } from "@/components/ModeSelect";
+import { Badge } from "./ui/Badge";
+import { Button } from "./ui/Button";
 import type { ModeView } from "@/hooks/useSessionModes";
 
 interface StatusBarProps {
@@ -40,21 +42,28 @@ export function StatusBar({
 }: StatusBarProps) {
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line-1/60 px-3">
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={onToggleTrace}
         title={traceOpen ? "收起轨迹" : "展开轨迹"}
+        aria-label={traceOpen ? "收起轨迹" : "展开轨迹"}
         className={cn(
-          "grid size-7 shrink-0 place-items-center rounded-[6px] transition-colors",
+          "size-7 shrink-0 gap-0 rounded-mark p-0",
           traceOpen ? "bg-surface-3/65 text-ink-1" : "text-ink-2 hover:bg-surface-3/55 hover:text-ink-1",
         )}
       >
         <Waypoints className="size-3.5" />
-      </button>
+      </Button>
 
-      <button className="flex min-w-0 items-center gap-1.5 rounded-[6px] px-1.5 py-1 font-mono text-[11px] text-ink-2 transition-colors hover:bg-surface-3/35 hover:text-ink-1">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-auto min-w-0 justify-start gap-1.5 rounded-mark px-1.5 py-1 font-mono text-caption font-normal"
+      >
         <span className="truncate">{cwd}</span>
         <ChevronDown className="size-3 shrink-0 text-ink-3" />
-      </button>
+      </Button>
 
       <div className="ml-auto flex items-center gap-0.5">
         {modes && onChooseMode && (
@@ -71,7 +80,7 @@ export function StatusBar({
         {right}
         {sessionId && (
           <span
-            className="mr-1 font-mono text-[9px] text-ink-3"
+            className="mr-1 font-mono text-micro text-ink-3"
             title={`session ${sessionId}`}
           >
             s:{sessionId.slice(0, 8)}
@@ -79,7 +88,7 @@ export function StatusBar({
         )}
         {eventCount > 0 && (
           <span
-            className="mr-1 max-w-[160px] truncate font-mono text-[9px] text-ink-3"
+            className="mr-1 max-w-40 truncate font-mono text-micro text-ink-3"
             title={`收到的 ACP 事件：${eventCount}，最后一条 ${lastEvent ?? "-"}`}
           >
             ev {eventCount}
@@ -87,29 +96,21 @@ export function StatusBar({
           </span>
         )}
         {profile && (
-          <div
-            className={cn(
-              "mr-1 flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px]",
-              profile.connected
-                ? "border-ok-1/20 bg-ok-1/[0.08]"
-                : "border-line-1 bg-surface-2/50",
-            )}
+          <span
+            className="mr-1 flex min-w-0 items-center gap-1.5"
             title={
               profile.connected
                 ? `${profile.agentName ?? "agent"} · 协议 v${profile.protocolVersion ?? 1}`
                 : "这个会话还没有连上 agent（打开会话会自动连）"
             }
           >
-            <ShieldCheck
-              className={cn("size-2.5 shrink-0", profile.connected ? "text-ok-1" : "text-ink-3")}
+            <span className="max-w-30 truncate text-caption text-ink-2">{profileLabel(profile)}</span>
+            <Badge
+              compact
+              status={profile.connected ? "connected" : "untested"}
+              label={profile.connected ? "已连接" : "未连接"}
             />
-            {/* 名字是「这是哪个 agent」，后面那句才是「连没连上」—— 两件事分开说，
-                否则用户在会话列表里看到一堆绿灰徽标，误以为是状态 */}
-            <span className="max-w-[120px] truncate text-ink-2">{profileLabel(profile)}</span>
-            <span className={profile.connected ? "text-ok-1" : "text-ink-3"}>
-              {profile.connected ? "已连接" : "未连接"}
-            </span>
-          </div>
+          </span>
         )}
 
       </div>

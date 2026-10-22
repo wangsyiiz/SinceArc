@@ -38,3 +38,9 @@ test("带变体的颜色不影响基础字号", () => {
   assert.ok(has(out, "text-caption"));
   assert.ok(has(out, "hover:text-ink-1"));
 });
+
+test("micro 档同样受保护（P2b 新增的最小档）", () => {
+  const out = cn("text-micro", "text-ink-3");
+  assert.ok(has(out, "text-micro"), `最小档被颜色顶掉了：${out}`);
+  assert.ok(has(out, "text-ink-3"));
+});
