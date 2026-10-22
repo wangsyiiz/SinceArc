@@ -1,6 +1,7 @@
 import { FolderGit2, GitPullRequest, MessageSquare, Settings2, X } from "lucide-react";
 import type { Tab } from "@/types";
 import { cn } from "@/lib/utils";
+import { Button } from "./ui/Button";
 
 const ICON = {
   session: MessageSquare,
@@ -31,10 +32,10 @@ export function TabStrip({ tabs, activeId, badgeOf, onSelect, onClose }: TabStri
             type="button"
             onClick={() => onSelect(t.id)}
             className={cn(
-              "group flex h-full min-w-0 max-w-[220px] cursor-pointer items-center gap-1.5 border-r border-line-1/40 px-3 text-[11.5px] transition-colors",
+              "group flex h-full min-w-0 max-w-55 cursor-pointer items-center gap-1.5 border-r border-line-1/40 px-3 text-ui-tight transition-colors",
               active
-                ? "bg-surface-3/50 text-ink-1 shadow-[inset_0_1px_0_rgb(255_255_255/0.06)]"
-                : "text-ink-3 hover:bg-surface-2/50 hover:text-ink-2",
+                ? "sc-row-active text-ink-1"
+                : "text-ink-3 hover:bg-surface-3 hover:text-ink-1",
             )}
             title={t.subtitle ?? t.title}
           >
@@ -46,19 +47,24 @@ export function TabStrip({ tabs, activeId, badgeOf, onSelect, onClose }: TabStri
                 style={{ background: badgeOf(t) ?? undefined }}
               />
             )}
-            <button
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={(e) => {
                 e.stopPropagation();
                 onClose(t.id);
               }}
-              className={cn(
-                "ml-0.5 grid size-4 shrink-0 place-items-center rounded-[4px] transition-colors hover:bg-surface-3",
-                active ? "opacity-60 hover:opacity-100" : "opacity-0 group-hover:opacity-60",
-              )}
+              aria-label="关闭"
               title="关闭"
+              className={cn(
+                "ml-0.5 size-4 shrink-0 gap-0 rounded-mark p-0",
+                active
+                  ? "opacity-60 hover:opacity-100"
+                  : "opacity-0 group-hover:opacity-60 hover:opacity-100",
+              )}
             >
               <X className="size-2.5" />
-            </button>
+            </Button>
           </button>
         );
       })}

@@ -55,6 +55,9 @@ function countMatches(text: string, re: RegExp): number {
 /**
  * `outline-none` 只看同一字符串里的替代焦点样式。
  * 当前违规都写在单个 className 字符串或 cn() 的单个参数里；拆到多个参数的情况目前没有。
+ *
+ * `outline-0` 是同一个意思（`outline-width: 0px`），P2b 里真被用来绕过了这条判据 ——
+ * 判据照着 Tailwind 的两种写法一起认，否则改一个类名就能躲过棘轮。
  */
 function countOutlineNone(text: string): number {
   let count = 0;
@@ -76,7 +79,8 @@ function countOutlineNone(text: string): number {
       end += 1;
     }
     const value = text.slice(start, end);
-    if (value.includes("outline-none") && !value.includes("focus-visible:")) count += 1;
+    const hidesOutline = value.includes("outline-none") || value.includes("outline-0");
+    if (hidesOutline && !value.includes("focus-visible:")) count += 1;
     index = end + 1;
   }
   return count;

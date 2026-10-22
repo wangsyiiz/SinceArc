@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Square, Paperclip } from "lucide-react";
 import type { Player } from "@/types";
 import { cn } from "@/lib/utils";
+import { Button } from "./ui/Button";
 
 interface ComposerProps {
   busy: boolean;
@@ -92,7 +93,7 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [] }: Co
     <>
       <div className="relative">
       {mention && (
-        <div className="sc-glass absolute bottom-full left-2 z-30 mb-1.5 w-64 rounded-[8px] border border-line-1/60 p-1">
+        <div className="sc-glass absolute bottom-full left-2 z-30 mb-1.5 w-64 rounded-control p-1">
           {candidates.length > 0 ? (
             candidates.map((p, i) => (
               <button
@@ -105,7 +106,7 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [] }: Co
                 }}
                 onMouseEnter={() => setActive(i)}
                 className={cn(
-                  "flex w-full items-center gap-1.5 rounded-[4px] px-2 py-1 text-left transition-colors",
+                  "flex w-full items-center gap-1.5 rounded-mark px-2 py-1 text-left transition-colors",
                   i === active ? "bg-surface-3/60" : "hover:bg-surface-3/45",
                 )}
               >
@@ -113,12 +114,12 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [] }: Co
                   className="h-2 w-2 shrink-0 rounded-full"
                   style={{ backgroundColor: p.color }}
                 />
-                <span className="shrink-0 text-[11px] text-ink-1">{p.name}</span>
-                <span className="shrink-0 font-mono text-[9.5px] text-ink-3">@{p.handle}</span>
+                <span className="shrink-0 text-caption text-ink-1">{p.name}</span>
+                <span className="shrink-0 font-mono text-micro text-ink-3">@{p.handle}</span>
               </button>
             ))
           ) : (
-            <p className="px-2 py-1 text-[9.5px] leading-relaxed text-ink-3">
+            <p className="px-2 py-1 text-micro leading-relaxed text-ink-3">
               {players.length === 0
                 ? "群里还没有成员 —— 点左栏的 + 把人拉进来，才能 @ 到"
                 : `没有匹配 @${mention.query} 的成员`}
@@ -128,7 +129,7 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [] }: Co
       )}
       <div
       className={cn(
-        "sc-glass rounded-[12px] border-transparent transition-colors",
+        "sc-glass rounded-card transition-colors focus-within:border-accent-1",
         busy && "border-accent-1/25",
       )}
     >
@@ -174,42 +175,46 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [] }: Co
             submit();
           }
         }}
-        className="sc-selectable max-h-[200px] w-full resize-none bg-transparent px-3.5 pt-3 pb-0.5 text-[13px] leading-relaxed text-ink-1 outline-none placeholder:text-ink-3"
+        className="sc-selectable max-h-50 w-full resize-none bg-transparent px-3.5 pt-3 pb-0.5 text-ui leading-relaxed text-ink-1 focus-visible:outline-0 placeholder:text-ink-3"
       />
       <div className="flex items-center gap-1 px-2 pb-1.5">
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           title="添加附件（未接线）"
-          className="grid size-7 place-items-center rounded-md text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-2"
+          aria-label="添加附件（未接线）"
+          className="size-7 gap-0 p-0"
         >
           <Paperclip className="size-3.5" />
-        </button>
-        <span className="ml-0.5 font-mono text-[9.5px] text-ink-3">
+        </Button>
+        <span className="ml-0.5 font-mono text-micro text-ink-3">
           {busy ? "agent 正在输出" : "ACP · stdio"}
         </span>
 
         <div className="ml-auto">
           {busy ? (
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={onStop}
               title="停止"
-              className="grid size-7 place-items-center rounded-[8px] bg-surface-3/75 text-ink-1 shadow-[inset_0_1px_0_rgb(255_255_255/0.06)] transition-colors hover:bg-surface-3"
+              aria-label="停止"
+              className="size-7 gap-0 bg-surface-3/75 p-0 hover:bg-surface-3"
             >
               <Square className="size-3 fill-current" />
-            </button>
+            </Button>
           ) : (
-            <button
+            <Button
+              variant="primary"
+              size="sm"
               onClick={submit}
               disabled={!canSend}
-              title="发送"
-              className={cn(
-                "grid size-7 place-items-center rounded-[8px] transition-all",
-                canSend
-                  ? "bg-accent-1 text-accent-ink shadow-[inset_0_1px_0_rgb(255_255_255/0.25)] hover:brightness-110"
-                  : "bg-surface-3/45 text-ink-3",
-              )}
+              disabledReason={!canSend ? "先输入内容再发送" : undefined}
+              aria-label="发送"
+              className="size-7 gap-0 p-0"
             >
               <ArrowUp className="size-3.5" />
-            </button>
+            </Button>
           )}
         </div>
       </div>
