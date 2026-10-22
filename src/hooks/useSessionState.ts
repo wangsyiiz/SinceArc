@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { messagesLoad } from "@/lib/ipc";
 import { isWrite } from "@/lib/format";
+import { mergeMessages, minSeq } from "@/lib/messages-merge";
 import { clog } from "@/lib/log";
 import type { Message, SessionState } from "@/types";
 
@@ -14,11 +15,27 @@ export const emptySession = (): SessionState => ({
 
 export type PatchSession = (sid: string, fn: (s: SessionState) => SessionState) => void;
 
+export interface PageState {
+  hasMore: boolean;
+  oldestSeq: number | null;
+  loadingOlder: boolean;
+}
+
 export function useSessionState(lastSessionId: string) {
   const [sessionState, setSessionState] = useState<Record<string, SessionState>>({});
+  const [pages, setPages] = useState<Record<string, PageState>>({});
+  /** 同步读的分页状态：滚动回调连续触发时不能等 React 下一次渲染 */
+  const pageRef = useRef<Record<string, PageState>>({});
+  /** 每个会话已加载消息的 seq，翻页游标与合并排序都从这里取 */
+  const seqBySession = useRef<Record<string, Record<string, number>>>({});
 
   const patchSession = useCallback((sid: string, fn: (s: SessionState) => SessionState) => {
     setSessionState((prev) => ({ ...prev, [sid]: fn(prev[sid] ?? emptySession()) }));
+  }, []);
+
+  const setPageState = useCallback((sid: string, next: PageState) => {
+    pageRef.current = { ...pageRef.current, [sid]: next };
+    setPages((prev) => ({ ...prev, [sid]: next }));
   }, []);
 
   /**
@@ -38,27 +55,111 @@ export function useSessionState(lastSessionId: string) {
     if (!sid) return;
     let alive = true;
     (async () => {
-      const rows = await messagesLoad(sid).catch(() => null);
-      if (!alive || rows === null) return;
-      const fromDb = rows.map((r) => r.payload as Message);
+      const page = await messagesLoad(sid).catch(() => null);
+      if (!alive || page === null) return;
+
+      const previousSeqs = seqBySession.current[sid] ?? {};
+      const previousOldest = minSeq(previousSeqs);
+      const firstSeq = page.messages[0]?.seq ?? null;
+      // 已翻出更早页时，最新页的 hasMore 只说明「最新页之前还有」，
+      // 不能覆盖更老游标上的真实状态。
+      const olderAlreadyLoaded =
+        previousOldest !== null && firstSeq !== null && previousOldest < firstSeq;
+      const previousPage = pageRef.current[sid];
+      const nextSeqs = { ...previousSeqs };
+      for (const row of page.messages) nextSeqs[row.id] = row.seq;
+      seqBySession.current[sid] = nextSeqs;
+      const fromDb = page.messages.map((r) => r.payload as Message);
+
       setSessionState((prev) => {
         const cur = prev[sid] ?? emptySession();
-        const inDb = new Set(fromDb.map((m) => m.id));
-        const live = cur.msgs.filter((m) => !inDb.has(m.id));
-        clog("LOAD", `ui=${sid} db=${fromDb.length} live=${live.length}`);
-        return { ...prev, [sid]: { ...cur, msgs: [...fromDb, ...live] } };
+        const merged = mergeMessages(cur.msgs, fromDb, nextSeqs);
+        clog(
+          "LOAD",
+          `ui=${sid} page=${fromDb.length} total=${merged.length} before=${firstSeq ?? "-"}`,
+        );
+        return { ...prev, [sid]: { ...cur, msgs: merged } };
+      });
+
+      setPageState(sid, {
+        hasMore: olderAlreadyLoaded
+          ? (previousPage?.hasMore ?? page.hasMore)
+          : page.hasMore,
+        oldestSeq: minSeq(nextSeqs),
+        loadingOlder: false,
       });
     })();
     return () => {
       alive = false;
     };
-  }, [lastSessionId]);
+  }, [lastSessionId, setPageState]);
 
   const state = sessionState[lastSessionId] ?? emptySession();
+  const currentPage = pages[lastSessionId];
+  const hasMore = !!currentPage?.hasMore;
+  const loadingOlder = !!currentPage?.loadingOlder;
+
+  const loadOlder = useCallback(async () => {
+    const sid = lastSessionId;
+    if (!sid) return;
+    const current = pageRef.current[sid];
+    if (!current?.hasMore || current.loadingOlder) return;
+
+    const beforeSeq = minSeq(seqBySession.current[sid] ?? {});
+    if (beforeSeq === null) {
+      setPageState(sid, { ...current, hasMore: false, loadingOlder: false });
+      return;
+    }
+
+    setPageState(sid, { ...current, loadingOlder: true });
+    const page = await messagesLoad(sid, { beforeSeq }).catch((e) => {
+      clog("PAGE-ERR", `ui=${sid} before=${beforeSeq} ${String(e)}`);
+      return null;
+    });
+    if (!page) {
+      const latest = pageRef.current[sid] ?? current;
+      setPageState(sid, { ...latest, loadingOlder: false });
+      return;
+    }
+
+    const nextSeqs = { ...(seqBySession.current[sid] ?? {}) };
+    for (const row of page.messages) nextSeqs[row.id] = row.seq;
+    seqBySession.current[sid] = nextSeqs;
+    const older = page.messages.map((r) => r.payload as Message);
+
+    setSessionState((prev) => {
+      const cur = prev[sid] ?? emptySession();
+      const existing = new Set(cur.msgs.map((m) => m.id));
+      // 全是重复 id 时保持原数组引用，避免触发「新消息滚到底」等副作用。
+      if (!older.some((m) => !existing.has(m.id))) return prev;
+      const merged = mergeMessages(cur.msgs, older, nextSeqs);
+      clog(
+        "PAGE",
+        `ui=${sid} before=${beforeSeq} added=${older.length} total=${merged.length}`,
+      );
+      return { ...prev, [sid]: { ...cur, msgs: merged } };
+    });
+
+    setPageState(sid, {
+      hasMore: page.hasMore,
+      oldestSeq: minSeq(nextSeqs),
+      loadingOlder: false,
+    });
+  }, [lastSessionId, setPageState]);
+
   const writeLock = state.acts.find((a) => a.status === "running" && isWrite(a)) ?? null;
   const initSession = useCallback((id: string) => {
     setSessionState((prev) => ({ ...prev, [id]: emptySession() }));
   }, []);
 
-  return { state, patchSession, writeLock, initSession, sessionState };
+  return {
+    state,
+    patchSession,
+    writeLock,
+    initSession,
+    sessionState,
+    hasMore,
+    loadOlder,
+    loadingOlder,
+  };
 }

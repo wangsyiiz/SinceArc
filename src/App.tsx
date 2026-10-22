@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ActivityRail } from "@/components/ActivityRail";
 import { Composer } from "@/components/Composer";
 import { EmptyState } from "@/components/EmptyState";
@@ -80,6 +80,13 @@ export default function App() {
   const [permOpen, setPermOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  const scrollAnchorRef = useRef<{
+    sessionId: string;
+    height: number;
+    top: number;
+    firstId: string | null;
+  } | null>(null);
+  const skipBottomScrollRef = useRef(false);
   /**
    * 底部浮层的实际高度。消息列表要留出这么多空间，否则最后一条会被输入框盖住 ——
    * 以前这里写死 `pb-32`（128px），输入框一高过 128px（多行输入、权限提示条、
@@ -140,7 +147,8 @@ export default function App() {
 
   const { sessions, setSessions, reload: reloadSessions } = useSessionList();
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
-  const { state, patchSession, writeLock, initSession, sessionState } = useSessionState(lastSessionId);
+  const { state, patchSession, writeLock, initSession, sessionState, hasMore, loadOlder, loadingOlder } =
+    useSessionState(lastSessionId);
 
   /** 重新读当前群的成员：换群、加入、移出都走它 */
   const reloadMembers = useCallback(() => {
@@ -234,11 +242,57 @@ export default function App() {
       )?.name ?? sessionProfile.defaultMode)
     : null;
 
+  const requestOlder = useCallback(() => {
+    if (!hasMore || loadingOlder) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    // 记录本次翻页前的真实布局，等新历史进入 DOM 后按差值补偿。
+    scrollAnchorRef.current = {
+      sessionId: lastSessionId,
+      height: el.scrollHeight,
+      top: el.scrollTop,
+      firstId: state.msgs[0]?.id ?? null,
+    };
+    void loadOlder();
+  }, [hasMore, lastSessionId, loadOlder, loadingOlder, state.msgs]);
+
+  const handleMessageScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || !hasMore || loadingOlder) return;
+    if (el.scrollTop <= 24) requestOlder();
+  }, [hasMore, loadingOlder, requestOlder]);
+
+  useLayoutEffect(() => {
+    const anchor = scrollAnchorRef.current;
+    const el = scrollRef.current;
+    if (!anchor || !el) return;
+    if (anchor.sessionId !== lastSessionId) {
+      scrollAnchorRef.current = null;
+      return;
+    }
+
+    const firstId = state.msgs[0]?.id ?? null;
+    if (firstId === anchor.firstId) {
+      if (!loadingOlder) scrollAnchorRef.current = null;
+      return;
+    }
+
+    const delta = el.scrollHeight - anchor.height;
+    if (delta !== 0) el.scrollTop = anchor.top + delta;
+    // 这次 DOM 变化是前插旧消息，不能让下面的“新消息滚到底”覆盖补偿结果。
+    skipBottomScrollRef.current = true;
+    scrollAnchorRef.current = null;
+  }, [lastSessionId, loadingOlder, state.msgs]);
+
   /**
    * 新消息到了就滚到底。以前只设一次 `scrollTop`，字体/图片/长表格量完高度往往晚一帧，
    * 结果停在中间偏上（表现为「最后一条看不见」）。改成下一帧再补一次。
    */
   useEffect(() => {
+    if (skipBottomScrollRef.current) {
+      skipBottomScrollRef.current = false;
+      return;
+    }
     let raf2 = 0;
     const raf1 = requestAnimationFrame(() => {
       raf2 = requestAnimationFrame(() => {
@@ -677,11 +731,24 @@ export default function App() {
                   }
                 />
                 <div className="relative min-h-0 flex-1">
-                  <div ref={scrollRef} className="h-full overflow-y-auto">
+                  <div
+                    ref={scrollRef}
+                    onScroll={handleMessageScroll}
+                    className="h-full overflow-y-auto"
+                  >
                     <div
                       className="sc-selectable mx-auto flex max-w-3xl flex-col gap-3.5 px-4 pt-4"
                       style={{ paddingBottom: composerH + 16 }}
                     >
+                      {hasMore && (
+                        <button
+                          type="button"
+                          onClick={requestOlder}
+                          className="mx-auto rounded-md px-2 py-1 text-[11px] text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-2"
+                        >
+                          {loadingOlder ? "正在加载更早消息…" : "加载更早"}
+                        </button>
+                      )}
                       {state.msgs.length === 0 ? (
                         <div className="py-12">
                           <EmptyState
