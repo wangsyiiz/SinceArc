@@ -73,12 +73,14 @@
 
   /* 字号（§1.6） */
   --fs-caption: 11px;
+  --fs-ui-tight: 11.5px;
   --fs-small: 12px;
   --fs-ui: 13px;
   --fs-body: 14px;
   --fs-lead: 16px;
   --fs-title: 20px;
   --lh-caption: 16px;
+  --lh-ui-tight: 16px;
   --lh-small: 18px;
   --lh-ui: 20px;
   --lh-body: 22px;
@@ -175,6 +177,10 @@
   /* 字号（§1.6）：text-caption / text-small / text-ui / text-body / text-lead / text-title */
   --text-caption: var(--fs-caption);
   --text-caption--line-height: var(--lh-caption);
+  /* 紧凑行里的标题与正文（菜单项、会话标题、字段值、Tab 标签）——11.5 这一档是存量界面
+     一直在用的尺寸，提成正式档而不是继续写 text-[11.5px] */
+  --text-ui-tight: var(--fs-ui-tight);
+  --text-ui-tight--line-height: var(--lh-ui-tight);
   --text-small: var(--fs-small);
   --text-small--line-height: var(--lh-small);
   --text-ui: var(--fs-ui);

@@ -36,6 +36,7 @@ export function MoreMenu({
       align="end"
       compact
       triggerVariant="ghost"
+      itemSize="caption"
       className={cn("size-6 p-0 text-ink-3 hover:text-ink-1", className)}
       trigger={<MoreHorizontal size={iconSize} aria-hidden="true" />}
       items={items.map((item, index) => ({

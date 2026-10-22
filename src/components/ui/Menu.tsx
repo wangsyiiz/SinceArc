@@ -30,6 +30,11 @@ export interface MenuProps {
    *   只靠 hover 面与字色变化 —— 暗色下多一圈 1px 框就是规范禁止的那种「用边框分界」。
    */
   triggerVariant?: "control" | "ghost";
+  /**
+   * 菜单项字号：默认 `ui-tight`（11.5，与存量菜单一致）。
+   * 单行短语的图标菜单（如会话条目上的 ⋯）用 `caption`（11）。
+   */
+  itemSize?: "caption" | "ui-tight";
   disabled?: boolean;
   disabledReason?: string;
   className?: string;
@@ -157,6 +162,7 @@ export function Menu({
   align = "start",
   compact = false,
   triggerVariant = "control",
+  itemSize = "ui-tight",
   disabled = false,
   disabledReason,
   className,
@@ -225,7 +231,7 @@ export function Menu({
           triggerVariant === "ghost"
             ? cn(
                 "text-ink-2 hover:bg-surface-3 hover:text-ink-1",
-                compact ? "h-7 px-2 text-caption" : "h-8 px-2.5 text-small",
+                compact ? "h-7 px-2 text-caption" : "h-8 px-2.5 text-ui-tight",
                 open && "bg-surface-3 text-ink-1",
               )
             : cn(
@@ -273,7 +279,7 @@ export function Menu({
               }}
               className={cn(
                 "flex w-full items-start gap-2 rounded-mark px-2 py-1.5 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1",
-                compact ? "text-caption" : "text-small",
+                itemSize === "caption" ? "text-caption" : "text-ui-tight",
                 item.disabled
                   ? "cursor-not-allowed opacity-45"
                   : item.danger
