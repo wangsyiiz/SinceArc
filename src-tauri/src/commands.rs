@@ -689,6 +689,48 @@ pub async fn ipc_subscribe(
     Ok(())
 }
 
+/// 把一条 ACP 消息落成轨迹事件（思考 / 工具调用 / 权限 / 模式 / 用量）。
+///
+/// 三个「不落」的条件都是有意的：
+/// 1. 不是轨迹类消息（`agent_message_chunk` 是对话正文，走 messages）；
+/// 2. 当前没有活动轮次 —— 那是 `session/load` 的重放，不是这一轮的历史；
+/// 3. 没有界面会话归属 —— 落下去就是孤儿行，谁也没法看。
+async fn record_trace(
+    db: &Arc<db::Db>,
+    routes: &crate::state::Routes,
+    turns: &crate::state::Turns,
+    method: &str,
+    params: &serde_json::Value,
+) {
+    let Some(captured) = crate::trace::parse(method, params) else {
+        return;
+    };
+    let Some(acp_sid) = params.get("sessionId").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    let Some(turn_id) = turns.current(acp_sid).await else {
+        return;
+    };
+    let Some(record) = routes.get(acp_sid).await else {
+        return;
+    };
+    let Some(ui_sid) = record.ui_session_id.clone() else {
+        return;
+    };
+    let input = db::EventInput {
+        turn_id,
+        author_id: record.author_id.clone(),
+        kind: captured.kind.to_string(),
+        payload_json: captured.payload.to_string(),
+        source: "live".to_string(),
+        truncated: captured.truncated,
+    };
+    if let Err(e) = db.append_events(&ui_sid, &[input]) {
+        // 轨迹落库失败不能影响这一轮对话，但必须留痕（否则就是「轨迹莫名少一段」）
+        tracing::warn!(target: "sincearc::trace", error = %e, "轨迹落库失败");
+    }
+}
+
 #[tauri::command]
 pub async fn agent_connect(
     state: State<'_, AppState>,
@@ -724,6 +766,9 @@ pub async fn agent_connect(
     let profile_for_task = id.clone();
     // 归属表：事件该投给哪个界面会话，完全由后端记录决定（前端不再猜「当前会话」）
     let routes = state.routes.clone();
+    // 轨迹采集：事件落地需要库和「这一轮是谁」——两者都在 task 外面，clone 进去
+    let db_for_trace = state.db.clone();
+    let turns_for_trace = state.turns.clone();
     tokio::spawn(async move {
         /// 从 ACP 原始消息里取 sessionId，再按归属表补上界面会话与作者
         async fn route(
@@ -747,6 +792,14 @@ pub async fn agent_connect(
             let payload = match msg {
                 transport::Incoming::Notification { method, params } => {
                     tracing::debug!(target: "sincearc::acp", %method, "notification");
+                    record_trace(
+                        &db_for_trace,
+                        &routes,
+                        &turns_for_trace,
+                        &method,
+                        &params,
+                    )
+                    .await;
                     let (session_id, ui_session_id, author_id) = route(&routes, &params).await;
                     AcpEvent::Notification {
                         method,
@@ -777,6 +830,16 @@ pub async fn agent_connect(
                             .await;
                         continue;
                     }
+                    // 权限请求本身也是轨迹的一部分（用户要能事后查到「当时授权了什么」；
+                    // 聊天正文里已不再写「权限决定」这类系统消息）
+                    record_trace(
+                        &db_for_trace,
+                        &routes,
+                        &turns_for_trace,
+                        &method,
+                        &params,
+                    )
+                    .await;
                     // 只有登记过的 id 才允许被回答（见 agent_respond_request）
                     pending.mark(&profile_for_task, id).await;
                     let (session_id, ui_session_id, author_id) = route(&routes, &params).await;
@@ -1208,8 +1271,13 @@ pub async fn session_prompt(
     );
 
     let sid = session_id.clone();
+    // 一轮 = 一次 prompt。轨迹事件靠 turn id 归轮，prompt 之外收到的一律不落库。
+    let turn_id = format!("turn-{}", crate::trace::now_ms());
+    state.turns.start(&sid, &turn_id).await;
+    let turns = state.turns.clone();
     let bus = state.bus.clone();
     let profile_id = record.profile_id.clone();
+    let sid_for_trace = sid.clone();
     let proc = handle.proc.clone();
     // 这三个事件必须自带归属：推送时前端可能已经切到别的会话，
     // 「当前打开的那个」不是判断依据。
@@ -1240,6 +1308,7 @@ pub async fn session_prompt(
             Ok(result) => {
                 tracing::info!(target: "sincearc::ipc", session = %sid, stop = ?result.get("stopReason"), "prompt finished");
                 tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptResult");
+                turns.end(&sid_for_trace).await;
                 bus.emit_json(
                     "acp.prompt.result",
                     true,
@@ -1255,6 +1324,7 @@ pub async fn session_prompt(
             Err(e) => {
                 tracing::warn!(target: "sincearc::ipc", session = %sid, error = %e, "prompt failed");
                 tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptFailed");
+                turns.end(&sid_for_trace).await;
                 bus.emit_json(
                     "acp.prompt.failed",
                     true,

@@ -39,6 +39,30 @@ pub struct SessionRow {
     pub updated_at: i64,
 }
 
+/// 一条待落库的轨迹事件（已由 `trace` 解析、截断）。
+pub struct EventInput {
+    pub turn_id: String,
+    pub author_id: Option<String>,
+    pub kind: String,
+    pub payload_json: String,
+    pub source: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventRow {
+    pub id: String,
+    pub seq: i64,
+    pub at: i64,
+    pub turn_id: String,
+    pub author_id: Option<String>,
+    pub kind: String,
+    pub payload_json: String,
+    pub source: String,
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageRow {
@@ -431,7 +455,76 @@ impl Db {
         tx.commit()
     }
 
-    /// 最近 limit 条，按 seq 升序返回
+    /* ---------------- session_events（轨迹源数据） ---------------- */
+
+    /// 追加轨迹事件。seq 由库按会话自增，保证顺序与重启后一致。
+    ///
+    /// 只做存储：哪些事件算轨迹、怎么截断，由 `trace` 模块决定（见 architecture §6.1）。
+    pub fn append_events(
+        &self,
+        session_id: &str,
+        events: &[EventInput],
+    ) -> rusqlite::Result<usize> {
+        if events.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn.lock().expect("db poisoned");
+        let tx = conn.transaction()?;
+        let mut seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM session_events WHERE session_id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        )?;
+        let at = now();
+        for e in events {
+            seq += 1;
+            tx.execute(
+                "INSERT INTO session_events
+                   (id, session_id, turn_id, seq, at, author_id, kind, payload_json, source, truncated)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    format!("{session_id}-{seq}"),
+                    session_id,
+                    e.turn_id,
+                    seq,
+                    at,
+                    e.author_id,
+                    e.kind,
+                    e.payload_json,
+                    e.source,
+                    e.truncated as i64,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(events.len())
+    }
+
+    pub fn load_events(&self, session_id: &str, limit: i64) -> rusqlite::Result<Vec<EventRow>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, seq, at, turn_id, author_id, kind, payload_json, source, truncated
+               FROM session_events WHERE session_id = ?1
+              ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![session_id, limit], |r| {
+                Ok(EventRow {
+                    id: r.get(0)?,
+                    seq: r.get(1)?,
+                    at: r.get(2)?,
+                    turn_id: r.get(3)?,
+                    author_id: r.get(4)?,
+                    kind: r.get(5)?,
+                    payload_json: r.get(6)?,
+                    source: r.get(7)?,
+                    truncated: r.get::<_, i64>(8)? != 0,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn load_messages(&self, session_id: &str, limit: i64) -> rusqlite::Result<Vec<MessageRow>> {
         let conn = self.conn.lock().expect("db poisoned");
         let mut stmt = conn.prepare(
@@ -924,4 +1017,42 @@ mod tests {
         assert!(db.load_messages("s-1", 50).expect("load").is_empty());
         std::fs::remove_file(&path).ok();
     }
+
+    #[test]
+    fn events_are_appended_in_order_and_die_with_the_session() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+
+        let ev = |kind: &str, turn: &str| EventInput {
+            turn_id: turn.into(),
+            author_id: None,
+            kind: kind.into(),
+            payload_json: r#"{"text":"x"}"#.into(),
+            source: "live".into(),
+            truncated: false,
+        };
+        db.append_events("s-1", &[ev("thought", "t1")]).expect("e1");
+        db.append_events(
+            "s-1",
+            &[ev("tool_call", "t1"), ev("permission", "t2")],
+        )
+        .expect("e2");
+
+        let rows = db.load_events("s-1", 50).expect("load");
+        // 倒序返回：最新的在前
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].seq, 3);
+        assert_eq!(rows[0].kind, "permission");
+        assert_eq!(rows[0].turn_id, "t2");
+        assert_eq!(rows[2].seq, 1);
+        assert_eq!(rows[2].kind, "thought");
+
+        // 删会话要连轨迹一起删：否则库里留下没人能看的孤儿行
+        db.delete_session("s-1").expect("delete");
+        assert!(db.load_events("s-1", 50).expect("load2").is_empty());
+
+        std::fs::remove_file(&path).ok();
+    }
+
 }

@@ -36,6 +36,33 @@ pub struct SessionRecord {
     pub author_id: Option<String>,
 }
 
+/// ACP 会话 → 当前这一轮的 turn id。
+///
+/// 轨迹事件必须挂在「那一轮」下面；没有活动轮次时收到的事件是 `session/load` 的重放，
+/// 或者别的窗口发起的，不该冒充我们这一轮的历史（前端已经在丢 `DROP-REPLAY`，
+/// 落库这层也要一致地跳过）。
+#[derive(Default)]
+pub struct Turns {
+    inner: Mutex<HashMap<String, String>>,
+}
+
+impl Turns {
+    pub async fn start(&self, acp_session_id: &str, turn_id: &str) {
+        self.inner
+            .lock()
+            .await
+            .insert(acp_session_id.to_string(), turn_id.to_string());
+    }
+
+    pub async fn current(&self, acp_session_id: &str) -> Option<String> {
+        self.inner.lock().await.get(acp_session_id).cloned()
+    }
+
+    pub async fn end(&self, acp_session_id: &str) {
+        self.inner.lock().await.remove(acp_session_id);
+    }
+}
+
 pub struct AppState {
     /// 全局事件总线：所有域的出站事件都从这里走（wire.rs）。
     pub bus: Arc<crate::wire::EventBus>,
@@ -48,6 +75,8 @@ pub struct AppState {
     modes: Mutex<HashMap<String, SessionModes>>,
     /// 等用户回答的 agent 请求（目前只有 session/request_permission）
     pub pending: PendingRequests,
+    /// 每个 ACP 会话当前这一轮的 id（轨迹事件靠它归轮）
+    pub turns: Arc<Turns>,
     /// 配置与会话记账（同步 SQLite，操作都是毫秒级，直接锁用）
     pub db: Arc<crate::db::Db>,
 }
@@ -108,6 +137,7 @@ impl AppState {
             routes: Routes::default(),
             modes: Mutex::new(HashMap::new()),
             pending: PendingRequests::default(),
+            turns: Arc::new(Turns::default()),
             db: Arc::new(db),
         }
     }

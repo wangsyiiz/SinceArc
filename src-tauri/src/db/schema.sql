@@ -104,3 +104,27 @@ CREATE TABLE IF NOT EXISTS session_members (
   added_at   INTEGER NOT NULL,
   PRIMARY KEY (session_id, user_id)
 );
+
+-- 轨迹事件（思考 / 工具调用 / 权限 / 用量）：**源数据**，轨迹图由后端按需聚合，不在这里存。
+-- 为什么自己记一份：ACP 没有「读历史」的标准方法，只有 session/load 的重放副作用；
+-- 重放要起进程、思考还会残缺，也给不出发生时间。详见 docs/ipc-contract.md §7。
+CREATE TABLE IF NOT EXISTS session_events (
+  id           TEXT PRIMARY KEY,
+  session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  -- 一轮对话：与 messages 里那轮的提问/回答对齐（由 session_prompt 起算）
+  turn_id      TEXT NOT NULL,
+  seq          INTEGER NOT NULL,
+  -- 我们记下的发生时刻（agent 侧没有时间戳，只有到达顺序）
+  at           INTEGER NOT NULL,
+  -- 谁做的：群成员 id；主 agent 为 NULL
+  author_id    TEXT,
+  kind         TEXT NOT NULL CHECK (kind IN (
+                 'thought', 'tool_call', 'tool_call_update', 'permission', 'usage', 'mode')),
+  -- 结构化摘要 + 原始字段；单行上限 64KB，思考正文只留前 8KB（truncated=1 时界面要标注）
+  payload_json TEXT NOT NULL,
+  -- live = 实时采集；replay = 事后用 session/load 补录（不作实时数据源）
+  source       TEXT NOT NULL DEFAULT 'live' CHECK (source IN ('live', 'replay')),
+  truncated    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id, seq);
