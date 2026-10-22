@@ -281,16 +281,16 @@ export function TracePanel({
     >
       <div style={{ width }} className="sc-pane flex h-full flex-col overflow-hidden">
         <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line-1/60 px-3">
-          <span className="text-[11.5px] font-medium text-ink-1">轨迹</span>
-          <span className="font-mono text-[9.5px] text-ink-3">
+          <span className="text-ui-tight font-medium text-ink-1">轨迹</span>
+          <span className="font-mono text-micro text-ink-3">
             {turns.length} 轮 · {actionCount} 动作
           </span>
-          <div className="ml-auto flex items-center gap-0.5 rounded-[5px] bg-surface-3/35 p-0.5">
+          <div className="ml-auto flex items-center gap-0.5 rounded-mark bg-surface-3/35 p-0.5">
             <button
               onClick={() => setView("graph")}
               title="图形"
               className={cn(
-                "grid size-5 place-items-center rounded-[4px] transition-colors",
+                "grid size-5 place-items-center rounded-mark transition-colors",
                 view === "graph" ? "bg-surface-3/85 text-ink-1" : "text-ink-3 hover:text-ink-2",
               )}
             >
@@ -300,7 +300,7 @@ export function TracePanel({
               onClick={() => setView("list")}
               title="列表"
               className={cn(
-                "grid size-5 place-items-center rounded-[4px] transition-colors",
+                "grid size-5 place-items-center rounded-mark transition-colors",
                 view === "list" ? "bg-surface-3/85 text-ink-1" : "text-ink-3 hover:text-ink-2",
               )}
             >
@@ -309,21 +309,21 @@ export function TracePanel({
           </div>
           <button
             onClick={onClose}
-            className="ml-1 grid size-6 place-items-center rounded-[6px] text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-1"
+            className="ml-1 grid size-6 place-items-center rounded-mark text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-1"
           >
             <X className="size-3.5" />
           </button>
         </header>
 
         {/* design-language §11：主动截断/清理的数据必须在界面上讲清楚，否则看起来像 bug */}
-        <div className="shrink-0 border-b border-line-1/40 px-3 py-1 text-[9.5px] leading-relaxed text-ink-3">
+        <div className="shrink-0 border-b border-line-1/40 px-3 py-1 text-micro leading-relaxed text-ink-3">
           思考过程只保留开头 8KB；轨迹保留 90 天（最多 5 万条），超出会自动清理。
         </div>
 
         {view === "list" && (
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1">
             {activities.length === 0 && (
-              <div className="py-8 text-center text-[11px] text-ink-3">没有活动</div>
+              <div className="py-8 text-center text-caption text-ink-3">没有活动</div>
             )}
             {activities.map((a) => {
               const p = players.find((x) => x.id === a.playerId);
@@ -331,9 +331,9 @@ export function TracePanel({
               return (
                 <div
                   key={a.id}
-                  className="transition-colors duration-150 flex items-center gap-1.5 rounded-[5px] px-1 py-1 text-[11px] hover:bg-surface-2/50"
+                  className="transition-colors duration-150 flex items-center gap-1.5 rounded-mark px-1 py-1 text-caption hover:bg-surface-2/50"
                 >
-                  <span className="w-7 shrink-0 font-mono text-[9px] text-ink-3">{a.at}</span>
+                  <span className="w-7 shrink-0 font-mono text-micro text-ink-3">{a.at}</span>
                   {p && (
                     <span
                       className="size-1.5 shrink-0 rounded-full"
@@ -344,7 +344,7 @@ export function TracePanel({
                   <Icon className="size-2.5 shrink-0 text-ink-3" />
                   <span className="shrink-0 text-ink-2">{a.title}</span>
                   {a.detail && (
-                    <span className="min-w-0 truncate font-mono text-[9.5px] text-ink-3">
+                    <span className="min-w-0 truncate font-mono text-micro text-ink-3">
                       {a.detail}
                     </span>
                   )}
@@ -366,10 +366,10 @@ export function TracePanel({
         {view === "graph" && (
         <div className="min-h-0 flex-1 overflow-y-auto">
           {rows.length === 0 && (
-            <div className="px-4 py-10 text-center text-[11px] leading-relaxed text-ink-3">
+            <div className="px-4 py-10 text-center text-caption leading-relaxed text-ink-3">
               这个会话还没有轨迹
               <br />
-              <span className="text-[10px]">@ 一个玩家开始</span>
+              <span className="text-micro">@ 一个玩家开始</span>
             </div>
           )}
           <div className="flex">
@@ -424,22 +424,22 @@ export function TracePanel({
                   >
                     {r.kind === "user" ? (
                       <>
-                        <span className="shrink-0 font-mono text-[9px] text-ink-3">{r.at}</span>
-                        <span className="truncate text-[11px]">{r.title}</span>
+                        <span className="shrink-0 font-mono text-micro text-ink-3">{r.at}</span>
+                        <span className="truncate text-caption">{r.title}</span>
                       </>
                     ) : r.kind === "reply" ? (
                       <span className="flex min-w-0 items-baseline gap-1.5">
-                        <span className="shrink-0 text-[10.5px] font-medium" style={{ color: r.color }}>
+                        <span className="shrink-0 text-caption font-medium" style={{ color: r.color }}>
                           {r.playerName}
                         </span>
-                        <span className="truncate text-[11px] text-ink-2">{r.meta ?? "回复"}</span>
+                        <span className="truncate text-caption text-ink-2">{r.meta ?? "回复"}</span>
                       </span>
                     ) : (
                       <>
                         {Icon && <Icon className="size-2.5 shrink-0 text-ink-3" />}
-                        <span className="truncate text-[11px]">{r.title}</span>
+                        <span className="truncate text-caption">{r.title}</span>
                         {r.meta && (
-                          <span className="min-w-0 truncate font-mono text-[9.5px] text-ink-3">{r.meta}</span>
+                          <span className="min-w-0 truncate font-mono text-micro text-ink-3">{r.meta}</span>
                         )}
                         {r.status === "running" && (
                           <span
@@ -457,7 +457,7 @@ export function TracePanel({
         </div>
         )}
 
-        <footer className="shrink-0 border-t border-line-1/60 px-3 py-2 text-[9.5px] leading-relaxed text-ink-3">
+        <footer className="shrink-0 border-t border-line-1/60 px-3 py-2 text-micro leading-relaxed text-ink-3">
           主干是你的时间轴；一轮里被 @ 的玩家各开一条支线并行跑，答完弯回主干，虚线头表示还在答。
         </footer>
       </div>

@@ -43,7 +43,8 @@ export function ActivityRail({
               "relative grid size-7 place-items-center rounded-full transition-opacity",
               selected ? "ring-2 ring-offset-2 ring-offset-transparent" : "opacity-80 hover:opacity-100",
             )}
-            style={selected ? { boxShadow: `0 0 0 2px ${p.color}66` } : undefined}
+            /* 同上：颜色可能是 CSS 变量，只能走 color-mix，不能拼 hex 后缀 */
+            style={selected ? { boxShadow: `0 0 0 2px color-mix(in srgb, ${p.color} 40%, transparent)` } : undefined}
           >
             <PlayerAvatar player={p} size={24} />
             {running && (

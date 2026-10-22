@@ -4,15 +4,6 @@
  * 每条注明归属（哪个组件、为什么暂时留着），P2 逐个清。
  */
 export const ALLOWED: Record<string, { rule: string; count: number; why: string }[]> = {
-  "App.tsx": [
-    { rule: "arbitrary-value", count: 6, why: "P2 收敛停止提示与输入浮层的尺寸/字号" },
-    { rule: "color-literal", count: 1, why: "P2 把主 agent 颜色改为令牌" },
-    {
-      rule: "glass-border-kill",
-      count: 3,
-      why: "通知条上的 border-0：暗色看不出差别，浅色会丢掉浮层边界。P2b2 清 App.tsx 时一起删",
-    },
-  ],
   "components/AgentCapabilities.tsx": [
     { rule: "arbitrary-value", count: 16, why: "P2 能力徽标尺寸与字号收敛" },
   ],
@@ -41,9 +32,6 @@ export const ALLOWED: Record<string, { rule: string; count: number; why: string 
   "components/Sidebar.tsx": [
     { rule: "arbitrary-value", count: 29, why: "P2 侧栏行高与字号收敛" },
     { rule: "outline-none", count: 1, why: "P2 搜索框补可替代的焦点样式" },
-  ],
-  "components/TracePanel.tsx": [
-    { rule: "arbitrary-value", count: 21, why: "P2 轨迹面板尺寸与字号收敛" },
   ],
   "mock/data.ts": [
     { rule: "color-literal", count: 3, why: "P2 mock 玩家颜色改为令牌" },
