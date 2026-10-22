@@ -861,6 +861,32 @@ impl Db {
         Ok(rows)
     }
 
+    /// 该会话最后一条 usage 事件。`session_events.session_id` 存的是 UI 会话 id。
+    ///
+    /// 这条查询只服务于「重启/切回会话时先显示最后一次真实占用」；轨迹面板不消费 usage。
+    pub fn latest_usage(
+        &self,
+        session_id: &str,
+    ) -> rusqlite::Result<Option<(serde_json::Value, Option<String>)>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let row = conn
+            .query_row(
+                "SELECT payload_json, author_id
+                   FROM session_events
+                  WHERE session_id = ?1 AND kind = 'usage'
+                  ORDER BY at DESC, rowid DESC LIMIT 1",
+                params![session_id],
+                |r| {
+                    let payload: String = r.get(0)?;
+                    let value =
+                        serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null);
+                    Ok((value, r.get(1)?))
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
     pub fn load_messages(&self, session_id: &str, limit: i64) -> rusqlite::Result<Vec<MessageRow>> {
         let conn = self.conn.lock().expect("db poisoned");
         let mut stmt = conn.prepare(

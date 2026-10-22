@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { messagesLoad } from "@/lib/ipc";
+import { messagesLoad, sessionUsage } from "@/lib/ipc";
 import { mergeMessages, minSeq } from "@/lib/messages-merge";
 import { clog } from "@/lib/log";
 import type { Message, SessionState } from "@/types";
@@ -11,6 +11,7 @@ export const emptySession = (): SessionState => ({
   busy: false,
   pendingPerm: null,
   locks: {},
+  usage: null,
 });
 
 export type PatchSession = (sid: string, fn: (s: SessionState) => SessionState) => void;
@@ -55,8 +56,27 @@ export function useSessionState(lastSessionId: string) {
     if (!sid) return;
     let alive = true;
     (async () => {
-      const page = await messagesLoad(sid).catch(() => null);
-      if (!alive || page === null) return;
+      const [page, usage] = await Promise.all([
+        messagesLoad(sid).catch(() => null),
+        sessionUsage(sid).catch(() => null),
+      ]);
+      if (!alive) return;
+
+      // usage 与消息并行读；即使消息页失败，也先把最后一次真实占用显示出来。
+      if (usage) {
+        setSessionState((prev) => {
+          const cur = prev[sid] ?? emptySession();
+          return {
+            ...prev,
+            [sid]: {
+              ...cur,
+              usage: { used: usage.used, size: usage.size, percent: usage.percent },
+            },
+          };
+        });
+      }
+
+      if (page === null) return;
 
       const previousSeqs = seqBySession.current[sid] ?? {};
       const previousOldest = minSeq(previousSeqs);

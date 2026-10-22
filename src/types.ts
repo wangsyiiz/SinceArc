@@ -207,6 +207,8 @@ export interface SessionState {
    * 用映射而不是单个槽位，是因为多个 agent 可能同时在写。
    */
   locks?: Record<string, { playerId: string | null; title: string; count: number }>;
+  /** ACP 报上来的真实上下文占用；null = 这个会话还没收到过 usage。 */
+  usage?: { used: number; size: number; percent: number } | null;
 }
 
 /* ---------- 设置 ---------- */
