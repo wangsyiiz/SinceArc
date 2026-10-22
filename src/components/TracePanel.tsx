@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AlignLeft, FileText, PencilLine, Play, Search, Sparkles, ShieldAlert, Waypoints, X } from "lucide-react";
 import type { Activity, ActivityKind, Player, TraceTurn } from "@/types";
 import { cn } from "@/lib/utils";
+import { useHoverCard } from "./ui/HoverCard";
 
 const ROW = 34;
 const MAIN_X = 13;
@@ -150,7 +152,102 @@ const KIND_ICON: Record<ActivityKind, typeof FileText> = {
   permission: ShieldAlert,
 };
 
+function statusDotClass(status: TraceRow["status"]): string | undefined {
+  if (status === "ok") return "bg-ok-1/70";
+  if (status === "running") return "animate-pulse bg-accent-1";
+  if (status === "error") return "bg-danger-1";
+  if (status === "cancelled") return "bg-ink-3";
+  return undefined;
+}
+
+function HoverContent({ row }: { row: TraceRow }) {
+  const activity = row.activity;
+  const Icon = activity ? KIND_ICON[activity.kind] : Waypoints;
+  const text = activity?.body ?? activity?.detail ?? row.meta;
+
+  return (
+    <div>
+      <div className="flex items-start gap-2">
+        <Icon className="mt-0.5 size-3 shrink-0 text-ink-3" />
+        <div className="min-w-0 flex-1">
+          <div className="break-words text-caption font-medium text-ink-1">{row.title}</div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-micro text-ink-3">
+            {row.at && <span className="font-mono">{row.at}</span>}
+            {row.playerName && <span style={{ color: row.color }}>{row.playerName}</span>}
+            {row.status && (
+              <span
+                aria-hidden="true"
+                className={cn("size-1.5 shrink-0 rounded-full", statusDotClass(row.status))}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+      {text && (
+        <div className="mt-2 whitespace-pre-wrap break-words text-caption text-ink-2">{text}</div>
+      )}
+      {activity?.truncated && (
+        <div className="mt-2 text-micro text-ink-3">已截断，仅保留最早 8KB</div>
+      )}
+    </div>
+  );
+}
+
+function ActivityListRow({ activity, player }: { activity: Activity; player?: Player }) {
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  const hover = useHoverCard();
+  const Icon = KIND_ICON[activity.kind];
+  const row: TraceRow = {
+    id: activity.id,
+    x: 0,
+    y: 0,
+    kind: "activity",
+    title: activity.title,
+    meta: activity.detail ?? activity.meta,
+    at: activity.at,
+    color: player?.color ?? "var(--i3)",
+    status: activity.status,
+    activity,
+    playerName: player?.name,
+  };
+
+  return (
+    <>
+      <div
+        ref={setEl}
+        {...hover.triggerProps(el)}
+        className="transition-colors duration-150 flex items-center gap-1.5 rounded-mark px-1 py-1 text-caption hover:bg-surface-2/50"
+      >
+        <span className="w-7 shrink-0 font-mono text-micro text-ink-3">{activity.at}</span>
+        {player && (
+          <span
+            className="size-1.5 shrink-0 rounded-full"
+            style={{ background: player.color }}
+            title={player.name}
+          />
+        )}
+        <Icon className="size-2.5 shrink-0 text-ink-3" />
+        <span className="shrink-0 text-ink-2">{activity.title}</span>
+        {activity.detail && (
+          <span className="min-w-0 truncate font-mono text-micro text-ink-3">
+            {activity.detail}
+          </span>
+        )}
+        <span
+          className={cn(
+            "ml-auto size-1 shrink-0 rounded-full",
+            statusDotClass(activity.status),
+          )}
+        />
+      </div>
+      {hover.card(<HoverContent row={row} />)}
+    </>
+  );
+}
+
 function Mark({ row, focused, tick }: { row: TraceRow; focused: boolean; tick: number }) {
+  const [el, setEl] = useState<SVGGElement | null>(null);
+  const hover = useHoverCard();
   const k = row.activity?.kind ?? "read";
   const fill = row.status === "error" ? "var(--d1)" : row.color;
 
@@ -179,56 +276,62 @@ function Mark({ row, focused, tick }: { row: TraceRow; focused: boolean; tick: n
       />
     ) : null;
 
-  if (row.kind === "user") {
-    return (
+  const glyph =
+    row.kind === "user" ? (
       <>
         {halo}
         <circle cx={row.x} cy={row.y} r={3.6} fill="var(--i2)" />
       </>
-    );
-  }
-  if (row.kind === "reply") {
-    return (
+    ) : row.kind === "reply" ? (
       <>
         {halo}
         {pulse}
         <circle cx={row.x} cy={row.y} r={4.2} fill={fill} />
         <circle cx={row.x} cy={row.y} r={1.5} fill="var(--s0)" />
       </>
+    ) : (
+      <>
+        {halo}
+        {pulse}
+        {k === "edit" ? (
+          <rect x={row.x - 3.4} y={row.y - 3.4} width={6.8} height={6.8} rx={1.2} fill={fill} opacity={0.9} />
+        ) : k === "execute" ? (
+          <polygon
+            points={`${row.x},${row.y - 4} ${row.x + 3.8},${row.y + 3} ${row.x - 3.8},${row.y + 3}`}
+            fill={fill}
+            opacity={0.9}
+          />
+        ) : k === "permission" ? (
+          <polygon
+            points={`${row.x},${row.y - 4.4} ${row.x + 4.4},${row.y} ${row.x},${row.y + 4.4} ${row.x - 4.4},${row.y}`}
+            fill={fill}
+          />
+        ) : k === "thinking" ? (
+          <circle cx={row.x} cy={row.y} r={3.2} fill="var(--s0)" stroke={fill} strokeWidth={1.5} />
+        ) : k === "search" ? (
+          <circle
+            cx={row.x}
+            cy={row.y}
+            r={3}
+            fill="none"
+            stroke={fill}
+            strokeWidth={1.4}
+            strokeDasharray="2 2"
+          />
+        ) : (
+          <circle cx={row.x} cy={row.y} r={2.2} fill={fill} />
+        )}
+      </>
     );
-  }
+
+  const card = hover.card(<HoverContent row={row} />);
+
   return (
     <>
-      {halo}
-      {pulse}
-      {k === "edit" ? (
-        <rect x={row.x - 3.4} y={row.y - 3.4} width={6.8} height={6.8} rx={1.2} fill={fill} opacity={0.9} />
-      ) : k === "execute" ? (
-        <polygon
-          points={`${row.x},${row.y - 4} ${row.x + 3.8},${row.y + 3} ${row.x - 3.8},${row.y + 3}`}
-          fill={fill}
-          opacity={0.9}
-        />
-      ) : k === "permission" ? (
-        <polygon
-          points={`${row.x},${row.y - 4.4} ${row.x + 4.4},${row.y} ${row.x},${row.y + 4.4} ${row.x - 4.4},${row.y}`}
-          fill={fill}
-        />
-      ) : k === "thinking" ? (
-        <circle cx={row.x} cy={row.y} r={3.2} fill="var(--s0)" stroke={fill} strokeWidth={1.5} />
-      ) : k === "search" ? (
-        <circle
-          cx={row.x}
-          cy={row.y}
-          r={3}
-          fill="none"
-          stroke={fill}
-          strokeWidth={1.4}
-          strokeDasharray="2 2"
-        />
-      ) : (
-        <circle cx={row.x} cy={row.y} r={2.2} fill={fill} />
-      )}
+      <g ref={setEl} {...hover.triggerProps(el)}>
+        {glyph}
+      </g>
+      {card ? createPortal(card, document.body) : null}
     </>
   );
 }
@@ -325,41 +428,13 @@ export function TracePanel({
             {activities.length === 0 && (
               <div className="py-8 text-center text-caption text-ink-3">没有活动</div>
             )}
-            {activities.map((a) => {
-              const p = players.find((x) => x.id === a.playerId);
-              const Icon = KIND_ICON[a.kind];
-              return (
-                <div
-                  key={a.id}
-                  className="transition-colors duration-150 flex items-center gap-1.5 rounded-mark px-1 py-1 text-caption hover:bg-surface-2/50"
-                >
-                  <span className="w-7 shrink-0 font-mono text-micro text-ink-3">{a.at}</span>
-                  {p && (
-                    <span
-                      className="size-1.5 shrink-0 rounded-full"
-                      style={{ background: p.color }}
-                      title={p.name}
-                    />
-                  )}
-                  <Icon className="size-2.5 shrink-0 text-ink-3" />
-                  <span className="shrink-0 text-ink-2">{a.title}</span>
-                  {a.detail && (
-                    <span className="min-w-0 truncate font-mono text-micro text-ink-3">
-                      {a.detail}
-                    </span>
-                  )}
-                  <span
-                    className={cn(
-                      "ml-auto size-1 shrink-0 rounded-full",
-                      a.status === "ok" && "bg-ok-1/70",
-                      a.status === "running" && "animate-pulse bg-accent-1",
-                      a.status === "error" && "bg-danger-1",
-                      a.status === "cancelled" && "bg-ink-3",
-                    )}
-                  />
-                </div>
-              );
-            })}
+            {activities.map((a) => (
+              <ActivityListRow
+                key={a.id}
+                activity={a}
+                player={players.find((x) => x.id === a.playerId)}
+              />
+            ))}
           </div>
         )}
 
