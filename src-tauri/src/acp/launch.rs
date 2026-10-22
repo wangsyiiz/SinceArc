@@ -69,6 +69,44 @@ pub struct SpawnSpec {
     pub pid_file: Option<String>,
 }
 
+/// 把「真的会执行的东西」渲染成一条人能读、能粘贴的命令行。
+/// 必须在 `command_line()` 的产物上渲染，不许另写一套拼装。
+pub fn render_command_line(spec: &SpawnSpec) -> String {
+    let mut line = quote_arg(&spec.program);
+    for arg in &spec.args {
+        line.push(' ');
+        line.push_str(&quote_arg(arg));
+    }
+    line
+}
+
+/// 需要时用双引号包住参数，并转义 shell 会解释的字符。
+///
+/// 换行属于空白字符，会被一起包进双引号并原样保留 —— 改成字面量 `\n`
+/// 会改变参数内容，不再是「可粘贴」的同一条命令。
+fn quote_arg(arg: &str) -> String {
+    let needs_quotes = arg.is_empty()
+        || arg
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '$' | '`'));
+    if !needs_quotes {
+        return arg.to_string();
+    }
+
+    let mut quoted = String::with_capacity(arg.len() + 2);
+    quoted.push('"');
+    for c in arg.chars() {
+        match c {
+            '"' => quoted.push_str("\\\""),
+            '$' => quoted.push_str("\\$"),
+            '`' => quoted.push_str("\\`"),
+            _ => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
 #[derive(Debug)]
 pub enum LaunchError {
     Io(std::io::Error),
@@ -367,5 +405,54 @@ mod tests {
             remote_command("hermes", &["acp".into()], "", None),
             "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\" exec hermes 'acp'"
         );
+    }
+
+    fn bare_spec(program: &str, args: &[&str]) -> SpawnSpec {
+        SpawnSpec {
+            program: program.into(),
+            args: args.iter().map(|s| (*s).to_string()).collect(),
+            env: BTreeMap::new(),
+            cleanup: None,
+            pid_file: None,
+        }
+    }
+
+    #[test]
+    fn render_local_lists_program_and_args() {
+        assert_eq!(
+            render_command_line(&bare_spec("hermes", &["acp"])),
+            "hermes acp"
+        );
+    }
+
+    #[test]
+    fn render_quotes_args_with_spaces() {
+        let line = render_command_line(&bare_spec("hermes", &["a b"]));
+        assert!(line.contains("\"a b\""), "got: {line}");
+    }
+
+    #[test]
+    fn render_wsl_keeps_cd_and_shell() {
+        let spec = profile(Launch::Wsl {
+            distro: "fedora".into(),
+            shell: "zsh".into(),
+        })
+        .command_line("/home/jerry/src")
+        .unwrap();
+        let line = render_command_line(&spec);
+        assert!(line.contains("wsl.exe"), "got: {line}");
+        assert!(line.contains(" -d "), "got: {line}");
+        assert!(line.contains(" --cd "), "got: {line}");
+        assert!(line.contains(" -lc "), "got: {line}");
+    }
+
+    #[test]
+    fn render_does_not_leak_env_or_pidfile() {
+        let mut spec = bare_spec("hermes", &["acp"]);
+        spec.env.insert("SINCEARC_X".into(), "1".into());
+        spec.pid_file = Some("/tmp/sincearc-internal.pid".into());
+        let line = render_command_line(&spec);
+        assert!(!line.contains("SINCEARC_X"), "got: {line}");
+        assert!(!line.contains("sincearc-internal.pid"), "got: {line}");
     }
 }

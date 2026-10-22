@@ -16,7 +16,7 @@ use tauri::ipc::Channel;
 use tauri::Manager;
 use tauri::State;
 
-use crate::acp::launch::{AgentProfile, Launch, SshAuth, SshSpec};
+use crate::acp::launch::{render_command_line, AgentProfile, Launch, SshAuth, SshSpec};
 use crate::acp::{self, transport};
 use crate::db;
 use crate::state::{AgentHandle, AppState, SessionRecord};
@@ -155,6 +155,14 @@ pub struct ProfileDto {
     pub ssh_password: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct CommandPreview {
+    /// 真正会执行的命令行（可粘贴）
+    pub line: String,
+}
+
 #[derive(Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
@@ -254,6 +262,43 @@ pub fn to_profile(dto: &ProfileDto) -> Result<AgentProfile, CmdError> {
         env: BTreeMap::new(),
         default_cwd: PathBuf::from(&dto.cwd),
     })
+}
+
+/// 生成能力面板展示的命令行。
+///
+/// 必须走与真正启动相同的 `command_line()` 包装；`binary` / `argv` 只覆盖
+/// 「被执行的程序与参数」，WSL/SSH 的 relay、cwd、PATH 仍由启动层决定。
+#[tauri::command]
+pub async fn command_preview(
+    profile: ProfileDto,
+    cwd: Option<String>,
+    binary: Option<String>,
+    argv: Option<Vec<String>>,
+) -> Result<CommandPreview, CmdError> {
+    let mut parsed = to_profile(&profile)?;
+    if let Some(binary) = binary {
+        parsed.program = binary;
+    }
+    if let Some(argv) = argv {
+        parsed.args = argv;
+    }
+
+    let cwd = cwd.unwrap_or_else(|| profile.cwd.clone());
+    let cwd = if cwd.trim().is_empty() {
+        parsed.default_cwd.to_string_lossy().into_owned()
+    } else {
+        cwd
+    };
+    let spec = parsed
+        .command_line(&cwd)
+        .map_err(|e| CmdError::new(50000, format!("生成命令预览失败：{e}")))?;
+    let line = render_command_line(&spec);
+
+    // 密码认证会为 SSH_ASKPASS 写临时脚本；预览不需要它，渲染完立刻清掉。
+    if let Some(path) = spec.cleanup {
+        let _ = std::fs::remove_file(path);
+    }
+    Ok(CommandPreview { line })
 }
 
 /// 起进程之前的静态校验。
