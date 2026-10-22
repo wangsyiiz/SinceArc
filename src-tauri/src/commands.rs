@@ -1563,6 +1563,7 @@ pub async fn session_prompt(
         }
     }
     let turns = state.turns.clone();
+    let cancels = state.cancels();
     let bus = state.bus.clone();
     let profile_id = record.profile_id.clone();
     let sid_for_trace = sid.clone();
@@ -1596,10 +1597,20 @@ pub async fn session_prompt(
 
         match proc.request("session/prompt", params, PROMPT_TIMEOUT).await {
             Ok(result) => {
+                let cancelled_by_user = cancels.take(&sid).await;
+                let cancelled = cancelled_by_user
+                    || result
+                        .get("stopReason")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("cancelled");
                 tracing::info!(target: "sincearc::ipc", session = %sid, stop = ?result.get("stopReason"), "prompt finished");
                 tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptResult");
                 turns.end(&sid_for_trace).await;
-                end_turn_safely(&db_for_turn, &turn_id_for_turn, "finished");
+                end_turn_safely(
+                    &db_for_turn,
+                    &turn_id_for_turn,
+                    if cancelled { "cancelled" } else { "finished" },
+                );
                 bus.emit_json(
                     "acp.prompt.result",
                     true,
@@ -1616,7 +1627,14 @@ pub async fn session_prompt(
                 tracing::warn!(target: "sincearc::ipc", session = %sid, error = %e, "prompt failed");
                 tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptFailed");
                 turns.end(&sid_for_trace).await;
-                end_turn_safely(&db_for_turn, &turn_id_for_turn, "failed");
+                // 用户按了停止之后 agent 报错，是「取消」不是「出错」：
+                // 轨迹里记成 failed 会让人以为这一轮崩了。
+                let cancelled_by_user = cancels.take(&sid).await;
+                end_turn_safely(
+                    &db_for_turn,
+                    &turn_id_for_turn,
+                    if cancelled_by_user { "cancelled" } else { "failed" },
+                );
                 bus.emit_json(
                     "acp.prompt.failed",
                     true,
@@ -1632,6 +1650,43 @@ pub async fn session_prompt(
     });
 
     Ok(())
+}
+
+/// 请求 agent 取消当前轮。
+///
+/// `session/cancel` 是 notification：没有 id，也不能等回包。真正的终态仍以
+/// `promptResult` / `promptFailed` 为准；这里只负责把请求送到 agent。
+#[tauri::command]
+pub async fn session_cancel(
+    state: State<'_, AppState>,
+    profile_id: String,
+    session_id: String,
+) -> Result<(), CmdError> {
+    let handle = state
+        .get(&profile_id)
+        .await
+        .ok_or_else(|| CmdError::new(50400, "这条连接还没建立，无法取消"))?;
+
+    tracing::info!(
+        target: "sincearc::ipc", profile = %profile_id, session = %session_id,
+        "session cancel requested"
+    );
+    // 先打标记再发通知：agent 可能立刻回终态，晚一步就区分不出「取消导致的失败」
+    state.request_cancel(&session_id).await;
+    handle
+        .proc
+        .notify(
+            "session/cancel",
+            serde_json::json!({ "sessionId": session_id }),
+        )
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                target: "sincearc::ipc", profile = %profile_id, error = %e,
+                "session cancel notify failed"
+            );
+            CmdError::new(50500, format!("取消请求没送达：{e}"))
+        })
 }
 
 /// 回答 agent 发来的请求。目前只有 `session/request_permission`。

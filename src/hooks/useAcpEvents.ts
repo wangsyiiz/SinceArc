@@ -34,6 +34,12 @@ interface StreamState {
   buf: string;
 }
 
+function stopReasonOf(result: unknown): string | null {
+  if (!result || typeof result !== "object" || !("stopReason" in result)) return null;
+  const value = (result as { stopReason?: unknown }).stopReason;
+  return typeof value === "string" ? value : null;
+}
+
 export interface AcpRefs {
   /** ACP 会话 -> 当前这一轮的 turn id（轨迹栏用） */
   acpToTurn: React.RefObject<Record<string, string>>;
@@ -272,12 +278,20 @@ export function useAcpEvents({
         const actId = `act-stream-${acpSid ?? "x"}`;
         const turnId = acpSid ? acpToTurn.current[acpSid] : undefined;
         const failed = event.kind === "promptFailed";
+        const stopReason = event.kind === "promptResult" ? stopReasonOf(event.result) : null;
+        const cancelled = stopReason === "cancelled";
 
         patchSession(uiSid, (s) => ({
           ...s,
           busy: false,
           acts: s.acts.map((a) =>
-            a.id === actId ? { ...a, status: failed ? ("error" as const) : ("ok" as const) } : a,
+            a.id === actId
+              ? {
+                  ...a,
+                  title: cancelled ? "已停止" : a.title,
+                  status: failed ? ("error" as const) : ("ok" as const),
+                }
+              : a,
           ),
           turns: turnId
             ? s.turns.map((t) =>
@@ -304,7 +318,10 @@ export function useAcpEvents({
         }));
 
         const full = st?.text ?? "";
-        clog("RESULT", `acp=${acpSid ?? "-"} ui=${uiSid} kind=${event.kind} len=${full.length}`);
+        clog(
+          "RESULT",
+          `acp=${acpSid ?? "-"} ui=${uiSid} kind=${event.kind} stop=${stopReason ?? "-"} len=${full.length}`,
+        );
         if (failed) {
           console.warn("[acp] prompt failed", event.msg);
           const id = newId("perr");

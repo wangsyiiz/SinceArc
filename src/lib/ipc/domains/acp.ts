@@ -49,6 +49,15 @@ export function sessionPrompt(
 }
 
 /**
+ * 请求 agent 取消当前轮。
+ *
+ * 这是通知，不等回包；真正结束以 promptResult / promptFailed 为准。
+ */
+export function sessionCancel(profileId: string, acpSessionId: string): Promise<void> {
+  return invokeCmd<void>("session_cancel", { profileId, sessionId: acpSessionId });
+}
+
+/**
  * 回答 agent 发来的权限请求。
  *
  * `cancelled` 只表示用户中止了这一轮；有拒绝选项时应当回 `selected`，

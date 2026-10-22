@@ -705,7 +705,7 @@ impl Db {
         Ok(())
     }
 
-    /// 收一轮。`status` 只允许 finished / failed —— 「是否还在跑」不该由调用方随口决定。
+    /// 收一轮。`status` 允许 finished / failed / cancelled —— 「是否还在跑」不该由调用方随口决定。
     pub fn end_turn(&self, turn_id: &str, status: &str) -> rusqlite::Result<()> {
         let conn = self.conn.lock().expect("db poisoned");
         conn.execute(
@@ -1447,6 +1447,39 @@ mod tests {
 
         db.delete_session("s-1").expect("del");
         assert!(db.load_turns("s-1", 10).expect("load2").is_empty());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn cancelled_turn_keeps_partial_text_and_status() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+
+        db.start_turn("s-1", "t-cancel", "继续写", None)
+            .expect("start");
+        db.append_messages(
+            "s-1",
+            &[MessageInput {
+                id: "partial-1".into(),
+                author_id: None,
+                role: "player".into(),
+                kind: "text".into(),
+                payload: serde_json::json!({ "id": "partial-1", "text": "写了一半" }),
+            }],
+        )
+        .expect("append partial");
+        db.end_turn("t-cancel", "cancelled").expect("end cancelled");
+
+        let turns = db.load_turns("s-1", 10).expect("load turns");
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].status, "cancelled");
+        assert!(turns[0].ended_at.is_some());
+
+        let messages = db.load_messages("s-1", 10).expect("load messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload["text"], "写了一半");
 
         std::fs::remove_file(&path).ok();
     }
