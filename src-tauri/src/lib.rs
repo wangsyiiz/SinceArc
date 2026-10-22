@@ -2,6 +2,7 @@ pub mod acp;
 pub mod coalesce;
 pub mod commands;
 pub mod db;
+pub mod lock;
 pub mod state;
 pub mod trace;
 pub mod wire;

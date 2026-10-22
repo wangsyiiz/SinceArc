@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { messagesLoad } from "@/lib/ipc";
-import { isWrite } from "@/lib/format";
 import { mergeMessages, minSeq } from "@/lib/messages-merge";
 import { clog } from "@/lib/log";
 import type { Message, SessionState } from "@/types";
@@ -11,6 +10,7 @@ export const emptySession = (): SessionState => ({
   turns: [],
   busy: false,
   pendingPerm: null,
+  locks: {},
 });
 
 export type PatchSession = (sid: string, fn: (s: SessionState) => SessionState) => void;
@@ -147,7 +147,6 @@ export function useSessionState(lastSessionId: string) {
     });
   }, [lastSessionId, setPageState]);
 
-  const writeLock = state.acts.find((a) => a.status === "running" && isWrite(a)) ?? null;
   const initSession = useCallback((id: string) => {
     setSessionState((prev) => ({ ...prev, [id]: emptySession() }));
   }, []);
@@ -155,7 +154,6 @@ export function useSessionState(lastSessionId: string) {
   return {
     state,
     patchSession,
-    writeLock,
     initSession,
     sessionState,
     hasMore,
