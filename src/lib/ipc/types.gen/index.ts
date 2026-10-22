@@ -16,6 +16,7 @@ export type { PruneReport } from "./PruneReport";
 export type { SessionInfo } from "./SessionInfo";
 export type { SessionModes } from "./SessionModes";
 export type { SessionRow } from "./SessionRow";
+export type { SessionUpsert } from "./SessionUpsert";
 export type { TraceItem } from "./TraceItem";
 export type { TraceTurn } from "./TraceTurn";
 export type { TurnRow } from "./TurnRow";

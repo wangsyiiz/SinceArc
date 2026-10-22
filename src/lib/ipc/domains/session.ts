@@ -1,6 +1,6 @@
 //! 会话域：连接配置、会话行、消息。
 
-import type { ProfileDto, SessionRowDto, TraceTurnDto } from "../types";
+import type { ProfileDto, SessionRowDto, SessionUpsert, TraceTurnDto } from "../types";
 import type { MessagePage } from "../types.gen/MessagePage";
 import type { AgentProfile, SshAuth, SshConfig } from "@/types";
 import { invokeCmd } from "../client";
@@ -83,7 +83,7 @@ export function sessionsList(profileId?: string): Promise<SessionRowDto[]> {
   return invokeCmd<SessionRowDto[]>("sessions_list", { profileId: profileId ?? null });
 }
 
-export function sessionUpsert(row: SessionRowDto): Promise<void> {
+export function sessionUpsert(row: SessionUpsert): Promise<void> {
   return invokeCmd<void>("session_upsert", { row });
 }
 

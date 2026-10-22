@@ -71,10 +71,11 @@ export interface SessionSummary {
   id: string;
   title: string;
   cwd: string;
-  /** 人类可读的"最后活动时间"（展示用，由 updatedAtSec 格式化而来） */
+  /** 后端给的简短显示时间：今天 `HH:mm`，更早 `MM-DD` */
   updatedAt: string;
-  /** 库里的时间戳（秒），排序与分组都按它算 */
+  /** 库里的时间戳（秒）；排序/去重仍用它，不再用它算分组 */
   updatedAtSec?: number;
+  /** 由后端按机器本地时区判定，前端只映射成中文 */
   group: "今天" | "昨天" | "更早";
   /** 这个会话里有哪些玩家 */
   playerIds: string[];

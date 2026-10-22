@@ -2,6 +2,12 @@ import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } 
 import { sessionsList, type SessionRowDto } from "@/lib/ipc";
 import type { SessionSummary } from "@/types";
 
+const GROUP_LABELS: Record<string, SessionSummary["group"]> = {
+  today: "今天",
+  yesterday: "昨天",
+  earlier: "更早",
+};
+
 export function useSessionList(): {
   sessions: SessionSummary[];
   setSessions: Dispatch<SetStateAction<SessionSummary[]>>;
@@ -10,22 +16,15 @@ export function useSessionList(): {
 } {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
 
-  /** 库行 -> 侧栏条目（时间与分组都按库里的时间戳算） */
+  /** 库行 -> 侧栏条目；分组与显示时间都由后端按本地时区算好 */
   const toSummary = (r: SessionRowDto): SessionSummary => {
-    const at = new Date(r.updatedAt * 1000);
-    const today = new Date();
-    const sameDay = at.toDateString() === today.toDateString();
-    const yesterday = new Date(today);
-    yesterday.setDate(today.getDate() - 1);
     return {
       id: r.id,
       title: r.title,
       cwd: r.cwd,
-      updatedAt: sameDay
-        ? at.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })
-        : at.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }),
+      updatedAt: r.displayTime ?? "",
       updatedAtSec: r.updatedAt,
-      group: sameDay ? "今天" : at.toDateString() === yesterday.toDateString() ? "昨天" : "更早",
+      group: GROUP_LABELS[r.dayBucket ?? ""] ?? "更早",
       playerIds: [],
       acpSessionId: r.acpSessionId ?? null,
       profileId: r.profileId ?? undefined,
