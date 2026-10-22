@@ -1,0 +1,157 @@
+# 通信层与分层约定（Tauri IPC）
+
+> 决定「前端怎么跟 Rust 说话、Rust 内部怎么分层」。这是性能与可维护性的地基，
+> 也是「同样的 bug 不重犯」的落点之一：归属、顺序、丢事件、类型漂移都在这一层定死。
+
+## 1. 现状与问题
+
+现在的通信是「能用但没设计」：
+
+- 每个连接（`agent_connect`）各自带一个 `Channel` → N 个连接 = N 个通道，前端要分别订阅、分别解包。
+- 事件字段靠手写：`AcpEvent`（Rust）与 `AcpEvent`（TS）两份，改签名靠人记着同步 —— 本会话已经踩过漏同步。
+- 业务代码里到处 `invoke("xxx")`：命令名是字符串，拼错只能运行时发现。
+- 流式文本在**前端**按 40ms 合批；chunk 频率由 agent 决定，前端被迫做流控。
+- 大payload（将来 GH 的 diff/文件列表）没有分页与体积约束，全量塞进事件就会卡界面。
+- 排序/重放没有序列号：断线重连后无法判断「这条是新的还是旧的」。
+
+## 2. 目标形态
+
+```
+              ┌──────────── Rust ────────────┐
+ 前端  ──命令──▶│ commands（薄编排 + 校验 + 错误码）│
+      ◀─事件──│ services（domain：session/turn/member/gh）│
+              │ adapters（acp 进程 / gh CLI）        │
+              └──────────────────────────────┘
+                       │
+                 SQLite（唯一权威）
+```
+
+三条硬约定：
+
+1. **一个事件通道**。应用启动时建一次 `Channel<WireEvent>`，所有域的事件都走它，
+   用信封里的 `topic` 路由。连接数量不影响通道数量。
+2. **一层类型契约**。Rust 的 DTO 是唯一来源，TS 类型**生成**（不手写）。
+3. **业务代码不直接 `invoke`**。前端只通过 `src/lib/ipc/domains/*.ts` 的域函数说话。
+
+## 3. 信封（WireEvent）
+
+```ts
+interface WireEvent {
+  v: 1;                  // 契约版本，破坏性变更时 +1
+  seq: number;           // 单调递增，用于判断乱序/丢事件
+  ts: number;            // 毫秒时间戳（产生时刻，不是收到时刻）
+  topic: string;         // 见下表
+  sessionId?: string;    // ACP 会话（若与该事件相关）
+  uiSessionId?: string;  // 投递给哪个界面会话（INV-1：缺就不投递）
+  authorId?: string;     // 发言的群成员；主 agent 为 null
+  lossless: boolean;     // 拥塞时是否允许丢弃
+  payload: unknown;      // 具体域载荷（类型由 topic 决定）
+}
+```
+
+`seq` 由后端全局递增；前端发现 `seq` 跳号时记 `EVENT-GAP` 并触发一次「重新读库」对账
+（而不是相信内存）。
+
+## 4. topic 表
+
+| topic | 频率 | lossless | 说明 |
+|---|---|---|---|
+| `acp.text` | 高（流式） | 是（按段合并后） | 已合批的正文增量，后端每 30ms 或 4KB 发一次 |
+| `acp.activity` | 中 | 是 | 工具调用/思考/写锁（E6 起由后端产出） |
+| `acp.request` | 低 | 是 | 权限请求（带 `id`） |
+| `acp.prompt` | 低 | 是 | `started` / `result` / `failed` 终态 |
+| `acp.usage` | 中 | **否** | token/成本等可丢指标 |
+| `conn.state` | 低 | 是 | 连接建立/断开/失败 |
+| `gh.job` | 低 | 是 | GH 查询进度与完成（含分页游标） |
+| `log.line` | 低 | 否 | 诊断日志（前端只保留最近 N 条） |
+
+规则：
+
+- **终端事件绝不丢**：`acp.prompt.result/failed` 丢了就等于「回答消失」。通道拥塞时先丢 `acp.usage`、`log.line`。
+- **正文合批在 Rust 做**：`agent_message_chunk` 在 adapter 侧累积，达到 30ms 或 4KB 发一段；
+  前端不再自己攒，只负责追加渲染。
+- **大对象不进事件**：GH 的 diff/文件列表由 `gh.job` 给「可拉取的游标」，前端按需调命令取分页。
+
+## 5. 命令契约
+
+- 命名：`<域>_<动作>`（`session_prompt`、`agent_user_save`、`gh_pr_list`），域前缀固定。
+- 入参：**必须显式**携带所属 UI 会话（`uiSessionId`）—— 见 INV-1。
+- 返回：`Result<T, CmdError>`，`CmdError { code, msg }`，码段见 `architecture.md` §7。
+- 前端：`src/lib/ipc/client.ts` 提供 `call<T>(domain, action, args)`，统一把
+  `code` 映射成人话；域函数只做参数整理，不做业务判断。
+
+## 6. 前端分层
+
+```
+src/lib/ipc/
+  client.ts      —— invoke 包装、错误码→文案、非 Tauri 环境的降级
+  events.ts      —— 订阅单通道、按 topic 分发、seq 跳号检测
+  types.gen.ts   —— 由 Rust 生成的类型（勿手改）
+  domains/
+    acp.ts       —— 连接/探测/能力
+    session.ts   —— 会话/消息/模式
+    member.ts    —— 成员/成员关系
+    gh.ts        —— 仓库/PR/Issue
+```
+
+规则：`components/` 只 import 域函数与类型；**禁止**出现字符串命令名。
+
+## 7. 数据模型（按域）
+
+### ACP 域（`acp`）
+`Profile`（连接配置）、`InitializeOutcome`（握手：agent 名/版本/协议/能力）、
+`ModeSnapshot`、`AcpSession`（`acp_session_id` + profile + cwd，凭证，见 INV-9）。
+
+### 会话域（`session`）
+`Session`（UI 会话，唯一持久身份）、`SessionBinding`（历史：何时绑了哪个 acp 会话、原因）、
+`Message`（`id/role/kind/payload`）、`Turn`（一轮：user 文本 → 终态）、
+`Activity`（tool_call/thinking/写锁，**后端产出**）。
+
+### 群域（`group`）
+`AgentUser`（身份：profile + acp 会话 + 名字/handle/颜色）、`Membership`（群↔成员）。
+
+### 轨迹（轨迹是派生视图，不单独存）
+`Turn` + `Activity` 聚合出「谁在什么时候做了什么、写锁归谁」。由**后端**计算，
+前端只渲染（E6 第一项）。
+
+### GH 域（`gh`）
+`Repo`、`PullRequest`、`Issue`、`CheckRun`、`FileDiff`（分页）、`Comment`。
+
+## 8. GH 三层抽象
+
+```
+gh CLI（外部进程）
+   ↓  adapter：执行、超时、JSON 解析、错误映射（未安装/未登录/限流）
+domain service：规范化 → 校验 → 缓存（TTL）→ 分页游标 → 视图模型
+   ↓  命令层：gh_repos_list / gh_pr_list / gh_pr_detail / gh_diff_page
+前端：只渲染 + 翻页（纯视图状态）
+```
+
+必须遵守：
+
+- **不为每种视图写一次命令**：命令按「资源 + 动作」设计，视图在前端组合。
+- **分页永远在后端**：返回 `{ items, nextCursor }`，前端不一次性拿全量。
+- **错误可分辨**：`gh` 未安装 / 未登录 / 限流 / 仓库不存在，各有码，前端只翻文案。
+- **与 acp 域解耦**：GH 域不知道「会话」的存在；「把 PR 引用进对话」是前端把结构化数据交给
+  `session_*` 命令，由后端校验后写入消息 `quoted` 字段。
+
+## 9. 性能预算
+
+| 场景 | 现状 | 目标 |
+|---|---|---|
+| 流式正文 | 前端 40ms 合批，chunk 频率不可控 | 后端 30ms/4KB 合批，单事件 ≤ 4KB |
+| 多连接 | 每连接一条 Channel | 单通道 + topic 路由 |
+| 长历史 | 一次 `messages_load` 默认 200 条 | 分页游标（`before=<seq>`），首屏 50 条 |
+| GH 列表 | 未实现 | 分页 + TTL 缓存（列表 30s，详情 5min） |
+| 事件量上限 | 无 | 单连接每秒 ≤ 200 事件；超出合并或丢弃非无损主题 |
+
+## 10. 迁移路径（不许一次性大改）
+
+1. **M1**：加 `WireEvent` 信封与单通道，现有的 `AcpEvent` 原样塞进 `payload`（行为不变）。
+2. **M2**：前端 `src/lib/ipc/` 分层落地，业务代码改走域函数（机械替换，无行为变化）。
+3. **M3**：正文合批搬到 Rust；前端删掉自己的 40ms 逻辑。
+4. **M4**：`SessionBinding` 历史表 + 绑定校验（INV-9）。
+5. **M5**：类型生成（ts-rs），删掉手写 DTO。
+6. **M6**：GH 域按 §8 从零建（不走 acp 的旧路子）。
+
+每一步都必须「行为不变 + 有测试」；M3 与 M4 会动到关键链路，单独排期。

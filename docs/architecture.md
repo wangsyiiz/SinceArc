@@ -27,8 +27,17 @@
 
 1. **唯一持久身份是 `sessions.id`**。它先于任何 ACP 会话存在（草稿会话 `acp_session_id` 为 NULL），
    也可能在一个 UI 会话里先后挂过不同的 ACP 会话（重连）。
-2. **`acp_session_id` 是外部句柄，不是我们的身份**。它由 agent 分配，我们只能引用、不能推断。
-   它就是「agent 那边的会话」，删我们的会话不该删它（见 INV-7）。
+2. **`acp_session_id` 是凭证，不是可变字段**。它由 agent 分配，是我们**在 agent 上找回那个会话的唯一凭据**。
+   一旦绑上，就不许「顺手改掉」—— 改了等于我们库里挂在它下面的消息归属、成员身份、
+   模式覆盖全部指向一个不存在或不对应的会话（数据变脏、且无法判真伪）。
+   所以：
+   - **绑定只有两个入口**：`session/new` 得到新会话（草稿 → 已绑）、`session/load` **验证成功**（恢复）。
+   - 已绑的会话**不允许静默改** `acp_session_id`；需要换会话时是一次显式的「重建」动作：
+     旧绑定进 `session_bindings` 历史（带原因 `created/loaded/replaced`），新绑定写当前指针，
+     界面必须看得见「这个会话换过 agent 侧会话」。
+   - `session/load` 失败（agent 不认这个 id）→ 标 `invalid` 并提示重建，**不许悄悄换一个新 id** 顶上。
+   - 成员的 `agent_users.acp_session_id` 同理：一经保存不可编辑；要换 = 新建成员，旧成员保留历史归属。
+   - 删我们的会话仍然不动 agent 侧的会话（见 INV-7）。
 3. **成员是全局实体，群是关系**：一个 agent user 锚在 `(profile_id, acp_session_id)` 上，
    通过 `session_members` 加入任意多个群。`@` 只认**本群成员**。
 
@@ -73,6 +82,8 @@
 | INV-6 | 一个 `agent_user` 唯一绑定 `(profile_id, acp_session_id)`；任一字段变更即退回「未测试」 | schema 唯一约束 + `AgentUsers` |
 | INV-7 | 破坏性操作只删本地记录、只在用户显式确认后执行；agent 侧产物（会话/文件）我们不动；正在跑一轮的会话禁止删除 | `session_delete` + `ConfirmDialog` |
 | INV-8 | 前端不计算业务；所有尺寸/高度必须实测，禁止常数估算布局 | `dev-rules.md` 禁用清单 |
+| INV-9 | 绑定是凭证：`acp_session_id` 一旦写入不可静默修改；换会话必须走显式「重建」并留历史 | `session_bindings` + `session_bind_acp` |
+| INV-10 | IPC 只有一个事件通道与一层类型契约；业务代码不得直接 `invoke` | `docs/ipc-contract.md` |
 
 ## 5. 状态机
 
