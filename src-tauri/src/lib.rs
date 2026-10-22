@@ -1,4 +1,5 @@
 pub mod acp;
+pub mod coalesce;
 pub mod commands;
 pub mod db;
 pub mod state;
