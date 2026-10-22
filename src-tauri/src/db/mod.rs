@@ -126,6 +126,17 @@ pub struct MessageRow {
     pub created_at: i64,
 }
 
+/// 一页历史消息。游标分页只相信这里的 `has_more`，前端不自己算剩余条数。
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct MessagePage {
+    /// 按 seq 升序，界面可直接作为一段连续历史追加
+    pub messages: Vec<MessageRow>,
+    #[serde(rename = "hasMore")]
+    pub has_more: bool,
+}
+
 /// 一个可加入群聊的玩家（docs/group-chat.md §1）
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
@@ -833,6 +844,53 @@ impl Db {
         Ok(out)
     }
 
+    /// 游标分页：`before_seq` 为 None 取最新一页，否则取严格早于该 seq 的一页。
+    ///
+    /// 多取一条只用于判定 `has_more`，不返回给界面；返回顺序与 `load_messages` 一致（升序）。
+    pub fn load_messages_page(
+        &self,
+        session_id: &str,
+        limit: i64,
+        before_seq: Option<i64>,
+    ) -> rusqlite::Result<MessagePage> {
+        let limit = limit.max(0);
+        let conn = self.conn.lock().expect("db poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, seq, role, kind, payload_json, created_at, author_id
+             FROM messages
+             WHERE session_id = ?1 AND (?2 IS NULL OR seq < ?2)
+             ORDER BY seq DESC LIMIT ?3",
+        )?;
+        let mut messages = stmt
+            .query_map(
+                params![session_id, before_seq, limit.saturating_add(1)],
+                |r| {
+                    let payload: String = r.get(4)?;
+                    Ok(MessageRow {
+                        id: r.get(0)?,
+                        seq: r.get(1)?,
+                        role: r.get(2)?,
+                        kind: r.get(3)?,
+                        payload: serde_json::from_str(&payload)
+                            .unwrap_or(serde_json::Value::Null),
+                        created_at: r.get(5)?,
+                        author_id: r.get(6)?,
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let has_more = messages.len() > limit as usize;
+        if has_more {
+            // DESC 的最后一条是这一页之外最老的那条，丢掉。
+            messages.pop();
+        }
+        messages.reverse();
+        Ok(MessagePage {
+            messages,
+            has_more,
+        })
+    }
+
     /// 读一条元数据（发现结果缓存之类）。键值表的用途见 schema.sql 的 app_meta。
     pub fn meta_get(&self, key: &str) -> rusqlite::Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
@@ -1383,6 +1441,85 @@ mod tests {
         // 会话被删 -> 消息跟着走
         db.delete_session("s-1").expect("del");
         assert!(db.load_messages("s-1", 50).expect("load").is_empty());
+        std::fs::remove_file(&path).ok();
+    }
+
+    fn seed_sixty_messages(db: &Db) {
+        let messages: Vec<MessageInput> = (1..=60)
+            .map(|i| MessageInput {
+                id: format!("m{i}"),
+                author_id: None,
+                role: if i % 2 == 0 { "player" } else { "user" }.into(),
+                kind: "text".into(),
+                payload: serde_json::json!({ "id": format!("m{i}"), "text": format!("第{i}条") }),
+            })
+            .collect();
+        db.append_messages("s-1", &messages).expect("seed");
+    }
+
+    #[test]
+    fn page_returns_latest_and_flags_more() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+        seed_sixty_messages(&db);
+
+        let page = db
+            .load_messages_page("s-1", 50, None)
+            .expect("latest page");
+        assert_eq!(page.messages.len(), 50);
+        assert!(page.has_more);
+        assert_eq!(page.messages.first().expect("first").seq, 11);
+        assert_eq!(page.messages.last().expect("last").seq, 60);
+        assert_eq!(page.messages.last().expect("last").id, "m60");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn page_cursor_returns_older_without_overlap() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+        seed_sixty_messages(&db);
+
+        let latest = db
+            .load_messages_page("s-1", 50, None)
+            .expect("latest page");
+        let cursor = latest.messages.first().expect("oldest latest").seq;
+        let older = db
+            .load_messages_page("s-1", 50, Some(cursor))
+            .expect("older page");
+
+        assert_eq!(older.messages.len(), 10);
+        assert!(!older.has_more);
+        let latest_ids: std::collections::HashSet<_> =
+            latest.messages.iter().map(|m| m.id.as_str()).collect();
+        assert!(older
+            .messages
+            .iter()
+            .all(|m| !latest_ids.contains(m.id.as_str())));
+        assert!(older.messages.iter().all(|m| m.seq < cursor));
+        assert!(older
+            .messages
+            .windows(2)
+            .all(|pair| pair[0].seq < pair[1].seq));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn page_on_empty_session() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+
+        let page = db
+            .load_messages_page("s-1", 50, None)
+            .expect("empty page");
+        assert!(page.messages.is_empty());
+        assert!(!page.has_more);
+
         std::fs::remove_file(&path).ok();
     }
 

@@ -1883,10 +1883,12 @@ pub async fn messages_load(
     state: State<'_, AppState>,
     session_id: String,
     limit: Option<i64>,
-) -> Result<Vec<db::MessageRow>, CmdError> {
+    before_seq: Option<i64>,
+) -> Result<db::MessagePage, CmdError> {
+    let limit = limit.unwrap_or(50).clamp(1, 500);
     state
         .db
-        .load_messages(&session_id, limit.unwrap_or(200))
+        .load_messages_page(&session_id, limit, before_seq)
         .map_err(|e| CmdError::new(50000, format!("读取消息失败：{e}")))
 }
 

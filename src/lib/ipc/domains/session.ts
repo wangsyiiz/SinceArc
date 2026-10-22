@@ -1,6 +1,7 @@
 //! 会话域：连接配置、会话行、消息。
 
-import type { MessageRowDto, ProfileDto, SessionRowDto, TraceTurnDto } from "../types";
+import type { ProfileDto, SessionRowDto, TraceTurnDto } from "../types";
+import type { MessagePage } from "../types.gen/MessagePage";
 import type { AgentProfile, SshAuth, SshConfig } from "@/types";
 import { invokeCmd } from "../client";
 
@@ -103,8 +104,15 @@ export function messagesAppend(
   return invokeCmd<void>("messages_append", { sessionId, messages });
 }
 
-export function messagesLoad(sessionId: string, limit?: number): Promise<MessageRowDto[]> {
-  return invokeCmd<MessageRowDto[]>("messages_load", { sessionId, limit: limit ?? null });
+export function messagesLoad(
+  sessionId: string,
+  opts?: { limit?: number; beforeSeq?: number },
+): Promise<MessagePage> {
+  return invokeCmd<MessagePage>("messages_load", {
+    sessionId,
+    limit: opts?.limit ?? null,
+    beforeSeq: opts?.beforeSeq ?? null,
+  });
 }
 
 /* ---------- session/update 的解析 ---------- */
