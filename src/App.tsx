@@ -12,7 +12,6 @@ import { AgentCapabilities } from "@/components/AgentCapabilities";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { MAIN_AGENT_ID } from "@/hooks/usePrompt";
 import { profileLabel } from "@/lib/format";
-import { findMention, mentionToken } from "@/lib/mentions";
 import { pushSystemNotice } from "@/lib/notices";
 import { commandLineOf, commandsFor } from "@/extensions/registry";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
@@ -38,6 +37,7 @@ import type {
 } from "@/types";
 import {
   asCmdError,
+  mentionResolve,
   sessionDelete,
   sessionCancel,
   sessionMembers,
@@ -506,40 +506,44 @@ export default function App() {
 
   const sendInGroup = useCallback(
     async (raw: string) => {
-      // 用已知短名去文本里找（短名可能含中文，字符集正则会把它截断）
-      const hit = findMention(
-        raw,
-        members.map((u) => u.handle),
-      );
-      if (!hit) {
-        // 敲了 @ 却一个成员都对不上：说清敲的是什么，不静默投给主 agent
-        const token = mentionToken(raw);
-        if (!token) {
-          await send(raw);
-          refreshTitles();
+      let resolved: Awaited<ReturnType<typeof mentionResolve>>;
+      try {
+        // 谁在群里、他连的哪条连接、cwd 是什么：全部由后端一次判定。
+        resolved = await mentionResolve(lastSessionId, raw);
+      } catch (e) {
+        const err = asCmdError(e);
+        pushSystemNotice(patchSession, lastSessionId, err.msg);
+        return;
+      }
+
+      if (resolved.memberId) {
+        if (!resolved.profileId || !resolved.acpSessionId) {
+          pushSystemNotice(patchSession, lastSessionId, "成员信息不完整，这条消息没有发出去");
           return;
         }
+        const r = await send(raw, {
+          profileId: resolved.profileId,
+          acpSessionId: resolved.acpSessionId,
+          authorId: resolved.memberId,
+          cwd: resolved.cwd,
+        });
+        refreshTitles();
+        return r;
+      }
+
+      if (resolved.token) {
         pushSystemNotice(
           patchSession,
           lastSessionId,
-          `@${token} 不在这个群里 —— 这条消息没有发出去（要加人请到左栏的 + 或设置 → 成员）`,
+          `@${resolved.token} 不在这个群里 —— 这条消息没有发出去（要加人请到左栏的 + 或设置 → 成员）`,
         );
         return;
       }
-      // findMention 只在 members 的短名里命中，所以一定能找到人
-      const who = members.find((u) => u.handle === hit.handle);
-      if (!who) return;
-      const prof = profiles.find((p) => p.id === who.profileId);
-      const r = await send(raw, {
-        profileId: who.profileId,
-        acpSessionId: who.acpSessionId,
-        authorId: who.id,
-        cwd: prof?.cwd ?? "",
-      });
+
+      await send(raw);
       refreshTitles();
-      return r;
     },
-    [members, profiles, send, lastSessionId, patchSession, refreshTitles],
+    [send, lastSessionId, patchSession, refreshTitles],
   );
 
   /**

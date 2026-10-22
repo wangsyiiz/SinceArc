@@ -3,6 +3,7 @@ pub mod coalesce;
 pub mod commands;
 pub mod db;
 pub mod lock;
+pub mod mention;
 pub mod state;
 pub mod trace;
 pub mod wire;
@@ -85,6 +86,7 @@ pub fn run() {
             commands::agent_user_save,
             commands::agent_user_delete,
             commands::session_members,
+            commands::mention_resolve,
             commands::session_member_add,
             commands::session_member_remove,
             commands::session_load,

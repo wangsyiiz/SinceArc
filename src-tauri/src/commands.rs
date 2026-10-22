@@ -511,6 +511,85 @@ pub fn session_members(
         .map_err(|e| CmdError::new(50000, format!("读群成员失败：{e}")))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct MentionResolution {
+    /// 命中的成员 id / 连接 id / 会话 id / cwd；没命中时全为 None
+    pub member_id: Option<String>,
+    pub profile_id: Option<String>,
+    pub acp_session_id: Option<String>,
+    pub cwd: String,
+    pub handle: Option<String>,
+    /// 用户敲了 `@xxx` 但没对上成员时给出他敲的内容
+    pub token: Option<String>,
+}
+
+/// 解析一条群聊消息里的 `@`，并把「成员 → 连接 → ACP 会话 → cwd」一次定死。
+///
+/// 前端只负责展示返回结果：命中就按这里给的四元组投递；没命中但有 token 就提示；
+/// 成员不可用时由这里给出明确错误码，不再让前端各自猜。
+#[tauri::command]
+pub async fn mention_resolve(
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+) -> Result<MentionResolution, CmdError> {
+    let members = state
+        .db
+        .session_members(&session_id)
+        .map_err(|e| CmdError::new(50000, format!("读群成员失败：{e}")))?;
+    let handles: Vec<String> = members.iter().map(|m| m.handle.clone()).collect();
+
+    let Some(hit) = crate::mention::find(&text, &handles) else {
+        return Ok(MentionResolution {
+            member_id: None,
+            profile_id: None,
+            acp_session_id: None,
+            cwd: String::new(),
+            handle: None,
+            token: crate::mention::token(&text),
+        });
+    };
+
+    let matched: Vec<_> = members
+        .iter()
+        .filter(|m| crate::mention::same_handle(&m.handle, &hit.handle))
+        .collect();
+    if matched.len() != 1 {
+        return Err(CmdError::new(
+            50601,
+            format!("短名 @{} 对应了多个成员，数据不一致 —— 请到成员设置里修正", hit.handle),
+        ));
+    }
+    let member = matched[0];
+
+    if member.acp_session_id.trim().is_empty() {
+        return Err(CmdError::new(
+            50602,
+            "这个成员还没有可用的会话 —— 到成员设置里点「测试」建一个",
+        ));
+    }
+
+    let cwd = state
+        .db
+        .load_profiles()
+        .map_err(|e| CmdError::new(50000, format!("读取配置失败：{e}")))?
+        .into_iter()
+        .find(|p| p.id == member.profile_id)
+        .map(|p| p.cwd)
+        .ok_or_else(|| CmdError::new(50601, "成员所属的连接不存在，数据不一致"))?;
+
+    Ok(MentionResolution {
+        member_id: Some(member.id.clone()),
+        profile_id: Some(member.profile_id.clone()),
+        acp_session_id: Some(member.acp_session_id.clone()),
+        cwd,
+        handle: Some(member.handle.clone()),
+        token: None,
+    })
+}
+
 #[tauri::command]
 pub fn session_member_add(
     state: State<'_, AppState>,
