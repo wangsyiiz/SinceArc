@@ -168,6 +168,9 @@
   --color-ink-3: var(--i3);
   --color-accent-1: var(--a1);
   --color-accent-ink: var(--ai);
+  /* 控件上的洗色（暗色白 6% / 浅色黑 4%）：玻璃按钮这类「浮在玻璃上的控件」用它提亮，
+     否则同色玻璃叠玻璃只差 2~3/255，等于看不见。 */
+  --color-glass-control: var(--glass-control);
   --color-danger-1: var(--d1);
   --color-ok-1: var(--ok);
   --color-warn-1: var(--warn);

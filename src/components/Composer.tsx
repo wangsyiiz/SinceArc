@@ -205,7 +205,7 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [] }: Co
             </Button>
           ) : (
             <Button
-              variant="primary"
+              variant="glass"
               size="sm"
               onClick={submit}
               disabled={!canSend}
