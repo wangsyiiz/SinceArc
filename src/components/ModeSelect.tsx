@@ -77,6 +77,7 @@ export function ModeSelect({
       ariaLabel="文件编辑审批模式"
       align="end"
       compact={compact}
+      triggerVariant="ghost"
       className="max-w-60"
       disabled={locked}
       disabledReason={

@@ -23,6 +23,13 @@ export interface MenuProps {
   description?: string;
   align?: "start" | "end";
   compact?: boolean;
+  /**
+   * 触发器的形态：
+   * - `control`（默认）独立的次按钮，自带底与描边；
+   * - `ghost` 行内触发器（状态栏的模式选择、会话条目上的 ⋯）：**无底无边**，
+   *   只靠 hover 面与字色变化 —— 暗色下多一圈 1px 框就是规范禁止的那种「用边框分界」。
+   */
+  triggerVariant?: "control" | "ghost";
   disabled?: boolean;
   disabledReason?: string;
   className?: string;
@@ -149,6 +156,7 @@ export function Menu({
   description,
   align = "start",
   compact = false,
+  triggerVariant = "control",
   disabled = false,
   disabledReason,
   className,
@@ -213,9 +221,18 @@ export function Menu({
           toggle();
         }}
         className={cn(
-          "sc-control inline-flex items-center justify-center gap-2 rounded-control border border-line-1 bg-surface-2 text-ink-1 transition-colors hover:border-line-2 hover:bg-surface-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-1 disabled:cursor-not-allowed disabled:opacity-45",
-          compact ? "h-7 px-2 text-small" : "h-8 px-3 text-ui",
-          open && "border-line-2 bg-surface-3",
+          "inline-flex items-center justify-center gap-2 rounded-control transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-1 disabled:cursor-not-allowed disabled:opacity-45",
+          triggerVariant === "ghost"
+            ? cn(
+                "text-ink-2 hover:bg-surface-3 hover:text-ink-1",
+                compact ? "h-7 px-2 text-caption" : "h-8 px-2.5 text-small",
+                open && "bg-surface-3 text-ink-1",
+              )
+            : cn(
+                "sc-control border border-line-1 bg-surface-2 text-ink-1 hover:border-line-2 hover:bg-surface-3",
+                compact ? "h-7 px-2 text-small" : "h-8 px-3 text-ui",
+                open && "border-line-2 bg-surface-3",
+              ),
           className,
         )}
       >
@@ -230,7 +247,9 @@ export function Menu({
           style={{ ...style, animation: "sc-pop 150ms var(--ease-pop)" }}
           onKeyDown={onPanelKeyDown}
           className={cn(
-            "sc-glass z-20 max-h-80 overflow-y-auto rounded-card border border-line-1/60 p-1",
+            // 边界交给 .sc-glass：它按主题给 border（暗色透明）+ 内边缘高光（§1.8）。
+            // 在这里再补一层 border-line-* 会把暗色下的高光分界换成一圈实线，正是规范禁止的。
+            "sc-glass z-20 max-h-80 overflow-y-auto rounded-card p-1",
             compact ? "w-64" : "w-80",
           )}
         >
@@ -254,7 +273,7 @@ export function Menu({
               }}
               className={cn(
                 "flex w-full items-start gap-2 rounded-mark px-2 py-1.5 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1",
-                compact ? "text-small" : "text-ui",
+                compact ? "text-caption" : "text-small",
                 item.disabled
                   ? "cursor-not-allowed opacity-45"
                   : item.danger
