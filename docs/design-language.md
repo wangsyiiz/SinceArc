@@ -85,6 +85,7 @@ v1 的十条硬教训全部保留（见 §8 §9 §10 §11 §12），并补上令
 
 | 档 | 字号 / 行高 | 用途 |
 | --- | --- | --- |
+| `micro` | 10 / 14 | 极小标注：时间戳、计数、命令与路径 |
 | `caption` | 11 / 16 | 徽标、时间、极小标注 |
 | `ui-tight` | 11.5 / 16 | 紧凑行里的标题与正文：菜单项、会话标题、字段值、Tab 标签 |
 | `small` | 12 / 18 | 分段控件、表头、次要行 |
@@ -96,7 +97,7 @@ v1 的十条硬教训全部保留（见 §8 §9 §10 §11 §12），并补上令
 正文字号不变：**14px**。改它等于改所有屏幕的排布，属于单独提案。
 
 **落地形状**（P2a）：各档已由 `styles.css` 的 `@theme inline` 暴露成工具类，
-代码里写 `text-caption` / `text-ui-tight` / `text-small` / `text-ui` / `text-body` / `text-lead` / `text-title`，
+代码里写 `text-micro` / `text-caption` / `text-ui-tight` / `text-small` / `text-ui` / `text-body` / `text-lead` / `text-title`，
 行高随类一起生效（`--text-*--line-height`）。**不要再写 `text-[11px]` 这类任意值**，
 那正是棘轮要清的债；也不要写 `text-[length:var(--fs-ui)]`（能躲过扫描，但等于把令牌名散到各处）。
 

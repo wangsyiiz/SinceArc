@@ -75,6 +75,7 @@
   --z-toast: 40;
 
   /* 字号（§1.6） */
+  --fs-micro: 10px;
   --fs-caption: 11px;
   --fs-ui-tight: 11.5px;
   --fs-small: 12px;
@@ -82,6 +83,7 @@
   --fs-body: 14px;
   --fs-lead: 16px;
   --fs-title: 20px;
+  --lh-micro: 14px;
   --lh-caption: 16px;
   --lh-ui-tight: 16px;
   --lh-small: 18px;
@@ -173,6 +175,8 @@
   --radius-card: 12px;
 
   /* 字号（§1.6）：text-caption / text-small / text-ui / text-body / text-lead / text-title */
+  --text-micro: var(--fs-micro);
+  --text-micro--line-height: var(--lh-micro);
   --text-caption: var(--fs-caption);
   --text-caption--line-height: var(--lh-caption);
   /* 紧凑行里的标题与正文（菜单项、会话标题、字段值、Tab 标签）——11.5 这一档是存量界面
