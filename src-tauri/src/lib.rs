@@ -92,6 +92,7 @@ pub fn run() {
             commands::agent_disconnect,
             commands::agent_respond_request,
             commands::session_new,
+            commands::session_rebind,
             commands::session_prompt,
             commands::profiles_load,
             commands::profiles_save,
