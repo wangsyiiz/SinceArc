@@ -682,6 +682,20 @@ fn end_turn_safely(db: &Arc<db::Db>, turn_id: &str, status: &str) {
 /// 轨迹视图：最近 N 轮 + 每轮的活动（tool_call 与它的增量更新已合并）。
 ///
 /// 只读、只聚合，不做业务判断 —— 谁能看哪一轮由 `uiSessionId` 决定（调用方只传自己的会话）。
+/// 轨迹保留策略的执行体：90 天 / 单会话 5 万条，超出直接删除。
+pub const TRACE_RETENTION_DAYS: i64 = 90;
+pub const TRACE_MAX_EVENTS_PER_SESSION: i64 = 50_000;
+
+/// 手动触发一次清理（也用于验证「界面上承诺的清理是否真的发生」）。
+#[tauri::command]
+pub async fn trace_prune(state: State<'_, AppState>) -> Result<db::PruneReport, CmdError> {
+    let cutoff = crate::trace::now_ms() - TRACE_RETENTION_DAYS * 24 * 3600 * 1000;
+    state
+        .db
+        .prune_traces(cutoff, TRACE_MAX_EVENTS_PER_SESSION, true)
+        .map_err(|e| CmdError::new(50000, format!("清理轨迹失败：{e}")))
+}
+
 #[tauri::command]
 pub async fn session_trace(
     state: State<'_, AppState>,
