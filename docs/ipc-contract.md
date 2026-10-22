@@ -84,14 +84,15 @@ interface WireEvent {
 
 ```
 src/lib/ipc/
-  client.ts      —— invoke 包装、错误码→文案、非 Tauri 环境的降级
-  events.ts      —— 订阅单通道、按 topic 分发、seq 跳号检测
-  types.gen.ts   —— 由 Rust 生成的类型（勿手改）
+  client.ts      —— 唯一的 invokeCmd 出口、错误归一、fireAndForget
+  events.ts      —— 订阅单通道、按 profileId 分发、版本/seq/归属检查
+  types.ts       —— DTO 形状（M5 起由 Rust 生成 types.gen.ts 取代）
   domains/
-    acp.ts       —— 连接/探测/能力
-    session.ts   —— 会话/消息/模式
+    acp.ts       —— 连接/会话/模式/权限/探测
+    session.ts   —— 连接配置/会话行/消息
     member.ts    —— 成员/成员关系
-    gh.ts        —— 仓库/PR/Issue
+    gh.ts        —— 仓库/PR/Issue（E9）
+  index.ts       —— 门面；业务代码只 import `@/lib/ipc`
 ```
 
 规则：`components/` 只 import 域函数与类型；**禁止**出现字符串命令名。
@@ -178,7 +179,12 @@ domain service：规范化 → 校验 → 缓存（TTL）→ 分页游标 → �
   所有出站事件（notification/request/prompt\*/hello/exited）都带 `topic + seq + 归属`。
   前端 `lib/ipc.ts` 的 `onAgentEvent(profileId, fn)` 幂等订阅一次并分发；
   `seq` 跳号记 `EVENT-GAP`，版本不符记 `WIRE-VERSION`，无归属记 `DROP-NOPROFILE`。
-- M2–M6 未开始。
+- **M2 实现完成**：`src/lib/ipc/` 拆成 `client.ts`（唯一 `invokeCmd` 出口 + 错误归一 +
+  `fireAndForget`）、`events.ts`（单通道订阅与分发）、`types.ts`（DTO 形状）、
+  `domains/{acp,session,member}.ts`、`index.ts`（门面，业务代码只 import `@/lib/ipc`）。
+  `lib/log.ts` 也改走 `fireAndForget`。新增守门用例 `ipc/layering.test.ts`：
+  `invoke(` 只允许出现在 `client.ts` / `events.ts`（已验证「故意放一个违规文件 → 变红」）。
+- M3–M6 未开始。
 
 ## 10. 迁移路径（不许一次性大改）
 
