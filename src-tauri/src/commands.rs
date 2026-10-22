@@ -1343,7 +1343,39 @@ pub async fn messages_append(
     state
         .db
         .append_messages(&session_id, &messages)
-        .map_err(|e| CmdError::new(50000, format!("保存消息失败：{e}")))
+        .map_err(|e| CmdError::new(50000, format!("保存消息失败：{e}")))?;
+
+    // 会话标题：默认所有会话都叫「新会话」，用户分不清谁是谁（实测过：在两个同名会话里找错回复）。
+    // 属于业务规则，所以留在命令层，db 只负责「仍叫占位名时才写」这个动作。
+    if let Some(title) = title_from_first_user_message(&messages) {
+        if let Err(e) = state
+            .db
+            .set_title_if_unnamed(&session_id, &title, DEFAULT_SESSION_TITLES)
+        {
+            // 标题失败不该影响消息落库，但必须留痕（stderr 会进应用日志）
+            eprintln!("TITLE-ERR session={session_id} {e}");
+        }
+    }
+    Ok(())
+}
+
+/// 默认会话标题：出现这些值时视为「还没起过名字」。
+const DEFAULT_SESSION_TITLES: &[&str] = &["新会话"];
+
+/// 首条用户消息的第一行前 30 字作为标题。没有可用文本就不改标题。
+fn title_from_first_user_message(messages: &[db::MessageInput]) -> Option<String> {
+    let first = messages.iter().find(|m| m.role == "user")?;
+    let text = first
+        .payload
+        .get("text")
+        .and_then(serde_json::Value::as_str)?
+        .lines()
+        .next()?
+        .trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(text.chars().take(30).collect())
 }
 
 #[tauri::command]

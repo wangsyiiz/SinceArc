@@ -601,19 +601,33 @@ export function SettingsView({
                           placeholder="root"
                           onChange={(v) => onUpdateProfile({ ...p, ssh: { ...ssh, user: v } })}
                         />
-                        <label className="block">
+                        <div className="block">
                           <span className="mb-1 block text-[9.5px] text-ink-3">认证</span>
-                          <select
-                            value={ssh.auth}
-                            onChange={(e) =>
-                              onUpdateProfile({ ...p, ssh: { ...ssh, auth: e.target.value as SshAuth } })
-                            }
-                            className="h-7 w-full rounded-[6px] border border-line-1/60 bg-surface-2/40 px-2 text-[11px] text-ink-1 focus:border-accent-1/50 focus:outline-none"
+                          {/* 不用原生 <select>：系统下拉的样式/尺寸不受控，会跟这套暗色界面打架（规范禁止） */}
+                          <div
+                            role="radiogroup"
+                            aria-label="SSH 认证方式"
+                            className="flex h-7 items-center gap-0.5 rounded-[6px] border border-line-1/60 bg-surface-2/40 p-0.5"
                           >
-                            <option value="key">私钥</option>
-                            <option value="password">密码</option>
-                          </select>
-                        </label>
+                            {(["key", "password"] as SshAuth[]).map((k) => (
+                              <button
+                                key={k}
+                                type="button"
+                                role="radio"
+                                aria-checked={ssh.auth === k}
+                                onClick={() => onUpdateProfile({ ...p, ssh: { ...ssh, auth: k } })}
+                                className={cn(
+                                  "flex-1 rounded-[4px] py-1 text-[10.5px] transition-colors",
+                                  ssh.auth === k
+                                    ? "sc-row-active text-ink-1"
+                                    : "text-ink-3 hover:bg-surface-3/35 hover:text-ink-2",
+                                )}
+                              >
+                                {k === "key" ? "私钥" : "密码"}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
                         <div className="col-span-2">
                           {ssh.auth === "key" ? (
                             <Field

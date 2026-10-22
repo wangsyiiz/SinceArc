@@ -342,6 +342,32 @@ impl Db {
         Ok(())
     }
 
+    /// 仅当会话标题仍是「未命名」时才写入。
+    ///
+    /// 这里只执行 SQL：哪些值算「未命名」、标题从哪来，都是业务判断，
+    /// 由调用方（commands 层）决定 —— 见 docs/architecture.md §6.1。
+    pub fn set_title_if_unnamed(
+        &self,
+        session_id: &str,
+        title: &str,
+        placeholders: &[&str],
+    ) -> rusqlite::Result<usize> {
+        let mut conn = self.conn.lock().expect("db poisoned");
+        let tx = conn.transaction()?;
+        let mut sql = String::from(
+            "UPDATE sessions SET title = ?1 WHERE id = ?2 AND (title IS NULL OR title = ''",
+        );
+        let mut binds: Vec<String> = vec![title.to_string(), session_id.to_string()];
+        for ph in placeholders.iter().filter(|p| !p.is_empty()) {
+            sql.push_str(&format!(" OR title = ?{}", binds.len() + 1));
+            binds.push((*ph).to_string());
+        }
+        sql.push(')');
+        let n = tx.execute(&sql, rusqlite::params_from_iter(binds.iter()))?;
+        tx.commit()?;
+        Ok(n)
+    }
+
     pub fn delete_session(&self, id: &str) -> rusqlite::Result<()> {
         let conn = self.conn.lock().expect("db poisoned");
         conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
@@ -376,29 +402,6 @@ impl Db {
             |r| r.get(0),
         )?;
         let ts = now();
-        // 会话标题：默认是「新会话」，所有会话都同名就分不清谁是谁（实测过：
-        // 两个都叫「新会话」，用户在一个里找另一个的最后一条回复）。
-        // 第一条用户消息落地时用它做标题 —— 属于业务规则，所以放在后端。
-        if let Some(first) = msgs.iter().find(|m| m.role == "user") {
-            let text = first
-                .payload
-                .get("text")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim();
-            if !text.is_empty() {
-                let title: String = text.chars().take(30).collect();
-                tx.execute(
-                    "UPDATE sessions SET title = ?1
-                     WHERE id = ?2 AND (title IS NULL OR title = '' OR title = '新会话')",
-                    params![title, session_id],
-                )?;
-            }
-        }
-
         for (i, m) in msgs.iter().enumerate() {
             tx.execute(
                 "INSERT INTO messages
@@ -872,17 +875,20 @@ mod tests {
             kind: "text".into(),
             payload: serde_json::json!({ "id": id, "text": text }),
         };
-        // 首条用户消息的第一行成为标题（默认「新会话」所有人同名，分不清谁是谁）
         db.append_messages("s-1", &[user("u1", "第一行标题\n第二行不要")])
             .expect("a");
-        let t = db.list_sessions(None).expect("list")[0].title.clone();
-        assert_eq!(t, "第一行标题");
+        // db 不知道「标题该怎么来」：调用方给什么就写什么（业务规则在 commands 层）
+        let n = db
+            .set_title_if_unnamed("s-1", "第一行标题", &["新会话"])
+            .expect("title");
+        assert_eq!(n, 1, "占位名可被覆盖");
+        assert_eq!(db.list_sessions(None).expect("list")[0].title, "第一行标题");
 
-        // 后续消息不许再改标题
-        db.append_messages("s-1", &[user("u2", "第二条完全不同的话")])
-            .expect("b");
-        let t2 = db.list_sessions(None).expect("list")[0].title.clone();
-        assert_eq!(t2, "第一行标题");
+        // 已有真实标题就不再覆盖
+        let n2 = db
+            .set_title_if_unnamed("s-1", "第二条完全不同的话", &["新会话"])
+            .expect("title2");
+        assert_eq!(n2, 0, "非占位名不许改");
 
         std::fs::remove_file(&path).ok();
     }

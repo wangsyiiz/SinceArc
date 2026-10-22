@@ -7,7 +7,7 @@
 
 | # | 位置 | 问题 | 处理 |
 |---|---|---|---|
-| A1 | `src-tauri/src/db/mod.rs` `append_messages` | 在持久化层里决定**会话标题**（判定默认值「新会话」+ 截 30 字）。这是业务规则，db 只该收 title | 立即修：抽 `derive_title()` 到 `commands.rs`，db 增加显式 `set_title_if_default` |
+| A1 | `src-tauri/src/db/mod.rs` `append_messages` | 在持久化层里决定**会话标题**（判定默认值「新会话」+ 截 30 字）。这是业务规则，db 只该收 title | ✅ 已修：`title_from_first_user_message()` + `DEFAULT_SESSION_TITLES` 在 commands 层；db 只提供 `set_title_if_unnamed(id, title, placeholders)` |
 | A2 | `src/lib/ipc.ts` | 只有 DTO 转换与封装，未见业务判断 | 合规 |
 | A3 | `src-tauri/src/acp/*` | 只做进程/协议/解析 | 合规 |
 | A4 | `src-tauri/src/commands.rs` | 抽查无大段内联 SQL；模式判定集中在此（正确） | 合规 |
@@ -28,7 +28,7 @@
 
 | # | 位置 | 问题 | 处理 |
 |---|---|---|---|
-| C1 | `usePrompt.ts:64`、`App.tsx:306`、`useAcpEvents.ts:293` | 消息 id 用 `Date.now()`：同一毫秒内两次写会撞（`ON CONFLICT` 覆盖） | 立即修：单调计数器 + 随机后缀 |
+| C1 | `usePrompt.ts:64`、`App.tsx:306`、`useAcpEvents.ts:293` | 消息 id 用 `Date.now()`：同一毫秒内两次写会撞（`ON CONFLICT` 覆盖） | ✅ 已修：`lib/ids.ts` 的 `newId()`，全仓 7 处替换，附单测（5000 次不重复） |
 | C2 | `useAcpEvents.ts:212` | 回答 id = `stream-<acp>-<ts>` | 合规（每轮唯一） |
 | C3 | 全仓 `lastSessionId` 用法 | 复核：只用于「当前界面会话自身的操作」（发送/加载/渲染），未参与跨会话归属推导 | 合规 |
 
@@ -44,7 +44,7 @@
 
 | # | 位置 | 问题 | 处理 |
 |---|---|---|---|
-| E1 | `SettingsView.tsx:606` | 原生 `<select>`（SSH 认证） | 立即修：换自绘弹层（照 `ModeSelect`） |
+| E1 | `SettingsView.tsx:606` | 原生 `<select>`（SSH 认证） | ✅ 已修：改成两段式按钮组（`role="radiogroup"`），与上方 launch 切换同一套样式 |
 | E2 | `AgentCapabilities.tsx:81`、`SettingsView.tsx:177` | 弹层固定 `w-[320px]` | 豁免：宽度可固定；**位置**已贴触发元素（`top-full right-0`），符合「不飘」要求 |
 | E3 | `Sidebar.tsx:33` `GROUPS` | 分组顺序常量 | 豁免（展示顺序） |
 | E4 | 依赖 | `package.json` 无新增 UI 库/依赖（本轮只加 `vitest`，见 E11） | 合规 |
@@ -57,6 +57,13 @@
 | F2 | 全仓 `invoke("...")` | 业务代码直接调命令名 | E8.2 前端 ipc 分层 |
 | F3 | `agent_message_chunk` | 前端 40ms 合批 | E8.3 合批下沉 |
 | F4 | `messages_load` | 一次最多 200 条，无游标 | E8.6 分页 |
+
+## 附：E11 测试地基（已落地，且没有新增依赖）
+
+Node 24 原生支持 TS 类型剥离 + `node:test`，所以不需要 vitest：
+`npm test` → `node --test "src/**/*.test.ts"`，当前 10 条用例全绿
+（`lib/mentions.test.ts` 7 条、`lib/ids.test.ts` 3 条）。
+`tsconfig.app.json` 排除 `src/**/*.test.ts`（项目没有 `@types/node`，Node 类型不该进 app 类型图）。
 
 ## 结论
 

@@ -51,5 +51,9 @@ export function findMention(text: string, handles: string[]): MentionHit | null 
  */
 export function mentionToken(text: string): string | null {
   const m = /(^|\s)@([^\s]+)/.exec(text);
-  return m ? m[2].replace(/[，。,.!?！？:：;；]+$/, "") : null;
+  if (!m) return null;
+  // 短名不能含空格，但可能紧贴标点（`@hermes-9，行吗`）：在第一个句读标点处截断。
+  // 只截这一小组字符，不用通用「非字母数字」规则 —— 短名允许中文、连字符、下划线。
+  const cut = m[2].split(/[，。、,.!?！？:：;；]/)[0];
+  return cut.length > 0 ? cut : null;
 }
