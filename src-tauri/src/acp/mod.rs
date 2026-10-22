@@ -7,6 +7,7 @@
 //! 3. 协议版本显式钉 v1；`unstable_protocol_v2` 不启用。
 
 pub mod discover;
+pub mod fs;
 pub mod launch;
 pub mod transport;
 
@@ -273,11 +274,11 @@ pub async fn initialize(
 
     let params = serde_json::json!({
         "protocolVersion": 1,
-        // 能力要照实报：`fs/*` 和 `terminal/*` 我们一行实现都没有。报 true 等于请 agent
-        // 把文件读写和终端执行甩给客户端，然后它去等一个永远不会来的响应 —— 表现是
-        // 整轮 prompt 卡住直到超时，而且看起来像 agent 的问题。
+        // 能力要照实报：只开只读 `fs/read_text_file`，且实现限定在会话 cwd 子树内。
+        // 写文件与终端仍报 false —— 这两项要等审批通道成熟后再开，否则 agent 会把
+        // 高危操作甩给客户端，然后等一个永远不会来的响应。
         "clientCapabilities": {
-            "fs": { "readTextFile": false, "writeTextFile": false },
+            "fs": { "readTextFile": true, "writeTextFile": false },
             "terminal": false
         }
     });

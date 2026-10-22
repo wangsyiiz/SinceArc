@@ -853,6 +853,25 @@ async fn record_trace(
     }
 }
 
+/// `fs/read_text_file` 的失败响应。错误里只允许出现 agent 自己给的相对路径：
+/// 绝对路径可能被转进第三方日志，不在这里回显。
+fn fs_error_payload(err: &acp::fs::FsError, requested: &str) -> serde_json::Value {
+    let path = std::path::Path::new(requested);
+    let suffix = if path.is_absolute() || path.has_root() {
+        String::new()
+    } else {
+        format!(": {requested}")
+    };
+    let (code, message) = match err {
+        acp::fs::FsError::Escapes => (-32602, format!("路径越界{suffix}")),
+        acp::fs::FsError::NotFound => (-32602, format!("文件不存在{suffix}")),
+        acp::fs::FsError::NotAFile => (-32602, format!("不是文件{suffix}")),
+        acp::fs::FsError::TooLarge(_) => (-32602, format!("文件超过 1 MiB{suffix}")),
+        acp::fs::FsError::Io(e) => (-32603, format!("读取文件失败: {e}")),
+    };
+    serde_json::json!({ "code": code, "message": message })
+}
+
 #[tauri::command]
 pub async fn agent_connect(
     state: State<'_, AppState>,
@@ -988,6 +1007,67 @@ pub async fn agent_connect(
                 }
                 transport::Incoming::Request { id, method, params } => {
                     tracing::debug!(target: "sincearc::acp", id, %method, "agent request");
+                    if method == "fs/read_text_file" {
+                        let acp_session_id = params
+                            .get("sessionId")
+                            .and_then(serde_json::Value::as_str);
+                        let requested = params.get("path").and_then(serde_json::Value::as_str);
+                        let line = params.get("line").and_then(serde_json::Value::as_i64);
+                        let limit = params.get("limit").and_then(serde_json::Value::as_i64);
+
+                        let result = match (acp_session_id, requested) {
+                            (Some(session_id), Some(requested)) => {
+                                match routes.get(session_id).await {
+                                    Some(record) => {
+                                        let cwd = PathBuf::from(record.cwd);
+                                        match acp::fs::read_text_file(
+                                            &cwd,
+                                            requested,
+                                            line,
+                                            limit,
+                                        ) {
+                                            Ok(content) => {
+                                                tracing::debug!(
+                                                    target: "sincearc::acp", id,
+                                                    session = %session_id,
+                                                    "fs/read_text_file ok"
+                                                );
+                                                Ok(serde_json::json!({ "content": content }))
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    target: "sincearc::acp", id,
+                                                    session = %session_id,
+                                                    error = ?e,
+                                                    "fs/read_text_file rejected"
+                                                );
+                                                Err(fs_error_payload(&e, requested))
+                                            }
+                                        }
+                                    }
+                                    None => Err(serde_json::json!({
+                                        "code": -32602,
+                                        "message": "未知会话",
+                                    })),
+                                }
+                            }
+                            (None, _) => Err(serde_json::json!({
+                                "code": -32602,
+                                "message": "缺少 sessionId",
+                            })),
+                            (_, None) => Err(serde_json::json!({
+                                "code": -32602,
+                                "message": "缺少 path",
+                            })),
+                        };
+                        if let Err(e) = proc_for_task.respond(id, result).await {
+                            tracing::warn!(
+                                target: "sincearc::acp", id, error = %e,
+                                "fs/read_text_file response failed"
+                            );
+                        }
+                        continue;
+                    }
                     if method != "session/request_permission" {
                         // 没实现的方法必须当场拒答。JSON-RPC 里一个不回的请求会让 agent
                         // 一直等（hermes 默认 300s 才自拒），而界面上什么都不显示 ——
