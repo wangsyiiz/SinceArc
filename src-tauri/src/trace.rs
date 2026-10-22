@@ -164,24 +164,31 @@ fn cap_payload(payload: Value) -> (Value, bool) {
 /* ---------------- 聚合：从源数据得到「一轮里发生了什么」 ---------------- */
 
 /// 轨迹面板要的一条：一段按 seq 排好的活动。`tool_call` 与它的增量更新已合并。
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct TraceItem {
+    #[ts(type = "number")]
     pub seq: i64,
+    #[ts(type = "number")]
     pub at: i64,
     pub author_id: Option<String>,
     pub kind: String,
+    #[ts(type = "Record<string, unknown>")]
     pub payload: Value,
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct TraceTurn {
     pub id: String,
     pub prompt: String,
     pub author_id: Option<String>,
+    #[ts(type = "number")]
     pub started_at: i64,
+    #[ts(type = "number | null")]
     pub ended_at: Option<i64>,
     pub status: String,
     pub items: Vec<TraceItem>,

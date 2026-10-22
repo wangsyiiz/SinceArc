@@ -25,46 +25,62 @@ pub struct Db {
     conn: Mutex<Connection>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct SessionRow {
     pub id: String,
+    #[ts(optional = nullable)]
     pub acp_session_id: Option<String>,
+    #[ts(optional = nullable)]
     pub mode_override: Option<String>,
     /// 还没绑定连接配置的草稿会话为 None
+    #[ts(optional = nullable)]
     pub profile_id: Option<String>,
     pub title: String,
     pub cwd: String,
+    #[ts(type = "number")]
     pub created_at: i64,
+    #[ts(type = "number")]
     pub updated_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct BindingRow {
+    #[ts(type = "number")]
     pub id: i64,
     pub acp_session_id: String,
     pub cwd: String,
+    #[ts(type = "number")]
     pub bound_at: i64,
     pub reason: String,
+    #[ts(type = "number | null")]
     pub superseded_at: Option<i64>,
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct PruneReport {
+    #[ts(type = "number")]
     pub events_deleted: i64,
+    #[ts(type = "number")]
     pub turns_deleted: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct TurnRow {
     pub id: String,
     pub session_id: String,
     pub prompt: String,
     pub author_id: Option<String>,
+    #[ts(type = "number")]
     pub started_at: i64,
+    #[ts(type = "number | null")]
     pub ended_at: Option<i64>,
     pub status: String,
 }
@@ -93,22 +109,27 @@ pub struct EventRow {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct MessageRow {
     pub id: String,
+    #[ts(type = "number")]
     pub seq: i64,
     pub role: String,
     pub author_id: Option<String>,
     pub kind: String,
     /// 原始消息对象（前端 `Message` 的形状），不做有损转换
+    #[ts(type = "unknown")]
     pub payload: serde_json::Value,
+    #[ts(type = "number")]
     pub created_at: i64,
 }
 
 /// 一个可加入群聊的玩家（docs/group-chat.md §1）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct AgentUserRow {
     pub id: String,
     pub profile_id: String,
@@ -117,6 +138,7 @@ pub struct AgentUserRow {
     pub name: String,
     pub handle: String,
     pub color: String,
+    #[ts(type = "number")]
     pub created_at: i64,
 }
 

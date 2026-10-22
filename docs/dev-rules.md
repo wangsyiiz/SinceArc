@@ -97,9 +97,23 @@
 | L1 | `cargo test --lib`（含不变量单测：路由精确命中、标题生成、消息去重） | 每次改后端 |
 | L2 | 真机 `--ignored` 测试（hermes 实机：session/new→load→prompt→chunk） | 改 ACP 链路 |
 | L3 | 手工验证清单（见提交信息） | 改交互/布局 |
+| L3.5 | 生成物对账：`cargo test --lib export_bindings` 后 `git diff --exit-code src/lib/ipc/types.gen` | 改任何 `#[derive(TS)]` 的 Rust DTO |
 | L4 | `sincearc.log` 对账（`LOAD db=n live=m`、`SEND/RESULT/DB-OK`、`DROP-*`） | 涉及「消息去哪了」类问题 |
 
 排查「消息丢失/串会话」时的固定顺序：**L4 日志 → L1 单测 → 代码**。不要先猜。
+
+### 4.1 跨语言类型：Rust 是唯一来源
+
+`src/lib/ipc/types.gen/*.ts` 是**生成物**，不许手改；`types.ts` 只做 re-export 与改名。
+改 Rust DTO 后必须跑 `cargo test --lib export_bindings` 并**把生成物一起提交**，
+否则前端拿到的是旧形状（本会话真发生过：Rust 加了字段、TS 没跟上，靠人眼才抓到）。
+
+两个坑，踩过就别再踩：
+
+- `i64 / u64` 默认生成 `bigint`，但 IPC 走 serde_json，运行时是普通 number ——
+  数值字段要标 `#[ts(type = "number")]`；
+- `serde_json::Value` 没有 `TS` 实现，payload 类字段要标 `#[ts(type = "unknown")]`，
+  或给依赖开 `serde-json-impl`。
 
 ## 5. 自审 12 问（提交前逐条过）
 

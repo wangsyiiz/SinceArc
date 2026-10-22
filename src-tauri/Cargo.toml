@@ -21,9 +21,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 agent-client-protocol = "3.4"
+ts-rs = { version = "12", features = ["serde-compat"] }
 
 [profile.release]
 codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+[features]

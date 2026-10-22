@@ -1,0 +1,22 @@
+// 手写 barrel：ts-rs 只生成单类型文件，这里汇总。新增类型时记得补一行。
+export type { AcpEvent } from "./AcpEvent";
+export type { AgentUserRow } from "./AgentUserRow";
+export type { AgentUserTestOutcome } from "./AgentUserTestOutcome";
+export type { BindingRow } from "./BindingRow";
+export type { Candidate } from "./Candidate";
+export type { ConnectOutcome } from "./ConnectOutcome";
+export type { DiscoverOutcome } from "./DiscoverOutcome";
+export type { Found } from "./Found";
+export type { MessageRow } from "./MessageRow";
+export type { ModeChoice } from "./ModeChoice";
+export type { ModeOption } from "./ModeOption";
+export type { ProbeOutcome } from "./ProbeOutcome";
+export type { ProfileDto } from "./ProfileDto";
+export type { PruneReport } from "./PruneReport";
+export type { SessionInfo } from "./SessionInfo";
+export type { SessionModes } from "./SessionModes";
+export type { SessionRow } from "./SessionRow";
+export type { TraceItem } from "./TraceItem";
+export type { TraceTurn } from "./TraceTurn";
+export type { TurnRow } from "./TurnRow";
+export type { WireEvent } from "./WireEvent";
