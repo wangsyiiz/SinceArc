@@ -94,7 +94,8 @@ export type ActivityKind =
   | "plan"
   | "permission";
 
-export type ActivityStatus = "running" | "ok" | "error";
+/** cancelled = 用户中途停止；它既不是成功也不是错误，界面上不能用红色 */
+export type ActivityStatus = "running" | "ok" | "error" | "cancelled";
 
 export interface Activity {
   id: string;
@@ -121,12 +122,14 @@ export interface TraceTurn {
   at: string;
   userText: string;
   branches: TraceBranch[];
+  /** 这一轮的结局；cancelled 时界面上要写「已停止」，不能当成正常结束 */
+  status?: ActivityStatus;
 }
 
 /* ---------- 聊天流：只留「人对人的话」 ---------- */
 export type Message =
   | { id: string; role: "user"; text: string; at: string; quoted?: QuotedRef }
-  | { id: string; role: "player"; playerId: string; text: string; at: string; streaming?: boolean }
+  | { id: string; role: "player"; playerId: string; text: string; at: string; streaming?: boolean; /** 用户中途点了停止：已生成的部分保留，但要标出来 */ stopped?: boolean }
   | { id: string; role: "system"; text: string; at: string };
 
 /** 「加入对话」带进来的引用（PR / issue / 文件） */

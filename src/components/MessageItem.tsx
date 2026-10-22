@@ -90,6 +90,13 @@ export function MessageItem({ message, players }: { message: Message; players: P
         >
           {renderText(message.text, players)}
         </div>
+        {/* 中途停下要留痕：否则用户只看到「回答没了后半段」，不知道是停了还是断了 */}
+        {message.stopped && (
+          <div className="mt-1 flex items-center gap-1.5 text-[11px] text-ink-3">
+            <span className="inline-block size-1 rounded-full bg-ink-3" />
+            已停止（这一轮没答完）
+          </div>
+        )}
       </div>
     </div>
   );

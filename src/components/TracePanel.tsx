@@ -20,7 +20,7 @@ interface TraceRow {
   meta?: string;
   at: string;
   color: string;
-  status?: "ok" | "running" | "error";
+  status?: "ok" | "running" | "error" | "cancelled";
   activity?: Activity;
   playerName?: string;
 }
@@ -354,6 +354,7 @@ export function TracePanel({
                       a.status === "ok" && "bg-ok-1/70",
                       a.status === "running" && "animate-pulse bg-accent-1",
                       a.status === "error" && "bg-danger-1",
+                      a.status === "cancelled" && "bg-ink-3",
                     )}
                   />
                 </div>

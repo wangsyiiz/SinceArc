@@ -302,7 +302,9 @@ export function useAcpEvents({
             : s.turns,
           msgs: [
             ...s.msgs.map((m) =>
-              st && m.id === st.msgId && m.role === "player" ? { ...m, streaming: false } : m,
+              st && m.id === st.msgId && m.role === "player"
+                ? { ...m, streaming: false, stopped: cancelled || m.stopped }
+                : m,
             ),
             ...(failed
               ? [
