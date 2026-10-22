@@ -96,6 +96,50 @@ pub fn read_text_file(
     Ok(slice_lines(&text, line, limit))
 }
 
+/// 处理一条 `fs/read_text_file` 请求。
+/// 入参是 ACP 的 params（已反序列化的 Value）与本次请求所属会话的 cwd。
+/// 返回 Ok(result) 或 Err(jsonrpc error 对象)，与线上行为完全一致。
+pub fn handle_read_request(
+    params: &serde_json::Value,
+    cwd: &Path,
+) -> Result<serde_json::Value, serde_json::Value> {
+    let session_id = params
+        .get("sessionId")
+        .and_then(serde_json::Value::as_str);
+    let requested = params.get("path").and_then(serde_json::Value::as_str);
+    let (Some(_session_id), Some(requested)) = (session_id, requested) else {
+        return Err(jsonrpc_error(-32602, "缺少参数"));
+    };
+
+    let line = params.get("line").and_then(serde_json::Value::as_i64);
+    let limit = params.get("limit").and_then(serde_json::Value::as_i64);
+    read_text_file(cwd, requested, line, limit)
+        .map(|content| serde_json::json!({ "content": content }))
+        .map_err(|e| read_error_payload(&e, requested))
+}
+
+fn read_error_payload(err: &FsError, requested: &str) -> serde_json::Value {
+    // 只回显 agent 自己给的相对路径；绝对路径可能被转进第三方日志。
+    let path = Path::new(requested);
+    let suffix = if path.is_absolute() || path.has_root() {
+        String::new()
+    } else {
+        format!(": {requested}")
+    };
+    let (code, message) = match err {
+        FsError::Escapes => (-32602, format!("路径越界{suffix}")),
+        FsError::NotFound => (-32602, format!("文件不存在{suffix}")),
+        FsError::NotAFile => (-32602, format!("不是文件{suffix}")),
+        FsError::TooLarge(_) => (-32602, format!("文件超过 1 MiB{suffix}")),
+        FsError::Io(e) => (-32603, format!("读取文件失败: {e}")),
+    };
+    jsonrpc_error(code, message)
+}
+
+fn jsonrpc_error(code: i64, message: impl Into<String>) -> serde_json::Value {
+    serde_json::json!({ "code": code, "message": message.into() })
+}
+
 fn slice_lines(text: &str, line: Option<i64>, limit: Option<i64>) -> String {
     let start = line.unwrap_or(1).max(1);
     let start = usize::try_from(start)
@@ -200,5 +244,47 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0], "[package]");
+    }
+
+    #[test]
+    fn handle_rejects_missing_params() {
+        let err = handle_read_request(&serde_json::json!({}), &repo_cwd())
+            .expect_err("missing params must fail");
+        assert_eq!(err.get("code").and_then(serde_json::Value::as_i64), Some(-32602));
+        assert!(err["message"].as_str().unwrap_or("").contains("缺少参数"));
+    }
+
+    #[test]
+    fn handle_reads_inside_cwd() {
+        let params = serde_json::json!({
+            "sessionId": "s1",
+            "path": "Cargo.toml",
+            "line": 1,
+            "limit": 1,
+        });
+        let result = handle_read_request(&params, &repo_cwd()).expect("inside cwd");
+        let content = result["content"].as_str().unwrap_or("");
+        assert!(content.starts_with("[package]"));
+    }
+
+    #[test]
+    fn handle_rejects_traversal() {
+        let params = serde_json::json!({
+            "sessionId": "s1",
+            "path": "../Cargo.toml",
+        });
+        let err = handle_read_request(&params, &repo_cwd()).expect_err("traversal must fail");
+        assert_eq!(err.get("code").and_then(serde_json::Value::as_i64), Some(-32602));
+        assert!(err["message"].as_str().unwrap_or("").contains("越界"));
+    }
+
+    #[test]
+    fn handle_rejects_absolute_outside() {
+        let params = serde_json::json!({
+            "sessionId": "s1",
+            "path": "/etc/passwd",
+        });
+        let err = handle_read_request(&params, &repo_cwd()).expect_err("absolute outside must fail");
+        assert_eq!(err.get("code").and_then(serde_json::Value::as_i64), Some(-32602));
     }
 }
