@@ -1,4 +1,5 @@
 import type { AgentCommand, AgentProfile } from "@/types";
+import type { CommandPreview } from "@/lib/ipc/types.gen/CommandPreview";
 
 /**
  * ACP 之外的能力：agent 自己的 CLI 子命令。
@@ -123,22 +124,22 @@ export function commandsFor(
 }
 
 /**
- * 面板里显示「这条命令实际会怎么跑」，不同 launch 的形态不同。
+ * 面板里显示「这条命令实际会怎么跑」。
  *
- * 用命令自己的 `binary` 拼，不用 profile.program —— 后者是 ACP 的启动命令，
- * 对 codex 来说是 `npx … codex-acp`，拿它拼 `doctor` 会得到一条根本不存在的命令。
+ * 不在前端拼 launch 形态：`binary` / `argv` 只描述 agent 自己的子命令，
+ * WSL/SSH relay、cwd、PATH 等必须由后端的 `command_line()` 统一生成。
  */
-export function previewCommand(profile: AgentProfile | undefined, cmd: AgentCommand): string {
-  const base = [cmd.binary, ...cmd.argv].filter(Boolean).join(" ");
-  if (!profile) return base;
-  if (profile.launch === "ssh" && profile.ssh) {
-    const { user, host, port } = profile.ssh;
-    const portArg = port && port !== 22 ? ` -p ${port}` : "";
-    const cwd = profile.cwd ? `cd ${profile.cwd} && ` : "";
-    return `ssh -T${portArg} ${user}@${host} "${cwd}${base}"`;
-  }
-  if (profile.launch === "wsl") {
-    return `wsl.exe -d ${profile.distro ?? "wsl"} -- ${profile.shell ?? "zsh"} -lc "${base}"`;
-  }
-  return base;
+export async function commandPreview(
+  profile: AgentProfile | undefined,
+  cmd: AgentCommand,
+): Promise<string> {
+  if (!profile) throw new Error("缺少 profile，无法生成命令预览");
+  const { invokeCmd, toDto } = await import("@/lib/ipc");
+  const preview = await invokeCmd<CommandPreview>("command_preview", {
+    profile: toDto(profile),
+    cwd: profile.cwd ?? null,
+    binary: cmd.binary,
+    argv: cmd.argv,
+  });
+  return preview.line;
 }

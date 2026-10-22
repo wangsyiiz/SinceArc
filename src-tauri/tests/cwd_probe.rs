@@ -128,7 +128,7 @@ async fn session_cwd_对_agent_自己的工具是否生效() {
 /// 从 Debug 串里取一个字符串字段（`"text": String("…")` 或 `"text": "…"` 两种形态都吃）
 fn field_of(s: &str, key: &str) -> Option<String> {
     let idx = s.find(&format!("\"{key}\":"))?;
-    let rest = s[idx..].splitn(2, ':').nth(1)?.trim_start();
+    let rest = s[idx..].split_once(':')?.1.trim_start();
     let rest = rest.strip_prefix("String(").unwrap_or(rest);
     let rest = rest.strip_prefix('"')?;
     Some(rest.split('"').next().unwrap_or("").to_string())

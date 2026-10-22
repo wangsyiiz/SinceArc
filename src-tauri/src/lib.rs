@@ -75,6 +75,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             acp::list_profiles_hint,
+            commands::command_preview,
             commands::agent_probe,
             commands::agent_discover,
             commands::agent_discovery_cached,

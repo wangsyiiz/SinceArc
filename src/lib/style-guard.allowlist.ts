@@ -13,7 +13,7 @@ export const ALLOWED: Record<string, { rule: string; count: number; why: string 
     { rule: "transition-all", count: 1, why: "P2 改为按属性过渡" },
   ],
   "components/AgentCapabilities.tsx": [
-    { rule: "arbitrary-value", count: 12, why: "P2 能力徽标尺寸与字号收敛" },
+    { rule: "arbitrary-value", count: 10, why: "P2 能力徽标尺寸与字号收敛" },
   ],
   "components/AgentUsers.tsx": [
     { rule: "arbitrary-value", count: 29, why: "P2 成员管理表单改为令牌尺寸" },

@@ -709,7 +709,11 @@ export default function App() {
                 right={
                   <AgentCapabilities
                     profile={sessionProfile}
-                    commands={commandsFor(sessionProfile?.agentName, commandLineOf(sessionProfile))}
+                    commands={commandsFor(
+                      sessionProfile?.agentName,
+                      // 只用于按命令行识别 agent，不用于展示；展示由后端 command_preview 生成。
+                      commandLineOf(sessionProfile),
+                    )}
                   />
                 }
               />
