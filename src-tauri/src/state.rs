@@ -79,6 +79,29 @@ pub struct AppState {
     pub turns: Arc<Turns>,
     /// 配置与会话记账（同步 SQLite，操作都是毫秒级，直接锁用）
     pub db: Arc<crate::db::Db>,
+    /// 已经请求取消、还没等到终态的 ACP 会话。
+    /// 用来把「取消导致的 failed」和「真失败」区分开 —— 否则用户按了停止，
+    /// 轨迹里却显示这一轮出错了。
+    cancel_requested: Cancels,
+}
+
+/// 取消请求登记表（ACP 会话 id → 已请求取消）。
+#[derive(Clone, Default)]
+pub struct Cancels(Arc<Mutex<HashSet<String>>>);
+
+impl Cancels {
+    pub async fn mark(&self, acp_session_id: &str) {
+        self.0.lock().await.insert(acp_session_id.to_string());
+    }
+
+    /// 取走标记：一轮只有一个终态，取走即清，避免影响下一轮
+    pub async fn take(&self, acp_session_id: &str) -> bool {
+        self.0.lock().await.remove(acp_session_id)
+    }
+
+    pub async fn clear(&self, acp_session_id: &str) {
+        self.0.lock().await.remove(acp_session_id);
+    }
 }
 
 /// 待回答的 agent 请求登记表。
@@ -139,7 +162,23 @@ impl AppState {
             pending: PendingRequests::default(),
             turns: Arc::new(Turns::default()),
             db: Arc::new(db),
+            cancel_requested: Cancels::default(),
         }
+    }
+
+    /// 拿一份取消登记表的句柄：后台 task 不能借用 `State`（生命周期不够），只能持有克隆
+    pub fn cancels(&self) -> Cancels {
+        self.cancel_requested.clone()
+    }
+
+    /// 记下「这个 ACP 会话已被用户请求取消」
+    pub async fn request_cancel(&self, acp_session_id: &str) {
+        self.cancel_requested.mark(acp_session_id).await;
+    }
+
+    /// 取走取消标记：返回 true 表示这一轮的终态是取消造成的
+    pub async fn take_cancel(&self, acp_session_id: &str) -> bool {
+        self.cancel_requested.take(acp_session_id).await
     }
 
     pub async fn insert(&self, id: String, handle: Arc<AgentHandle>) {
@@ -197,7 +236,7 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::{PendingRequests, Routes, SessionRecord};
+    use super::{Cancels, PendingRequests, Routes, SessionRecord};
 
     fn rec(ui: Option<&str>, author: Option<&str>) -> SessionRecord {
         SessionRecord {
@@ -280,5 +319,26 @@ mod tests {
         assert!(!pending.take("p1", 1).await);
         assert!(!pending.take("p1", 2).await);
         assert!(pending.take("p2", 1).await);
+    }
+
+    #[tokio::test]
+    async fn cancel_mark_is_consumed_once() {
+        // 一轮只有一个终态：取走即清，否则下一轮会被上一轮的取消标记污染，
+        // 把一次真失败误记成「用户取消」。
+        let c = Cancels::default();
+        assert!(!c.take("s-1").await, "没标记时不该返回 true");
+
+        c.mark("s-1").await;
+        assert!(c.take("s-1").await, "标记后第一次取走应为 true");
+        assert!(!c.take("s-1").await, "取走之后必须清零");
+    }
+
+    #[tokio::test]
+    async fn cancel_mark_is_per_session() {
+        // 群聊里多个 ACP 会话同时在跑：取消其中一个不能影响另一个
+        let c = Cancels::default();
+        c.mark("s-1").await;
+        assert!(!c.take("s-2").await);
+        assert!(c.take("s-1").await);
     }
 }

@@ -38,6 +38,7 @@ import type {
 import {
   asCmdError,
   sessionDelete,
+  sessionCancel,
   sessionMembers,
   sessionUpsert,
   type AgentUser,
@@ -85,6 +86,8 @@ export default function App() {
    * 并行成本提示），最新那条回答就藏在浮层底下，看起来像「没有显示」。
    */
   const [composerH, setComposerH] = useState(128);
+  /** 已发出取消请求、还在等 promptResult / promptFailed 的界面会话 */
+  const [cancelling, setCancelling] = useState<Record<string, boolean>>({});
 
   const { profiles, activeProfile, addProfile, updateProfile, removeProfile } = useProfileStore();
   const discovery = useDiscovery(profiles);
@@ -189,6 +192,14 @@ export default function App() {
   // 归属跟会话走，不再跟一个全局「选中连接」走：全局选中项的唯一入口（左下角列表）
   // 已经移除，靠它就等于靠一个永远空着的值
   const sessionProfile = profiles.find((p) => p.id === activeSession?.profileId) ?? activeProfile;
+  const isStopping = !!cancelling[lastSessionId] && state.busy;
+
+  useEffect(() => {
+    if (state.busy) return;
+    setCancelling((prev) =>
+      prev[lastSessionId] ? { ...prev, [lastSessionId]: false } : prev,
+    );
+  }, [state.busy, lastSessionId]);
 
   // 连接生命周期只有这一处实现：设置页手动连接、打开会话自动连接都走它
   const { connect, ensureConnected, disconnect } = useAgentConnect({
@@ -470,6 +481,62 @@ export default function App() {
   );
 
   /**
+   * 停止按钮必须把取消送到 agent，而不是只关掉本地的「生成中」。
+   * 请求送达后继续保持 busy，等 promptResult / promptFailed 给出真正终态。
+   */
+  const stopGeneration = useCallback(async () => {
+    const sid = lastSessionId;
+    if (cancelling[sid]) return;
+    // 群里 @ 成员的轮次也走同一个 busy 状态；活动 id 里带着实际 ACP 会话。
+    const runningAct = [...state.acts]
+      .reverse()
+      .find((a) => a.status === "running" && a.id.startsWith("act-stream-"));
+    const acpFromAct = runningAct?.id.slice("act-stream-".length);
+    const member =
+      runningAct && runningAct.playerId !== MAIN_AGENT_ID
+        ? members.find((m) => m.id === runningAct.playerId)
+        : undefined;
+    if (runningAct && runningAct.playerId !== MAIN_AGENT_ID && !member) {
+      patchSession(sid, (s) => ({ ...s, busy: false }));
+      pushSystemNotice(patchSession, sid, "停止失败：找不到这条群成员连接的配置");
+      return;
+    }
+    const profileId = member?.profileId ?? activeSession?.profileId ?? sessionProfile?.id;
+    const acpSessionId =
+      acpFromAct ??
+      member?.acpSessionId ??
+      (profileId ? sessionsByProfile[profileId] : undefined) ??
+      activeSession?.acpSessionId;
+
+    if (!profileId || !acpSessionId) {
+      patchSession(sid, (s) => ({ ...s, busy: false }));
+      pushSystemNotice(patchSession, sid, "停止失败：找不到可取消的 agent 会话");
+      return;
+    }
+
+    setCancelling((prev) => ({ ...prev, [sid]: true }));
+    try {
+      await sessionCancel(profileId, acpSessionId);
+      // 成功不改 busy：等 agent 回终态，避免界面先「停了」而 agent 还在写。
+    } catch (e) {
+      const err = asCmdError(e);
+      setCancelling((prev) => ({ ...prev, [sid]: false }));
+      patchSession(sid, (s) => ({ ...s, busy: false }));
+      pushSystemNotice(patchSession, sid, `停止失败：${err.code} ${err.msg}`);
+    }
+  }, [
+    activeSession?.acpSessionId,
+    activeSession?.profileId,
+    cancelling,
+    lastSessionId,
+    members,
+    patchSession,
+    sessionProfile?.id,
+    sessionsByProfile,
+    state.acts,
+  ]);
+
+  /**
    * 用发现到的命令直接建连接：program / args / 环境 / 工作目录都已经知道，
    * 让用户再手填一遍是白费功夫（也最容易填错）。
    */
@@ -684,11 +751,19 @@ export default function App() {
                         </button>
                       )}
                       <div className="pointer-events-auto">
+                        {isStopping && (
+                          <div className="sc-glass mb-2 flex items-center gap-2 rounded-[10px] border-0 px-3 py-1.5 text-[11px] text-ink-2">
+                            <span className="size-1.5 animate-pulse rounded-full bg-warn-1" />
+                            正在停止…（已发送取消请求，等待 agent 收尾）
+                          </div>
+                        )}
                         <Composer
                           busy={state.busy}
                           onSend={sendInGroup}
-                          onStop={() => patchSession(lastSessionId, (s) => ({ ...s, busy: false }))}
-                          placeholder="输入消息，@ 玩家提问…"
+                          onStop={stopGeneration}
+                          placeholder={
+                            isStopping ? "正在停止…" : "输入消息，@ 玩家提问…"
+                          }
                           players={players}
                           contextMessages={settings.contextMessages}
                         />

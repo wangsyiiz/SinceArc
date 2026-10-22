@@ -94,6 +94,7 @@ pub fn run() {
             commands::session_new,
             commands::session_rebind,
             commands::session_prompt,
+            commands::session_cancel,
             commands::profiles_load,
             commands::profiles_save,
             commands::sessions_list,
