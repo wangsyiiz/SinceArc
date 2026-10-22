@@ -54,6 +54,36 @@
 
   --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.07), inset 0 -1px 0 rgb(0 0 0 / 0.4);
   --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.06), inset 0 -1px 0 rgb(0 0 0 / 0.3);
+
+  /* 动效（§1.9） */
+  --dur-fast: 110ms;
+  --dur-base: 160ms;
+  --dur-slow: 200ms;
+  --dur-slide: 420ms;
+  --ease-out: ease-out;
+  --ease-pop: cubic-bezier(0.2, 0.9, 0.3, 1);
+  --ease-slide: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* 层叠（§1.10） */
+  --z-content: 0;
+  --z-sticky: 10;
+  --z-popover: 20;
+  --z-modal: 30;
+  --z-toast: 40;
+
+  /* 字号（§1.6） */
+  --fs-caption: 11px;
+  --fs-small: 12px;
+  --fs-ui: 13px;
+  --fs-body: 14px;
+  --fs-lead: 16px;
+  --fs-title: 20px;
+  --lh-caption: 16px;
+  --lh-small: 18px;
+  --lh-ui: 20px;
+  --lh-body: 22px;
+  --lh-lead: 24px;
+  --lh-title: 28px;
 }
 
 :root[data-theme="light"] {
@@ -387,12 +417,12 @@ dialog.sc-dialog[open] {
   ::before,
   ::after {
     transition:
-      background-color 160ms ease-out,
-      color 160ms ease-out,
-      border-color 160ms ease-out,
-      box-shadow 160ms ease-out,
-      opacity 160ms ease-out,
-      transform 160ms ease-out;
+      background-color var(--dur-base) var(--ease-out),
+      color var(--dur-base) var(--ease-out),
+      border-color var(--dur-base) var(--ease-out),
+      box-shadow var(--dur-base) var(--ease-out),
+      opacity var(--dur-base) var(--ease-out),
+      transform var(--dur-base) var(--ease-out);
   }
 }
 
