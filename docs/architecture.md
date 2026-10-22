@@ -147,6 +147,24 @@
 规则：**服务端认为请求错了就按错误返回**，不把错误状态混进业务语义；前端只把码翻成人话，
 不做二次判断（例如「是不是短名有空格」不在前端判断）。
 
+## 7.1 客户端 fs 能力 ≠ 进程隔离（实测边界）
+
+我们实现了 ACP 的 `fs/read_text_file`（只读、限会话 cwd），但**它只约束「agent 请求客户端代为读文件」这一条通道**。
+agent 是独立进程，自带文件工具时根本不会走这条路。
+
+实测（2026-10-22）：让 hermes 读 `C:\Windows\win.ini`，它用**自己的** `read_file` 工具直接读了
+`/mnt/c/Windows/win.ini`，`sincearc.log` 里 `fs/read_text_file` 命中数为 **0**。同一轮的
+`session_events` 里是一条 `tool_call(kind=read, locations=[/mnt/c/Windows/win.ini])`。
+
+结论与用途：
+
+- 我们的沙箱防的是「agent 没有文件工具、把读取甩给客户端」这一类 agent（沙箱化的 CLI、受限容器里的 adapter）；
+- 对自带工具的 agent（hermes / codex / claude 等），文件访问由**它自己的权限模型**决定，与我们的 cwd 无关；
+- 要真隔离得在**进程层**（WSL 用 bwrap 绑定挂载、Windows 用 Job Object / AppContainer，或把 agent 放进容器）。
+  那是独立的一层，代价是 agent 读不到自己的配置、缓存与凭据 —— 属于单独提案，不在客户端代码里解决。
+
+写文档是为了防止一种误判：看到「我们限制了 cwd」就以为 agent 只能读 cwd。**没有这回事。**
+
 ## 8. 事件契约
 
 | 事件 | 必带字段 | 用途 |
