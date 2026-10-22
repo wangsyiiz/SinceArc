@@ -365,7 +365,9 @@ v1 就栽在这：`.sc-control` 自带 `background`，调用方的 `hover:bg-*` 
 `src/lib/style-guard.test.ts`（照 `layering.test.ts` 的路子，零依赖 node:test）扫描 `src`：
 
 1. `.tsx/.ts` 里出现 `#[0-9a-fA-F]{3,8}`、`rgb(`、`hsl(` → 红（白名单：`styles.css` 与 `types.gen/`）；
-2. 出现任意值写法 `-[0-9]+px]` / `-[0-9.]+rem]` → 红；
+2. 出现任意值写法 `-[数字px]` / `-[数字.rem]` → 红；**十进制必须一起认**
+   （`text-[9.5px]`、`rounded-[10.5px]`）—— 旧判据写成 `[0-9]+px` 时这一整类被静默漏数，
+   报出来的“总债务”比真实值低 101 处（2026-10-23 修正）；
 3. 出现 `<select`、`type="checkbox"` → 红；
 4. 出现 `transition: all` / `transition-all` → 红；
 5. 出现 `outline-none` 且同一 class 串里没有 `focus-visible:` → 红。
