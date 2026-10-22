@@ -171,6 +171,15 @@ domain service：规范化 → 校验 → 缓存（TTL）→ 分页游标 → �
 | GH 列表 | 未实现 | 分页 + TTL 缓存（列表 30s，详情 5min） |
 | 事件量上限 | 无 | 单连接每秒 ≤ 200 事件；超出合并或丢弃非无损主题 |
 
+## 9.5 进度
+
+- **M1 实现完成**（待真机烟测）：`src-tauri/src/wire.rs` 提供全局 `EventBus` 与 `WireEvent` 信封；
+  `ipc_subscribe` 在启动时订阅一次；`agent_connect` 不再接收 Channel；
+  所有出站事件（notification/request/prompt\*/hello/exited）都带 `topic + seq + 归属`。
+  前端 `lib/ipc.ts` 的 `onAgentEvent(profileId, fn)` 幂等订阅一次并分发；
+  `seq` 跳号记 `EVENT-GAP`，版本不符记 `WIRE-VERSION`，无归属记 `DROP-NOPROFILE`。
+- M2–M6 未开始。
+
 ## 10. 迁移路径（不许一次性大改）
 
 1. **M1**：加 `WireEvent` 信封与单通道，现有的 `AcpEvent` 原样塞进 `payload`（行为不变）。

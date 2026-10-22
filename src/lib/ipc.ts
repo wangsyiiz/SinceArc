@@ -1,4 +1,5 @@
 import type { AgentProfile, SshAuth, SshConfig } from "@/types";
+import { clog } from "@/lib/log";
 
 /**
  * Tauri command 的薄封装。
@@ -162,20 +163,76 @@ export function fromDto(d: ProfileDto): AgentProfile {
   };
 }
 
+/**
+ * 出站事件信封（后端 `src-tauri/src/wire.rs`）。**只有一个通道**，
+ * 前端按 `profileId` 分发给各连接的处理器 —— 连接数不再等于通道数。
+ */
+export interface WireEvent {
+  v: number;
+  seq: number;
+  ts: number;
+  topic: string;
+  profileId?: string;
+  sessionId?: string;
+  uiSessionId?: string;
+  authorId?: string;
+  lossless: boolean;
+  payload: unknown;
+}
+
+const WIRE_VERSION = 1;
+const handlers = new Map<string, (e: AcpEvent) => void>();
+let subscribed: Promise<void> | null = null;
+let lastSeq = 0;
+
+/** 订阅（幂等）：整个应用生命周期只建一条 Channel。 */
+function ensureSubscribed(): Promise<void> {
+  if (subscribed) return subscribed;
+  subscribed = (async () => {
+    if (!isTauri()) {
+      throw { code: 50900, msg: "当前不在 Tauri 运行环境里（浏览器直开无法调用后端）" } as CmdError;
+    }
+    const { Channel } = await import("@tauri-apps/api/core");
+    const channel = new Channel<WireEvent>();
+    channel.onmessage = (wire) => {
+      if (wire.v !== WIRE_VERSION) {
+        clog("WIRE-VERSION", `收到 v${wire.v}，期望 v${WIRE_VERSION}，已忽略`);
+        return;
+      }
+      // seq 跳号意味着丢过事件：显式留痕，让上层决定是否重读库对账
+      if (lastSeq > 0 && wire.seq !== lastSeq + 1) {
+        clog("EVENT-GAP", `${lastSeq} -> ${wire.seq}（${wire.topic}）`);
+      }
+      lastSeq = wire.seq;
+      // 无归属（例如 conn.ready）不属于任何连接，直接跳过
+      if (!wire.profileId) return;
+      const fn = handlers.get(wire.profileId);
+      if (!fn) {
+        clog("DROP-NOPROFILE", `${wire.topic} profile=${wire.profileId}`);
+        return;
+      }
+      fn(wire.payload as AcpEvent);
+    };
+    await invoke("ipc_subscribe", { channel });
+  })();
+  return subscribed;
+}
+
+/** 登记某个连接的处理器；同一 profile 重复登记会覆盖（重连场景）。 */
+export function onAgentEvent(
+  profileId: string,
+  handler: (e: AcpEvent) => void,
+): Promise<void> {
+  handlers.set(profileId, handler);
+  return ensureSubscribed();
+}
+
 export async function connectAgent(
   profile: AgentProfile,
-  onEvent?: (e: AcpEvent) => void,
   uiSessionId?: string,
 ): Promise<ConnectOutcome> {
-  if (!isTauri()) {
-    throw { code: 50900, msg: "当前不在 Tauri 运行环境里（浏览器直开无法调用后端）" } as CmdError;
-  }
-  const { Channel } = await import("@tauri-apps/api/core");
-  const channel = new Channel<AcpEvent>();
-  if (onEvent) channel.onmessage = onEvent;
   return invoke<ConnectOutcome>("agent_connect", {
     profile: toDto(profile),
-    onEvent: channel,
     uiSessionId,
   });
 }

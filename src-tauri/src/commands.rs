@@ -20,6 +20,7 @@ use crate::acp::launch::{AgentProfile, Launch, SshAuth, SshSpec};
 use crate::acp::{self, transport};
 use crate::db;
 use crate::state::{AgentHandle, AppState, SessionRecord};
+use crate::wire::{Meta, WireEvent};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
@@ -666,11 +667,32 @@ pub async fn agent_probe(profile: ProfileDto) -> Result<ProbeOutcome, CmdError> 
     })
 }
 
+/// 前端启动时订阅**唯一**的事件通道（`docs/ipc-contract.md` §3）。
+///
+/// 反复调用是安全的：后来的订阅者替换旧的 sink（例如窗口重载）。
+/// 之前是「每次 agent_connect 带一条 Channel」，连 N 个 agent 就要订阅 N 次，
+/// 事件也可能因为某条通道关闭而整体失联。
+#[tauri::command]
+pub async fn ipc_subscribe(
+    state: State<'_, AppState>,
+    channel: Channel<WireEvent>,
+) -> Result<(), CmdError> {
+    state.bus.subscribe(channel);
+    tracing::info!(target: "sincearc::ipc", "webview subscribed to event bus");
+    // 告诉前端「通道是通的」：这条收不到，问题在通道本身而不是 ACP 事件。
+    state.bus.emit_json(
+        "conn.ready",
+        true,
+        Meta::default(),
+        &serde_json::json!({ "droppedBefore": state.bus.dropped() }),
+    );
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn agent_connect(
     state: State<'_, AppState>,
     profile: ProfileDto,
-    on_event: Channel<AcpEvent>,
     // 这次连接是给哪个界面会话用的（没有就不建映射）
     ui_session_id: Option<String>,
 ) -> Result<ConnectOutcome, CmdError> {
@@ -692,8 +714,8 @@ pub async fn agent_connect(
             launch_error(&profile, e)
         })?;
 
-    // 入站消息逐条推给界面；channel 断了说明前端不要了，停掉转发即可。
-    let events = on_event.clone();
+    // 入站消息逐条推给界面。走全局总线：连接不再各自持有一条 Channel。
+    let bus = state.bus.clone();
     // 转发 task 里拿不到 State，所以把进程句柄和「待回答登记表」clone 进去：
     // 未实现的方法要在这里当场拒答，权限请求要在这里登记 id。
     let proc = Arc::new(proc);
@@ -781,15 +803,51 @@ pub async fn agent_connect(
                 },
                 "forward -> webview"
             );
-            if events.send(payload).is_err() {
-                tracing::warn!(
-                    target: "sincearc::ipc",
-                    "event channel closed (前端不再接收)，停止转发"
-                );
-                return;
-            }
+            // 终态事件一律无损：丢了就等于「回答消失」。
+            let (topic, lossless) = match &payload {
+                AcpEvent::Notification { .. } => ("acp.notification", true),
+                AcpEvent::Request { .. } => ("acp.request", true),
+                AcpEvent::Hello => ("conn.hello", true),
+                AcpEvent::Exited => ("conn.exited", true),
+                AcpEvent::PromptStarted { .. } => ("acp.prompt.started", true),
+                AcpEvent::PromptResult { .. } => ("acp.prompt.result", true),
+                AcpEvent::PromptFailed { .. } => ("acp.prompt.failed", true),
+            };
+            // notification/request 的 sessionId 可能缺失；prompt* 事件一定有。
+            // 两种情况都要归一成 Option，否则 or-pattern 类型对不上。
+            let (sid, ui, author) = match &payload {
+                AcpEvent::Notification { session_id, ui_session_id, author_id, .. }
+                | AcpEvent::Request { session_id, ui_session_id, author_id, .. } => (
+                    session_id.clone(),
+                    ui_session_id.clone(),
+                    author_id.clone(),
+                ),
+                AcpEvent::PromptStarted { session_id, ui_session_id, author_id }
+                | AcpEvent::PromptResult { session_id, ui_session_id, author_id, .. }
+                | AcpEvent::PromptFailed { session_id, ui_session_id, author_id, .. } => (
+                    Some(session_id.clone()),
+                    ui_session_id.clone(),
+                    author_id.clone(),
+                ),
+                AcpEvent::Hello | AcpEvent::Exited => (None, None, None),
+            };
+            let meta = Meta {
+                profile_id: Some(profile_for_task.clone()),
+                session_id: sid,
+                ui_session_id: ui,
+                author_id: author,
+            };
+            bus.emit_json(topic, lossless, meta, &payload);
         }
-        let _ = events.send(AcpEvent::Exited);
+        bus.emit_json(
+            "conn.exited",
+            true,
+            Meta {
+                profile_id: Some(profile_for_task.clone()),
+                ..Default::default()
+            },
+            &AcpEvent::Exited,
+        );
     });
 
     tracing::info!(
@@ -807,7 +865,6 @@ pub async fn agent_connect(
                 proc: proc.clone(),
                 outcome: outcome.clone(),
                 profile: parsed,
-                events: on_event.clone(),
             }),
         )
         .await;
@@ -822,8 +879,13 @@ pub async fn agent_connect(
 
     // 自检：这条如果前端也没收到，问题在 Channel 本身而不是 ACP 事件
     tracing::info!(target: "sincearc::ipc", "hello -> webview");
-    if on_event.send(AcpEvent::Hello).is_err() {
-        tracing::warn!(target: "sincearc::ipc", "hello event rejected：Channel 不可用");
+    if !state.bus.emit_json(
+        "conn.hello",
+        true,
+        Meta { profile_id: Some(id.clone()), ..Default::default() },
+        &AcpEvent::Hello,
+    ) {
+        tracing::warn!(target: "sincearc::ipc", "hello 未送达：前端还没订阅事件通道");
     }
 
     Ok(ConnectOutcome {
@@ -1146,7 +1208,8 @@ pub async fn session_prompt(
     );
 
     let sid = session_id.clone();
-    let events = handle.events.clone();
+    let bus = state.bus.clone();
+    let profile_id = record.profile_id.clone();
     let proc = handle.proc.clone();
     // 这三个事件必须自带归属：推送时前端可能已经切到别的会话，
     // 「当前打开的那个」不是判断依据。
@@ -1156,27 +1219,47 @@ pub async fn session_prompt(
     tokio::spawn(async move {
         // 先告诉界面「这一轮开始了」，UI 据此进入生成态
         tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptStarted");
-        let _ = events.send(AcpEvent::PromptStarted {
-            session_id: sid.clone(),
-            ui_session_id: ui_for_event.clone(),
-            author_id: author_for_event.clone(),
-        });
+        let meta = Meta::for_session(
+            profile_id.clone(),
+            sid.clone(),
+            ui_for_event.clone(),
+            author_for_event.clone(),
+        );
+        bus.emit_json(
+            "acp.prompt.started",
+            true,
+            meta.clone(),
+            &AcpEvent::PromptStarted {
+                session_id: sid.clone(),
+                ui_session_id: ui_for_event.clone(),
+                author_id: author_for_event.clone(),
+            },
+        );
 
         match proc.request("session/prompt", params, PROMPT_TIMEOUT).await {
             Ok(result) => {
                 tracing::info!(target: "sincearc::ipc", session = %sid, stop = ?result.get("stopReason"), "prompt finished");
                 tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptResult");
-                let _ = events.send(AcpEvent::PromptResult {
-                    session_id: sid,
-                    ui_session_id: ui_for_event,
-                    author_id: author_for_event,
-                    result,
-                });
+                bus.emit_json(
+                    "acp.prompt.result",
+                    true,
+                    meta,
+                    &AcpEvent::PromptResult {
+                        session_id: sid,
+                        ui_session_id: ui_for_event,
+                        author_id: author_for_event,
+                        result,
+                    },
+                );
             }
             Err(e) => {
                 tracing::warn!(target: "sincearc::ipc", session = %sid, error = %e, "prompt failed");
                 tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptFailed");
-                let _ = events.send(AcpEvent::PromptFailed {
+                bus.emit_json(
+                    "acp.prompt.failed",
+                    true,
+                    meta,
+                    &AcpEvent::PromptFailed {
                     session_id: sid,
                     ui_session_id: ui_for_event,
                     author_id: author_for_event,

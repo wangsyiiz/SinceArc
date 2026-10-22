@@ -3,6 +3,7 @@ import {
   asCmdError,
   connectAgent,
   disconnectAgent,
+  onAgentEvent as onAgentEvent_,
   type AcpEvent,
   type CmdError,
   type ModesSnapshot,
@@ -53,7 +54,9 @@ export function useAgentConnect({
   /** 显式连接（设置页按钮）。失败抛 CmdError，由调用方决定怎么显示。 */
   const connect = useCallback(async (p: AgentProfile, uiSid?: string): Promise<string> => {
     const s = stateRef.current;
-    const out = await connectAgent(p, (e) => s.onAgentEvent(p.id, e), uiSid);
+    // 先登记处理器、再连接：单通道按 profileId 分发，事件不会因为「还没订阅」而丢
+    await onAgentEvent_(p.id, (e) => s.onAgentEvent(p.id, e));
+    const out = await connectAgent(p, uiSid);
     s.onUpdateProfile({
       ...p,
       connected: true,

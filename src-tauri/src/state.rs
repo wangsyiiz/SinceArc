@@ -10,16 +10,14 @@ use tokio::sync::Mutex;
 
 use crate::acp::launch::AgentProfile;
 use crate::acp::{transport, InitializeOutcome, SessionModes};
-use crate::commands::AcpEvent;
 
 pub struct AgentHandle {
     pub proc: Arc<transport::AgentProcess>,
     pub outcome: InitializeOutcome,
     /// 起进程时用的 profile（cwd、launch 方式），session 创建要用
     pub profile: AgentProfile,
-    /// 推给界面的事件通道。prompt 是长请求，响应从后台 task 回来，
-    /// 所以句柄要自己持有一份。
-    pub events: tauri::ipc::Channel<AcpEvent>,
+    // 事件通道不再挂在连接上：全局只有一个 EventBus（见 wire.rs），
+    // 连接数变化不影响通道数，也让「事件该投给谁」只有一处判断。
 }
 
 /// 一个 ACP 会话属于哪个 profile（后续 prompt / cancel 要按它路由）
@@ -39,6 +37,8 @@ pub struct SessionRecord {
 }
 
 pub struct AppState {
+    /// 全局事件总线：所有域的出站事件都从这里走（wire.rs）。
+    pub bus: Arc<crate::wire::EventBus>,
     agents: Mutex<HashMap<String, Arc<AgentHandle>>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
     /// 事件转发 task 也要读会话归属（它拿不到 `State`），所以单独留一份共享表。
@@ -102,6 +102,7 @@ impl PendingRequests {
 impl AppState {
     pub fn new(db: crate::db::Db) -> Self {
         Self {
+            bus: Arc::new(crate::wire::EventBus::default()),
             agents: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             routes: Routes::default(),

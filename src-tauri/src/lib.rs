@@ -2,6 +2,7 @@ pub mod acp;
 pub mod commands;
 pub mod db;
 pub mod state;
+pub mod wire;
 
 use state::AppState;
 
@@ -46,6 +47,7 @@ pub fn run() {
             commands::session_member_add,
             commands::session_member_remove,
             commands::session_load,
+            commands::ipc_subscribe,
             commands::agent_connect,
             commands::agent_disconnect,
             commands::agent_respond_request,
