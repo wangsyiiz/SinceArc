@@ -131,7 +131,7 @@ export default function App() {
       id: MAIN_AGENT_ID,
       name: prof ? profileLabel(prof) : "agent",
       handle: "agent",
-      color: "#9aa4b2",
+      color: "var(--i3)",
       profileId: prof?.id ?? "",
       busy: false,
     };
@@ -762,7 +762,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={requestOlder}
-                          className="mx-auto rounded-md px-2 py-1 text-[11px] text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-2"
+                          className="mx-auto rounded-md px-2 py-1 text-caption text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-2"
                         >
                           {loadingOlder ? "正在加载更早消息…" : "加载更早"}
                         </button>
@@ -814,7 +814,7 @@ export default function App() {
                       {state.pendingPerm && (
                         <button
                           onClick={() => setPermOpen(true)}
-                          className="sc-glass pointer-events-auto mb-2 flex w-full items-center gap-2 rounded-[10px] border-0 shadow-none px-3 py-1.5 text-left text-[11px] text-warn-1 transition-colors hover:brightness-110"
+                          className="sc-glass pointer-events-auto mb-2 flex w-full items-center gap-2 rounded-card px-3 py-1.5 text-left text-caption text-warn-1 transition-colors hover:brightness-110"
                         >
                           <span className="shrink-0 font-medium">
                             {players.find((x) => x.id === state.pendingPerm?.playerId)?.name ??
@@ -829,7 +829,7 @@ export default function App() {
                       <div className="pointer-events-auto">
                         {usageLine && (
                           <div
-                            className={`sc-glass mb-2 flex items-center gap-2 rounded-md border-0 px-3 py-1.5 ${
+                            className={`sc-glass mb-2 flex items-center gap-2 rounded-md px-3 py-1.5 ${
                               usageLine.warn ? "text-warn-1" : "text-ink-3"
                             }`}
                             style={{
@@ -841,7 +841,7 @@ export default function App() {
                           </div>
                         )}
                         {writeHint && (
-                          <div className="sc-glass mb-2 flex items-center gap-2 rounded-md border-0 px-3 py-1.5 text-xs text-ink-3">
+                          <div className="sc-glass mb-2 flex items-center gap-2 rounded-md px-3 py-1.5 text-xs text-ink-3">
                             <span className="truncate">
                               {renderPlayers.find((p) => p.id === (writeHint.playerId ?? MAIN_AGENT_ID))
                                 ?.name ?? "agent"}
@@ -855,7 +855,7 @@ export default function App() {
                           </div>
                         )}
                         {isStopping && (
-                          <div className="sc-glass mb-2 flex items-center gap-2 rounded-[10px] border-0 px-3 py-1.5 text-[11px] text-ink-2">
+                          <div className="sc-glass mb-2 flex items-center gap-2 rounded-card px-3 py-1.5 text-caption text-ink-2">
                             <span className="size-1.5 animate-pulse rounded-full bg-warn-1" />
                             正在停止…（已发送取消请求，等待 agent 收尾）
                           </div>
@@ -942,7 +942,7 @@ export default function App() {
                 ，你在别处仍然能接着用它。
               </li>
               {deleteError && (
-                <li className="list-none break-all font-mono text-[10.5px] text-danger-1">
+                <li className="list-none break-all font-mono text-caption text-danger-1">
                   没删成：{deleteError}
                 </li>
               )}

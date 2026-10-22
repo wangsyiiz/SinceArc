@@ -16,9 +16,12 @@ export function PlayerAvatar({
       style={{
         width: size,
         height: size,
-        background: `${player.color}1f`,
+        /* 用 color-mix 而不是拼 hex 后缀（`${color}1f`）：Player.color 现在可能是
+           `var(--i3)` 这类 CSS 变量，拼后缀会得到 `var(--i3)1f` —— 非法值，整条 style 被丢掉
+           （主 agent 的头像会变成没有底色、没有边框）。color-mix 接受 var()。 */
+        background: `color-mix(in srgb, ${player.color} 12%, transparent)`,
         color: player.color,
-        borderColor: `${player.color}55`,
+        borderColor: `color-mix(in srgb, ${player.color} 33%, transparent)`,
         fontSize: Math.round(size * 0.44),
       }}
       className={cn(
