@@ -39,6 +39,13 @@ pub struct SessionRow {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Default, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PruneReport {
+    pub events_deleted: i64,
+    pub turns_deleted: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnRow {
@@ -120,10 +127,22 @@ fn default_kind() -> String {
     "text".to_string()
 }
 
+/// 秒。历史列（profiles/sessions/messages 的 created_at/updated_at）用它，改动代价大于收益。
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// 毫秒。轨迹（session_events.at / turns.*）用它 —— 一轮里几十条事件的先后只有毫秒分得开。
+///
+/// 血的教训：曾经 events 用秒、cutoff 用毫秒，清理逻辑一上线就会把**全部**轨迹判成过期
+/// （1792666081 < 1792575304137000 恒真），是单测先炸出来的。
+pub fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
 
@@ -177,6 +196,15 @@ impl Db {
         ensure_column(&conn, "sessions", "mode_override", "TEXT")?;
         // 群聊里的消息要能指认「谁说的」：不加这列，多 agent 群所有回复长得一样（docs/group-chat.md §4）
         ensure_column(&conn, "messages", "author_id", "TEXT")?;
+        // 轨迹时间列早期写成秒，与毫秒级的保留策略混用会把一切判成过期。
+        // 一次性换算（< 1e11 一定不是毫秒：那相当于 1973 年之前），幂等。
+        conn.execute_batch(
+            "UPDATE session_events SET at = at * 1000 WHERE at > 0 AND at < 100000000000;
+             UPDATE turns SET started_at = started_at * 1000
+               WHERE started_at > 0 AND started_at < 100000000000;
+             UPDATE turns SET ended_at = ended_at * 1000
+               WHERE ended_at IS NOT NULL AND ended_at > 0 AND ended_at < 100000000000;",
+        )?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
 
         Ok(Self {
@@ -467,6 +495,93 @@ impl Db {
         tx.commit()
     }
 
+    /* ---------------- 轨迹保留策略 ---------------- */
+
+    /// 清理超出保留期的轨迹。所有者拍板：**超出直接删除**，不归档。
+    ///
+    /// 两个维度同时生效：
+    /// - 时间：`at` 早于 `cutoff_ms` 的事件，以及结束于其前的轮次；
+    /// - 体量：单会话只保留最近 `max_events_per_session` 条事件。
+    ///
+    /// 返回删了多少，便于日志与「清理是否真的发生」的核对 —— 界面上写着会自动清理，
+    /// 那就必须真的清理，否则就是一句谎话。
+    pub fn prune_traces(
+        &self,
+        cutoff_ms: i64,
+        max_events_per_session: i64,
+        allow_wipe: bool,
+    ) -> rusqlite::Result<PruneReport> {
+        let mut conn = self.conn.lock().expect("db poisoned");
+        let tx = conn.transaction()?;
+        let mut report = PruneReport::default();
+
+        // 防呆：时间过滤若会删掉**全部**事件，先当成单位/时钟错误挡下来。
+        // 真出过事：events.at 用秒、cutoff 用毫秒，一上线就把所有轨迹判成过期。
+        let total: i64 = tx.query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0))?;
+        let expired: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM session_events WHERE at < ?1",
+            params![cutoff_ms],
+            |r| r.get(0),
+        )?;
+        let wipe_all = total > 0 && expired == total;
+        if wipe_all && !allow_wipe {
+            tracing::warn!(
+                target: "sincearc::trace",
+                total, cutoff_ms,
+                "时间过滤会清空全部轨迹，疑似时间单位不一致，已跳过（要真删请显式 allow_wipe）"
+            );
+        } else {
+            report.events_deleted += tx.execute(
+                "DELETE FROM session_events WHERE at < ?1",
+                params![cutoff_ms],
+            )? as i64;
+        }
+        // 轮次的时间过滤与事件**同时**受防呆保护：只挡事件、放行轮次的话，
+        // 单位错了仍然会把轮次清空（测试里就撞到过这个只挡一半的版本）。
+        if !(wipe_all && !allow_wipe) {
+            report.turns_deleted += tx.execute(
+                "DELETE FROM turns WHERE COALESCE(ended_at, started_at) < ?1",
+                params![cutoff_ms],
+            )? as i64;
+        }
+
+        // 单会话体量上限：先找出该保留的最小 seq，再删更早的
+        let mut sessions: Vec<String> = {
+            let mut stmt = tx.prepare("SELECT DISTINCT session_id FROM session_events")?;
+            let list = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            list
+        };
+        for sid in sessions.drain(..) {
+            let cutoff_seq: Option<i64> = tx
+                .query_row(
+                    "SELECT seq FROM session_events WHERE session_id = ?1
+                      ORDER BY seq DESC LIMIT 1 OFFSET ?2",
+                    params![sid, (max_events_per_session - 1).max(0)],
+                    |r| r.get(0),
+                )
+                .ok();
+            if let Some(seq) = cutoff_seq {
+                report.events_deleted += tx.execute(
+                    "DELETE FROM session_events WHERE session_id = ?1 AND seq < ?2",
+                    params![sid, seq],
+                )? as i64;
+            }
+        }
+
+        // 事件被清空的轮次没有展示价值，但**正在跑**的轮次不能动（它还没收尾）
+        report.turns_deleted += tx.execute(
+            "DELETE FROM turns
+              WHERE status != 'running'
+                AND NOT EXISTS (SELECT 1 FROM session_events e WHERE e.turn_id = turns.id)",
+            [],
+        )? as i64;
+
+        tx.commit()?;
+        Ok(report)
+    }
+
     /* ---------------- turns（轨迹的轮次） ---------------- */
 
     /// 记一轮的开始。`turn_id` 由命令层生成并同时交给 `AppState.turns`，
@@ -483,7 +598,7 @@ impl Db {
             "INSERT OR REPLACE INTO turns
                (id, session_id, prompt, author_id, started_at, status)
              VALUES (?1, ?2, ?3, ?4, ?5, 'running')",
-            params![turn_id, session_id, prompt, author_id, now()],
+            params![turn_id, session_id, prompt, author_id, now_ms()],
         )?;
         Ok(())
     }
@@ -493,7 +608,7 @@ impl Db {
         let conn = self.conn.lock().expect("db poisoned");
         conn.execute(
             "UPDATE turns SET ended_at = ?1, status = ?2 WHERE id = ?3",
-            params![now(), status, turn_id],
+            params![now_ms(), status, turn_id],
         )?;
         Ok(())
     }
@@ -543,7 +658,7 @@ impl Db {
             params![session_id],
             |r| r.get(0),
         )?;
-        let at = now();
+        let at = now_ms();
         for e in events {
             seq += 1;
             tx.execute(
@@ -1147,6 +1262,61 @@ mod tests {
 
         db.delete_session("s-1").expect("del");
         assert!(db.load_turns("s-1", 10).expect("load2").is_empty());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+
+    #[test]
+    fn prune_drops_old_and_over_cap_traces_but_keeps_running_turns() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+
+        let ev = |kind: &str, turn: &str| EventInput {
+            turn_id: turn.into(),
+            author_id: None,
+            kind: kind.into(),
+            payload_json: "{}".into(),
+            source: "live".into(),
+            truncated: false,
+        };
+        // 60 条：验证「单会话只留最近 N 条」
+        db.start_turn("s-1", "t-new", "新的一轮", None).expect("turn");
+        for _ in 0..60 {
+            db.append_events("s-1", &[ev("thought", "t-new")]).expect("e");
+        }
+        // 一个正在跑的轮次（不收尾）：它的事件清空后，轮次本身不能被删
+        db.start_turn("s-1", "t-running", "还在跑", None).expect("turn2");
+
+        let report = db
+            .prune_traces(crate::trace::now_ms() - 90 * 24 * 3600 * 1000, 50, false)
+            .expect("prune");
+        assert_eq!(report.events_deleted, 10, "60 条里只该删掉最早的 10 条");
+        let left = db.load_events("s-1", 500).expect("load");
+        assert_eq!(left.len(), 50);
+        // 最老的 seq 已被删掉
+        assert_eq!(left.iter().map(|e| e.seq).min(), Some(11));
+
+        // running 的轮次不许被清理逻辑带走
+        let turns = db.load_turns("s-1", 10).expect("turns");
+        assert!(turns.iter().any(|t| t.id == "t-running" && t.status == "running"));
+
+        // 全部事件都过期时，事件与轮次一起清掉
+        // cutoff 在未来 = 会清空全部：不带 allow_wipe 时必须被挡下
+        let blocked = db
+            .prune_traces(crate::trace::now_ms() + 1000, 50, false)
+            .expect("blocked");
+        assert_eq!(blocked.events_deleted, 0, "一次性清空必须先被防呆挡住");
+        assert_eq!(db.load_events("s-1", 500).expect("still").len(), 50);
+        let report2 = db
+            .prune_traces(crate::trace::now_ms() + 1000, 50, true)
+            .expect("prune2");
+        assert_eq!(report2.events_deleted, 50);
+        assert!(report2.turns_deleted >= 1);
+        assert!(db.load_events("s-1", 500).expect("l3").is_empty());
+        // 时间过滤会带走它：一轮 90 天还没收尾，说明那次运行已经死了，留着只会显示「永远在跑」
+        assert!(db.load_turns("s-1", 10).expect("t3").is_empty());
 
         std::fs::remove_file(&path).ok();
     }
