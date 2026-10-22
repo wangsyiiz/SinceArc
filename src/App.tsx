@@ -24,6 +24,7 @@ import { TracePanel } from "@/components/TracePanel";
 import { sessionTrace, type TraceTurnDto } from "@/lib/ipc";
 import { toTraceView } from "@/lib/trace-adapter";
 import { summarizeLocks } from "@/lib/locks";
+import { describeUsage } from "@/lib/usage-format";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
 import { prsByRepo } from "@/mock/data";
 import type {
@@ -209,6 +210,7 @@ export default function App() {
    * 一次性列三行会把输入框顶得老高，而这条本来就只是提示。
    */
   const writeHint = useMemo(() => summarizeLocks(state.locks ?? {}), [state.locks]);
+  const usageLine = state.usage ? describeUsage(state.usage) : null;
 
   useEffect(() => {
     if (state.busy) return;
@@ -825,6 +827,19 @@ export default function App() {
                         </button>
                       )}
                       <div className="pointer-events-auto">
+                        {usageLine && (
+                          <div
+                            className={`sc-glass mb-2 flex items-center gap-2 rounded-md border-0 px-3 py-1.5 ${
+                              usageLine.warn ? "text-warn-1" : "text-ink-3"
+                            }`}
+                            style={{
+                              fontSize: "var(--fs-caption)",
+                              lineHeight: "var(--lh-caption)",
+                            }}
+                          >
+                            <span className="truncate">{usageLine.text}</span>
+                          </div>
+                        )}
                         {writeHint && (
                           <div className="sc-glass mb-2 flex items-center gap-2 rounded-md border-0 px-3 py-1.5 text-xs text-ink-3">
                             <span className="truncate">
@@ -853,7 +868,6 @@ export default function App() {
                             isStopping ? "正在停止…" : "输入消息，@ 玩家提问…"
                           }
                           players={players}
-                          contextMessages={settings.contextMessages}
                         />
                       </div>
                     </div>

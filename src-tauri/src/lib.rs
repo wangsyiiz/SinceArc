@@ -110,6 +110,7 @@ pub fn run() {
             commands::messages_append,
             commands::client_log,
             commands::messages_load,
+            commands::session_usage,
             commands::agent_list_connected,
         ])
         .run(tauri::generate_context!())

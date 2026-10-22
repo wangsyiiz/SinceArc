@@ -98,6 +98,56 @@ pub enum AcpEvent {
     },
 }
 
+/// 一次 ACP `usage_update` 的可显示结果。
+///
+/// `percent` 在后端算好：前端只负责排版，不再做除法，也不按消息长度猜。
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct UsageDto {
+    pub ui_session_id: Option<String>,
+    /// 谁的报告（群聊里每个成员各有上下文）
+    pub author_id: Option<String>,
+    /// 已用
+    #[ts(type = "number")]
+    pub used: u64,
+    /// 窗口大小
+    #[ts(type = "number")]
+    pub size: u64,
+    /// 0–100 的整数百分比，后端算好（前端不做除法）
+    pub percent: u8,
+}
+
+impl UsageDto {
+    fn from_raw(
+        ui_session_id: Option<String>,
+        author_id: Option<String>,
+        used: u64,
+        size: u64,
+    ) -> Self {
+        Self {
+            ui_session_id,
+            author_id,
+            used,
+            size,
+            percent: usage_percent(used, size),
+        }
+    }
+}
+
+/// 整数百分比。`used > 0` 时至少给 1%，避免「明明用了一点却显示 0%」。
+fn usage_percent(used: u64, size: u64) -> u8 {
+    if size == 0 {
+        return 0;
+    }
+    let raw = ((used as u128 * 100) / size as u128).min(100);
+    if used > 0 && raw == 0 {
+        1
+    } else {
+        raw as u8
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct CmdError {
     pub code: u32,
@@ -1083,6 +1133,26 @@ pub async fn agent_connect(
                     )
                     .await;
                     let (session_id, ui_session_id, author_id) = route(&routes, &params).await;
+                    // usage 是计量而不是轨迹动作：照样落 session_events（供重启后恢复），
+                    // 同时单独推一条可丢的 acp.usage，下一帧会补上。
+                    if let Some((used, size)) = crate::trace::parse(&method, &params)
+                        .filter(|captured| captured.kind == "usage")
+                        .and_then(|captured| crate::trace::usage_of(&captured.payload))
+                    {
+                        let dto = UsageDto::from_raw(
+                            ui_session_id.clone(),
+                            author_id.clone(),
+                            used,
+                            size,
+                        );
+                        let usage_meta = Meta {
+                            profile_id: Some(profile_for_task.clone()),
+                            session_id: session_id.clone(),
+                            ui_session_id: ui_session_id.clone(),
+                            author_id: author_id.clone(),
+                        };
+                        bus.emit_json("acp.usage", false, usage_meta, &dto);
+                    }
                     // 只认「我们自己发起的一轮」里的写操作：`session/load` 会把上一轮
                     // 的 tool_call 重放一遍，那不是正在写，不能把提示条点亮。
                     let in_active_turn = match session_id.as_deref() {
@@ -2122,6 +2192,30 @@ pub async fn messages_load(
         .map_err(|e| CmdError::new(50000, format!("读取消息失败：{e}")))
 }
 
+/// 打开会话时先给一次最新的真实上下文占用；实时变化仍走 `acp.usage`。
+#[tauri::command]
+pub async fn session_usage(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<UsageDto>, CmdError> {
+    let latest = state
+        .db
+        .latest_usage(&session_id)
+        .map_err(|e| CmdError::new(50000, format!("读取上下文占用失败：{e}")))?;
+    let Some((payload, author_id)) = latest else {
+        return Ok(None);
+    };
+    let Some((used, size)) = crate::trace::usage_of(&payload) else {
+        return Ok(None);
+    };
+    Ok(Some(UsageDto::from_raw(
+        Some(session_id),
+        author_id,
+        used,
+        size,
+    )))
+}
+
 /* ---------------- 会话审批模式（编辑审批） ---------------- */
 // 判据与顺序见 docs/modes-spec.md §4 / §5.1。两条铁律：
 //   1. 手动选择：校验通过、且 set_mode 成功之后，才写 mode_override
@@ -2378,5 +2472,16 @@ mod launch_input_tests {
     #[test]
     fn normal_input_passes() {
         assert!(validate_launch_input(&dto("hermes", "/home/jerry")).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::usage_percent;
+
+    #[test]
+    fn percent_never_zero_when_used() {
+        assert_eq!(usage_percent(1, 1_000_000), 1);
+        assert_eq!(usage_percent(0, 1_000_000), 0);
     }
 }
