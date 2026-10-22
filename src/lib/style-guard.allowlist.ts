@@ -13,7 +13,7 @@ export const ALLOWED: Record<string, { rule: string; count: number; why: string 
     { rule: "transition-all", count: 1, why: "P2 改为按属性过渡" },
   ],
   "components/AgentCapabilities.tsx": [
-    { rule: "arbitrary-value", count: 12, why: "P2 能力徽标尺寸与字号收敛" },
+    { rule: "arbitrary-value", count: 10, why: "P2 能力徽标尺寸与字号收敛" },
   ],
   "components/AgentUsers.tsx": [
     { rule: "arbitrary-value", count: 29, why: "P2 成员管理表单改为令牌尺寸" },
@@ -21,7 +21,7 @@ export const ALLOWED: Record<string, { rule: string; count: number; why: string 
     { rule: "outline-none", count: 4, why: "P2 统一输入框焦点环" },
   ],
   "components/Composer.tsx": [
-    { rule: "arbitrary-value", count: 10, why: "P2 输入框与提及面板改为令牌尺寸" },
+    { rule: "arbitrary-value", count: 8, why: "P2 输入框与提及面板改为令牌尺寸" },
     { rule: "color-literal", count: 2, why: "P2 按钮内高光改用令牌" },
     { rule: "outline-none", count: 1, why: "P2 文本域补可替代的焦点样式" },
     { rule: "transition-all", count: 1, why: "P2 发送按钮改为按属性过渡" },

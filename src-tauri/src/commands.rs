@@ -16,9 +16,10 @@ use tauri::ipc::Channel;
 use tauri::Manager;
 use tauri::State;
 
-use crate::acp::launch::{AgentProfile, Launch, SshAuth, SshSpec};
+use crate::acp::launch::{render_command_line, AgentProfile, Launch, SshAuth, SshSpec};
 use crate::acp::{self, transport};
 use crate::db;
+use crate::lock::SessionLockDto;
 use crate::state::{AgentHandle, AppState, SessionRecord};
 use crate::wire::{Meta, WireEvent};
 
@@ -97,6 +98,56 @@ pub enum AcpEvent {
     },
 }
 
+/// 一次 ACP `usage_update` 的可显示结果。
+///
+/// `percent` 在后端算好：前端只负责排版，不再做除法，也不按消息长度猜。
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct UsageDto {
+    pub ui_session_id: Option<String>,
+    /// 谁的报告（群聊里每个成员各有上下文）
+    pub author_id: Option<String>,
+    /// 已用
+    #[ts(type = "number")]
+    pub used: u64,
+    /// 窗口大小
+    #[ts(type = "number")]
+    pub size: u64,
+    /// 0–100 的整数百分比，后端算好（前端不做除法）
+    pub percent: u8,
+}
+
+impl UsageDto {
+    fn from_raw(
+        ui_session_id: Option<String>,
+        author_id: Option<String>,
+        used: u64,
+        size: u64,
+    ) -> Self {
+        Self {
+            ui_session_id,
+            author_id,
+            used,
+            size,
+            percent: usage_percent(used, size),
+        }
+    }
+}
+
+/// 整数百分比。`used > 0` 时至少给 1%，避免「明明用了一点却显示 0%」。
+fn usage_percent(used: u64, size: u64) -> u8 {
+    if size == 0 {
+        return 0;
+    }
+    let raw = ((used as u128 * 100) / size as u128).min(100);
+    if used > 0 && raw == 0 {
+        1
+    } else {
+        raw as u8
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct CmdError {
     pub code: u32,
@@ -153,6 +204,14 @@ pub struct ProfileDto {
     /// 密码只在内存里过一手：不写配置、不落 SQLite
     #[serde(default)]
     pub ssh_password: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct CommandPreview {
+    /// 真正会执行的命令行（可粘贴）
+    pub line: String,
 }
 
 #[derive(Debug, Serialize, ts_rs::TS)]
@@ -254,6 +313,43 @@ pub fn to_profile(dto: &ProfileDto) -> Result<AgentProfile, CmdError> {
         env: BTreeMap::new(),
         default_cwd: PathBuf::from(&dto.cwd),
     })
+}
+
+/// 生成能力面板展示的命令行。
+///
+/// 必须走与真正启动相同的 `command_line()` 包装；`binary` / `argv` 只覆盖
+/// 「被执行的程序与参数」，WSL/SSH 的 relay、cwd、PATH 仍由启动层决定。
+#[tauri::command]
+pub async fn command_preview(
+    profile: ProfileDto,
+    cwd: Option<String>,
+    binary: Option<String>,
+    argv: Option<Vec<String>>,
+) -> Result<CommandPreview, CmdError> {
+    let mut parsed = to_profile(&profile)?;
+    if let Some(binary) = binary {
+        parsed.program = binary;
+    }
+    if let Some(argv) = argv {
+        parsed.args = argv;
+    }
+
+    let cwd = cwd.unwrap_or_else(|| profile.cwd.clone());
+    let cwd = if cwd.trim().is_empty() {
+        parsed.default_cwd.to_string_lossy().into_owned()
+    } else {
+        cwd
+    };
+    let spec = parsed
+        .command_line(&cwd)
+        .map_err(|e| CmdError::new(50000, format!("生成命令预览失败：{e}")))?;
+    let line = render_command_line(&spec);
+
+    // 密码认证会为 SSH_ASKPASS 写临时脚本；预览不需要它，渲染完立刻清掉。
+    if let Some(path) = spec.cleanup {
+        let _ = std::fs::remove_file(path);
+    }
+    Ok(CommandPreview { line })
 }
 
 /// 起进程之前的静态校验。
@@ -463,6 +559,85 @@ pub fn session_members(
         .db
         .session_members(&session_id)
         .map_err(|e| CmdError::new(50000, format!("读群成员失败：{e}")))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct MentionResolution {
+    /// 命中的成员 id / 连接 id / 会话 id / cwd；没命中时全为 None
+    pub member_id: Option<String>,
+    pub profile_id: Option<String>,
+    pub acp_session_id: Option<String>,
+    pub cwd: String,
+    pub handle: Option<String>,
+    /// 用户敲了 `@xxx` 但没对上成员时给出他敲的内容
+    pub token: Option<String>,
+}
+
+/// 解析一条群聊消息里的 `@`，并把「成员 → 连接 → ACP 会话 → cwd」一次定死。
+///
+/// 前端只负责展示返回结果：命中就按这里给的四元组投递；没命中但有 token 就提示；
+/// 成员不可用时由这里给出明确错误码，不再让前端各自猜。
+#[tauri::command]
+pub async fn mention_resolve(
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+) -> Result<MentionResolution, CmdError> {
+    let members = state
+        .db
+        .session_members(&session_id)
+        .map_err(|e| CmdError::new(50000, format!("读群成员失败：{e}")))?;
+    let handles: Vec<String> = members.iter().map(|m| m.handle.clone()).collect();
+
+    let Some(hit) = crate::mention::find(&text, &handles) else {
+        return Ok(MentionResolution {
+            member_id: None,
+            profile_id: None,
+            acp_session_id: None,
+            cwd: String::new(),
+            handle: None,
+            token: crate::mention::token(&text),
+        });
+    };
+
+    let matched: Vec<_> = members
+        .iter()
+        .filter(|m| crate::mention::same_handle(&m.handle, &hit.handle))
+        .collect();
+    if matched.len() != 1 {
+        return Err(CmdError::new(
+            50601,
+            format!("短名 @{} 对应了多个成员，数据不一致 —— 请到成员设置里修正", hit.handle),
+        ));
+    }
+    let member = matched[0];
+
+    if member.acp_session_id.trim().is_empty() {
+        return Err(CmdError::new(
+            50602,
+            "这个成员还没有可用的会话 —— 到成员设置里点「测试」建一个",
+        ));
+    }
+
+    let cwd = state
+        .db
+        .load_profiles()
+        .map_err(|e| CmdError::new(50000, format!("读取配置失败：{e}")))?
+        .into_iter()
+        .find(|p| p.id == member.profile_id)
+        .map(|p| p.cwd)
+        .ok_or_else(|| CmdError::new(50601, "成员所属的连接不存在，数据不一致"))?;
+
+    Ok(MentionResolution {
+        member_id: Some(member.id.clone()),
+        profile_id: Some(member.profile_id.clone()),
+        acp_session_id: Some(member.acp_session_id.clone()),
+        cwd,
+        handle: Some(member.handle.clone()),
+        token: None,
+    })
 }
 
 #[tauri::command]
@@ -891,6 +1066,7 @@ pub async fn agent_connect(
     // 轨迹采集：事件落地需要库和「这一轮是谁」——两者都在 task 外面，clone 进去
     let db_for_trace = state.db.clone();
     let turns_for_trace = state.turns.clone();
+    let locks = state.locks.clone();
     tokio::spawn(async move {
         /// 从 ACP 原始消息里取 sessionId，再按归属表补上界面会话与作者
         async fn route(
@@ -957,6 +1133,56 @@ pub async fn agent_connect(
                     )
                     .await;
                     let (session_id, ui_session_id, author_id) = route(&routes, &params).await;
+                    // usage 是计量而不是轨迹动作：照样落 session_events（供重启后恢复），
+                    // 同时单独推一条可丢的 acp.usage，下一帧会补上。
+                    if let Some((used, size)) = crate::trace::parse(&method, &params)
+                        .filter(|captured| captured.kind == "usage")
+                        .and_then(|captured| crate::trace::usage_of(&captured.payload))
+                    {
+                        let dto = UsageDto::from_raw(
+                            ui_session_id.clone(),
+                            author_id.clone(),
+                            used,
+                            size,
+                        );
+                        let usage_meta = Meta {
+                            profile_id: Some(profile_for_task.clone()),
+                            session_id: session_id.clone(),
+                            ui_session_id: ui_session_id.clone(),
+                            author_id: author_id.clone(),
+                        };
+                        bus.emit_json("acp.usage", false, usage_meta, &dto);
+                    }
+                    // 只认「我们自己发起的一轮」里的写操作：`session/load` 会把上一轮
+                    // 的 tool_call 重放一遍，那不是正在写，不能把提示条点亮。
+                    let in_active_turn = match session_id.as_deref() {
+                        Some(acp_sid) => turns_for_trace.current(acp_sid).await.is_some(),
+                        None => false,
+                    };
+                    if let (Some(acp_sid), true) = (session_id.as_deref(), in_active_turn) {
+                        // author 属于会话归属，不在 ACP 的 update 里；补进锁解析参数，
+                        // 让群聊里显示「谁在写」而不是只有主 agent。
+                        let mut lock_params = params.clone();
+                        if let (Some(author), Some(object)) =
+                            (author_id.as_deref(), lock_params.as_object_mut())
+                        {
+                            object.insert(
+                                "authorId".to_string(),
+                                serde_json::Value::String(author.to_string()),
+                            );
+                        }
+                        if let Some(lock_state) = locks.update(acp_sid, &lock_params) {
+                            let dto =
+                                SessionLockDto::from_state(&lock_state, acp_sid.to_string(), ui_session_id.clone());
+                            let lock_meta = Meta::for_session(
+                                profile_for_task.clone(),
+                                acp_sid.to_string(),
+                                ui_session_id.clone(),
+                                author_id.clone(),
+                            );
+                            bus.emit_json("session.lock", false, lock_meta, &dto);
+                        }
+                    }
                     if is_text {
                         // 攒起来；够 4KB 就先发一段（长回答开头不必等满 30ms）
                         let chunk = params
@@ -988,6 +1214,43 @@ pub async fn agent_connect(
                 }
                 transport::Incoming::Request { id, method, params } => {
                     tracing::debug!(target: "sincearc::acp", id, %method, "agent request");
+                    if method == "fs/read_text_file" {
+                        let acp_session_id = params
+                            .get("sessionId")
+                            .and_then(serde_json::Value::as_str);
+                        let result = match acp_session_id {
+                            Some(session_id) => match routes.get(session_id).await {
+                                Some(record) => {
+                                    let cwd = PathBuf::from(record.cwd);
+                                    acp::fs::handle_read_request(&params, &cwd)
+                                }
+                                None => Err(serde_json::json!({
+                                    "code": -32602,
+                                    "message": "未知会话",
+                                })),
+                            },
+                            // 没有 sessionId 就连 cwd 都定位不到；交给纯函数统一报「缺少参数」。
+                            None => acp::fs::handle_read_request(&params, std::path::Path::new("")),
+                        };
+                        match &result {
+                            Ok(_) => tracing::info!(
+                                target: "sincearc::acp", id,
+                                "fs/read_text_file ok"
+                            ),
+                            Err(e) => tracing::warn!(
+                                target: "sincearc::acp", id,
+                                error = %e,
+                                "fs/read_text_file rejected"
+                            ),
+                        }
+                        if let Err(e) = proc_for_task.respond(id, result).await {
+                            tracing::warn!(
+                                target: "sincearc::acp", id, error = %e,
+                                "fs/read_text_file response failed"
+                            );
+                        }
+                        continue;
+                    }
                     if method != "session/request_permission" {
                         // 没实现的方法必须当场拒答。JSON-RPC 里一个不回的请求会让 agent
                         // 一直等（hermes 默认 300s 才自拒），而界面上什么都不显示 ——
@@ -1564,6 +1827,7 @@ pub async fn session_prompt(
     }
     let turns = state.turns.clone();
     let cancels = state.cancels();
+    let locks = state.locks.clone();
     let bus = state.bus.clone();
     let profile_id = record.profile_id.clone();
     let sid_for_trace = sid.clone();
@@ -1611,6 +1875,16 @@ pub async fn session_prompt(
                     &turn_id_for_turn,
                     if cancelled { "cancelled" } else { "finished" },
                 );
+                // 一轮的终态到了：写提示锁必须一起消失，哪怕 agent 没发
+                // tool_call_update（有的实现只在 tool_call 里更新状态）。
+                if locks.clear(&sid_for_trace).is_some() {
+                    bus.emit_json(
+                        "session.lock",
+                        false,
+                        meta.clone(),
+                        &SessionLockDto::unlocked(sid.clone(), ui_for_event.clone()),
+                    );
+                }
                 bus.emit_json(
                     "acp.prompt.result",
                     true,
@@ -1635,6 +1909,14 @@ pub async fn session_prompt(
                     &turn_id_for_turn,
                     if cancelled_by_user { "cancelled" } else { "failed" },
                 );
+                if locks.clear(&sid_for_trace).is_some() {
+                    bus.emit_json(
+                        "session.lock",
+                        false,
+                        meta.clone(),
+                        &SessionLockDto::unlocked(sid.clone(), ui_for_event.clone()),
+                    );
+                }
                 bus.emit_json(
                     "acp.prompt.failed",
                     true,
@@ -1677,7 +1959,7 @@ pub async fn session_cancel(
         .proc
         .notify(
             "session/cancel",
-            serde_json::json!({ "sessionId": session_id }),
+            serde_json::json!({ "sessionId": session_id.clone() }),
         )
         .await
         .map_err(|e| {
@@ -1686,7 +1968,25 @@ pub async fn session_cancel(
                 "session cancel notify failed"
             );
             CmdError::new(50500, format!("取消请求没送达：{e}"))
-        })
+        })?;
+
+    // 停止请求已送达：写提示不必等一个可能永远不来的终态。
+    // 若 agent 在收尾期间还发 tool_call，会重新点亮；下一轮/终态再清。
+    if state.locks.clear(&session_id).is_some() {
+        let record = state.routes.get(&session_id).await;
+        let ui_sid = record.as_ref().and_then(|r| r.ui_session_id.clone());
+        let author_id = record.as_ref().and_then(|r| r.author_id.clone());
+        let meta = Meta::for_session(
+            profile_id,
+            session_id.clone(),
+            ui_sid.clone(),
+            author_id,
+        );
+        state
+            .bus
+            .emit_json("session.lock", false, meta, &SessionLockDto::unlocked(session_id.clone(), ui_sid));
+    }
+    Ok(())
 }
 
 /// 回答 agent 发来的请求。目前只有 `session/request_permission`。
@@ -1779,7 +2079,7 @@ pub async fn sessions_list(
 #[tauri::command]
 pub async fn session_upsert(
     state: State<'_, AppState>,
-    row: db::SessionRow,
+    row: db::SessionUpsert,
 ) -> Result<(), CmdError> {
     state
         .db
@@ -1890,6 +2190,30 @@ pub async fn messages_load(
         .db
         .load_messages_page(&session_id, limit, before_seq)
         .map_err(|e| CmdError::new(50000, format!("读取消息失败：{e}")))
+}
+
+/// 打开会话时先给一次最新的真实上下文占用；实时变化仍走 `acp.usage`。
+#[tauri::command]
+pub async fn session_usage(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<UsageDto>, CmdError> {
+    let latest = state
+        .db
+        .latest_usage(&session_id)
+        .map_err(|e| CmdError::new(50000, format!("读取上下文占用失败：{e}")))?;
+    let Some((payload, author_id)) = latest else {
+        return Ok(None);
+    };
+    let Some((used, size)) = crate::trace::usage_of(&payload) else {
+        return Ok(None);
+    };
+    Ok(Some(UsageDto::from_raw(
+        Some(session_id),
+        author_id,
+        used,
+        size,
+    )))
 }
 
 /* ---------------- 会话审批模式（编辑审批） ---------------- */
@@ -2148,5 +2472,16 @@ mod launch_input_tests {
     #[test]
     fn normal_input_passes() {
         assert!(validate_launch_input(&dto("hermes", "/home/jerry")).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::usage_percent;
+
+    #[test]
+    fn percent_never_zero_when_used() {
+        assert_eq!(usage_percent(1, 1_000_000), 1);
+        assert_eq!(usage_percent(0, 1_000_000), 0);
     }
 }

@@ -71,10 +71,11 @@ export interface SessionSummary {
   id: string;
   title: string;
   cwd: string;
-  /** 人类可读的"最后活动时间"（展示用，由 updatedAtSec 格式化而来） */
+  /** 后端给的简短显示时间：今天 `HH:mm`，更早 `MM-DD` */
   updatedAt: string;
-  /** 库里的时间戳（秒），排序与分组都按它算 */
+  /** 库里的时间戳（秒）；排序/去重仍用它，不再用它算分组 */
   updatedAtSec?: number;
+  /** 由后端按机器本地时区判定，前端只映射成中文 */
   group: "今天" | "昨天" | "更早";
   /** 这个会话里有哪些玩家 */
   playerIds: string[];
@@ -201,6 +202,13 @@ export interface SessionState {
   turns: TraceTurn[];
   busy: boolean;
   pendingPerm: PermissionRequest | null;
+  /**
+   * 后端推送的写提示：键是 ACP 会话 id（群聊里每个成员一个），只用于显示，不参与发送拦截。
+   * 用映射而不是单个槽位，是因为多个 agent 可能同时在写。
+   */
+  locks?: Record<string, { playerId: string | null; title: string; count: number }>;
+  /** ACP 报上来的真实上下文占用；null = 这个会话还没收到过 usage。 */
+  usage?: { used: number; size: number; percent: number } | null;
 }
 
 /* ---------- 设置 ---------- */

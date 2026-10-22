@@ -1,7 +1,8 @@
 //! 会话域：连接配置、会话行、消息。
 
-import type { ProfileDto, SessionRowDto, TraceTurnDto } from "../types";
+import type { ProfileDto, SessionRowDto, SessionUpsert, TraceTurnDto } from "../types";
 import type { MessagePage } from "../types.gen/MessagePage";
+import type { UsageDto } from "../types.gen/UsageDto";
 import type { AgentProfile, SshAuth, SshConfig } from "@/types";
 import { invokeCmd } from "../client";
 
@@ -83,7 +84,7 @@ export function sessionsList(profileId?: string): Promise<SessionRowDto[]> {
   return invokeCmd<SessionRowDto[]>("sessions_list", { profileId: profileId ?? null });
 }
 
-export function sessionUpsert(row: SessionRowDto): Promise<void> {
+export function sessionUpsert(row: SessionUpsert): Promise<void> {
   return invokeCmd<void>("session_upsert", { row });
 }
 
@@ -113,6 +114,11 @@ export function messagesLoad(
     limit: opts?.limit ?? null,
     beforeSeq: opts?.beforeSeq ?? null,
   });
+}
+
+/** 打开会话时读一次最后一条真实 usage；没有就返回 null。 */
+export function sessionUsage(sessionId: string): Promise<UsageDto | null> {
+  return invokeCmd<UsageDto | null>("session_usage", { sessionId });
 }
 
 /* ---------- session/update 的解析 ---------- */

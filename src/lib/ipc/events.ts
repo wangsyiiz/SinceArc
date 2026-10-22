@@ -9,7 +9,7 @@ import { clog } from "@/lib/log";
 
 const WIRE_VERSION = 1;
 
-const handlers = new Map<string, (e: AcpEvent) => void>();
+const handlers = new Map<string, (e: AcpEvent, topic: string) => void>();
 let subscribed: Promise<void> | null = null;
 let lastSeq = 0;
 
@@ -40,7 +40,7 @@ function ensureSubscribed(): Promise<void> {
         clog("DROP-NOPROFILE", `${wire.topic} profile=${wire.profileId}`);
         return;
       }
-      fn(wire.payload as AcpEvent);
+      fn(wire.payload as AcpEvent, wire.topic);
     };
     await invokeCmd("ipc_subscribe", { channel });
   })();
@@ -51,7 +51,7 @@ function ensureSubscribed(): Promise<void> {
 
 export function onAgentEvent(
   profileId: string,
-  handler: (e: AcpEvent) => void,
+  handler: (e: AcpEvent, topic: string) => void,
 ): Promise<void> {
   handlers.set(profileId, handler);
   return ensureSubscribed();

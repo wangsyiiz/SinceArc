@@ -12,7 +12,6 @@ import { AgentCapabilities } from "@/components/AgentCapabilities";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { MAIN_AGENT_ID } from "@/hooks/usePrompt";
 import { profileLabel } from "@/lib/format";
-import { findMention, mentionToken } from "@/lib/mentions";
 import { pushSystemNotice } from "@/lib/notices";
 import { commandLineOf, commandsFor } from "@/extensions/registry";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
@@ -24,6 +23,8 @@ import { TitleBar } from "@/components/TitleBar";
 import { TracePanel } from "@/components/TracePanel";
 import { sessionTrace, type TraceTurnDto } from "@/lib/ipc";
 import { toTraceView } from "@/lib/trace-adapter";
+import { summarizeLocks } from "@/lib/locks";
+import { describeUsage } from "@/lib/usage-format";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
 import { prsByRepo } from "@/mock/data";
 import type {
@@ -37,6 +38,7 @@ import type {
 } from "@/types";
 import {
   asCmdError,
+  mentionResolve,
   sessionDelete,
   sessionCancel,
   sessionMembers,
@@ -46,7 +48,7 @@ import {
   type DiscoveryHit,
   type ModesSnapshot,
 } from "@/lib/ipc";
-import { isWrite, now } from "@/lib/format";
+import { now } from "@/lib/format";
 import { clog } from "@/lib/log";
 import { newId } from "@/lib/ids";
 import { useAcpEvents } from "@/hooks/useAcpEvents";
@@ -147,7 +149,7 @@ export default function App() {
 
   const { sessions, setSessions, reload: reloadSessions } = useSessionList();
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
-  const { state, patchSession, writeLock, initSession, sessionState, hasMore, loadOlder, loadingOlder } =
+  const { state, patchSession, initSession, sessionState, hasMore, loadOlder, loadingOlder } =
     useSessionState(lastSessionId);
 
   /** 重新读当前群的成员：换群、加入、移出都走它 */
@@ -201,6 +203,14 @@ export default function App() {
   // 已经移除，靠它就等于靠一个永远空着的值
   const sessionProfile = profiles.find((p) => p.id === activeSession?.profileId) ?? activeProfile;
   const isStopping = !!cancelling[lastSessionId] && state.busy;
+
+  /**
+   * 写提示：群聊里每个成员是独立 ACP 会话，各自可能同时在写。
+   * 只显示其中一个（按 title 稳定选择），其余用「另有 N 个」计数 ——
+   * 一次性列三行会把输入框顶得老高，而这条本来就只是提示。
+   */
+  const writeHint = useMemo(() => summarizeLocks(state.locks ?? {}), [state.locks]);
+  const usageLine = state.usage ? describeUsage(state.usage) : null;
 
   useEffect(() => {
     if (state.busy) return;
@@ -498,40 +508,44 @@ export default function App() {
 
   const sendInGroup = useCallback(
     async (raw: string) => {
-      // 用已知短名去文本里找（短名可能含中文，字符集正则会把它截断）
-      const hit = findMention(
-        raw,
-        members.map((u) => u.handle),
-      );
-      if (!hit) {
-        // 敲了 @ 却一个成员都对不上：说清敲的是什么，不静默投给主 agent
-        const token = mentionToken(raw);
-        if (!token) {
-          await send(raw);
-          refreshTitles();
+      let resolved: Awaited<ReturnType<typeof mentionResolve>>;
+      try {
+        // 谁在群里、他连的哪条连接、cwd 是什么：全部由后端一次判定。
+        resolved = await mentionResolve(lastSessionId, raw);
+      } catch (e) {
+        const err = asCmdError(e);
+        pushSystemNotice(patchSession, lastSessionId, err.msg);
+        return;
+      }
+
+      if (resolved.memberId) {
+        if (!resolved.profileId || !resolved.acpSessionId) {
+          pushSystemNotice(patchSession, lastSessionId, "成员信息不完整，这条消息没有发出去");
           return;
         }
+        const r = await send(raw, {
+          profileId: resolved.profileId,
+          acpSessionId: resolved.acpSessionId,
+          authorId: resolved.memberId,
+          cwd: resolved.cwd,
+        });
+        refreshTitles();
+        return r;
+      }
+
+      if (resolved.token) {
         pushSystemNotice(
           patchSession,
           lastSessionId,
-          `@${token} 不在这个群里 —— 这条消息没有发出去（要加人请到左栏的 + 或设置 → 成员）`,
+          `@${resolved.token} 不在这个群里 —— 这条消息没有发出去（要加人请到左栏的 + 或设置 → 成员）`,
         );
         return;
       }
-      // findMention 只在 members 的短名里命中，所以一定能找到人
-      const who = members.find((u) => u.handle === hit.handle);
-      if (!who) return;
-      const prof = profiles.find((p) => p.id === who.profileId);
-      const r = await send(raw, {
-        profileId: who.profileId,
-        acpSessionId: who.acpSessionId,
-        authorId: who.id,
-        cwd: prof?.cwd ?? "",
-      });
+
+      await send(raw);
       refreshTitles();
-      return r;
     },
-    [members, profiles, send, lastSessionId, patchSession, refreshTitles],
+    [send, lastSessionId, patchSession, refreshTitles],
   );
 
   /**
@@ -709,7 +723,11 @@ export default function App() {
                 right={
                   <AgentCapabilities
                     profile={sessionProfile}
-                    commands={commandsFor(sessionProfile?.agentName, commandLineOf(sessionProfile))}
+                    commands={commandsFor(
+                      sessionProfile?.agentName,
+                      // 只用于按命令行识别 agent，不用于展示；展示由后端 command_preview 生成。
+                      commandLineOf(sessionProfile),
+                    )}
                   />
                 }
               />
@@ -772,20 +790,11 @@ export default function App() {
                             .map((a) => {
                               const p = renderPlayers.find((x) => x.id === a.playerId);
                               if (!p) return null;
-                              const queued =
-                                writeLock && writeLock.id !== a.id && isWrite(a)
-                                  ? {
-                                      holder:
-                                        renderPlayers.find((x) => x.id === writeLock.playerId)
-                                          ?.name ?? "agent",
-                                    }
-                                  : null;
                               return (
                                 <ThinkingRow
                                   key={a.id}
                                   player={p}
                                   activity={a}
-                                  queued={queued}
                                   onOpenTrace={() => {
                                     setTraceOpen(true);
                                     setFocus((f) => ({ id: a.id, tick: (f?.tick ?? 0) + 1 }));
@@ -818,6 +827,33 @@ export default function App() {
                         </button>
                       )}
                       <div className="pointer-events-auto">
+                        {usageLine && (
+                          <div
+                            className={`sc-glass mb-2 flex items-center gap-2 rounded-md border-0 px-3 py-1.5 ${
+                              usageLine.warn ? "text-warn-1" : "text-ink-3"
+                            }`}
+                            style={{
+                              fontSize: "var(--fs-caption)",
+                              lineHeight: "var(--lh-caption)",
+                            }}
+                          >
+                            <span className="truncate">{usageLine.text}</span>
+                          </div>
+                        )}
+                        {writeHint && (
+                          <div className="sc-glass mb-2 flex items-center gap-2 rounded-md border-0 px-3 py-1.5 text-xs text-ink-3">
+                            <span className="truncate">
+                              {renderPlayers.find((p) => p.id === (writeHint.playerId ?? MAIN_AGENT_ID))
+                                ?.name ?? "agent"}
+                              正在写：{writeHint.title}
+                            </span>
+                            {writeHint.extra > 0 && (
+                              <span className="ml-auto shrink-0 text-ink-3">
+                                另有 {writeHint.extra} 个进行中
+                              </span>
+                            )}
+                          </div>
+                        )}
                         {isStopping && (
                           <div className="sc-glass mb-2 flex items-center gap-2 rounded-[10px] border-0 px-3 py-1.5 text-[11px] text-ink-2">
                             <span className="size-1.5 animate-pulse rounded-full bg-warn-1" />
@@ -832,7 +868,6 @@ export default function App() {
                             isStopping ? "正在停止…" : "输入消息，@ 玩家提问…"
                           }
                           players={players}
-                          contextMessages={settings.contextMessages}
                         />
                       </div>
                     </div>

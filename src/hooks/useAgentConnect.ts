@@ -21,7 +21,7 @@ interface Deps {
   /** 已有的 profile → ACP 会话映射，用来判断「还用不用连」 */
   sessionsByProfile: Record<string, string>;
   onUpdateProfile: (p: AgentProfile) => void;
-  onAgentEvent: (profileId: string, event: AcpEvent) => void;
+  onAgentEvent: (profileId: string, event: AcpEvent, topic: string) => void;
   onSession: (
     profileId: string,
     acpSessionId: string,
@@ -55,7 +55,7 @@ export function useAgentConnect({
   const connect = useCallback(async (p: AgentProfile, uiSid?: string): Promise<string> => {
     const s = stateRef.current;
     // 先登记处理器、再连接：单通道按 profileId 分发，事件不会因为「还没订阅」而丢
-    await onAgentEvent_(p.id, (e) => s.onAgentEvent(p.id, e));
+    await onAgentEvent_(p.id, (e, topic) => s.onAgentEvent(p.id, e, topic));
     const out = await connectAgent(p, uiSid);
     s.onUpdateProfile({
       ...p,

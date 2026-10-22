@@ -20,10 +20,24 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// 「写」= 会改动磁盘或执行命令。判据只在这里定义，前端不再自行判断。
+pub fn is_write_kind(kind: &str) -> bool {
+    matches!(kind, "edit" | "execute")
+}
+
 /// 思考正文上限：够看出「它在往哪个方向想」，不追求逐字复现。
 pub const THOUGHT_MAX_BYTES: usize = 8 * 1024;
 /// 单条事件上限：超过就截断并标记。
 pub const PAYLOAD_MAX_BYTES: usize = 64 * 1024;
+
+/// `usage_update` 的 payload → `(used, size)`。
+///
+/// 只认这两个真实字段：缺一个或类型不对就返回 `None`，不按字符数/历史消息猜。
+pub fn usage_of(payload: &Value) -> Option<(u64, u64)> {
+    let used = payload.get("used")?.as_u64()?;
+    let size = payload.get("size")?.as_u64()?;
+    Some((used, size))
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Captured {
@@ -400,6 +414,19 @@ mod tests {
         });
         assert!(parse("session/update", &params).is_none());
     }
+
+    #[test]
+    fn usage_of_reads_used_and_size() {
+        let payload = json!({ "size": 1_000_000, "used": 18_853 });
+        assert_eq!(usage_of(&payload), Some((18_853, 1_000_000)));
+    }
+
+    #[test]
+    fn usage_of_ignores_missing_fields() {
+        assert_eq!(usage_of(&json!({})), None);
+        assert_eq!(usage_of(&json!({ "used": 1 })), None);
+    }
+
     #[test]
     fn 工具调用的增量更新会并回初始事件() {
         use crate::db::{EventRow, TurnRow};

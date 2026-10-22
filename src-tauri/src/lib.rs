@@ -2,6 +2,8 @@ pub mod acp;
 pub mod coalesce;
 pub mod commands;
 pub mod db;
+pub mod lock;
+pub mod mention;
 pub mod state;
 pub mod trace;
 pub mod wire;
@@ -75,6 +77,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             acp::list_profiles_hint,
+            commands::command_preview,
             commands::agent_probe,
             commands::agent_discover,
             commands::agent_discovery_cached,
@@ -83,6 +86,7 @@ pub fn run() {
             commands::agent_user_save,
             commands::agent_user_delete,
             commands::session_members,
+            commands::mention_resolve,
             commands::session_member_add,
             commands::session_member_remove,
             commands::session_load,
@@ -106,6 +110,7 @@ pub fn run() {
             commands::messages_append,
             commands::client_log,
             commands::messages_load,
+            commands::session_usage,
             commands::agent_list_connected,
         ])
         .run(tauri::generate_context!())

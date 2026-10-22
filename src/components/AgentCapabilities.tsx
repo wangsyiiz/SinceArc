@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, Minus, Sparkles, Terminal } from "lucide-react";
 import type { AgentCommand, AgentProfile } from "@/types";
-import { previewCommand } from "@/extensions/registry";
+import { commandPreview } from "@/extensions/registry";
 import { cn } from "@/lib/utils";
 
 interface AgentCapabilitiesProps {
@@ -40,6 +40,9 @@ export const CAPABILITY_LABEL: Record<string, string> = {
 export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps) {
   const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState<AgentCommand | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -50,6 +53,39 @@ export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps)
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
+
+  useEffect(() => {
+    let alive = true;
+    setPreview(null);
+    setPreviewFailed(false);
+    setPreviewLoading(false);
+    if (!open || !picked) {
+      return () => {
+        alive = false;
+      };
+    }
+    if (!profile) {
+      setPreviewFailed(true);
+      return () => {
+        alive = false;
+      };
+    }
+
+    setPreviewLoading(true);
+    void commandPreview(profile, picked)
+      .then((line) => {
+        if (alive) setPreview(line);
+      })
+      .catch(() => {
+        if (alive) setPreviewFailed(true);
+      })
+      .finally(() => {
+        if (alive) setPreviewLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open, picked, profile]);
 
   const caps = profile?.capabilities ?? [];
   const rows = Object.entries(CAPABILITY_LABEL).map(([key, label]) => ({
@@ -131,7 +167,7 @@ export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps)
                         </span>
                       </span>
                       {c.note && (
-                        <span className="mt-0.5 block text-[10px] text-ink-3">{c.note}</span>
+                        <span className="mt-0.5 block text-[length:var(--fs-caption)] text-ink-3">{c.note}</span>
                       )}
                     </span>
                   </button>
@@ -141,9 +177,17 @@ export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps)
               {picked && (
                 <div className="mt-1 border-t border-line-1/40 px-2 py-2">
                   <div className="text-[9.5px] text-ink-3">将执行</div>
-                  <code className="mt-1 block break-all font-mono text-[10px] leading-relaxed text-ink-2">
-                    {previewCommand(profile, picked)}
-                  </code>
+                  {previewLoading && (
+                    <p className="mt-1 text-[length:var(--fs-caption)] text-ink-3">正在生成命令预览…</p>
+                  )}
+                  {previewFailed && (
+                    <p className="mt-1 text-[length:var(--fs-caption)] text-ink-3">无法生成命令预览</p>
+                  )}
+                  {preview && (
+                    <code className="mt-1 block break-all whitespace-pre-wrap font-mono text-[length:var(--fs-caption)] leading-relaxed text-ink-2">
+                      {preview}
+                    </code>
+                  )}
                   <p className="mt-1.5 text-[9.5px] leading-relaxed text-ink-3">
                     未接线：目前只显示命令形态，不发起调用。
                   </p>
