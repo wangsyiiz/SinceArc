@@ -235,6 +235,32 @@ pub fn aggregate(turns: Vec<crate::db::TurnRow>, events: Vec<crate::db::EventRow
                 let payload: Value = serde_json::from_str(&e.payload_json)
                     .unwrap_or_else(|_| json!({ "raw": e.payload_json }));
 
+                // 思考是流式的：hermes 按 token 段发（实测一轮 24 条，"User"、" asks: from now"…
+                // 各自成条）。不合并的话轨迹就是 24 行碎片，读不出任何东西。
+                if e.kind == "thought" {
+                    if let Some(last) = items.last_mut().filter(|i| i.kind == "thought"
+                        && i.author_id == e.author_id)
+                    {
+                        let add = payload.get("text").and_then(Value::as_str).unwrap_or("");
+                        let mut text = last
+                            .payload
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        text.push_str(add);
+                        last.truncated |= e.truncated;
+                        if text.len() > THOUGHT_MAX_BYTES {
+                            // 合并后仍守 8KB 上限（按字符边界截断，别切坏中文）
+                            let (cut, _) = truncate_str(&text, THOUGHT_MAX_BYTES);
+                            text = cut;
+                            last.truncated = true;
+                        }
+                        last.payload = json!({ "text": text });
+                        continue;
+                    }
+                }
+
                 if e.kind == "tool_call_update" {
                     if let Some(id) = payload.get("toolCallId").and_then(Value::as_str) {
                         if let Some(&idx) = calls.get(id) {
@@ -270,6 +296,44 @@ pub fn aggregate(turns: Vec<crate::db::TurnRow>, events: Vec<crate::db::EventRow
             }
         })
         .collect()
+}
+
+
+/// 补上「有事件、没有轮次行」的轮次。
+///
+/// 正常情况下不会出现：轮次在提问时与 turn id 一起落库。但历史数据（本轮修复之前的那批，
+/// 轮次外键拿错 id 写失败了）只有事件 —— 如果直接按 turns 聚合，这些事件就会**静默消失**，
+/// 界面显示「没有轨迹」，而库里明明有 28 条。宁可显示「提问没有记录」，也不能让人以为没发生过。
+pub fn with_orphan_turns(
+    mut turns: Vec<crate::db::TurnRow>,
+    session_id: &str,
+    events: &[crate::db::EventRow],
+) -> Vec<crate::db::TurnRow> {
+    use std::collections::HashSet;
+
+    let known: HashSet<&str> = turns.iter().map(|t| t.id.as_str()).collect();
+    let mut ranges: std::collections::HashMap<&str, (i64, i64)> = std::collections::HashMap::new();
+    for e in events {
+        if known.contains(e.turn_id.as_str()) {
+            continue;
+        }
+        let r = ranges.entry(e.turn_id.as_str()).or_insert((e.at, e.at));
+        r.0 = r.0.min(e.at);
+        r.1 = r.1.max(e.at);
+    }
+    for (id, (start, end)) in ranges {
+        turns.push(crate::db::TurnRow {
+            id: id.to_string(),
+            session_id: session_id.to_string(),
+            prompt: "(这一轮的提问没有记录)".to_string(),
+            author_id: None,
+            started_at: start,
+            ended_at: Some(end),
+            status: "unknown".to_string(),
+        });
+    }
+    turns.sort_by_key(|t| std::cmp::Reverse(t.started_at));
+    turns
 }
 
 #[cfg(test)]
@@ -366,6 +430,63 @@ mod tests {
         assert_eq!(items[0].payload["title"], "terminal: date", "null 不能覆盖已有标题");
         assert_eq!(items[0].payload["locations"], json!([]), "空数组不覆盖");
         assert_eq!(items[1].kind, "thought");
+    }
+
+
+    #[test]
+    fn 只有事件没有轮次行时也要显示出来() {
+        use crate::db::{EventRow, TurnRow};
+        let events = vec![EventRow {
+            id: "s1-1".into(),
+            seq: 1,
+            at: 100,
+            turn_id: "turn-x".into(),
+            author_id: None,
+            kind: "tool_call".into(),
+            payload_json: "{}".into(),
+            source: "live".into(),
+            truncated: false,
+        }];
+        let out = with_orphan_turns(Vec::<TurnRow>::new(), "s1", &events);
+        assert_eq!(out.len(), 1, "有事件就必须有一轮，不能静默丢掉");
+        assert_eq!(out[0].id, "turn-x");
+        assert_eq!(out[0].status, "unknown");
+        assert!(out[0].prompt.contains("没有记录"));
+    }
+
+
+    #[test]
+    fn 流式思考会合并成一条() {
+        use crate::db::{EventRow, TurnRow};
+        let turn = TurnRow {
+            id: "t1".into(),
+            session_id: "s1".into(),
+            prompt: "还有多少小时".into(),
+            author_id: None,
+            started_at: 1,
+            ended_at: Some(9),
+            status: "finished".into(),
+        };
+        let ev = |seq: i64, text: &str| EventRow {
+            id: format!("s1-{seq}"),
+            seq,
+            at: seq,
+            turn_id: "t1".into(),
+            author_id: None,
+            kind: "thought".into(),
+            payload_json: json!({ "text": text }).to_string(),
+            source: "live".into(),
+            truncated: false,
+        };
+        let events = vec![
+            ev(1, "User"),
+            ev(2, " asks: 还有几小时"),
+            ev(3, "？算一下"),
+        ];
+        let out = aggregate(vec![turn], events);
+        assert_eq!(out[0].items.len(), 1, "思考片段必须合并，否则轨迹是碎片");
+        assert_eq!(out[0].items[0].payload["text"], "User asks: 还有几小时？算一下");
+        assert_eq!(out[0].items[0].seq, 1, "合并后保留第一段的位置");
     }
 
 }

@@ -698,6 +698,7 @@ pub async fn session_trace(
         .db
         .load_events(&session_id, limit * 200)
         .map_err(|e| CmdError::new(50000, format!("读取轨迹失败：{e}")))?;
+    let turns = crate::trace::with_orphan_turns(turns, &session_id, &events);
     Ok(crate::trace::aggregate(turns, events))
 }
 
@@ -1303,14 +1304,22 @@ pub async fn session_prompt(
     // 一轮 = 一次 prompt。轨迹事件靠 turn id 归轮，prompt 之外收到的一律不落库。
     let turn_id = format!("turn-{}", crate::trace::now_ms());
     state.turns.start(&sid, &turn_id).await;
-    // 轨迹要能单独读懂「这一轮问了什么」，所以提问正文随轮次一起落库
-    if let Err(e) = state.db.start_turn(
-        &sid,
-        &turn_id,
-        &text,
-        record.author_id.as_deref(),
-    ) {
-        tracing::warn!(target: "sincearc::trace", error = %e, "轮次落库失败");
+    // 注意：轮次要挂在**界面会话**下，不是 ACP 会话 id。
+    // turns.session_id 外键指向 sessions(id)（UI），而这里的 session_id 是 ACP 的 ——
+    // 拿错了外键就失败，表现为「事件都落了，轨迹面板却是空的」。
+    if let Some(ui_sid) = record
+        .ui_session_id
+        .clone()
+        .or_else(|| ui_session_id.clone())
+    {
+        if let Err(e) = state.db.start_turn(
+            &ui_sid,
+            &turn_id,
+            &text,
+            record.author_id.as_deref(),
+        ) {
+            tracing::warn!(target: "sincearc::trace", error = %e, "轮次落库失败");
+        }
     }
     let turns = state.turns.clone();
     let bus = state.bus.clone();
