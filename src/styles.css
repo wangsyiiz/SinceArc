@@ -463,6 +463,26 @@ dialog.sc-dialog[open] {
 }
 
 @layer components {
+  /* 标题栏三个窗口按钮：**不受设计令牌约束**（所有者 2026-10-23：跟 Windows 原生
+     caption button 走 —— 用户对这三个键的手感来自系统，换成应用令牌立刻"不像 Windows"）。
+     最小化/最大化用 --glass-control（暗色白 6% / 浅色黑 4%，就是 Win 的 hover 洗色）；
+     关闭键是 Win 的固定红 #c42b1c、按下 #b02617 —— 这两个字面量放在这里是**有意的**，
+     TSX 里仍然一个色值都不许出现（style-guard 照旧拦）。 */
+  .sc-winbtn {
+    color: var(--i2);
+  }
+  .sc-winbtn:hover {
+    background: var(--glass-control);
+    color: var(--i1);
+  }
+  .sc-winbtn-close:hover {
+    background: #c42b1c;
+    color: #ffffff;
+  }
+  .sc-winbtn-close:active {
+    background: #b02617;
+  }
+
   /* 列表 / 导航的选中面：走主题令牌，浅色下比 n-4 再深一档 */
   .sc-row-active {
     background: var(--row-active);

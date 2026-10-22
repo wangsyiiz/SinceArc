@@ -84,10 +84,8 @@ function WinButton({
       aria-label={label}
       onClick={onClick}
       className={cn(
-        "grid w-11.5 place-items-center text-ink-2 transition-colors duration-75",
-        close
-          ? "hover:bg-danger-1 hover:text-accent-ink active:bg-danger-1 active:brightness-95"
-          : "hover:bg-surface-3/65 hover:text-ink-1 active:bg-surface-3",
+        "sc-winbtn grid w-11.5 place-items-center transition-colors duration-75",
+        close && "sc-winbtn-close",
       )}
     >
       {children}

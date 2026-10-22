@@ -7,6 +7,11 @@ export const ALLOWED: Record<string, { rule: string; count: number; why: string 
   "App.tsx": [
     { rule: "arbitrary-value", count: 5, why: "P2 收敛停止提示与输入浮层的尺寸/字号" },
     { rule: "color-literal", count: 1, why: "P2 把主 agent 颜色改为令牌" },
+    {
+      rule: "glass-border-kill",
+      count: 3,
+      why: "通知条上的 border-0：暗色看不出差别，浅色会丢掉浮层边界。P2b2 清 App.tsx 时一起删",
+    },
   ],
   "components/AgentCapabilities.tsx": [
     { rule: "arbitrary-value", count: 10, why: "P2 能力徽标尺寸与字号收敛" },

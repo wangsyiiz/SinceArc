@@ -130,6 +130,22 @@ v1 的十条硬教训全部保留（见 §8 §9 §10 §11 §12），并补上令
 **不做底边压暗**（`inset 0 -1px 0 rgba(0,0,0,.3~.4)` 这一道）：在深色面上它看起来不是「内边缘」，
 而是元素下面拖了一条阴影，按钮和输入框上最明显（P2a 之后被所有者当场指掉，已从两个令牌里删除）。
 
+**边界归 `--glass-border` 管，两条都不许手写**（2026-10-23 明确）：
+
+| 主题 | 边界怎么来 | 手写这两类都会坏 |
+| --- | --- | --- |
+| 暗色 | `--glass-border: transparent`，**只有上缘一道内高光** | `border-line-*` → 浮层上多套一圈实线 |
+| 浅色 | `--glass-border: var(--l1)`，**1px 边框就是边界本身** | `border-0` / `border-transparent` → 浅色丢掉边界 |
+
+所以：在 `sc-glass` 上 `border-line-*`、`border-0`、`border-transparent` 三类一律不许写。
+机器规则只守得住 `border-0` / `border-transparent`（`style-guard` 的 `glass-border-kill`），
+叠加实线那条还得靠人眼 —— 暗色下看得见，浅色下看不出来是因为它本来就该有。
+
+**标题栏的三个窗口按钮豁免令牌**：最小化 / 最大化 / 关闭走 Windows 原生 caption button 的方向
+（`.sc-winbtn` / `.sc-winbtn-close` 在 `styles.css`）。用户对这三个键的手感来自系统，
+把关闭键换成 `danger-1` 的应用红会立刻显得「不是 Windows」。因此这里的色值不遵守
+「不许写颜色字面量」—— 但它只存在于 CSS 的那个类里，TSX 里照旧一个色值都不许出现。
+
 ### 1.9 动效
 
 | 令牌 | 值 | 用途 |
@@ -340,6 +356,7 @@ v1 就栽在这：`.sc-control` 自带 `background`，调用方的 `hover:bg-*` 
 | 10 | 行内 `style` 覆盖令牌 | 主题切换时失效，且无法被检查工具发现 |
 | 11 | `var(--x)` 未定义就使用 | 整条声明被判无效丢弃，不退回 0（分段控件曾一直是直角） |
 | 12 | unlayered 组件类自带 `background` | 压过所有 `hover:bg-*`，hover 静默失效 |
+| 13 | 在 `.sc-glass` 上手写边界（`border-line-*` / `border-0` / `border-transparent`） | 暗色多套一圈实线，或浅色丢掉边界（通知条踩过） |
 
 ---
 

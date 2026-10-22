@@ -86,6 +86,22 @@ function countOutlineNone(text: string): number {
   return count;
 }
 
+/**
+ * 玻璃上把边界写死：`sc-glass` 的边界由 `--glass-border` 按主题给
+ * （暗色 transparent + 上缘高光、浅色 1px l1）。在同一个 className 里再写
+ * `border-0` / `border-transparent` 会把**浅色**那一道边框也删掉 ——
+ * 暗色看不出差别，浅色主题直接失去浮层边界（所有者 2026-10-23 点名这条）。
+ * 反过来写 `border-line-*` 是给暗色多套一圈实线，同样由人眼判，不在机器规则里。
+ */
+function countGlassBorderKill(text: string): number {
+  let count = 0;
+  for (const match of text.matchAll(/"[^"\n]*"|`[^`\n]*`/g)) {
+    const value = match[0];
+    if (value.includes("sc-glass") && /\bborder-(0|transparent)\b/.test(value)) count += 1;
+  }
+  return count;
+}
+
 function scanActual(): Record<string, Record<string, number>> {
   const actual: Record<string, Record<string, number>> = {};
   for (const path of walk(SRC)) {
@@ -100,6 +116,8 @@ function scanActual(): Record<string, Record<string, number>> {
     }
     const outline = countOutlineNone(text);
     if (outline > 0) counts["outline-none"] = outline;
+    const glassBorder = countGlassBorderKill(text);
+    if (glassBorder > 0) counts["glass-border-kill"] = glassBorder;
     if (Object.keys(counts).length > 0) actual[rel] = counts;
   }
   return actual;
