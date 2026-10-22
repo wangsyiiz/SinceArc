@@ -110,9 +110,35 @@ src/lib/ipc/
 ### 群域（`group`）
 `AgentUser`（身份：profile + acp 会话 + 名字/handle/颜色）、`Membership`（群↔成员）。
 
-### 轨迹（轨迹是派生视图，不单独存）
-`Turn` + `Activity` 聚合出「谁在什么时候做了什么、写锁归谁」。由**后端**计算，
-前端只渲染（E6 第一项）。
+### 轨迹域（`session_events` + 聚合视图）
+
+**源数据必须落库，派生图不落库** —— 这是两件事，别混：
+
+- `session_events`（append-only）：在事件发生的那一刻记下的原始活动 ——
+  `kind`（thought / tool_call / tool_call_update / permission / usage / mode）、`turn_id`、
+  `author_id`、`at`（发生时刻）、`payload_json`（结构化摘要 + 原始）、`source ∈ {live, replay}`。
+- 轨迹图由后端**按需聚合**（`session_trace`），前端只渲染泳道。不存派生结果：
+  存了就会与源数据不一致。
+
+**和 agent 侧记录的分工**（实测：`session/load` 会重放整段历史，且带 tool_call）：
+
+| | agent 侧 | 我们侧 |
+|---|---|---|
+| 定位 | 它的记忆，供自己续聊 | 用户的历史与审计 |
+| 取法 | 只有 `session/load` 的重放副作用（ACP 无「读历史」RPC） | 直接查库 |
+| 覆盖 | 单 agent、单会话 | 跨 agent、跨群、全局时间线 |
+| 完整性 | 操作完整、**思考残缺**（实测两轮仅 1 条 thought） | 收到什么记什么 |
+| 可用性 | 需要进程与会话都在 | 离线可读 |
+| 时间戳 | 无（只有到达顺序） | 有（我们记的发生时刻） |
+
+⇒ **我们记一份是主库，agent 那份当灾备/补录源**。
+
+**保留与截断（已定）**：
+- 单会话轨迹上限 **5 万条**、时间上限 **90 天**，超出**直接删除**（不归档）。
+- 单条 `payload_json` 上限 **64KB**；思考片段只保留**前 8KB**，超限标记 `truncated`。
+- **必须写在界面上**：轨迹面板常驻一句「思考过程只保留开头 8KB，轨迹保留 90 天，
+  超出会自动清理」，截断条目本身带可见标记 —— 否则用户会把截断当成 bug
+  （`design-language.md` §11）。
 
 ### GH 域（`gh`）
 `Repo`、`PullRequest`、`Issue`、`CheckRun`、`FileDiff`（分页）、`Comment`。
