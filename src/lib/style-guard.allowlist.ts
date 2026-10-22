@@ -26,27 +26,11 @@ export const ALLOWED: Record<string, { rule: string; count: number; why: string 
     { rule: "outline-none", count: 1, why: "P2 文本域补可替代的焦点样式" },
     { rule: "transition-all", count: 1, why: "P2 发送按钮改为按属性过渡" },
   ],
-  "components/ConfirmDialog.tsx": [
-    { rule: "arbitrary-value", count: 6, why: "P2 对话框间距与字号收敛" },
-  ],
-  "components/EmptyState.tsx": [
-    { rule: "arbitrary-value", count: 4, why: "P2 空态尺寸与字号收敛" },
-  ],
   "components/MembersMenu.tsx": [
     { rule: "arbitrary-value", count: 8, why: "P2 成员菜单字号与圆角收敛" },
   ],
   "components/MessageItem.tsx": [
     { rule: "arbitrary-value", count: 8, why: "P2 消息气泡尺寸与字号收敛" },
-  ],
-  "components/ModeSelect.tsx": [
-    { rule: "arbitrary-value", count: 11, why: "P2 模式菜单宽度与字号收敛" },
-  ],
-  "components/MoreMenu.tsx": [
-    { rule: "arbitrary-value", count: 5, why: "P2 更多菜单尺寸与字号收敛" },
-  ],
-  "components/PermissionDialog.tsx": [
-    { rule: "arbitrary-value", count: 7, why: "P2 权限对话框尺寸与字号收敛" },
-    { rule: "color-literal", count: 1, why: "P2 主按钮内高光改用令牌" },
   ],
   "components/PrView.tsx": [
     { rule: "arbitrary-value", count: 11, why: "P2 PR 状态与按钮尺寸收敛" },
@@ -82,9 +66,6 @@ export const ALLOWED: Record<string, { rule: string; count: number; why: string 
   ],
   "components/TracePanel.tsx": [
     { rule: "arbitrary-value", count: 14, why: "P2 轨迹面板尺寸与字号收敛" },
-  ],
-  "components/WorkspaceEmpty.tsx": [
-    { rule: "arbitrary-value", count: 5, why: "P2 空工作区尺寸与字号收敛" },
   ],
   "mock/data.ts": [
     { rule: "color-literal", count: 3, why: "P2 mock 玩家颜色改为令牌" },

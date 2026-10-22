@@ -1,6 +1,6 @@
-import { useEffect, useRef } from "react";
 import { AlertTriangle } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Button } from "./ui/Button";
+import { Dialog } from "./ui/Dialog";
 
 /**
  * 破坏性操作的确认框。
@@ -29,66 +29,30 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
-  const ref = useRef<HTMLDialogElement>(null);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    if (open && !el.open) el.showModal();
-    if (!open && el.open) el.close();
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onCancel();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, onCancel]);
-
   return (
-    <dialog
-      ref={ref}
-      // onCancel 是 <dialog> 自己的事件（Esc 触发），不能只靠 keydown —— 否则 Esc 会关掉
-      // dialog 却不通知外面，状态就两边不一致了
-      onCancel={(e) => {
-        e.preventDefault();
-        onCancel();
-      }}
-      className="sc-dialog sc-glass w-[min(420px,92vw)] rounded-[10px] border border-line-1/60 p-0 text-ink-1 backdrop:bg-black/45"
+    <Dialog
+      open={open}
+      onClose={onCancel}
+      title={title}
+      danger={danger}
+      icon={danger ? <AlertTriangle className="size-4" /> : undefined}
+      footer={
+        <>
+          <Button variant="ghost" size="sm" onClick={onCancel}>
+            {cancelLabel}
+          </Button>
+          <Button
+            variant={danger ? "secondary" : "primary"}
+            size="sm"
+            danger={danger}
+            onClick={onConfirm}
+          >
+            {confirmLabel}
+          </Button>
+        </>
+      }
     >
-      <div className="flex items-start gap-2.5 p-4">
-        {danger && <AlertTriangle size={16} className="mt-0.5 shrink-0 text-danger-1" />}
-        <div className="min-w-0">
-          <h2 className="text-[13px] font-medium text-ink-1">{title}</h2>
-          <div className="mt-1.5 text-[11.5px] leading-relaxed text-ink-2">{body}</div>
-          <div className="mt-3.5 flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={onCancel}
-              className="rounded-[6px] px-3 py-1.5 text-[11px] text-ink-2 transition-colors hover:bg-surface-3/45 hover:text-ink-1"
-            >
-              {cancelLabel}
-            </button>
-            <button
-              type="button"
-              onClick={onConfirm}
-              className={cn(
-                "rounded-[6px] px-3 py-1.5 text-[11px] transition-colors",
-                danger
-                  ? "bg-danger-1/15 text-danger-1 hover:bg-danger-1/25"
-                  : "sc-row-active text-ink-1 hover:brightness-110",
-              )}
-            >
-              {confirmLabel}
-            </button>
-          </div>
-        </div>
-      </div>
-    </dialog>
+      {body}
+    </Dialog>
   );
 }
