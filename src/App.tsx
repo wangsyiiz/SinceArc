@@ -232,7 +232,9 @@ export default function App() {
       cancelAnimationFrame(raf1);
       if (raf2) cancelAnimationFrame(raf2);
     };
-  }, [state.msgs, activeTabId]);
+    // 权限条出现在输入框上方时会把列表底部顶高，也要跟着滚一次，
+    // 否则「思考中」那一行会被压在权限条后面看不见。
+  }, [state.msgs, activeTabId, state.pendingPerm]);
 
   /**
    * 渲染侧对账：界面上到底拿到几条、最后一条是什么。
@@ -314,34 +316,18 @@ export default function App() {
     const uiSid = lastSessionId;
     try {
       // null 表示用户取消/Esc：由队列按 kind 找拒绝项，不能硬编码 optionId。
-      const chosen = await permissions.decide(uiSid, optionId);
-      patchSession(uiSid, (s) => ({
-        ...s,
-        msgs: [
-          ...s.msgs,
-          {
-            id: newId("perm"),
-            role: "system",
-            text: `权限决定：${chosen?.label ?? "取消"}`,
-            at: now(),
-          },
-        ],
-      }));
+      await permissions.decide(uiSid, optionId);
+      // 成功**不**往消息流里写「权限决定：允许」。
+      //
+      // 那条通知以前只存在于内存（没有落库），于是同一个气泡有两种位置：
+      // 决定当下排在思考行上方（思考行永远渲染在消息之后），重开会话时
+      // 合并逻辑把它接到回答末尾（LOAD db=5 live=2）。用户看到的是「气泡乱跑」。
+      // 权限请求与决定属于 agent 的操作轨迹（E10 落库后进轨迹面板），不是对话内容。
     } catch (e) {
       const err = asCmdError(e);
-      // 应答没写出去时队头仍在，界面继续显示请求，同时把原因留在消息流里。
-      patchSession(uiSid, (s) => ({
-        ...s,
-        msgs: [
-          ...s.msgs,
-          {
-            id: newId("perm-err"),
-            role: "system",
-            text: `权限决定失败：${err.code} ${err.msg}`,
-            at: now(),
-          },
-        ],
-      }));
+      // 应答没写出去时队头仍在，界面继续显示请求；这条是「当前状态坏了」，必须留痕，
+      // 而且要走落库版提示，否则重开会话它又会换位置。
+      pushSystemNotice(patchSession, uiSid, `权限决定失败：${err.code} ${err.msg}`);
     }
   }, [lastSessionId, patchSession, permissions.decide]);
 
