@@ -1,7 +1,4 @@
-import type { Activity } from "@/types";
-
 export const now = () => new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-export const isWrite = (a: Activity) => a.kind === "edit" || a.kind === "execute";
 
 /**
  * 连接的显示名。默认名「新连接」是 addProfile 的占位符，对所有连接都一样，

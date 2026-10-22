@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 
 use crate::acp::launch::AgentProfile;
 use crate::acp::{transport, InitializeOutcome, SessionModes};
+use crate::lock::WriteLocks;
 
 pub struct AgentHandle {
     pub proc: Arc<transport::AgentProcess>,
@@ -83,6 +84,8 @@ pub struct AppState {
     /// 用来把「取消导致的 failed」和「真失败」区分开 —— 否则用户按了停止，
     /// 轨迹里却显示这一轮出错了。
     cancel_requested: Cancels,
+    /// 每个 ACP 会话正在进行的写工具调用。只用于界面提示，不参与调度。
+    pub locks: WriteLocks,
 }
 
 /// 取消请求登记表（ACP 会话 id → 已请求取消）。
@@ -163,6 +166,7 @@ impl AppState {
             turns: Arc::new(Turns::default()),
             db: Arc::new(db),
             cancel_requested: Cancels::default(),
+            locks: WriteLocks::default(),
         }
     }
 

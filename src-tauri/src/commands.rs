@@ -19,6 +19,7 @@ use tauri::State;
 use crate::acp::launch::{render_command_line, AgentProfile, Launch, SshAuth, SshSpec};
 use crate::acp::{self, transport};
 use crate::db;
+use crate::lock::SessionLockDto;
 use crate::state::{AgentHandle, AppState, SessionRecord};
 use crate::wire::{Meta, WireEvent};
 
@@ -936,6 +937,7 @@ pub async fn agent_connect(
     // 轨迹采集：事件落地需要库和「这一轮是谁」——两者都在 task 外面，clone 进去
     let db_for_trace = state.db.clone();
     let turns_for_trace = state.turns.clone();
+    let locks = state.locks.clone();
     tokio::spawn(async move {
         /// 从 ACP 原始消息里取 sessionId，再按归属表补上界面会话与作者
         async fn route(
@@ -1002,6 +1004,36 @@ pub async fn agent_connect(
                     )
                     .await;
                     let (session_id, ui_session_id, author_id) = route(&routes, &params).await;
+                    // 只认「我们自己发起的一轮」里的写操作：`session/load` 会把上一轮
+                    // 的 tool_call 重放一遍，那不是正在写，不能把提示条点亮。
+                    let in_active_turn = match session_id.as_deref() {
+                        Some(acp_sid) => turns_for_trace.current(acp_sid).await.is_some(),
+                        None => false,
+                    };
+                    if let (Some(acp_sid), true) = (session_id.as_deref(), in_active_turn) {
+                        // author 属于会话归属，不在 ACP 的 update 里；补进锁解析参数，
+                        // 让群聊里显示「谁在写」而不是只有主 agent。
+                        let mut lock_params = params.clone();
+                        if let (Some(author), Some(object)) =
+                            (author_id.as_deref(), lock_params.as_object_mut())
+                        {
+                            object.insert(
+                                "authorId".to_string(),
+                                serde_json::Value::String(author.to_string()),
+                            );
+                        }
+                        if let Some(lock_state) = locks.update(acp_sid, &lock_params) {
+                            let dto =
+                                SessionLockDto::from_state(&lock_state, acp_sid.to_string(), ui_session_id.clone());
+                            let lock_meta = Meta::for_session(
+                                profile_for_task.clone(),
+                                acp_sid.to_string(),
+                                ui_session_id.clone(),
+                                author_id.clone(),
+                            );
+                            bus.emit_json("session.lock", false, lock_meta, &dto);
+                        }
+                    }
                     if is_text {
                         // 攒起来；够 4KB 就先发一段（长回答开头不必等满 30ms）
                         let chunk = params
@@ -1646,6 +1678,7 @@ pub async fn session_prompt(
     }
     let turns = state.turns.clone();
     let cancels = state.cancels();
+    let locks = state.locks.clone();
     let bus = state.bus.clone();
     let profile_id = record.profile_id.clone();
     let sid_for_trace = sid.clone();
@@ -1693,6 +1726,16 @@ pub async fn session_prompt(
                     &turn_id_for_turn,
                     if cancelled { "cancelled" } else { "finished" },
                 );
+                // 一轮的终态到了：写提示锁必须一起消失，哪怕 agent 没发
+                // tool_call_update（有的实现只在 tool_call 里更新状态）。
+                if locks.clear(&sid_for_trace).is_some() {
+                    bus.emit_json(
+                        "session.lock",
+                        false,
+                        meta.clone(),
+                        &SessionLockDto::unlocked(sid.clone(), ui_for_event.clone()),
+                    );
+                }
                 bus.emit_json(
                     "acp.prompt.result",
                     true,
@@ -1717,6 +1760,14 @@ pub async fn session_prompt(
                     &turn_id_for_turn,
                     if cancelled_by_user { "cancelled" } else { "failed" },
                 );
+                if locks.clear(&sid_for_trace).is_some() {
+                    bus.emit_json(
+                        "session.lock",
+                        false,
+                        meta.clone(),
+                        &SessionLockDto::unlocked(sid.clone(), ui_for_event.clone()),
+                    );
+                }
                 bus.emit_json(
                     "acp.prompt.failed",
                     true,
@@ -1759,7 +1810,7 @@ pub async fn session_cancel(
         .proc
         .notify(
             "session/cancel",
-            serde_json::json!({ "sessionId": session_id }),
+            serde_json::json!({ "sessionId": session_id.clone() }),
         )
         .await
         .map_err(|e| {
@@ -1768,7 +1819,25 @@ pub async fn session_cancel(
                 "session cancel notify failed"
             );
             CmdError::new(50500, format!("取消请求没送达：{e}"))
-        })
+        })?;
+
+    // 停止请求已送达：写提示不必等一个可能永远不来的终态。
+    // 若 agent 在收尾期间还发 tool_call，会重新点亮；下一轮/终态再清。
+    if state.locks.clear(&session_id).is_some() {
+        let record = state.routes.get(&session_id).await;
+        let ui_sid = record.as_ref().and_then(|r| r.ui_session_id.clone());
+        let author_id = record.as_ref().and_then(|r| r.author_id.clone());
+        let meta = Meta::for_session(
+            profile_id,
+            session_id.clone(),
+            ui_sid.clone(),
+            author_id,
+        );
+        state
+            .bus
+            .emit_json("session.lock", false, meta, &SessionLockDto::unlocked(session_id.clone(), ui_sid));
+    }
+    Ok(())
 }
 
 /// 回答 agent 发来的请求。目前只有 `session/request_permission`。

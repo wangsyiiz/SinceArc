@@ -9,6 +9,7 @@ import {
 import { denyPermission, parsePermissionOptions } from "@/hooks/usePermissions";
 import { now } from "@/lib/format";
 import { clog } from "@/lib/log";
+import { applyLock } from "@/lib/locks";
 import { newId } from "@/lib/ids";
 import { pushSystemNotice } from "@/lib/notices";
 import type { SessionSummary } from "@/types";
@@ -38,6 +39,33 @@ function stopReasonOf(result: unknown): string | null {
   if (!result || typeof result !== "object" || !("stopReason" in result)) return null;
   const value = (result as { stopReason?: unknown }).stopReason;
   return typeof value === "string" ? value : null;
+}
+
+/**
+ * `session.lock` 是与 `AcpEvent` 并列的 topic 载荷。事件层现在会把 topic 一起交过来，
+ * 所以按 topic 判断，不再靠「没有 kind 且带 count」这种形状约定去猜。
+ */
+interface SessionLockPayload {
+  acpSessionId: string;
+  uiSessionId: string | null;
+  playerId: string | null;
+  title: string;
+  count: number;
+}
+
+function asSessionLock(event: unknown): SessionLockPayload | null {
+  if (!event || typeof event !== "object") return null;
+  const value = event as Partial<Record<keyof SessionLockPayload, unknown>>;
+  const count = value.count;
+  const acpSessionId = value.acpSessionId;
+  if (typeof count !== "number" || typeof acpSessionId !== "string") return null;
+  return {
+    acpSessionId,
+    uiSessionId: typeof value.uiSessionId === "string" ? value.uiSessionId : null,
+    playerId: typeof value.playerId === "string" ? value.playerId : null,
+    title: typeof value.title === "string" ? value.title : "",
+    count,
+  };
 }
 
 export interface AcpRefs {
@@ -151,8 +179,26 @@ export function useAcpEvents({
   }, [flushStream]);
 
   const onAgentEvent = useCallback(
-    (profileId: string, event: AcpEvent) => {
+    (profileId: string, event: AcpEvent, topic?: string) => {
       setEventCount((n) => n + 1);
+
+      // 按 topic 判断，不再靠载荷形状猜
+      const sessionLock = topic === "session.lock" ? asSessionLock(event) : null;
+      if (sessionLock) {
+        setEventLog((prev) => [...prev, { at: Date.now(), text: "session.lock" }].slice(-80));
+        setLastEvent("session.lock");
+        if (!sessionLock.uiSessionId) {
+          clog("LOCK-NOUI", `count=${sessionLock.count}`);
+          return;
+        }
+        // 群聊里每个成员是独立 ACP 会话：按 acpSessionId 分开存，
+        // 否则一个成员解锁会把另一个成员的提示一起清掉。
+        patchSession(sessionLock.uiSessionId, (s) => ({
+          ...s,
+          locks: applyLock(s.locks ?? {}, sessionLock),
+        }));
+        return;
+      }
 
       const su = asSessionUpdate(event);
       const kindLabel = su?.update?.sessionUpdate;
@@ -284,6 +330,8 @@ export function useAcpEvents({
         patchSession(uiSid, (s) => ({
           ...s,
           busy: false,
+          // 终态事件是 lossless 的；解锁事件可丢。这里兜底清掉，避免提示条残留。
+          locks: {},
           acts: s.acts.map((a) =>
             a.id === actId
               ? {

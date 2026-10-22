@@ -20,6 +20,11 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// 「写」= 会改动磁盘或执行命令。判据只在这里定义，前端不再自行判断。
+pub fn is_write_kind(kind: &str) -> bool {
+    matches!(kind, "edit" | "execute")
+}
+
 /// 思考正文上限：够看出「它在往哪个方向想」，不追求逐字复现。
 pub const THOUGHT_MAX_BYTES: usize = 8 * 1024;
 /// 单条事件上限：超过就截断并标记。
