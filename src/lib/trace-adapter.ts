@@ -73,7 +73,8 @@ export function toTraceView(dtos: TraceTurnDto[]): TraceView {
         title: titleOf(item),
         detail: item.truncated ? "…（已截断）" : undefined,
         at: clock(item.at),
-        status: t.status === "failed" ? "error" : "ok",
+        status:
+          t.status === "failed" ? "error" : t.status === "cancelled" ? "cancelled" : "ok",
       });
       const list = lanes.get(playerId) ?? [];
       list.push(id);
@@ -83,7 +84,9 @@ export function toTraceView(dtos: TraceTurnDto[]): TraceView {
     turns.push({
       id: t.id,
       at: clock(t.startedAt),
-      userText: t.prompt,
+      // 中途停下的一轮标在提问上：列表视图与图视图都读 userText，改一处两处都看得见
+      userText: t.status === "cancelled" ? `${t.prompt}（已停止）` : t.prompt,
+      status: t.status as TraceTurn["status"],
       branches: [...lanes.entries()].map(([playerId, activityIds]) => ({
         playerId,
         activityIds,
