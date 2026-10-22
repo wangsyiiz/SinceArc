@@ -145,3 +145,17 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS session_bindings (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id     TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  acp_session_id TEXT NOT NULL,
+  cwd            TEXT NOT NULL DEFAULT '',
+  bound_at       INTEGER NOT NULL,
+  reason         TEXT NOT NULL CHECK (reason IN ('created', 'loaded', 'replaced')),
+  superseded_at  INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_binding_live
+  ON session_bindings(session_id) WHERE superseded_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_binding_session ON session_bindings(session_id, bound_at DESC);

@@ -1299,6 +1299,13 @@ pub async fn session_new(
         state.set_modes(session_id.clone(), modes).await;
     }
 
+    if let Some(ui_id) = ui_session_id.as_deref() {
+        state
+            .db
+            .bind_acp_session(ui_id, &session_id, &cwd, "created")
+            .map_err(|e| CmdError::new(50000, format!("记录会话绑定失败：{e}")))?;
+    }
+
     state
         .insert_session(
             session_id.clone(),
@@ -1306,6 +1313,66 @@ pub async fn session_new(
                 profile_id,
                 cwd,
                 ui_session_id,
+                author_id: None,
+            },
+        )
+        .await;
+
+    Ok(SessionInfo { session_id })
+}
+
+#[tauri::command]
+pub async fn session_rebind(
+    state: State<'_, AppState>,
+    ui_session_id: String,
+    profile_id: String,
+    cwd: String,
+) -> Result<SessionInfo, CmdError> {
+    let handle = state.get(&profile_id).await.ok_or_else(|| {
+        CmdError::new(50300, format!("profile 未连接，不能重建会话：{profile_id}"))
+    })?;
+
+    let result = handle
+        .proc
+        .request(
+            "session/new",
+            serde_json::json!({ "cwd": cwd, "mcpServers": [] }),
+            REQUEST_TIMEOUT,
+        )
+        .await?;
+
+    let session_id = result
+        .get("sessionId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            CmdError::new(
+                50200,
+                format!("session/new 没有返回 sessionId，实际返回：{result}"),
+            )
+        })?
+        .to_string();
+
+    if let Some(modes) = acp::modes_from_response(&result) {
+        state.set_modes(session_id.clone(), modes).await;
+    }
+
+    state
+        .db
+        .bind_acp_session(&ui_session_id, &session_id, &cwd, "replaced")
+        .map_err(|e| CmdError::new(50000, format!("记录重建绑定失败：{e}")))?;
+
+    tracing::info!(
+        target: "sincearc::ipc", profile = %profile_id, session = %session_id,
+        ui_session = %ui_session_id, "session rebound"
+    );
+
+    state
+        .insert_session(
+            session_id.clone(),
+            SessionRecord {
+                profile_id,
+                cwd,
+                ui_session_id: Some(ui_session_id),
                 author_id: None,
             },
         )
@@ -1336,6 +1403,8 @@ pub async fn session_load(
     if acp_session_id.trim().is_empty() {
         return Err(CmdError::new(50602, "session id 不能为空"));
     }
+    // 连接没建立是环境问题，不是「凭证失效」——
+    // 在这里标 invalid 会让用户以为这个 session id 废了，跑去重建一个本来有效的会话。
     let handle = state
         .get(&profile_id)
         .await
@@ -1345,11 +1414,26 @@ pub async fn session_load(
         "cwd": cwd,
         "mcpServers": [],
     });
-    let v = handle
+    let v = match handle
         .proc
         .request("session/load", params, Duration::from_secs(120))
         .await
-        .map_err(|e| CmdError::new(50402, format!("session/load 失败：{e}")))?;
+    {
+        Ok(v) => v,
+        Err(e) => {
+            // 只有 agent **明确拒绝**（JSON-RPC error）才算凭证失效。
+            // 超时、进程挂了、管道断了都是环境问题：标 invalid 会误导用户去重建会话，
+            // 而真正该做的是重连。
+            if matches!(e, transport::TransportError::Agent(_)) {
+                if let Some(ui_id) = ui_session_id.as_deref() {
+                    if let Err(db_err) = state.db.mark_acp_invalid(ui_id) {
+                        tracing::warn!(target: "sincearc::ipc", error = %db_err, "标记会话失效失败");
+                    }
+                }
+            }
+            return Err(CmdError::new(50402, format!("session/load 失败：{e}")));
+        }
+    };
     let modes = acp::modes_from_response(&v);
     if let Some(m) = &modes {
         state.set_modes(acp_session_id.clone(), m.clone()).await;
@@ -1362,6 +1446,14 @@ pub async fn session_load(
         .ok()
         .flatten()
         .map(|u| u.id);
+
+    if let Some(ui_id) = ui_session_id.as_deref() {
+        state
+            .db
+            .bind_acp_session(ui_id, &acp_session_id, &cwd, "loaded")
+            .map_err(|e| CmdError::new(50000, format!("记录会话绑定失败：{e}")))?;
+    }
+
     state
         .insert_session(
             acp_session_id.clone(),
@@ -1631,7 +1723,7 @@ pub async fn session_bind_acp(
 ) -> Result<(), CmdError> {
     state
         .db
-        .bind_acp_session(&id, &acp_session_id)
+        .bind_acp_session(&id, &acp_session_id, "", "replaced")
         .map_err(|e| CmdError::new(50000, format!("绑定会话失败：{e}")))
 }
 

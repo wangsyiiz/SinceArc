@@ -39,6 +39,17 @@ pub struct SessionRow {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingRow {
+    pub id: i64,
+    pub acp_session_id: String,
+    pub cwd: String,
+    pub bound_at: i64,
+    pub reason: String,
+    pub superseded_at: Option<i64>,
+}
+
 #[derive(Debug, Default, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PruneReport {
@@ -194,6 +205,12 @@ impl Db {
         conn.execute_batch(SCHEMA)?;
         ensure_column(&conn, "profiles", "default_mode", "TEXT")?;
         ensure_column(&conn, "sessions", "mode_override", "TEXT")?;
+        ensure_column(
+            &conn,
+            "sessions",
+            "acp_state",
+            "TEXT CHECK (acp_state IN ('ok', 'invalid'))",
+        )?;
         // 群聊里的消息要能指认「谁说的」：不加这列，多 agent 群所有回复长得一样（docs/group-chat.md §4）
         ensure_column(&conn, "messages", "author_id", "TEXT")?;
         // 轨迹时间列早期写成秒，与毫秒级的保留策略混用会把一切判成过期。
@@ -373,13 +390,76 @@ impl Db {
         Ok(())
     }
 
-    pub fn bind_acp_session(&self, id: &str, acp_session_id: &str) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().expect("db poisoned");
-        conn.execute(
-            "UPDATE sessions SET acp_session_id = ?2, updated_at = ?3 WHERE id = ?1",
+    pub fn bind_acp_session(
+        &self,
+        id: &str,
+        acp_session_id: &str,
+        cwd: &str,
+        reason: &str,
+    ) -> rusqlite::Result<()> {
+        let mut conn = self.conn.lock().expect("db poisoned");
+        let tx = conn.transaction()?;
+        let bound_at = now_ms();
+        let live: Option<String> = tx
+            .query_row(
+                "SELECT acp_session_id FROM session_bindings
+                 WHERE session_id = ?1 AND superseded_at IS NULL
+                 ORDER BY bound_at DESC, id DESC LIMIT 1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        if live.as_deref() != Some(acp_session_id) {
+            tx.execute(
+                "UPDATE session_bindings SET superseded_at = ?2
+                 WHERE session_id = ?1 AND superseded_at IS NULL",
+                params![id, bound_at],
+            )?;
+            tx.execute(
+                "INSERT INTO session_bindings
+                   (session_id, acp_session_id, cwd, bound_at, reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, acp_session_id, cwd, bound_at, reason],
+            )?;
+        }
+
+        tx.execute(
+            "UPDATE sessions SET acp_session_id = ?2, acp_state = 'ok', updated_at = ?3
+             WHERE id = ?1",
             params![id, acp_session_id, now()],
         )?;
+        tx.commit()
+    }
+
+    pub fn mark_acp_invalid(&self, id: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "UPDATE sessions SET acp_state = 'invalid', updated_at = ?2 WHERE id = ?1",
+            params![id, now()],
+        )?;
         Ok(())
+    }
+
+    pub fn bindings(&self, session_id: &str) -> rusqlite::Result<Vec<BindingRow>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, acp_session_id, cwd, bound_at, reason, superseded_at
+             FROM session_bindings
+             WHERE session_id = ?1
+             ORDER BY bound_at DESC, id DESC",
+        )?;
+        let rows = stmt.query_map(params![session_id], |r| {
+            Ok(BindingRow {
+                id: r.get(0)?,
+                acp_session_id: r.get(1)?,
+                cwd: r.get(2)?,
+                bound_at: r.get(3)?,
+                reason: r.get(4)?,
+                superseded_at: r.get(5)?,
+            })
+        })?;
+        rows.collect()
     }
 
     pub fn mode_override(&self, ui_session_id: &str) -> rusqlite::Result<Option<String>> {
@@ -1092,6 +1172,16 @@ mod tests {
         }
     }
 
+    fn acp_state(db: &Db, id: &str) -> Option<String> {
+        let conn = db.conn.lock().expect("db poisoned");
+        conn.query_row(
+            "SELECT acp_state FROM sessions WHERE id = ?1",
+            params![id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .expect("acp_state")
+    }
+
     #[test]
     fn profiles_round_trip_and_passwords_are_dropped() {
         let (db, path) = temp_db();
@@ -1126,7 +1216,8 @@ mod tests {
         let (db, path) = temp_db();
         db.save_profiles(&[sample()]).expect("save");
         db.upsert_session(&session("s-1", None)).expect("insert");
-        db.bind_acp_session("s-1", "local-abc").expect("bind");
+        db.bind_acp_session("s-1", "local-abc", "/tmp", "created")
+            .expect("bind");
         // 之后再 upsert 一次（acp 为空）不能把绑定冲掉
         db.upsert_session(&session("s-1", None)).expect("upsert");
         let list = db.list_sessions(None).expect("list");
@@ -1135,6 +1226,78 @@ mod tests {
             db.last_acp_session("p1").expect("last").as_deref(),
             Some("local-abc")
         );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn bind_records_history_and_supersedes_previous() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+
+        db.bind_acp_session("s-1", "acp-a", "/work", "created")
+            .expect("bind a");
+        db.bind_acp_session("s-1", "acp-b", "/work", "loaded")
+            .expect("bind b");
+
+        let rows = db.bindings("s-1").expect("bindings");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].acp_session_id, "acp-b");
+        assert_eq!(rows[0].reason, "loaded");
+        assert!(rows[0].superseded_at.is_none());
+        assert_eq!(rows[1].acp_session_id, "acp-a");
+        assert!(rows[1].superseded_at.is_some());
+        assert_eq!(rows.iter().filter(|r| r.superseded_at.is_none()).count(), 1);
+
+        let list = db.list_sessions(None).expect("list");
+        assert_eq!(list[0].acp_session_id.as_deref(), Some("acp-b"));
+        assert_eq!(acp_state(&db, "s-1").as_deref(), Some("ok"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn binding_same_id_twice_is_idempotent() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+
+        db.bind_acp_session("s-1", "acp-a", "/work", "created")
+            .expect("bind first");
+        db.bind_acp_session("s-1", "acp-a", "/work", "loaded")
+            .expect("bind again");
+
+        let rows = db.bindings("s-1").expect("bindings");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].reason, "created");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn mark_invalid_keeps_the_credential() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", Some("acp-credential")))
+            .expect("insert");
+
+        db.mark_acp_invalid("s-1").expect("mark invalid");
+
+        let list = db.list_sessions(None).expect("list");
+        assert_eq!(list[0].acp_session_id.as_deref(), Some("acp-credential"));
+        assert_eq!(acp_state(&db, "s-1").as_deref(), Some("invalid"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn deleting_a_session_cascades_to_bindings() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+        db.bind_acp_session("s-1", "acp-a", "/work", "created")
+            .expect("bind");
+
+        assert_eq!(db.bindings("s-1").expect("before").len(), 1);
+        db.delete_session("s-1").expect("delete");
+        assert!(db.bindings("s-1").expect("after").is_empty());
         std::fs::remove_file(&path).ok();
     }
 
