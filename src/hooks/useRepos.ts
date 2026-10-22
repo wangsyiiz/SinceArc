@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { newId } from "@/lib/ids";
 import { prsByRepo, repos as seedRepos } from "@/mock/data";
 import type { GithubRepo, Tab } from "@/types";
 
@@ -9,7 +10,7 @@ export function useRepos(activeTab: Tab | null) {
     const name = path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "新项目";
     setRepoList((prev) => [
       ...prev,
-      { id: `r-${Date.now()}`, name, slug: `—/${name}`, path, branch: "—", connected: false },
+      { id: newId("repo"), name, slug: `—/${name}`, path, branch: "—", connected: false },
     ]);
   }, []);
 

@@ -45,6 +45,7 @@ import {
 } from "@/lib/ipc";
 import { isWrite, now } from "@/lib/format";
 import { clog } from "@/lib/log";
+import { newId } from "@/lib/ids";
 import { useAcpEvents } from "@/hooks/useAcpEvents";
 import { usePaneLayout } from "@/hooks/usePaneLayout";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -283,7 +284,7 @@ export default function App() {
         msgs: [
           ...s.msgs,
           {
-            id: `conn-err-${Date.now()}`,
+            id: newId("conn-err"),
             role: "system",
             text: `连接失败：${r.error!.code} ${r.error!.msg}`,
             at: now(),
@@ -303,7 +304,7 @@ export default function App() {
       setLastSessionId(sid);
       patchSession(sid, (s) => ({
         ...s,
-        msgs: [...s.msgs, { id: `u-${Date.now()}`, role: "user", at: now(), text: "@claude 看一下这个 PR", quoted: { kind: "pr", label: `#${pr.number} ${pr.title}`, detail: `${repo.slug} · ${pr.head} → ${pr.base} · +${pr.additions} −${pr.deletions} · ${pr.files} 文件` } }],
+        msgs: [...s.msgs, { id: newId("u"), role: "user", at: now(), text: "@claude 看一下这个 PR", quoted: { kind: "pr", label: `#${pr.number} ${pr.title}`, detail: `${repo.slug} · ${pr.head} → ${pr.base} · +${pr.additions} −${pr.deletions} · ${pr.files} 文件` } }],
       }));
     },
     [openTab, patchSession, tabs],
@@ -319,7 +320,7 @@ export default function App() {
         msgs: [
           ...s.msgs,
           {
-            id: `perm-${Date.now()}`,
+            id: newId("perm"),
             role: "system",
             text: `权限决定：${chosen?.label ?? "取消"}`,
             at: now(),
@@ -334,7 +335,7 @@ export default function App() {
         msgs: [
           ...s.msgs,
           {
-            id: `perm-err-${Date.now()}`,
+            id: newId("perm-err"),
             role: "system",
             text: `权限决定失败：${err.code} ${err.msg}`,
             at: now(),

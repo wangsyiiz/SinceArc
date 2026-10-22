@@ -3,6 +3,7 @@ import { asCmdError, messagesAppend, sessionLoad, sessionPrompt } from "@/lib/ip
 import { now } from "@/lib/format";
 import { pushSystemNotice } from "@/lib/notices";
 import { clog } from "@/lib/log";
+import { newId } from "@/lib/ids";
 import type { AgentProfile, Message } from "@/types";
 import type { EnsureResult } from "./useAgentConnect";
 import type { AcpRefs } from "./useAcpEvents";
@@ -61,7 +62,7 @@ export function usePrompt({
       // 用户消息先落地，真假链路都一样。
       // 只有真要发 prompt 时才置 busy —— 连接阶段置 busy 会把输入框锁住，
       // 而连接可能要几十秒，用户会以为界面卡死了（docs/desktop-ux.md §1.6）。
-      const userMsg: Message = { id: `u-${Date.now()}`, role: "user", text, at };
+      const userMsg: Message = { id: newId("u"), role: "user", text, at };
       patchSession(sid, (s) => ({
         ...s,
         busy: !needConnect,

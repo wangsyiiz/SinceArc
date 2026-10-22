@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { agentRespondRequest, type RespondOutcome } from "@/lib/ipc";
+import { clog } from "@/lib/log";
 import type { PermissionOption, PermissionRequest } from "@/types";
 
 export interface QueueItem {
@@ -23,7 +24,10 @@ export function denyPermission(
   const outcome: RespondOutcome = reject
     ? { outcome: "selected", optionId: reject.id }
     : { outcome: "cancelled" };
-  void agentRespondRequest(profileId, requestId, outcome).catch(() => {});
+  // 失败不能吞：这条路径没有人盯着结果，至少要在日志里留下「哪条请求没答上」
+  void agentRespondRequest(profileId, requestId, outcome).catch((e) => {
+    clog("PERM-DENY-ERR", `profile=${profileId} id=${requestId} ${String(e)}`);
+  });
 }
 
 type Queues = Record<string, QueueItem[]>;

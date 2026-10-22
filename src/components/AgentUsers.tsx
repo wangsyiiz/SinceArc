@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { newId } from "@/lib/ids";
 import { Check, ChevronDown, Plus, Trash2, X } from "lucide-react";
 import type { AgentProfile } from "@/types";
 import { cn } from "@/lib/utils";
@@ -157,7 +158,7 @@ export function AgentUsers({
     setError(null);
     try {
       await agentUserSave({
-        id: draft.id ?? `u-${Date.now().toString(36)}`,
+        id: draft.id ?? newId("u"),
         profileId: draft.profileId,
         acpSessionId: draft.acpSessionId.trim(),
         name: draft.name.trim(),

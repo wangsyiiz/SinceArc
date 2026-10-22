@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { newId } from "@/lib/ids";
 import { fromDto, profilesLoad, profilesSave } from "@/lib/ipc";
 import { profileLabel } from "@/lib/format";
 import type { AgentProfile } from "@/types";
@@ -18,7 +19,7 @@ export function useProfileStore() {
     setProfiles((list) => [
       ...list,
       {
-        id: `p-new-${Date.now().toString(36)}`,
+        id: newId("p-new"),
         name: "", // 空名走 profileLabel 派生（程序 · 位置），比所有连接都叫「新连接」有用
         launch: "ssh",
         detail: "",

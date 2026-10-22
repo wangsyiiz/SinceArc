@@ -1,4 +1,5 @@
 import { messagesAppend } from "@/lib/ipc";
+import { newId } from "@/lib/ids";
 import { now } from "@/lib/format";
 import type { Message } from "@/types";
 import type { PatchSession } from "@/hooks/useSessionState";
@@ -19,7 +20,7 @@ export function pushSystemNotice(
   opts?: { also?: (m: Message) => Message },
 ): Message {
   const at = now();
-  const msg: Message = { id: `sys-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, role: "system", text, at };
+  const msg: Message = { id: newId("sys"), role: "system", text, at };
   patchSession(sid, (s) => ({ ...s, msgs: [...s.msgs, msg] }));
   messagesAppend(sid, [
     { id: msg.id, role: "system", kind: "text", payload: opts?.also ? opts.also(msg) : msg },

@@ -9,6 +9,7 @@ import {
 import { denyPermission, parsePermissionOptions } from "@/hooks/usePermissions";
 import { now } from "@/lib/format";
 import { clog } from "@/lib/log";
+import { newId } from "@/lib/ids";
 import { pushSystemNotice } from "@/lib/notices";
 import type { SessionSummary } from "@/types";
 import { MAIN_AGENT_ID } from "./usePrompt";
@@ -290,7 +291,7 @@ export function useAcpEvents({
             ...(failed
               ? [
                   {
-                    id: `perr-${Date.now()}`,
+                    id: newId("perr"),
                     role: "system" as const,
                     text: `这一轮失败：${event.msg}`,
                     at: now(),
@@ -304,7 +305,7 @@ export function useAcpEvents({
         clog("RESULT", `acp=${acpSid ?? "-"} ui=${uiSid} kind=${event.kind} len=${full.length}`);
         if (failed) {
           console.warn("[acp] prompt failed", event.msg);
-          const id = `perr-${Date.now()}`;
+          const id = newId("perr");
           messagesAppend(uiSid, [
             {
               id,
