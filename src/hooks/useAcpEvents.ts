@@ -86,12 +86,10 @@ export function useAcpEvents({
    */
   const awaiting = useRef<Record<string, boolean>>({});
   const acpToTurn = useRef<Record<string, string>>({});
-  const flushTimer = useRef(0);
   const flushDiag = useRef(0);
 
   /** 40ms 合批：chunk 是逐字来的，逐条 setState 会让 React 每字重渲染一次 */
   const flushStream = useCallback(() => {
-    flushTimer.current = 0;
     for (const [acpSid, st] of Object.entries(streams.current)) {
       const text = st.buf;
       st.buf = "";
@@ -138,8 +136,12 @@ export function useAcpEvents({
     }
   }, [diag, patchSession]);
 
+  /**
+   * 不再自己攒 40ms：后端已经按 30ms / 4KB 合并过（src-tauri/src/coalesce.rs），
+   * 这里每来一段就直接落到界面。前端再做一层定时器只会多一次拷贝和延迟。
+   */
   const scheduleFlush = useCallback(() => {
-    if (!flushTimer.current) flushTimer.current = window.setTimeout(flushStream, 40);
+    flushStream();
   }, [flushStream]);
 
   const onAgentEvent = useCallback(

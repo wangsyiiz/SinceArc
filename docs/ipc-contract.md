@@ -184,7 +184,10 @@ domain service：规范化 → 校验 → 缓存（TTL）→ 分页游标 → �
   `domains/{acp,session,member}.ts`、`index.ts`（门面，业务代码只 import `@/lib/ipc`）。
   `lib/log.ts` 也改走 `fireAndForget`。新增守门用例 `ipc/layering.test.ts`：
   `invoke(` 只允许出现在 `client.ts` / `events.ts`（已验证「故意放一个违规文件 → 变红」）。
-- M3–M6 未开始。
+- **M3 实现完成**：正文合批搬到 Rust（`src-tauri/src/coalesce.rs`，30ms tick 或 ≥4KB 立刻发；
+  换会话/换作者/收到非正文事件前先冲缓冲，保证顺序）。前端删掉自己的 40ms 定时器
+  （`useAcpEvents` 直接落界面）。事件形状不变，前端无需区分「是否合并过」。
+- M4–M6 未开始。
 
 ## 10. 迁移路径（不许一次性大改）
 

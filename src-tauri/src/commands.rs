@@ -733,6 +733,60 @@ pub async fn ipc_subscribe(
     Ok(())
 }
 
+/// 把合批好的一段正文发出去。形状与单条 chunk 完全一致 ——
+/// 前端不需要知道「这条是合并过的」，它只会收到更少的 IPC 事件。
+fn emit_text(
+    flush: Option<crate::coalesce::Flush>,
+    bus: &Arc<crate::wire::EventBus>,
+    profile_id: &str,
+) {
+    let Some(f) = flush else { return };
+    let params = serde_json::json!({
+        "sessionId": f.session_id,
+        "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": f.text },
+        },
+    });
+    let event = AcpEvent::Notification {
+        method: "session/update".to_string(),
+        params,
+        session_id: f.session_id,
+        ui_session_id: f.ui_session_id,
+        author_id: f.author_id,
+    };
+    bus.emit_json(
+        "acp.notification",
+        true,
+        Meta {
+            profile_id: Some(profile_id.to_string()),
+            session_id: event_session(&event),
+            ui_session_id: event_ui(&event),
+            author_id: event_author(&event),
+        },
+        &event,
+    );
+}
+
+fn event_session(e: &AcpEvent) -> Option<String> {
+    match e {
+        AcpEvent::Notification { session_id, .. } => session_id.clone(),
+        _ => None,
+    }
+}
+fn event_ui(e: &AcpEvent) -> Option<String> {
+    match e {
+        AcpEvent::Notification { ui_session_id, .. } => ui_session_id.clone(),
+        _ => None,
+    }
+}
+fn event_author(e: &AcpEvent) -> Option<String> {
+    match e {
+        AcpEvent::Notification { author_id, .. } => author_id.clone(),
+        _ => None,
+    }
+}
+
 /// 把一条 ACP 消息落成轨迹事件（思考 / 工具调用 / 权限 / 模式 / 用量）。
 ///
 /// 三个「不落」的条件都是有意的：
@@ -832,7 +886,41 @@ pub async fn agent_connect(
             }
         }
 
-        while let Some(msg) = incoming.recv().await {
+        // 正文合批（docs/ipc-contract.md §4）：chunk 是逐段来的，一条一个事件会让
+        // webview 每秒处理几百次 IPC + 几百次 React 更新。在这里按 30ms / 4KB 合并，
+        // 前端就只管渲染（以前是前端自己攒 40ms，等于让 UI 线程承担流控）。
+        let mut text = crate::coalesce::TextCoalescer::default();
+        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(30));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            let msg = tokio::select! {
+                maybe = incoming.recv() => match maybe {
+                    Some(m) => m,
+                    None => break,
+                },
+                // 没有新消息时把攒着的正文发出去：否则一段说完就停住，界面像卡了
+                _ = ticker.tick() => {
+                    emit_text(text.flush(), &bus, &profile_for_task);
+                    continue;
+                }
+            };
+
+            // 正文以外的任何事件都先把缓冲冲掉，保证顺序（工具调用不能跑到它前面的文字之前）
+            let is_text = matches!(
+                &msg,
+                transport::Incoming::Notification { method, params }
+                    if method == "session/update"
+                        && params
+                            .get("update")
+                            .and_then(|u| u.get("sessionUpdate"))
+                            .and_then(serde_json::Value::as_str)
+                            == Some("agent_message_chunk")
+            );
+            if !is_text {
+                emit_text(text.flush(), &bus, &profile_for_task);
+            }
+
             let payload = match msg {
                 transport::Incoming::Notification { method, params } => {
                     tracing::debug!(target: "sincearc::acp", %method, "notification");
@@ -845,6 +933,27 @@ pub async fn agent_connect(
                     )
                     .await;
                     let (session_id, ui_session_id, author_id) = route(&routes, &params).await;
+                    if is_text {
+                        // 攒起来；够 4KB 就先发一段（长回答开头不必等满 30ms）
+                        let chunk = params
+                            .get("update")
+                            .and_then(|u| u.get("content"))
+                            .and_then(|c| c.get("text"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        emit_text(
+                            text.push(
+                                session_id.clone(),
+                                ui_session_id.clone(),
+                                author_id.clone(),
+                                &chunk,
+                            ),
+                            &bus,
+                            &profile_for_task,
+                        );
+                        continue;
+                    }
                     AcpEvent::Notification {
                         method,
                         params,
@@ -946,6 +1055,7 @@ pub async fn agent_connect(
             };
             bus.emit_json(topic, lossless, meta, &payload);
         }
+        emit_text(text.flush(), &bus, &profile_for_task);
         bus.emit_json(
             "conn.exited",
             true,
