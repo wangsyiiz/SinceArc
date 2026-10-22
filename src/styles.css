@@ -171,6 +171,25 @@
   --color-warn-1: var(--warn);
 
   --radius-card: 12px;
+
+  /* 字号（§1.6）：text-caption / text-small / text-ui / text-body / text-lead / text-title */
+  --text-caption: var(--fs-caption);
+  --text-caption--line-height: var(--lh-caption);
+  --text-small: var(--fs-small);
+  --text-small--line-height: var(--lh-small);
+  --text-ui: var(--fs-ui);
+  --text-ui--line-height: var(--lh-ui);
+  --text-body: var(--fs-body);
+  --text-body--line-height: var(--lh-body);
+  --text-lead: var(--fs-lead);
+  --text-lead--line-height: var(--lh-lead);
+  --text-title: var(--fs-title);
+  --text-title--line-height: var(--lh-title);
+
+  /* 圆角（§1.7）：rounded-mark 6 / rounded-control 8 / rounded-card 12（已有） */
+  --radius-mark: var(--radius-sm);
+  --radius-control: var(--radius);
+
   --font-sans: "Inter", "Segoe UI Variable Text", "Segoe UI", "PingFang SC",
     "Microsoft YaHei", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, monospace;
@@ -351,6 +370,15 @@ dialog.sc-dialog[open] {
 .sc-breathe { animation: sc-breathe 5.5s ease-in-out infinite; }
 .sc-orbit { animation: sc-orbit 22s linear infinite; }
 .sc-orbit-rev { animation: sc-orbit 34s linear infinite reverse; }
+
+/* 连接中：徽标状态点呼吸（§3.7，1.6s）。
+   放在这里而不是组件内 <style>：每个状态点各注入一份 keyframes 会让 DOM 里堆重复样式，
+   而且这种「动画写在组件里」的写法逃过所有静态检查。 */
+@keyframes sc-status-pulse {
+  0%, 100% { opacity: 0.45; transform: scale(0.82); }
+  50% { opacity: 1; transform: scale(1); }
+}
+.sc-status-pulse { animation: sc-status-pulse 1.6s ease-in-out infinite; }
 
 /* 分段控件：平铺底框 + 一个磨砂玻璃滑块横移
    （形状照 sincecloud-web 的 .view-switch：轨道 padding 0、净空在槽内、
