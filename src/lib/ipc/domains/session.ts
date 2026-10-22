@@ -1,6 +1,6 @@
 //! 会话域：连接配置、会话行、消息。
 
-import type { MessageRowDto, ProfileDto, SessionRowDto } from "../types";
+import type { MessageRowDto, ProfileDto, SessionRowDto, TraceTurnDto } from "../types";
 import type { AgentProfile, SshAuth, SshConfig } from "@/types";
 import { invokeCmd } from "../client";
 
@@ -108,3 +108,12 @@ export function messagesLoad(sessionId: string, limit?: number): Promise<Message
 }
 
 /* ---------- session/update 的解析 ---------- */
+
+/**
+ * 轨迹视图：最近 N 轮的提问与活动。
+ *
+ * 后端聚合（含 tool_call 与增量更新的合并），前端只渲染 —— 业务计算不进界面（E6）。
+ */
+export function sessionTrace(sessionId: string, limit = 50): Promise<TraceTurnDto[]> {
+  return invokeCmd("session_trace", { sessionId, limit });
+}

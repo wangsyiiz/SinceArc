@@ -22,6 +22,8 @@ import { TabStrip } from "@/components/TabStrip";
 import { ThinkingRow } from "@/components/ThinkingRow";
 import { TitleBar } from "@/components/TitleBar";
 import { TracePanel } from "@/components/TracePanel";
+import { sessionTrace, type TraceTurnDto } from "@/lib/ipc";
+import { toTraceView } from "@/lib/trace-adapter";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
 import { prsByRepo } from "@/mock/data";
 import type {
@@ -66,6 +68,11 @@ export default function App() {
   useScrollFade();
   const [mode, setMode] = useState<SidebarMode>("sessions");
   const [traceOpen, setTraceOpen] = useState(false);
+  /**
+   * 轨迹来自后端（session_events + turns），不再由前端从事件里推。
+   * 拉取时机：打开面板、切换会话、以及一轮结束时（此时才刚有收尾状态）。
+   */
+  const [traceTurns, setTraceTurns] = useState<TraceTurnDto[]>([]);
   const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
   const [playerFilter, setPlayerFilter] = useState<string | null>(null);
   const [settings, setSettings] = useState<ThreadSettings>({ contextMessages: 5 });
@@ -312,6 +319,22 @@ export default function App() {
     [openTab, patchSession, tabs],
   );
 
+  // 轨迹拉取：只读库，失败留日志（面板空着比整页报错好）
+  useEffect(() => {
+    if (!traceOpen) return;
+    let alive = true;
+    void sessionTrace(lastSessionId, 50)
+      .then((rows) => {
+        if (alive) setTraceTurns(rows);
+      })
+      .catch((e) => clog("TRACE-LOAD-ERR", String(e)));
+    return () => {
+      alive = false;
+    };
+  }, [traceOpen, lastSessionId, state.busy]);
+
+  const traceView = useMemo(() => toTraceView(traceTurns), [traceTurns]);
+
   const decide = useCallback(async (optionId: string | null) => {
     const uiSid = lastSessionId;
     try {
@@ -508,8 +531,8 @@ export default function App() {
           animate={!dragging}
           focusId={focus?.id ?? null}
           focusTick={focus?.tick ?? 0}
-          turns={state.turns}
-          activities={state.acts}
+          turns={traceView.turns}
+          activities={traceView.activities}
           players={players}
           onClose={() => {
             setTraceOpen(false);

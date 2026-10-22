@@ -10,7 +10,10 @@ import type { AcpRefs } from "./useAcpEvents";
 import type { PatchSession } from "./useSessionState";
 
 /** 主 agent 的发言用一个固定 id：玩家表里没有它时，消息会渲染成「agent」 */
-export const MAIN_AGENT_ID = "agent";
+// 定义在 lib/main-agent.ts（无依赖）：这里 import + 再导出，既保持既有 import 路径，
+// 也让本文件内部能直接用这个名字
+import { MAIN_AGENT_ID } from "@/lib/main-agent";
+export { MAIN_AGENT_ID };
 
 export function usePrompt({
   lastSessionId,

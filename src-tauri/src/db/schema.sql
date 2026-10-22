@@ -128,3 +128,20 @@ CREATE TABLE IF NOT EXISTS session_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id, seq);
+
+-- 轮次：一次「提问 → agent 干完活」。轨迹按轮组织，没有它就只能看到一堆碎片事件，
+-- 看不出「这一轮问了什么、用了多久、谁在写」。
+CREATE TABLE IF NOT EXISTS turns (
+  id           TEXT PRIMARY KEY,
+  session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  -- 提问正文（与 messages 里那条用户消息同源，但轨迹要能单独读，不靠前端猜）
+  prompt       TEXT NOT NULL DEFAULT '',
+  -- 这一轮是向谁提的：群成员 id；主 agent 为 NULL
+  author_id    TEXT,
+  started_at   INTEGER NOT NULL,
+  ended_at     INTEGER,
+  -- running / finished / failed
+  status       TEXT NOT NULL DEFAULT 'running'
+);
+
+CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, started_at DESC);

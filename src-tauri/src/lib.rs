@@ -49,6 +49,7 @@ pub fn run() {
             commands::session_member_remove,
             commands::session_load,
             commands::ipc_subscribe,
+            commands::session_trace,
             commands::agent_connect,
             commands::agent_disconnect,
             commands::agent_respond_request,

@@ -199,3 +199,24 @@ export interface WireEvent {
   lossless: boolean;
   payload: unknown;
 }
+
+/** 轨迹里的一条活动（后端 trace.rs 的 TraceItem）。 */
+export interface TraceItemDto {
+  seq: number;
+  at: number;
+  authorId?: string | null;
+  kind: string;
+  payload: Record<string, unknown>;
+  truncated: boolean;
+}
+
+/** 一轮对话的轨迹（tool_call 与它的增量更新已由后端合并成一条）。 */
+export interface TraceTurnDto {
+  id: string;
+  prompt: string;
+  authorId?: string | null;
+  startedAt: number;
+  endedAt?: number | null;
+  status: string;
+  items: TraceItemDto[];
+}

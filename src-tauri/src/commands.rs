@@ -672,6 +672,35 @@ pub async fn agent_probe(profile: ProfileDto) -> Result<ProbeOutcome, CmdError> 
 /// 反复调用是安全的：后来的订阅者替换旧的 sink（例如窗口重载）。
 /// 之前是「每次 agent_connect 带一条 Channel」，连 N 个 agent 就要订阅 N 次，
 /// 事件也可能因为某条通道关闭而整体失联。
+/// 收轮失败不该让这一轮的结果丢掉：轨迹缺个结束时间，比整轮报错轻得多。
+fn end_turn_safely(db: &Arc<db::Db>, turn_id: &str, status: &str) {
+    if let Err(e) = db.end_turn(turn_id, status) {
+        tracing::warn!(target: "sincearc::trace", error = %e, "收轮失败");
+    }
+}
+
+/// 轨迹视图：最近 N 轮 + 每轮的活动（tool_call 与它的增量更新已合并）。
+///
+/// 只读、只聚合，不做业务判断 —— 谁能看哪一轮由 `uiSessionId` 决定（调用方只传自己的会话）。
+#[tauri::command]
+pub async fn session_trace(
+    state: State<'_, AppState>,
+    session_id: String,
+    limit: Option<i64>,
+) -> Result<Vec<crate::trace::TraceTurn>, CmdError> {
+    let limit = limit.unwrap_or(50).clamp(1, 200);
+    let turns = state
+        .db
+        .load_turns(&session_id, limit)
+        .map_err(|e| CmdError::new(50000, format!("读取轮次失败：{e}")))?;
+    // 事件按轮取：先取这一批轮次的所有事件（seq 倒序），聚合时再按轮分组
+    let events = state
+        .db
+        .load_events(&session_id, limit * 200)
+        .map_err(|e| CmdError::new(50000, format!("读取轨迹失败：{e}")))?;
+    Ok(crate::trace::aggregate(turns, events))
+}
+
 #[tauri::command]
 pub async fn ipc_subscribe(
     state: State<'_, AppState>,
@@ -1274,10 +1303,21 @@ pub async fn session_prompt(
     // 一轮 = 一次 prompt。轨迹事件靠 turn id 归轮，prompt 之外收到的一律不落库。
     let turn_id = format!("turn-{}", crate::trace::now_ms());
     state.turns.start(&sid, &turn_id).await;
+    // 轨迹要能单独读懂「这一轮问了什么」，所以提问正文随轮次一起落库
+    if let Err(e) = state.db.start_turn(
+        &sid,
+        &turn_id,
+        &text,
+        record.author_id.as_deref(),
+    ) {
+        tracing::warn!(target: "sincearc::trace", error = %e, "轮次落库失败");
+    }
     let turns = state.turns.clone();
     let bus = state.bus.clone();
     let profile_id = record.profile_id.clone();
     let sid_for_trace = sid.clone();
+    let db_for_turn = state.db.clone();
+    let turn_id_for_turn = turn_id.clone();
     let proc = handle.proc.clone();
     // 这三个事件必须自带归属：推送时前端可能已经切到别的会话，
     // 「当前打开的那个」不是判断依据。
@@ -1309,6 +1349,7 @@ pub async fn session_prompt(
                 tracing::info!(target: "sincearc::ipc", session = %sid, stop = ?result.get("stopReason"), "prompt finished");
                 tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptResult");
                 turns.end(&sid_for_trace).await;
+                end_turn_safely(&db_for_turn, &turn_id_for_turn, "finished");
                 bus.emit_json(
                     "acp.prompt.result",
                     true,
@@ -1325,6 +1366,7 @@ pub async fn session_prompt(
                 tracing::warn!(target: "sincearc::ipc", session = %sid, error = %e, "prompt failed");
                 tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptFailed");
                 turns.end(&sid_for_trace).await;
+                end_turn_safely(&db_for_turn, &turn_id_for_turn, "failed");
                 bus.emit_json(
                     "acp.prompt.failed",
                     true,

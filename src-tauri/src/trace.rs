@@ -161,6 +161,117 @@ fn cap_payload(payload: Value) -> (Value, bool) {
     }
 }
 
+/* ---------------- 聚合：从源数据得到「一轮里发生了什么」 ---------------- */
+
+/// 轨迹面板要的一条：一段按 seq 排好的活动。`tool_call` 与它的增量更新已合并。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceItem {
+    pub seq: i64,
+    pub at: i64,
+    pub author_id: Option<String>,
+    pub kind: String,
+    pub payload: Value,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceTurn {
+    pub id: String,
+    pub prompt: String,
+    pub author_id: Option<String>,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub status: String,
+    pub items: Vec<TraceItem>,
+}
+
+/// 把「工具调用的初始事件 + 若干增量更新」合成一条。
+///
+/// ACP 的 `tool_call_update` 是**增量**：实测（2026-10-22）里 `title`/`locations` 为 null、
+/// 只有 `status` 有值。若把 update 当独立条目渲染，轨迹里会出现「terminal: date」加一条
+/// 没有标题的 completed —— 看起来像两次操作。
+fn merge_tool_call(base: &mut Value, update: &Value) {
+    let Some(mut merged) = base.as_object().cloned() else {
+        return;
+    };
+    if let Some(upd) = update.as_object() {
+        for (k, v) in upd {
+            // 增量为 null 的字段不能覆盖已有值
+            if v.is_null() {
+                continue;
+            }
+            // locations 是整体替换语义，但空数组等于「没提到」
+            if k == "locations" && v.as_array().is_some_and(|a| a.is_empty()) {
+                continue;
+            }
+            merged.insert(k.clone(), v.clone());
+        }
+    }
+    *base = Value::Object(merged);
+}
+
+/// 按轮聚合。事件已在库里按 seq 有序；这里只做「合并 + 排序」，不做任何推断。
+pub fn aggregate(turns: Vec<crate::db::TurnRow>, events: Vec<crate::db::EventRow>) -> Vec<TraceTurn> {
+    use std::collections::HashMap;
+
+    let mut by_turn: HashMap<String, Vec<crate::db::EventRow>> = HashMap::new();
+    for e in events {
+        by_turn.entry(e.turn_id.clone()).or_default().push(e);
+    }
+
+    turns
+        .into_iter()
+        .map(|t| {
+            let mut rows = by_turn.remove(&t.id).unwrap_or_default();
+            rows.sort_by_key(|e| e.seq);
+
+            let mut items: Vec<TraceItem> = Vec::new();
+            // toolCallId → items 下标，用于把 update 并回初始事件
+            let mut calls: HashMap<String, usize> = HashMap::new();
+
+            for e in rows {
+                let payload: Value = serde_json::from_str(&e.payload_json)
+                    .unwrap_or_else(|_| json!({ "raw": e.payload_json }));
+
+                if e.kind == "tool_call_update" {
+                    if let Some(id) = payload.get("toolCallId").and_then(Value::as_str) {
+                        if let Some(&idx) = calls.get(id) {
+                            let slot = &mut items[idx];
+                            merge_tool_call(&mut slot.payload, &payload);
+                            continue;
+                        }
+                    }
+                }
+                if e.kind == "tool_call" {
+                    if let Some(id) = payload.get("toolCallId").and_then(Value::as_str) {
+                        calls.insert(id.to_string(), items.len());
+                    }
+                }
+                items.push(TraceItem {
+                    seq: e.seq,
+                    at: e.at,
+                    author_id: e.author_id,
+                    kind: e.kind,
+                    payload,
+                    truncated: e.truncated,
+                });
+            }
+
+            TraceTurn {
+                id: t.id,
+                prompt: t.prompt,
+                author_id: t.author_id,
+                started_at: t.started_at,
+                ended_at: t.ended_at,
+                status: t.status,
+                items,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,4 +329,43 @@ mod tests {
         });
         assert!(parse("session/update", &params).is_none());
     }
+    #[test]
+    fn 工具调用的增量更新会并回初始事件() {
+        use crate::db::{EventRow, TurnRow};
+        let turn = TurnRow {
+            id: "t1".into(),
+            session_id: "s1".into(),
+            prompt: "现在几点".into(),
+            author_id: None,
+            started_at: 1,
+            ended_at: Some(9),
+            status: "finished".into(),
+        };
+        let ev = |seq: i64, kind: &str, payload: &str| EventRow {
+            id: format!("s1-{seq}"),
+            seq,
+            at: seq,
+            turn_id: "t1".into(),
+            author_id: None,
+            kind: kind.into(),
+            payload_json: payload.into(),
+            source: "live".into(),
+            truncated: false,
+        };
+        let events = vec![
+            ev(1, "tool_call", r#"{"toolCallId":"c1","title":"terminal: date","kind":"execute","status":null,"locations":[]}"#),
+            ev(2, "tool_call_update", r#"{"toolCallId":"c1","title":null,"status":"completed","locations":null}"#),
+            ev(3, "thought", r#"{"text":"想一下"}"#),
+        ];
+        let out = aggregate(vec![turn], events);
+        assert_eq!(out.len(), 1);
+        let items = &out[0].items;
+        assert_eq!(items.len(), 2, "update 必须并回 tool_call，不能多一条");
+        assert_eq!(items[0].kind, "tool_call");
+        assert_eq!(items[0].payload["status"], "completed", "增量里的 status 要生效");
+        assert_eq!(items[0].payload["title"], "terminal: date", "null 不能覆盖已有标题");
+        assert_eq!(items[0].payload["locations"], json!([]), "空数组不覆盖");
+        assert_eq!(items[1].kind, "thought");
+    }
+
 }

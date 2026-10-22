@@ -315,6 +315,11 @@ export function TracePanel({
           </button>
         </header>
 
+        {/* design-language §11：主动截断/清理的数据必须在界面上讲清楚，否则看起来像 bug */}
+        <div className="shrink-0 border-b border-line-1/40 px-3 py-1 text-[9.5px] leading-relaxed text-ink-3">
+          思考过程只保留开头 8KB；轨迹保留 90 天（最多 5 万条），超出会自动清理。
+        </div>
+
         {view === "list" && (
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1">
             {activities.length === 0 && (

@@ -39,6 +39,18 @@ pub struct SessionRow {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnRow {
+    pub id: String,
+    pub session_id: String,
+    pub prompt: String,
+    pub author_id: Option<String>,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub status: String,
+}
+
 /// 一条待落库的轨迹事件（已由 `trace` 解析、截断）。
 pub struct EventInput {
     pub turn_id: String,
@@ -453,6 +465,62 @@ impl Db {
             params![ts, session_id],
         )?;
         tx.commit()
+    }
+
+    /* ---------------- turns（轨迹的轮次） ---------------- */
+
+    /// 记一轮的开始。`turn_id` 由命令层生成并同时交给 `AppState.turns`，
+    /// 保证事件、轮次、前端看到的「正在跑」是同一个 id。
+    pub fn start_turn(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        prompt: &str,
+        author_id: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "INSERT OR REPLACE INTO turns
+               (id, session_id, prompt, author_id, started_at, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'running')",
+            params![turn_id, session_id, prompt, author_id, now()],
+        )?;
+        Ok(())
+    }
+
+    /// 收一轮。`status` 只允许 finished / failed —— 「是否还在跑」不该由调用方随口决定。
+    pub fn end_turn(&self, turn_id: &str, status: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "UPDATE turns SET ended_at = ?1, status = ?2 WHERE id = ?3",
+            params![now(), status, turn_id],
+        )?;
+        Ok(())
+    }
+
+    /// 最近几轮（含正文与耗时），倒序。
+    pub fn load_turns(&self, session_id: &str, limit: i64) -> rusqlite::Result<Vec<TurnRow>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, prompt, author_id, started_at, ended_at, status
+               FROM turns WHERE session_id = ?1
+              -- 同一毫秒内连续开两轮时，只按 started_at 排会不稳定；rowid 兜底保证确定性
+              ORDER BY started_at DESC, rowid DESC LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![session_id, limit], |r| {
+                Ok(TurnRow {
+                    id: r.get(0)?,
+                    session_id: r.get(1)?,
+                    prompt: r.get(2)?,
+                    author_id: r.get(3)?,
+                    started_at: r.get(4)?,
+                    ended_at: r.get(5)?,
+                    status: r.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /* ---------------- session_events（轨迹源数据） ---------------- */
@@ -1051,6 +1119,34 @@ mod tests {
         // 删会话要连轨迹一起删：否则库里留下没人能看的孤儿行
         db.delete_session("s-1").expect("delete");
         assert!(db.load_events("s-1", 50).expect("load2").is_empty());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+
+    #[test]
+    fn turns_record_prompt_and_finish_state() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+
+        db.start_turn("s-1", "t1", "现在几点", None).expect("start");
+        db.start_turn("s-1", "t2", "写个文件", None).expect("start2");
+        db.end_turn("t2", "failed").expect("end");
+
+        let turns = db.load_turns("s-1", 10).expect("load");
+        assert_eq!(turns.len(), 2);
+        // 倒序：最新一轮在前
+        assert_eq!(turns[0].id, "t2");
+        assert_eq!(turns[0].status, "failed");
+        assert!(turns[0].ended_at.is_some());
+        // 没收到结束的轮次保持 running —— 界面据此显示「还在跑」
+        assert_eq!(turns[1].status, "running");
+        assert!(turns[1].ended_at.is_none());
+        assert_eq!(turns[1].prompt, "现在几点");
+
+        db.delete_session("s-1").expect("del");
+        assert!(db.load_turns("s-1", 10).expect("load2").is_empty());
 
         std::fs::remove_file(&path).ok();
     }
