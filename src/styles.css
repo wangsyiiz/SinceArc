@@ -52,8 +52,11 @@
   --switch-thumb: var(--s3);
   --switch-thumb-edge: rgb(255 255 255 / 0.07);
 
-  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.07), inset 0 -1px 0 rgb(0 0 0 / 0.4);
-  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.06), inset 0 -1px 0 rgb(0 0 0 / 0.3);
+  /* 只有上缘一道高光：不再带「底边压暗」（inset 0 -1px 0 rgba(0,0,0,.3~.4)）。
+     在深色面上那道底边内阴影看起来就是元素下面拖了一条阴影 —— 而层级已经由面阶差表达，
+     不靠它划界（规范 §1.8）。 */
+  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.07);
+  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.06);
 
   /* 动效（§1.9） */
   --dur-fast: 110ms;
@@ -111,15 +114,13 @@
   --switch-thumb: #ffffff;
   --switch-thumb-edge: rgb(255 255 255 / 0.95);
 
-  /* 浅色主题不用内边缘高光划边界：层次交给面阶差 */
-  --edge-highlight: none;
-  --edge-hairline: none;
+  /* 浅色主题同样只有上缘高光（层次交给 1px 边框 + 面阶差） */
+  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9);
+  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.7);
 
   --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
   --glass-2: color-mix(in srgb, var(--s1) 72%, transparent);
   --glass-control: color-mix(in srgb, #000000 4%, transparent);
-  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 -1px 0 rgb(0 0 0 / 0.1);
-  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.7), inset 0 -1px 0 rgb(0 0 0 / 0.06);
 }
 
 @media (prefers-color-scheme: light) {
@@ -138,21 +139,18 @@
     --ai: #ffffff;
     --row-active: #e6e6e6;
     --glass-border: var(--l1);
-  --glass-border: var(--l1);
 
   --switch-track: color-mix(in srgb, #060606 5%, transparent);
   --switch-thumb: #ffffff;
   --switch-thumb-edge: rgb(255 255 255 / 0.95);
 
-  /* 浅色主题不用内边缘高光划边界：层次交给面阶差 */
-  --edge-highlight: none;
-  --edge-hairline: none;
+    /* 浅色主题同样只有上缘高光（层次交给 1px 边框 + 面阶差） */
+    --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9);
+    --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.7);
 
-  --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
+    --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
     --glass-2: color-mix(in srgb, var(--s1) 72%, transparent);
     --glass-control: color-mix(in srgb, #000000 4%, transparent);
-    --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 -1px 0 rgb(0 0 0 / 0.1);
-    --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.7), inset 0 -1px 0 rgb(0 0 0 / 0.06);
   }
 }
 
