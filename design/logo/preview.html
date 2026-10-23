@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<title>sincearc · logo：从名字里取形</title>
+<style>
+  :root { --s0:#292d3e; --s1:#2f3347; --ink:#dedede; --dim:#8b90a3; --l1:#3d4256; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:13px/1.65 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+         background:#14161f; color:#cfd3e1; }
+  .page { max-width:1180px; margin:0 auto; padding:44px 28px 96px; }
+  h1 { font-size:21px; font-weight:600; margin:0 0 6px; color:#eceef6; }
+  .sub { color:var(--dim); font-size:12px; margin:0 0 30px; }
+  h2 { font-size:14px; font-weight:600; color:#eceef6; margin:0 0 2px; }
+  .why { color:var(--dim); font-size:12px; margin:6px 0 12px; max-width:80ch; }
+  section { margin-top:40px; }
+  .board { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .panel { border-radius:12px; padding:18px 20px; border:1px solid var(--l1); }
+  .panel.dark  { background:var(--s0); color:var(--ink); }
+  .panel.light { background:#fafafa; color:#171717; border-color:#dedede; }
+  .tag { font-size:10.5px; letter-spacing:.05em; text-transform:uppercase; opacity:.5; margin-bottom:12px; }
+  .row { display:flex; align-items:flex-end; gap:20px; flex-wrap:wrap; }
+  .cell { text-align:center; }
+  .cell span { display:block; margin-top:6px; font-size:10.5px; opacity:.45; font-variant-numeric:tabular-nums; }
+  .mk { display:block; color:currentColor; }
+  table.map { width:100%; border-collapse:collapse; font-size:12px; margin-top:14px; }
+  table.map th, table.map td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--l1); vertical-align:top; }
+  table.map th { color:var(--dim); font-weight:500; font-size:11px; letter-spacing:.03em; }
+  table.map td:first-child { color:#eceef6; white-space:nowrap; }
+  .mean { display:grid; grid-template-columns:132px 1fr; gap:3px 16px; font-size:12px; color:var(--dim); margin:0 0 16px; }
+  .mean b { color:#cfd3e1; font-weight:600; }
+  .mock { border-radius:12px; overflow:hidden; border:1px solid var(--l1); display:flex; height:136px; }
+  .mock .side { width:56px; background:var(--s1); border-right:1px solid var(--l1);
+                display:flex; flex-direction:column; align-items:center; gap:12px; padding:9px 0; }
+  .mock .main { flex:1; background:var(--s0); display:flex; flex-direction:column; }
+  .mock .bar { height:32px; background:var(--s1); border-bottom:1px solid var(--l1);
+               display:flex; align-items:center; gap:8px; padding:0 10px; color:var(--ink); }
+  .mock .word { font-family:Georgia,"Times New Roman",serif; font-size:13px; }
+  .mock .body { flex:1; padding:12px 14px; color:var(--dim); font-size:12px; }
+  .note { font-size:11.5px; color:#7d8296; margin-top:10px; }
+  .note b { color:#b9bdcd; font-weight:600; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; color:#a8aec6; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>sincearc · 从名字里取形</h1>
+  <p class="sub">
+    全部 <code>currentColor</code>，单色体系下换主题只改文字色。每个方向两套几何：1024 主形 + ≤24px 的简化形。
+    尺寸标注为 px；底色分别是 s0 / s1（暗色）与 #fafafa（浅色）。
+  </p>
+
+  <h2>名字的六层含义，各自落到一个形态决定</h2>
+  <table class="map">
+    <tr><th style="width:104px">名字里的层</th><th style="width:230px">读法</th><th>形态上怎么落地</th></tr>
+    <tr>
+      <td>since</td><td>“自……起” —— 时间上的起点</td>
+      <td>一颗实心圆点。它是每条轨迹的第一个坐标，也是整个标识里唯一“实”的元素（其余都是线）。</td>
+    </tr>
+    <tr>
+      <td>arc</td><td>弧 —— 是路径，不是直线</td>
+      <td>所有笔画都是弧，没有一条直角折线；曲线朝一个方向推进，读作“在走”。</td>
+    </tr>
+    <tr>
+      <td>s = arc</td><td>首字母本身就是一段弧</td>
+      <td><b>D</b>：一条连续的 S 曲线，既读作 s（since）也读作一条 arc。一个形态承担两个字母。</td>
+    </tr>
+    <tr>
+      <td>弦 vs 弧</td><td>两点之间最短是弦，实际走过的是弧</td>
+      <td><b>F</b>：同一对端点，直弦细而淡、弧粗而实 —— 理想与过程的对照。</td>
+    </tr>
+    <tr>
+      <td>自那以后</td><td>时间轴</td>
+      <td><b>G</b>：弧上均布刻度，像量角器。只在 ≥48px 用，16px 会糊。</td>
+    </tr>
+    <tr>
+      <td>多成员</td><td>一个会话里多个 agent 共享上下文</td>
+      <td><b>E</b>：三条弧同源扇开 —— 同一个起点，各自的路。</td>
+    </tr>
+  </table>
+
+  <!-- D + 我们的设计语言：圆角磁贴 + 辉光 -->
+  <section style="margin-top:46px">
+    <h2>D + 我们的设计语言（圆角磁贴 / 文字辉光）</h2>
+    <p class="why">
+      磁贴底 = s1（暗）/ #f7f7f7（浅），圆角 208/1024（约 20%），只有上缘一道内高光、不描整圈；
+      弧的辉光是三层同色描边由外向内收（不用高斯模糊，缩放时不会糊成一团）；
+      文字沿用衬线，同色副本先模糊再压一层原字形 —— 单色体系里"银光"只能是亮度差，不能引入彩色。
+    </p>
+    <div class="board">
+      <div class="panel dark"><div class="tag">tile · dark（s0 面板）</div><div class="row" id="tile-dark"></div></div>
+      <div class="panel light"><div class="tag">tile · light（#f2f2f4 面板）</div><div class="row" id="tile-light"></div></div>
+    </div>
+    <div class="board" style="margin-top:14px">
+      <div class="panel" style="background:repeating-conic-gradient(#4a4f63 0% 25%, #33374a 0% 50%) 50%/16px 16px">
+        <div class="tag">opacity check · 棋盘底</div><div class="row" id="tile-check"></div>
+      </div>
+      <div class="panel" style="background:linear-gradient(90deg,#fafafa 0 50%,#2b2f3d 50% 100%)">
+        <div class="tag">同屏跨底色（左浅右深）</div><div class="row" id="tile-cross"></div>
+      </div>
+    </div>
+    <div class="board" style="margin-top:14px">
+      <div class="panel dark"><div class="tag">lockup · dark（标识 + 字标）</div>
+        <div style="width:100%"><svg id="lock-dark" style="width:100%;height:auto;display:block;color:var(--ink)"></svg></div>
+      </div>
+      <div class="panel light"><div class="tag">lockup · light</div>
+        <div style="width:100%"><svg id="lock-light" style="width:100%;height:auto;display:block;color:#171717"></svg></div>
+      </div>
+    </div>
+    <p class="note">
+      <b>16px 规矩：</b>辉光在小尺寸一定糊，所以 ≤24px 用另一份几何（弧加粗到 150、去掉两层光晕、圆角加大）。
+      下面 16 / 24 那两格就是小尺寸版本，32 起才用带辉光的主形。
+    </p>
+  </section>
+
+  <div id="concepts"></div>
+
+  <h2 style="margin-top:52px">放进真实布局看</h2>
+  <p class="why">
+    标题栏 32px、侧栏 56px，与当前布局一致。标题栏里放的是「磁贴 + 字标」的整套 lockup（辉光就是给字标的），
+    侧栏顶部只放 20px 磁贴。下面两块：深色 / 浅色。
+  </p>
+  <div class="board">
+    <div class="mock">
+      <div class="side"><span class="tile-slot" data-tile="d-tile.svg" data-size="20"></span></div>
+      <div class="main">
+        <div class="bar"><span class="lock-slot" data-lock="d-lockup.svg" data-h="22"></span>
+          <span style="flex:1"></span>
+          <span style="font-size:10.5px;opacity:.45">— □ ✕</span></div>
+        <div class="body">
+          <div style="color:var(--ink);font-size:12px">api · feat/login-abc</div>
+          <div style="margin-top:6px">轨迹面板 / 会话 / 成员 —— 磁贴只在两个地方出现：侧栏顶部 20px、标题栏 22px 高的 lockup</div>
+        </div>
+      </div>
+    </div>
+    <div class="mock" style="background:#fafafa">
+      <div class="side" style="background:#f2f2f4;border-right-color:#dedede">
+        <span class="tile-slot" data-tile="d-tile-light.svg" data-size="20"></span>
+      </div>
+      <div class="main" style="background:#fafafa">
+        <div class="bar" style="background:#f2f2f4;border-bottom-color:#dedede;color:#171717">
+          <span class="lock-slot" data-lock="d-lockup-light.svg" data-h="22"></span>
+          <span style="flex:1"></span>
+          <span style="font-size:10.5px;opacity:.45">— □ ✕</span>
+        </div>
+        <div class="body" style="color:#6b6f7d">
+          <div style="color:#171717;font-size:12px">api · feat/login-abc</div>
+          <div style="margin-top:6px">浅色下磁贴是白底 + #d8d8d8 描边，字标辉光压到 1/3 强度（纸面上光晕容易脏）</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note">
+    <b>还没定：</b>wordmark 字体（现在 Georgia 占位）；标识是否替代 wordmark 里的 “s”；
+    浅色下辉光强度是否够（现在是暗色的 1/3）。
+  </p>
+</div>
+
+<script type="module">
+const concepts = [
+  { k:"d", title:"D · s-弧（名字直解）", file:"d-s-arc.svg", small:"d-s-arc-16.svg",
+    why:"一条连续的 S 曲线：since 的首字母与 arc 是同一个形态。左上角一颗起点圆点，曲线向右下展开。",
+    mean:[["s + arc","首字母即弧，不用额外解释"],["起点","左上圆点 = 自这里起"],["方向","单向推进、没有回勾"]] },
+  { k:"e", title:"E · 起点 + 弧系（多成员）", file:"e-origin-fan.svg", small:"e-origin-fan-16.svg",
+    why:"三条弧共用一个圆心、从同一点扇开：一个会话里多个 agent 共享起点，各走各的路径。",
+    mean:[["since","那个共同起点（圆点）"],["arc","三条不同半径 = 各自的路径"],["同心","最终回到同一份上下文"]] },
+  { k:"f", title:"F · 弦与弧（理想 vs 实际）", file:"f-chord-arc.svg", small:"f-chord-arc-16.svg",
+    why:"同一对端点，一条直弦加一条弧。直弦细而淡，弧粗而实 —— 最短是直线，agent 实际走的是弧。",
+    mean:[["chord","理想路径：最短，但没有过程"],["arc","实际路径：绕行，但留下轨迹"],["可读性","两条线 + 明确主次，16px 最稳"]] },
+  { k:"g", title:"G · 刻度弧（自那以后）", file:"g-tick-arc.svg", small:null,
+    why:"弧上均布四道刻度，像量角器 / 时间轴：since 的时间感。只在 ≥48px 用，小尺寸必须退化。",
+    mean:[["since","刻度的起点"],["arc","刻度所在的弧"],["风险","16px 下刻度糊成毛边"]] },
+  { k:"b", title:"B · 弧 + 点（轨迹上的现在）", file:"b-arc-bead.svg", small:"b-arc-bead-16.svg",
+    why:"270° 弧 + 末端实心点。与轨迹面板同一隐喻：路径 + 当前位置。不依赖名字，靠产品语义。",
+    mean:[["arc","路径"],["点","现在这一步"],["风险","容易被读成加载指示器"]] },
+  { k:"a", title:"A · 双弧（两个仍在路上的进程）", file:"a-double-arc.svg", small:"a-double-arc-16.svg",
+    why:"两条同心开口弧错开 180°。最抽象，也最不像别的开发工具。",
+    mean:[["两条","两个并行成员"],["开口","还没有结束"],["代价","与名字无关，需要解释"]] },
+  { k:"c", title:"C · 字标 a（最保守）", file:"c-letter-a.svg", small:"c-letter-a-16.svg",
+    why:"单层 a：开口 bowl + 竖杆。一眼认得出是字母，但差异化最弱，和名字的关系只到“有个 a”。",
+    mean:[["优点","识别零成本"],["缺点","任何叫 arc 的工具都能用"]] },
+];
+
+const sizesFor = c => c.small ? [16,20,24,32,48,64,128] : [48,64,128,256];
+
+async function load(c, size) {
+  const f = (c.small && size <= 24) ? c.small : c.file;
+  const doc = new DOMParser().parseFromString(await fetch(f + "?v=" + Date.now()).then(r => r.text()), "image/svg+xml");
+  const svg = document.importNode(doc.documentElement, true);
+  svg.setAttribute("width", size); svg.setAttribute("height", size);
+  svg.classList.add("mk");
+  return svg;
+}
+
+const host = document.getElementById("concepts");
+for (const c of concepts) {
+  const sec = document.createElement("section");
+  sec.innerHTML = `<h2>${c.title}</h2><p class="why">${c.why}</p>
+    <div class="mean">${c.mean.map(([a,b]) => `<b>${a}</b><span>${b}</span>`).join("")}</div>
+    <div class="board">
+      <div class="panel dark"><div class="tag">dark · s0</div><div class="row" id="r-${c.k}-d"></div></div>
+      <div class="panel light"><div class="tag">light</div><div class="row" id="r-${c.k}-l"></div></div>
+    </div>`;
+  host.appendChild(sec);
+  for (const theme of ["d","l"]) {
+    const row = sec.querySelector(`#r-${c.k}-${theme}`);
+    for (const s of sizesFor(c)) {
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      cell.appendChild(await load(c, s));
+      cell.insertAdjacentHTML("beforeend", `<span>${s}</span>`);
+      row.appendChild(cell);
+    }
+  }
+}
+for (const el of document.querySelectorAll("[data-mk]")) {
+  const c = concepts.find(x => x.k === el.dataset.mk);
+  el.replaceWith(await load(c, Number(el.getAttribute("width")), c.small));
+}
+
+// ---------- D 磁贴 + 字标 ----------
+const tileSizes = [16, 24, 32, 48, 64, 128, 256];
+for (const [rowId, file] of [["tile-dark", "d-tile.svg"], ["tile-light", "d-tile-light.svg"],
+                            ["tile-check", "d-tile.svg"], ["tile-cross", "d-tile.svg"]]) {
+  const row = document.getElementById(rowId);
+  const sizes = rowId === "tile-cross" ? [32, 64, 128] : tileSizes;
+  for (const s of sizes) {
+    const cell = document.createElement("div");
+    cell.className = "cell";
+    cell.appendChild(await load({ file, small: "d-tile-16.svg" }, s));
+    cell.insertAdjacentHTML("beforeend", `<span>${s}</span>`);
+    row.appendChild(cell);
+  }
+}
+for (const theme of ["dark", "light"]) {
+  const host = document.getElementById(`lock-${theme}`);
+  const f = theme === "dark" ? "d-lockup.svg" : "d-lockup-light.svg";
+  const doc = new DOMParser().parseFromString(await fetch(f + "?v=" + Date.now()).then(r => r.text()), "image/svg+xml");
+  const svg = document.importNode(doc.documentElement, true);
+  svg.setAttribute("id", `lock-${theme}`);
+  svg.style.width = "100%"; svg.style.height = "auto"; svg.style.display = "block";
+  svg.style.color = theme === "dark" ? "var(--ink)" : "#171717";
+  svg.style.setProperty("color", theme === "dark" ? "#dedede" : "#171717");
+  host.replaceWith(svg);
+}
+for (const el of document.querySelectorAll(".tile-slot")) {
+  const size = Number(el.dataset.size);
+  el.appendChild(await load({ file: el.dataset.tile, small: "d-tile-16.svg" }, size));
+}
+for (const el of document.querySelectorAll(".lock-slot")) {
+  const h = Number(el.dataset.h);
+  const txt = await fetch(el.dataset.lock + "?v=" + Date.now()).then(r => r.text());
+  const doc = new DOMParser().parseFromString(txt, "image/svg+xml");
+  const svg = document.importNode(doc.documentElement, true);
+  const vb = svg.getAttribute("viewBox").split(" ").map(Number);
+  svg.setAttribute("height", h);
+  svg.setAttribute("width", Math.round(h * vb[2] / vb[3]));
+  svg.style.display = "block";
+  svg.style.flex = "0 0 auto";
+  svg.style.setProperty("color", el.closest(".mock").querySelector(".main").style.background === "rgb(250, 250, 250)" ? "#171717" : "#ededf2");
+  el.replaceWith(svg);
+}
+window.__ready = true;
+</script>
+</body>
+</html>

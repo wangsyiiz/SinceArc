@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- A 双弧：两条同心的开口弧，错开 180°，读作“两个仍在路上的进程” -->
+  <g transform="translate(2.0 46.0)" fill="none" stroke="currentColor" stroke-linecap="round">
+    <path d="M 672.7 320.5 A 250 250 0 1 1 265.8 468.6" stroke-width="104"/>
+    <path d="M 260.0 812.3 A 392 392 0 1 1 900.2 457.4" stroke-width="104"/>
+  </g>
+</svg>

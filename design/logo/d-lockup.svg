@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 328" width="1240" height="328" color="#ededf2">
+  <defs>
+  <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity="0.20"/><stop offset="0.55" stop-color="#ffffff" stop-opacity="0.06"/><stop offset="1" stop-color="#ffffff" stop-opacity="0.03"/></linearGradient>
+  <filter id="g0" x="-40%" y="-70%" width="180%" height="240%"><feGaussianBlur stdDeviation="22"/></filter><filter id="g1" x="-40%" y="-70%" width="180%" height="240%"><feGaussianBlur stdDeviation="10"/></filter><filter id="g2" x="-40%" y="-70%" width="180%" height="240%"><feGaussianBlur stdDeviation="4"/></filter>
+  </defs>
+  <!-- D lockup dark：磁贴 + 字标，文字辉光三层 -->
+  <rect x="0" y="12" width="304" height="304" rx="64" fill="#1a1d26"/>
+  <rect x="1" y="13" width="302" height="302" rx="63" fill="none" stroke="url(#edge)" stroke-width="2"/>
+  <g transform="translate(152 164) scale(0.3117) translate(-512 -512)">
+    <g opacity="0.08">
+  <g transform="translate(46.0 46.0) translate(-197.6 -215.6) scale(1.3860)">
+    <path d="M 300 240 C 700 240, 760 430, 512 520 C 264 610, 324 810, 724 810" fill="none" stroke="currentColor" stroke-width="300" stroke-linecap="round"/>
+    <circle cx="300" cy="240" r="66.4" fill="currentColor"/>
+  </g></g><g opacity="0.16">
+  <g transform="translate(46.0 46.0) translate(-197.6 -215.6) scale(1.3860)">
+    <path d="M 300 240 C 700 240, 760 430, 512 520 C 264 610, 324 810, 724 810" fill="none" stroke="currentColor" stroke-width="232" stroke-linecap="round"/>
+    <circle cx="300" cy="240" r="66.4" fill="currentColor"/>
+  </g></g><g opacity="0.26">
+  <g transform="translate(46.0 46.0) translate(-197.6 -215.6) scale(1.3860)">
+    <path d="M 300 240 C 700 240, 760 430, 512 520 C 264 610, 324 810, 724 810" fill="none" stroke="currentColor" stroke-width="182" stroke-linecap="round"/>
+    <circle cx="300" cy="240" r="66.4" fill="currentColor"/>
+  </g></g>
+    <circle cx="300" cy="240" r="159.4" fill="currentColor" opacity="0.14"/><circle cx="300" cy="240" r="112.9" fill="currentColor" opacity="0.1"/>
+    
+  <g transform="translate(46.0 46.0) translate(-197.6 -215.6) scale(1.3860)">
+    <path d="M 300 240 C 700 240, 760 430, 512 520 C 264 610, 324 810, 724 810" fill="none" stroke="currentColor" stroke-width="75.0" stroke-linecap="round"/>
+    <circle cx="300" cy="240" r="66.4" fill="currentColor"/>
+  </g>
+  </g>
+  <g>
+    <text x="372" y="196" font-family="Georgia, 'Times New Roman', serif" font-size="152" letter-spacing="1" fill="currentColor" opacity="0.2" filter="url(#g0)">sincearc</text><text x="372" y="196" font-family="Georgia, 'Times New Roman', serif" font-size="152" letter-spacing="1" fill="currentColor" opacity="0.35" filter="url(#g1)">sincearc</text><text x="372" y="196" font-family="Georgia, 'Times New Roman', serif" font-size="152" letter-spacing="1" fill="currentColor" opacity="0.45" filter="url(#g2)">sincearc</text>
+    <text x="372" y="196" font-family="Georgia, 'Times New Roman', serif" font-size="152"
+          letter-spacing="1" fill="currentColor">sincearc</text>
+  </g>
+</svg>

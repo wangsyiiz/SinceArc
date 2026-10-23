@@ -1,3 +1,4 @@
+import { BrandMark } from "./BrandMark";
 import { EmptyState } from "./ui/EmptyState";
 import { Button } from "./ui/Button";
 
@@ -14,8 +15,8 @@ export function WorkspaceEmpty({ onNewSession }: WorkspaceEmptyProps) {
         <div className="relative grid size-32 place-items-center">
           <div className="sc-orbit absolute inset-0 rounded-full border border-dashed border-line-1/40" />
           <div className="sc-orbit-rev absolute inset-4 rounded-full border border-line-1/25" />
-          <div className="sc-breathe grid size-16 place-items-center rounded-card bg-surface-3/35 text-title leading-none text-ink-2">
-            ◇
+          <div className="sc-breathe grid size-16 place-items-center rounded-card bg-surface-3/35 text-ink-2">
+            <BrandMark className="size-9" />
           </div>
         </div>
       }

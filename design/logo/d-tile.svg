@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" color="#ededf2">
+  <defs>
+  <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity="0.20"/><stop offset="0.55" stop-color="#ffffff" stop-opacity="0.06"/><stop offset="1" stop-color="#ffffff" stop-opacity="0.03"/></linearGradient>
+  </defs>
+  <!-- D 磁贴 dark：实色 #1a1d26（比 s0 深一档），三层辉光 -->
+  <rect x="40" y="40" width="944" height="944" rx="216" fill="#1a1d26"/>
+  <rect x="41" y="41" width="942" height="942" rx="215"
+        fill="none" stroke="url(#edge)" stroke-width="2"/>
+  <g transform="translate(512 512) scale(0.62) translate(-512 -512)">
+    <g opacity="0.08">
+  <g transform="translate(46.0 46.0) translate(-197.6 -215.6) scale(1.3860)">
+    <path d="M 300 240 C 700 240, 760 430, 512 520 C 264 610, 324 810, 724 810" fill="none" stroke="currentColor" stroke-width="300" stroke-linecap="round"/>
+    <circle cx="300" cy="240" r="66.4" fill="currentColor"/>
+  </g></g><g opacity="0.16">
+  <g transform="translate(46.0 46.0) translate(-197.6 -215.6) scale(1.3860)">
+    <path d="M 300 240 C 700 240, 760 430, 512 520 C 264 610, 324 810, 724 810" fill="none" stroke="currentColor" stroke-width="232" stroke-linecap="round"/>
+    <circle cx="300" cy="240" r="66.4" fill="currentColor"/>
+  </g></g><g opacity="0.26">
+  <g transform="translate(46.0 46.0) translate(-197.6 -215.6) scale(1.3860)">
+    <path d="M 300 240 C 700 240, 760 430, 512 520 C 264 610, 324 810, 724 810" fill="none" stroke="currentColor" stroke-width="182" stroke-linecap="round"/>
+    <circle cx="300" cy="240" r="66.4" fill="currentColor"/>
+  </g></g>
+    <circle cx="300" cy="240" r="159.4" fill="currentColor" opacity="0.14"/><circle cx="300" cy="240" r="112.9" fill="currentColor" opacity="0.1"/>
+    
+  <g transform="translate(46.0 46.0) translate(-197.6 -215.6) scale(1.3860)">
+    <path d="M 300 240 C 700 240, 760 430, 512 520 C 264 610, 324 810, 724 810" fill="none" stroke="currentColor" stroke-width="75.0" stroke-linecap="round"/>
+    <circle cx="300" cy="240" r="66.4" fill="currentColor"/>
+  </g>
+  </g>
+</svg>
