@@ -206,6 +206,52 @@ pub struct ProfileDto {
     pub ssh_password: Option<String>,
 }
 
+pub const CONTEXT_MESSAGES_MAX: u32 = 20;
+
+pub fn is_valid_theme(theme: &str) -> bool {
+    matches!(theme, "dark" | "light" | "system")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct AppSettingsDto {
+    pub context_messages: u32,
+    pub theme: String,
+}
+
+impl Default for AppSettingsDto {
+    fn default() -> Self {
+        Self {
+            context_messages: 5,
+            theme: "dark".into(),
+        }
+    }
+}
+
+/// `settings_load` 的返回：设置本身 + 读不出来的脏值说明。
+///
+/// 脏值不阻塞启动，但必须让人看见（诊断面板）并留日志 —— 静默用默认值等于骗人。
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct SettingsReport {
+    pub settings: AppSettingsDto,
+    pub issues: Vec<String>,
+}
+
+impl AppSettingsDto {
+    fn validate(&self) -> Result<(), CmdError> {
+        if self.context_messages > CONTEXT_MESSAGES_MAX {
+            return Err(CmdError::new(50001, "附带条数超出范围（0–20）"));
+        }
+        if !is_valid_theme(&self.theme) {
+            return Err(CmdError::new(50001, "未知主题"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
@@ -1538,6 +1584,27 @@ pub async fn profiles_save(
         .map_err(|e| CmdError::new(50000, format!("保存配置失败：{e}")))
 }
 
+#[tauri::command]
+pub async fn settings_load(state: State<'_, AppState>) -> Result<SettingsReport, CmdError> {
+    let (settings, issues) = state
+        .db
+        .load_settings_report()
+        .map_err(|e| CmdError::new(50000, format!("读取设置失败：{e}")))?;
+    Ok(SettingsReport { settings, issues })
+}
+
+#[tauri::command]
+pub async fn settings_save(
+    state: State<'_, AppState>,
+    settings: AppSettingsDto,
+) -> Result<(), CmdError> {
+    settings.validate()?;
+    state
+        .db
+        .save_settings(&settings)
+        .map_err(|e| CmdError::new(50000, format!("保存设置失败：{e}")))
+}
+
 #[derive(Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
@@ -2483,5 +2550,32 @@ mod usage_tests {
     fn percent_never_zero_when_used() {
         assert_eq!(usage_percent(1, 1_000_000), 1);
         assert_eq!(usage_percent(0, 1_000_000), 0);
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::AppSettingsDto;
+
+    #[test]
+    fn settings_reject_context_over_max_with_50001() {
+        let settings = AppSettingsDto {
+            context_messages: 99,
+            theme: "dark".into(),
+        };
+        let err = settings.validate().expect_err("99 必须被拒");
+        assert_eq!(err.code, 50001);
+        assert_eq!(err.msg, "附带条数超出范围（0–20）");
+    }
+
+    #[test]
+    fn settings_reject_unknown_theme_with_50001() {
+        let settings = AppSettingsDto {
+            context_messages: 5,
+            theme: "neon".into(),
+        };
+        let err = settings.validate().expect_err("未知主题必须被拒");
+        assert_eq!(err.code, 50001);
+        assert_eq!(err.msg, "未知主题");
     }
 }

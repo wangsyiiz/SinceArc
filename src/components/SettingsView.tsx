@@ -18,6 +18,7 @@ import type {
   ThemeMode,
   ThreadSettings,
 } from "@/types";
+import { CONTEXT_MESSAGES_DEFAULT, CONTEXT_MESSAGES_MAX } from "@/types";
 import { cn } from "@/lib/utils";
 import {
   agentProbe,
@@ -1056,7 +1057,7 @@ export function SettingsView({
                           <input
                             type="range"
                             min={0}
-                            max={20}
+                            max={CONTEXT_MESSAGES_MAX}
                             step={1}
                             value={n}
                             onChange={(e) => onChangeContext(Number(e.target.value))}
@@ -1065,8 +1066,8 @@ export function SettingsView({
                           />
                           <div className="mt-1 flex justify-between font-mono text-micro text-ink-3">
                             <span>0</span>
-                            <span>默认 5</span>
-                            <span>20</span>
+                            <span>默认 {CONTEXT_MESSAGES_DEFAULT}</span>
+                            <span>{CONTEXT_MESSAGES_MAX}</span>
                           </div>
                         </div>
                       </div>
@@ -1101,8 +1102,6 @@ export function SettingsView({
                     </div>
                   </div>
                 )}
-
-                <p className="mt-8 text-micro text-ink-3">设置仅本次运行有效</p>
               </>
             )}
           </div>
