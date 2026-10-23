@@ -95,6 +95,11 @@ const SSH_AUTH_OPTIONS: { value: SshAuth; label: string }[] = [
   { value: "password", label: "密码" },
 ];
 
+const ADD_PATH_OPTIONS: { value: AddPath; label: string }[] = [
+  { value: "manual", label: "手动填写" },
+  { value: "scan", label: "自动扫描" },
+];
+
 const SECTIONS = [
   { id: "connection", label: "连接", icon: Plug },
   { id: "members", label: "成员", icon: Users },
@@ -114,7 +119,9 @@ type ProbeResult =
   | { ok: true; outcome: ProbeOutcome }
   | { ok: false; error: string };
 
-type Draft = { profile: AgentProfile; isNew: boolean };
+type AddPath = "manual" | "scan";
+
+type Draft = { profile: AgentProfile; isNew: boolean; addPath: AddPath };
 
 function cloneProfile(profile: AgentProfile): AgentProfile {
   return { ...profile, args: [...(profile.args ?? [])], ssh: profile.ssh ? { ...profile.ssh } : undefined };
@@ -213,10 +220,6 @@ export function SettingsView({
   const [commandDrafts, setCommandDrafts] = useState<Record<string, string>>({});
   const [commandEditing, setCommandEditing] = useState<Record<string, boolean>>({});
   const [recentPaths, setRecentPaths] = useState<Record<string, string[]>>({});
-  /** 发现列表里逐条「验证」的结果，key = candidateId@host */
-  const [discoveryProbe, setDiscoveryProbe] = useState<
-    Record<string, { busy?: boolean; ok?: string; error?: string }>
-  >({});
   const probeSeq = useRef<Record<string, number>>({});
   const connectionRowRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
@@ -342,8 +345,8 @@ export function SettingsView({
     patchDraft({ program, args });
   };
 
-  const handleProbe = async (profile: AgentProfile) => {
-    const raw = commandDrafts[profile.id];
+  const handleProbe = async (profile: AgentProfile, useCommandDraft = true) => {
+    const raw = useCommandDraft ? commandDrafts[profile.id] : undefined;
     // 点探测时输入框可能还没 blur：按框里的内容探测，而不是上一次提交的值
     const target =
       raw !== undefined && raw.trim()
@@ -382,35 +385,11 @@ export function SettingsView({
     id: string,
     candidate: DiscoveryCandidate,
     hit: DiscoveryHit,
+    base?: AgentProfile,
   ): AgentProfile | null => {
     const partial = onUseDiscovered?.(candidate, hit);
     if (!partial) return null;
-    return { ...createEmptyConnection(id), ...partial, id };
-  };
-
-  /**
-   * 扫到 ≠ 能用：这里真起一次 initialize（与连接详情里的「探测」同一条路径、同一套错误码）。
-   * 两层分开的意义就在这儿 —— 扫描可以很快很宽，验证只对用户真想要的那一个做。
-   */
-  const handleDiscoveryProbe = async (candidate: DiscoveryCandidate, hit: DiscoveryHit) => {
-    const key = `${candidate.id}@${hit.host}`;
-    const profile = discoveredProfile("p-discovery", candidate, hit);
-    if (!profile) return;
-    setDiscoveryProbe((prev) => ({ ...prev, [key]: { busy: true } }));
-    try {
-      const outcome = await agentProbe(profile);
-      setDiscoveryProbe((prev) => ({
-        ...prev,
-        [key]: {
-          ok: `${outcome.agentName} ${outcome.agentVersion} · 协议 v${outcome.protocolVersion}${describeCaps(
-            outcome.capabilities,
-          )}`,
-        },
-      }));
-    } catch (e) {
-      const err = asCmdError(e);
-      setDiscoveryProbe((prev) => ({ ...prev, [key]: { error: `${err.code} ${err.msg}` } }));
-    }
+    return { ...(base ?? createEmptyConnection(id)), ...partial, id };
   };
 
   const closeDraft = useCallback(
@@ -504,7 +483,7 @@ export function SettingsView({
   const startNewConnection = () => {
     const id = newId("p-draft");
     invalidateProbe(id);
-    setDraft({ profile: createEmptyConnection(id), isNew: true });
+    setDraft({ profile: createEmptyConnection(id), isNew: true, addPath: "manual" });
     setConnectionId(null);
   };
 
@@ -512,25 +491,27 @@ export function SettingsView({
     invalidateProbe(profile.id);
     clearCommandDraft(profile.id);
     setCommandEditing((prev) => ({ ...prev, [profile.id]: false }));
-    setDraft({ profile: cloneProfile(profile), isNew: false });
+    setDraft({ profile: cloneProfile(profile), isNew: false, addPath: "manual" });
     setConnectionId(profile.id);
   };
 
+  const setDraftPath = (next: AddPath) => {
+    setDraft((current) =>
+      current && current.isNew ? { ...current, addPath: next } : current,
+    );
+  };
+
   const startDiscoveredDraft = (candidate: DiscoveryCandidate, hit: DiscoveryHit) => {
-    const id = newId("p-draft");
-    const profile = discoveredProfile(id, candidate, hit);
+    const id = draft?.profile.id ?? newId("p-draft");
+    const profile = discoveredProfile(id, candidate, hit, draft?.profile);
     if (!profile) return;
-    const start = () => {
-      invalidateProbe(id);
-      setDraft({ profile, isNew: true });
-      setConnectionId(null);
-      void handleProbe(profile);
-    };
-    if (draft) {
-      discardDraft(start);
-      return;
-    }
-    start();
+    invalidateProbe(id);
+    clearCommandDraft(id);
+    setCommandEditing((prev) => ({ ...prev, [id]: false }));
+    setDraft({ profile, isNew: true, addPath: "manual" });
+    setConnectionId(null);
+    // 扫描结果已经写进 profile；不能让它被手动档未提交的命令草稿覆盖。
+    void handleProbe(profile, false);
   };
 
   const saveDraft = (profile: AgentProfile) => {
@@ -548,12 +529,87 @@ export function SettingsView({
     setDraft(null);
   };
 
+  const renderDiscoveryPicker = () => {
+    const rows = discovery
+      ? discovery.candidates.flatMap((candidate) =>
+          discovery.found
+            .filter((hit) => hit.candidateId === candidate.id)
+            .map((hit) => ({ candidate, hit })),
+        )
+      : [];
+
+    return (
+      <div className="space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <p className="min-w-0 flex-1 text-ui text-ink-2">
+            扫描本机已安装的 ACP agent，点一条直接填入当前草稿。
+          </p>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={discoveryScanning}
+            onClick={() => onScanDiscovery?.()}
+          >
+            {discoveryScanning ? "扫描中…" : "扫描本机"}
+          </Button>
+        </div>
+
+        {discoveryError && (
+          <p className="break-all text-caption text-danger-1">{discoveryError}</p>
+        )}
+        {discovery?.warnings.map((warning) => (
+          <p key={warning} className="break-all font-mono text-caption text-warn-1">
+            {warning}
+          </p>
+        ))}
+
+        {!discovery ? (
+          <p className="text-caption text-ink-3">还没扫描过</p>
+        ) : rows.length === 0 ? (
+          <EmptyState
+            compact
+            kind="empty"
+            title="没找到能跑 ACP 的 agent"
+            description="也可以手动填写启动命令"
+          />
+        ) : (
+          <div className="divide-y divide-line-1/50">
+            {rows.map(({ candidate, hit }) => (
+              <button
+                key={`${candidate.id}@${hit.host}@${hit.path}`}
+                type="button"
+                onClick={() => startDiscoveredDraft(candidate, hit)}
+                className="flex w-full flex-col gap-1 py-2.5 text-left transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+              >
+                <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="text-ui font-medium text-ink-1">{candidate.name}</span>
+                  <span className="text-caption text-ink-3">{candidate.note}</span>
+                  <span className="ml-auto shrink-0 font-mono text-caption text-ink-2">
+                    {hit.host}
+                  </span>
+                </span>
+                <span
+                  title={hit.path}
+                  className="truncate font-mono text-caption text-ink-3"
+                >
+                  {hit.path}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const n = settings.contextMessages;
   const heavy = n > 10;
 
   const renderConnectionDetail = (profile: AgentProfile) => {
     const ssh = profile.ssh;
     const isNew = draft?.isNew ?? false;
+    const addPath = draft?.addPath ?? "manual";
+    const scanMode = isNew && addPath === "scan";
     const savedProfile = isNew
       ? null
       : (profiles.find((item) => item.id === profile.id) ?? null);
@@ -575,6 +631,18 @@ export function SettingsView({
 
     return (
       <div className="mt-5 space-y-5">
+        {isNew && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-ui font-medium text-ink-2">添加方式</span>
+            <Segmented
+              ariaLabel="添加方式"
+              options={ADD_PATH_OPTIONS}
+              value={addPath}
+              onChange={setDraftPath}
+            />
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center justify-between gap-3">
           <span className="flex items-center gap-1.5 text-caption text-ink-3">
             <StatusDot status={connected ? "connected" : "untested"} />
@@ -629,7 +697,11 @@ export function SettingsView({
           </div>
         )}
 
-        <Field label="名称" htmlFor={`connection-name-${profile.id}`}>
+        {scanMode ? (
+          renderDiscoveryPicker()
+        ) : (
+          <>
+            <Field label="名称" htmlFor={`connection-name-${profile.id}`}>
           <Input
             id={`connection-name-${profile.id}`}
             value={profile.name}
@@ -877,142 +949,19 @@ export function SettingsView({
           </p>
         )}
 
-        <div className="border-t border-line-1/50 pt-4">
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-ui font-medium text-ink-2">这台机器上的 ACP agent</span>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => onScanDiscovery?.()}
-              disabled={discoveryScanning}
-            >
-              {discoveryScanning ? "扫描中…" : "重新扫描"}
-            </Button>
-          </div>
-          <p className="mt-1 text-caption text-ink-3">
-            {discovery
-              ? `上次扫描 ${new Date(discovery.scannedAt).toLocaleTimeString("zh-CN", {
-                  hour12: false,
-                })}`
-              : discoveryScanning
-                ? "正在找本机已装的 agent…"
-                : "还没扫过"}
-            ：扫到的只是「这个命令装没装」，能不能起 ACP 要按「验证」真连一次。
-          </p>
-          {discoveryError && (
-            <p className="mt-1 break-all font-mono text-caption text-danger-1">
-              {discoveryError}
-            </p>
-          )}
-          {discovery?.warnings.map((warning) => (
-            <p key={warning} className="mt-1 break-all font-mono text-caption text-warn-1">
-              {warning}
-            </p>
-          ))}
-
-          <div className="mt-2 divide-y divide-line-1/50">
-            {discovery?.candidates.map((candidate) => {
-              const hits = discovery?.found.filter(
-                (hit) => hit.candidateId === candidate.id,
-              ) ?? [];
-              return (
-                <div key={candidate.id} className="py-2.5">
-                  <div className="flex items-center gap-1.5">
-                    <span
-                      className={cn(
-                        "text-small",
-                        hits.length > 0 ? "text-ink-1" : "text-ink-3",
-                      )}
-                    >
-                      {candidate.name}
-                    </span>
-                    <span
-                      className={cn(
-                        "rounded-mark px-1 py-px font-mono text-micro",
-                        candidate.mode === "native" ? "text-ok-1" : "text-warn-1",
-                      )}
-                      title={candidate.note}
-                    >
-                      {candidate.mode === "native" ? "原生 ACP" : "需适配器"}
-                    </span>
-                    {hits.length === 0 && (
-                      <span className="text-caption text-ink-3">未安装</span>
-                    )}
-                  </div>
-                  <p className="mt-0.5 truncate font-mono text-caption text-ink-3">
-                    {candidate.acpProgram} {candidate.acpArgs.join(" ")}
-                  </p>
-                  {candidate.mode === "adapter" && hits.length > 0 && (
-                    <p className="mt-0.5 text-caption text-warn-1">{candidate.note}</p>
-                  )}
-                  {hits.map((hit) => {
-                    const key = `${candidate.id}@${hit.host}`;
-                    const result = discoveryProbe[key];
-                    return (
-                      <div key={key} className="mt-1.5">
-                        <div className="flex items-center gap-1.5">
-                          <span className="shrink-0 font-mono text-caption text-ink-2">
-                            {hit.host}
-                          </span>
-                          <span
-                            title={hit.path}
-                            className="min-w-0 flex-1 truncate font-mono text-caption text-ink-3"
-                          >
-                            {hit.path}
-                          </span>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-caption"
-                            onClick={() => void handleDiscoveryProbe(candidate, hit)}
-                            disabled={result?.busy}
-                          >
-                            {result?.busy ? "验证中…" : "验证"}
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-caption text-accent-1"
-                            onClick={() => startDiscoveredDraft(candidate, hit)}
-                          >
-                            用它建连接
-                          </Button>
-                        </div>
-                        {(result?.ok || result?.error) && (
-                          <p
-                            className={cn(
-                              "mt-0.5 break-all font-mono text-caption",
-                              result?.ok ? "text-ok-1" : "text-danger-1",
-                            )}
-                          >
-                            {result?.ok ?? result?.error}
-                          </p>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
-          </div>
-          <p className="mt-2 text-caption text-ink-3">
-            本地与远程是同一条 SSH 路径，只差 host：本地填{" "}
-            <code className="font-mono">localhost</code> 即可走 WSL 里的 sshd。密码不会落到
-            SQLite，存系统凭据库（未接线）。
-          </p>
-        </div>
-
-        <div className="border-t border-line-1/50 pt-4">
-          <Button
-            variant="ghost"
-            size="sm"
-            danger
-            onClick={() => setConfirmDeleteId(profile.id)}
-          >
-            <Trash2 className="size-3" />
-            删除连接
-          </Button>
-        </div>
+            <div className="border-t border-line-1/50 pt-4">
+              <Button
+                variant="ghost"
+                size="sm"
+                danger
+                onClick={() => setConfirmDeleteId(profile.id)}
+              >
+                <Trash2 className="size-3" />
+                删除连接
+              </Button>
+            </div>
+          </>
+        )}
       </div>
     );
   };
