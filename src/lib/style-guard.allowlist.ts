@@ -13,14 +13,4 @@
  */
 export const COLOR_LITERAL_EXEMPT: string[] = ["lib/player-colors.ts"];
 
-export const ALLOWED: Record<string, { rule: string; count: number; why: string }[]> = {
-  "components/PrView.tsx": [
-    { rule: "arbitrary-value", count: 14, why: "P2 PR 状态与按钮尺寸收敛" },
-    { rule: "color-literal", count: 5, why: "P2 PR 状态色改为令牌" },
-    { rule: "transition-all", count: 1, why: "P2 主按钮改为按属性过渡" },
-  ],
-  "components/RepoBrowser.tsx": [
-    { rule: "arbitrary-value", count: 16, why: "P2 仓库列表尺寸与字号收敛" },
-    { rule: "color-literal", count: 1, why: "P2 merged 状态色改为令牌" },
-  ],
-};
+export const ALLOWED: Record<string, { rule: string; count: number; why: string }[]> = {};
