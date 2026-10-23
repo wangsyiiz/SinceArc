@@ -1,10 +1,11 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import { newId } from "@/lib/ids";
-import { prsByRepo, repos as seedRepos } from "@/mock/data";
-import type { GithubRepo, Tab } from "@/types";
+import type { GithubPR, GithubRepo, Tab } from "@/types";
+
+export const EMPTY_PRS: Record<string, GithubPR[]> = {};
 
 export function useRepos(activeTab: Tab | null) {
-  const [repoList, setRepoList] = useState<GithubRepo[]>(seedRepos);
+  const [repoList, setRepoList] = useState<GithubRepo[]>([]);
 
   const addRepo = useCallback((path: string) => {
     const name = path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "新项目";
@@ -18,10 +19,12 @@ export function useRepos(activeTab: Tab | null) {
     ? repoList.find((r) => r.id === activeTab.repoId)
     : undefined;
 
-  const activePr = useMemo(() => {
-    if (activeTab?.kind !== "pr" || !activeTab.repoId) return undefined;
-    return (prsByRepo[activeTab.repoId] ?? []).find((p) => p.number === activeTab.prNumber);
-  }, [activeTab]);
+  const activePr =
+    activeTab?.kind === "pr" && activeTab.repoId
+      ? (EMPTY_PRS[activeTab.repoId] ?? []).find(
+          (pr) => pr.number === activeTab.prNumber,
+        )
+      : undefined;
 
   return { repoList, addRepo, activeRepo, activePr };
 }
