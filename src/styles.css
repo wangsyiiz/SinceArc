@@ -466,6 +466,12 @@ dialog.sc-dialog[open] {
 }
 
 @layer components {
+  /* 浮层的层次：只许用 --z-* 这一套（§1.10）。手写 z-30 / z-50 / z-[9999] 会让
+     「谁盖住谁」变成各处记忆里的数字，弹窗一出来就对不上。 */
+  .sc-z-popover {
+    z-index: var(--z-popover);
+  }
+
   /* 标题栏三个窗口按钮：**不受设计令牌约束**（所有者 2026-10-23：跟 Windows 原生
      caption button 走 —— 用户对这三个键的手感来自系统，换成应用令牌立刻"不像 Windows"）。
      最小化/最大化用 --glass-control（暗色白 6% / 浅色黑 4%，就是 Win 的 hover 洗色）；

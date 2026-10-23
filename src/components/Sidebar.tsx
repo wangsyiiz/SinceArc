@@ -4,6 +4,7 @@ import type { AgentProfile, GithubPR, GithubRepo, Player, SessionSummary } from 
 import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
 import { MoreMenu } from "./MoreMenu";
+import { StatusDot } from "./ui/Badge";
 
 export type SidebarMode = "sessions" | "code";
 
@@ -114,7 +115,7 @@ export function Sidebar({
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
             {grouped.map(({ group, items }) => (
               <div key={group} className="mb-0.5">
-                <div className="px-2 pt-2 pb-1 text-[10px] font-medium tracking-wide text-ink-3">
+                <div className="px-2 pt-2 pb-1 text-micro font-medium tracking-wide text-ink-3">
                   {group}
                 </div>
                 {items.map((s) => {
@@ -128,17 +129,17 @@ export function Sidebar({
                     <div
                       key={s.id}
                       className={cn(
-                        "group relative mb-0.5 rounded-[8px] transition-colors",
-                        active ? "sc-row-active" : "hover:bg-surface-3/35",
+                        "group relative mb-0.5 rounded-mark transition-colors",
+                        active ? "sc-row-active" : "hover:bg-surface-3",
                       )}
                     >
                       <button
                         onClick={() => onSelect(s.id)}
-                        className="flex w-full flex-col gap-0.5 rounded-[8px] px-2.5 py-2 pr-7 text-left"
+                        className="flex w-full flex-col gap-0.5 rounded-mark px-2.5 py-2 pr-7 text-left"
                       >
                       <span
                         className={cn(
-                          "truncate text-[12px]",
+                          "truncate text-small",
                           active ? "text-ink-1" : "text-ink-2 group-hover:text-ink-1",
                         )}
                       >
@@ -156,7 +157,7 @@ export function Sidebar({
                             />
                           ) : null;
                         })}
-                        <span className="min-w-0 truncate font-mono text-[10px] text-ink-3">
+                        <span className="min-w-0 truncate font-mono text-micro text-ink-3">
                           {s.cwd}
                         </span>
                         {profile && (
@@ -165,7 +166,7 @@ export function Sidebar({
                             className={cn(
                               // 这里只说「这个会话属于谁」，不做连接状态着色 ——
                               // 状态属于当前那个会话，在标题栏里显示，列在这里会变成一堆绿灰点。
-                              "ml-auto max-w-[72px] shrink-0 truncate rounded-[4px] bg-surface-3/35 px-1 py-px font-mono text-[9.5px] text-ink-3 transition-colors group-hover:bg-surface-3/55",
+                              "ml-auto max-w-18 shrink-0 truncate rounded-mark bg-surface-3/35 px-1 py-px font-mono text-micro text-ink-3 transition-colors group-hover:bg-surface-3/55",
                             )}
                           >
                             {profileLabel(profile)}
@@ -198,7 +199,7 @@ export function Sidebar({
       ) : (
         <>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-            <div className="px-2 pt-1 pb-1 text-[10px] font-medium tracking-wide text-ink-3">
+            <div className="px-2 pt-1 pb-1 text-micro font-medium tracking-wide text-ink-3">
               项目
             </div>
             {repos.map((r) => {
@@ -208,23 +209,20 @@ export function Sidebar({
                   key={r.id}
                   onClick={() => onOpenRepo(r.id)}
                   title={r.path}
-                  className="group mb-0.5 flex w-full flex-col gap-0.5 rounded-[8px] px-2.5 py-2 text-left transition-colors hover:bg-surface-3/35"
+                  className="group mb-0.5 flex w-full flex-col gap-0.5 rounded-mark px-2.5 py-2 text-left transition-colors hover:bg-surface-3"
                 >
                   <span className="flex items-center gap-1.5">
-                    <span
-                      className="size-1.5 shrink-0 rounded-full"
-                      style={{ background: r.connected ? "var(--ok)" : "var(--i3)" }}
-                    />
-                    <span className="transition-colors duration-150 truncate text-[12px] text-ink-2 group-hover:text-ink-1">
+                    <StatusDot status={r.connected ? "connected" : "untested"} />
+                    <span className="transition-colors duration-150 truncate text-small text-ink-2 group-hover:text-ink-1">
                       {r.name}
                     </span>
                     {count > 0 && (
-                      <span className="ml-auto shrink-0 font-mono text-[9.5px] text-ink-3">
+                      <span className="ml-auto shrink-0 font-mono text-micro text-ink-3">
                         {count}
                       </span>
                     )}
                   </span>
-                  <span className="truncate pl-3 font-mono text-[9.5px] text-ink-3">{r.slug}</span>
+                  <span className="truncate pl-3 font-mono text-micro text-ink-3">{r.slug}</span>
                 </button>
               );
             })}
@@ -241,16 +239,16 @@ export function Sidebar({
                   }}
                   onBlur={() => setAdding(false)}
                   placeholder="/home/jerry/source/项目"
-                  className="sc-selectable w-full rounded-[6px] bg-surface-3/45 px-2 py-1 font-mono text-[10.5px] text-ink-1 outline-none placeholder:text-ink-3"
+                  className="sc-selectable w-full rounded-mark bg-surface-3/45 px-2 py-1 font-mono text-caption text-ink-1 placeholder:text-ink-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
                 />
-                <p className="mt-1 text-[9.5px] leading-relaxed text-ink-3">
+                <p className="mt-1 text-micro text-ink-3">
                   回车添加；执行 gh 时后端把 cwd 切到这个目录
                 </p>
               </div>
             ) : (
               <button
                 onClick={() => setAdding(true)}
-                className="mt-1 flex w-full items-center gap-1.5 rounded-[8px] px-2.5 py-1.5 text-[11px] text-ink-3 transition-colors hover:bg-surface-3/35 hover:text-ink-2"
+                className="mt-1 flex w-full items-center gap-1.5 rounded-mark px-2.5 py-1.5 text-caption text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink-2"
               >
                 <Plus className="size-3" />
                 添加项目路径
@@ -263,7 +261,7 @@ export function Sidebar({
       <div className="border-t border-line-1/80 p-2">
         <button
           onClick={onOpenSettings}
-          className="mt-0.5 flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-[11.5px] text-ink-3 transition-colors hover:bg-surface-3/35 hover:text-ink-2"
+          className="mt-0.5 flex w-full items-center gap-2 rounded-mark px-2 py-1.5 text-ui-tight text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink-2"
         >
           <Settings2 className="size-3.5" />
           设置
@@ -311,15 +309,15 @@ function NewSessionButton({
 
   return (
     <div ref={ref} className="relative">
-      <div className="sc-control flex w-full items-center rounded-[8px] bg-surface-3/50 transition-colors hover:bg-surface-3/85">
+      <div className="sc-control flex w-full items-center rounded-control bg-surface-3/50 transition-colors hover:bg-surface-3/85">
         <button
           onClick={onNew}
-          className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left text-[12.5px] text-ink-1"
+          className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left text-small text-ink-1"
         >
           <Plus className="size-3.5 shrink-0 text-ink-2" />
           新建会话
           {!multi && (
-            <kbd className="ml-auto rounded border border-line-1/70 px-1.5 py-0.5 font-mono text-[9.5px] text-ink-3">
+            <kbd className="ml-auto rounded-mark border border-line-1/70 px-1.5 py-0.5 font-mono text-micro text-ink-3">
               Ctrl N
             </kbd>
           )}
@@ -329,7 +327,7 @@ function NewSessionButton({
             aria-label="选择 agent 新建会话"
             aria-expanded={open}
             onClick={() => setOpen((v) => !v)}
-            className="mr-1 grid size-6 shrink-0 place-items-center rounded-[6px] text-ink-3 transition-colors hover:bg-surface-3/70 hover:text-ink-1"
+            className="mr-1 grid size-6 shrink-0 place-items-center rounded-mark text-ink-3 transition-colors hover:bg-surface-3/70 hover:text-ink-1"
           >
             <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
           </button>
@@ -337,8 +335,8 @@ function NewSessionButton({
       </div>
 
       {open && multi && (
-        <div className="sc-glass absolute top-full right-0 left-0 z-30 mt-1.5 rounded-[10px] p-1">
-          <div className="px-2 py-1.5 text-[9.5px] leading-relaxed text-ink-3">
+        <div className="sc-glass absolute top-full right-0 left-0 sc-z-popover mt-1.5 rounded-card p-1">
+          <div className="px-2 py-1.5 text-micro text-ink-3">
             选一个 agent 新建；打开后会按它自动连接
           </div>
           {profiles.map((p) => (
@@ -348,12 +346,12 @@ function NewSessionButton({
                 onNewWithProfile(p.id);
                 setOpen(false);
               }}
-              className="flex w-full items-center gap-2 rounded-[6px] px-2 py-1.5 text-left transition-colors hover:bg-surface-3/45"
+              className="flex w-full items-center gap-2 rounded-mark px-2 py-1.5 text-left transition-colors hover:bg-surface-3"
             >
-              <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-1">
+              <span className="min-w-0 flex-1 truncate text-ui-tight text-ink-1">
                 {profileLabel(p)}
               </span>
-              <span className="shrink-0 font-mono text-[9.5px] text-ink-3">{p.launch}</span>
+              <span className="shrink-0 font-mono text-micro text-ink-3">{p.launch}</span>
             </button>
           ))}
         </div>
