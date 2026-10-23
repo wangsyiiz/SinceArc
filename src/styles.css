@@ -44,6 +44,10 @@
      --switch-track-bg / --switch-thumb-bg，用 light-dark 表达） */
   /* 浮层边界：暗色靠内边高光（边框透明），浅色靠 1px 边框（高光 none） */
   --glass-border: transparent;
+  /* 控件边界：暗色透明（只靠上内边缘高光），浅色 1px l1。
+     按钮/选择器触发器/输入框外壳一律用它，不许手写 border-line-* ——
+     那正是「暗色下冒出边框」的来源（所有者 2026-10-23 报的探测按钮与 agent 选择框）。 */
+  --control-border: transparent;
 
   /* 列表选中面：暗色取 n-4；浅色要再暗一档才看得出来（n-4 在 #fafafa 上过淡） */
   --row-active: var(--s3);
@@ -111,6 +115,7 @@
 
   --row-active: #e6e6e6;
   --glass-border: var(--l1);
+  --control-border: var(--l1);
 
   --switch-track: color-mix(in srgb, #060606 5%, transparent);
   --switch-thumb: #ffffff;
@@ -171,6 +176,8 @@
   /* 控件上的洗色（暗色白 6% / 浅色黑 4%）：玻璃按钮这类「浮在玻璃上的控件」用它提亮，
      否则同色玻璃叠玻璃只差 2~3/255，等于看不见。 */
   --color-glass-control: var(--glass-control);
+  /* 控件边界：暗色 transparent / 浅色 l1（同一个令牌两套值，组件里只写 border-control） */
+  --color-control-border: var(--control-border);
   --color-danger-1: var(--d1);
   --color-ok-1: var(--ok);
   --color-warn-1: var(--warn);
