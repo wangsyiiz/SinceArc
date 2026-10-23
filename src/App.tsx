@@ -28,6 +28,7 @@ import { summarizeLocks } from "@/lib/locks";
 import { describeUsage } from "@/lib/usage-format";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
 import type {
+  AgentProfile,
   GithubPR,
   GithubRepo,
   PermissionRequest,
@@ -673,11 +674,12 @@ export default function App() {
 
   /**
    * 用发现到的命令直接建连接：program / args / 环境 / 工作目录都已经知道，
-   * 让用户再手填一遍是白费功夫（也最容易填错）。
+   * 让用户再手填一遍是白费功夫（也最容易填错）。这里只组装预填值，
+   * 真正的草稿与入库都在设置页完成。
    */
-  const useDiscovered = (c: DiscoveryCandidate, hit: DiscoveryHit) => {
+  const useDiscovered = (c: DiscoveryCandidate, hit: DiscoveryHit): Partial<AgentProfile> => {
     const wsl = hit.host.startsWith("wsl:");
-    addProfile({
+    return {
       launch: wsl ? "wsl" : "local",
       distro: wsl ? hit.host.slice("wsl:".length) : undefined,
       shell: wsl ? "zsh" : undefined,
@@ -685,7 +687,7 @@ export default function App() {
       args: [...c.acpArgs],
       // 远端命令是 cd '<cwd>'，~ 不会被展开，所以用扫出来的绝对家目录
       cwd: hit.home ?? "",
-    });
+    };
   };
 
   return (
@@ -983,7 +985,7 @@ export default function App() {
               profiles={profiles}
               theme={settings.theme}
               onUpdateProfile={updateProfile}
-              onAddProfile={() => addProfile()}
+              onAddProfile={(draft) => addProfile(draft)}
               discovery={discovery.outcome}
               discoveryScanning={discovery.scanning}
               discoveryError={discovery.error}
