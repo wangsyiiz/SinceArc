@@ -37,8 +37,16 @@ export function Field(props: {
   );
 }
 
+/**
+ * 输入框的焦点反馈是**描边变色**，不是 2px 外环（§1.11 的替代方案）。
+ *
+ * `focus-visible:outline-none` 是必须的：浏览器默认会给聚焦元素画一圈 UA 描边，
+ * 只删掉我们的 outline-2 反而剩下"1px 边框 + 1px UA 环"，看起来还是粗的
+ * （2026-10-23 实测：暗色聚焦后 border 1px accent + outline 1px auto）。
+ * 抑制 UA 环、把可见性交给 `focus:border-accent-1`，这才是规范要的等价样式。
+ */
 const controlClass =
-  "w-full rounded-control border border-line-2 bg-surface-1 px-3 text-ui text-ink-1 placeholder:text-ink-3 transition-colors hover:bg-surface-2 focus:border-accent-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-1 disabled:cursor-not-allowed disabled:opacity-50 read-only:border-transparent read-only:bg-surface-1 read-only:text-ink-2 read-only:hover:bg-surface-1 read-only:focus:border-transparent";
+  "w-full rounded-control border border-line-2 bg-surface-1 px-3 text-ui text-ink-1 placeholder:text-ink-3 transition-colors hover:bg-surface-2 focus:border-accent-1 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 read-only:border-transparent read-only:bg-surface-1 read-only:text-ink-2 read-only:hover:bg-surface-1 read-only:focus:border-transparent";
 
 export const Input: React.FC<
   React.InputHTMLAttributes<HTMLInputElement> & { invalid?: boolean }

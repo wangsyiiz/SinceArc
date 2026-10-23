@@ -235,9 +235,9 @@ export function Menu({
                 open && "bg-surface-3 text-ink-1",
               )
             : cn(
-                "sc-control border border-line-1 bg-surface-2 text-ink-1 hover:border-line-2 hover:bg-surface-3",
+                "sc-control border border-control bg-surface-2 text-ink-1 hover:bg-surface-3",
                 compact ? "h-7 px-2 text-small" : "h-8 px-3 text-ui",
-                open && "border-line-2 bg-surface-3",
+                open && "bg-surface-3",
               ),
           className,
         )}
@@ -300,7 +300,12 @@ export function Menu({
               {item.hint && (
                 <span className="shrink-0 font-mono text-caption text-ink-3">{item.hint}</span>
               )}
-              {item.checked && <Check className="mt-0.5 size-3.5 shrink-0 text-accent-1" />}
+              <span
+                aria-hidden="true"
+                className="mt-0.5 flex size-4 shrink-0 items-center justify-center"
+              >
+                {item.checked && <Check className="size-3.5 text-accent-1" />}
+              </span>
             </button>
           ))}
         </div>

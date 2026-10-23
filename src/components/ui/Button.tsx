@@ -8,7 +8,7 @@ const buttonStyles = cva(
       variant: {
         primary: "bg-accent-1 text-accent-ink hover:brightness-110 active:brightness-95",
         secondary:
-          "sc-control border border-line-1 bg-surface-2 text-ink-1 hover:border-line-2 hover:bg-surface-3 active:bg-surface-2",
+          "sc-control border border-control bg-surface-2 text-ink-1 hover:bg-surface-3 active:bg-surface-2",
         ghost: "text-ink-2 hover:bg-surface-3 hover:text-ink-1 active:bg-surface-3",
         /* 玻璃按钮：底色/模糊/边界交给 .sc-glass，再叠一层 --glass-control 洗色 ——
            纯玻璃叠在玻璃上实测只差 2~3 个色阶（按钮面与输入框面几乎同色），等于看不见。 */
