@@ -122,13 +122,23 @@ export interface TraceBranch {
 }
 
 /** 一轮：用户发话 → 并行的 N 条支线（每条属于一个玩家） */
+export type TraceTurnStatus =
+  | "running"
+  | "waiting_approval"
+  | "finished"
+  | "cancelled"
+  | "failed"
+  | "unknown";
+
 export interface TraceTurn {
   id: string;
   at: string;
   userText: string;
   branches: TraceBranch[];
-  /** 这一轮的结局；cancelled 时界面上要写「已停止」，不能当成正常结束 */
-  status?: ActivityStatus;
+  /** 这一轮的终态；cancelled 时界面上要写「已停止」，不能当成正常结束 */
+  status?: TraceTurnStatus;
+  /** agent 原始的 stopReason：finished 且不是 end_turn 时界面要把它写出来 */
+  stopReason?: string;
 }
 
 /* ---------- 聊天流：只留「人对人的话」 ---------- */

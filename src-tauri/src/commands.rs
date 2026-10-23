@@ -918,9 +918,68 @@ pub async fn agent_probe(profile: ProfileDto) -> Result<ProbeOutcome, CmdError> 
 /// 之前是「每次 agent_connect 带一条 Channel」，连 N 个 agent 就要订阅 N 次，
 /// 事件也可能因为某条通道关闭而整体失联。
 /// 收轮失败不该让这一轮的结果丢掉：轨迹缺个结束时间，比整轮报错轻得多。
-fn end_turn_safely(db: &Arc<db::Db>, turn_id: &str, status: &str) {
-    if let Err(e) = db.end_turn(turn_id, status) {
+fn end_turn_safely(db: &Arc<db::Db>, turn_id: &str, status: &str, stop_reason: Option<&str>) {
+    if let Err(e) = db.end_turn(turn_id, status, stop_reason) {
         tracing::warn!(target: "sincearc::trace", error = %e, "收轮失败");
+    }
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// 失败轮的 `stop_reason`：错误码 + 一行摘要，最多 200 字。
+///
+/// `TransportError::Agent` 带的是 JSON-RPC 错误对象，优先用里面的 code；
+/// 其余传输层错误用稳定的小写标识，至少能区分「超时」「进程关了」「写不进去」。
+fn prompt_failure_reason(e: &transport::TransportError) -> String {
+    let code = match e {
+        transport::TransportError::Agent(v) => v
+            .get("code")
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "agent".to_string()),
+        transport::TransportError::Timeout(_) => "timeout".to_string(),
+        transport::TransportError::Closed => "closed".to_string(),
+        transport::TransportError::Io(_) => "io".to_string(),
+        transport::TransportError::Json(_) => "json".to_string(),
+        transport::TransportError::Spawn { .. } => "spawn".to_string(),
+        transport::TransportError::Launch(_) => "launch".to_string(),
+        transport::TransportError::Handshake { .. } => "handshake".to_string(),
+    };
+    let summary = e.to_string().replace('\n', " ");
+    truncate_chars(&format!("{code}: {summary}"), 200)
+}
+
+/// prompt 正常返回时的终态。用户点过停止、或 agent 自己回了 `cancelled`，
+/// 都只收一次 cancelled；其余情况保留 agent 的原始 stopReason。
+fn prompt_success_outcome(
+    cancelled_by_user: bool,
+    stop_reason: Option<String>,
+) -> (&'static str, Option<String>) {
+    if cancelled_by_user || stop_reason.as_deref() == Some("cancelled") {
+        (
+            "cancelled",
+            Some(stop_reason.unwrap_or_else(|| "cancelled".to_string())),
+        )
+    } else {
+        ("finished", stop_reason)
+    }
+}
+
+/// prompt 返回 Err 时的终态：用户点过停止就是 cancelled，否则是 failed + 可解释原因。
+fn prompt_failure_outcome(
+    cancelled_by_user: bool,
+    e: &transport::TransportError,
+) -> (&'static str, Option<String>) {
+    if cancelled_by_user {
+        ("cancelled", Some("cancelled".to_string()))
+    } else {
+        ("failed", Some(prompt_failure_reason(e)))
     }
 }
 
@@ -1326,8 +1385,27 @@ pub async fn agent_connect(
                         &params,
                     )
                     .await;
+                    // 权限请求意味着这一轮在等用户。只有当前确实有活动轮时才改状态：
+                    // 两轮之间收到的权限请求不能凭空造出一轮，也不能落到别的轮上。
+                    let waiting_turn = match params
+                        .get("sessionId")
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        Some(acp_sid) => turns_for_trace.current(acp_sid).await,
+                        None => None,
+                    };
+                    if let Some(turn_id) = waiting_turn.as_deref() {
+                        if let Err(e) = db_for_trace.mark_turn_waiting_approval(turn_id) {
+                            tracing::warn!(
+                                target: "sincearc::trace", error = %e, turn = %turn_id,
+                                "权限等待状态落库失败"
+                            );
+                        }
+                    }
                     // 只有登记过的 id 才允许被回答（见 agent_respond_request）
-                    pending.mark(&profile_for_task, id).await;
+                    pending
+                        .mark_with_turn(&profile_for_task, id, waiting_turn)
+                        .await;
                     let (session_id, ui_session_id, author_id) = route(&routes, &params).await;
                     AcpEvent::Request {
                         id,
@@ -1929,18 +2007,20 @@ pub async fn session_prompt(
         match proc.request("session/prompt", params, PROMPT_TIMEOUT).await {
             Ok(result) => {
                 let cancelled_by_user = cancels.take(&sid).await;
-                let cancelled = cancelled_by_user
-                    || result
-                        .get("stopReason")
-                        .and_then(serde_json::Value::as_str)
-                        == Some("cancelled");
+                let stop_reason = result
+                    .get("stopReason")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                let (status, stop_reason) =
+                    prompt_success_outcome(cancelled_by_user, stop_reason);
                 tracing::info!(target: "sincearc::ipc", session = %sid, stop = ?result.get("stopReason"), "prompt finished");
                 tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptResult");
                 turns.end(&sid_for_trace).await;
                 end_turn_safely(
                     &db_for_turn,
                     &turn_id_for_turn,
-                    if cancelled { "cancelled" } else { "finished" },
+                    status,
+                    stop_reason.as_deref(),
                 );
                 // 一轮的终态到了：写提示锁必须一起消失，哪怕 agent 没发
                 // tool_call_update（有的实现只在 tool_call 里更新状态）。
@@ -1971,10 +2051,12 @@ pub async fn session_prompt(
                 // 用户按了停止之后 agent 报错，是「取消」不是「出错」：
                 // 轨迹里记成 failed 会让人以为这一轮崩了。
                 let cancelled_by_user = cancels.take(&sid).await;
+                let (status, stop_reason) = prompt_failure_outcome(cancelled_by_user, &e);
                 end_turn_safely(
                     &db_for_turn,
                     &turn_id_for_turn,
-                    if cancelled_by_user { "cancelled" } else { "failed" },
+                    status,
+                    stop_reason.as_deref(),
                 );
                 if locks.clear(&sid_for_trace).is_some() {
                     bus.emit_json(
@@ -2070,7 +2152,8 @@ pub async fn agent_respond_request(
 ) -> Result<(), CmdError> {
     // 先摘登记再写回：同一个请求被点两次（双击、两个窗口）时，第二次必须被挡住，
     // 否则我们会往一个 agent 已经处理完的 id 上再写一条响应。
-    if !state.pending.take(&profile_id, id).await {
+    let (known, turn_id) = state.pending.take_with_turn(&profile_id, id).await;
+    if !known {
         return Err(CmdError::new(50500, "这个请求已失效或已被回答"));
     }
     let handle = state
@@ -2083,6 +2166,16 @@ pub async fn agent_respond_request(
         .await
     {
         Ok(()) => {
+            // 只有仍停在 waiting_approval 的轮才恢复 running；
+            // agent 若已经先回了终态，这里不能把 finished / cancelled 盖回去。
+            if let Some(turn_id) = turn_id.as_deref() {
+                if let Err(e) = state.db.resume_turn_after_approval(turn_id) {
+                    tracing::warn!(
+                        target: "sincearc::trace", error = %e, turn = %turn_id,
+                        "权限答完后恢复轮次状态失败"
+                    );
+                }
+            }
             tracing::info!(
                 target: "sincearc::ipc", profile = %profile_id, id,
                 "permission answered"
@@ -2091,7 +2184,10 @@ pub async fn agent_respond_request(
         }
         Err(e) => {
             // 写不进去就把登记还回去：用户可能想再点一次，别让请求凭空消失。
-            state.pending.mark(&profile_id, id).await;
+            state
+                .pending
+                .mark_with_turn(&profile_id, id, turn_id)
+                .await;
             tracing::warn!(
                 target: "sincearc::ipc", profile = %profile_id, id, error = %e,
                 "respond failed"
@@ -2539,6 +2635,57 @@ mod launch_input_tests {
     #[test]
     fn normal_input_passes() {
         assert!(validate_launch_input(&dto("hermes", "/home/jerry")).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod turn_state_tests {
+    use super::{
+        prompt_failure_outcome, prompt_failure_reason, prompt_success_outcome, truncate_chars,
+    };
+    use crate::acp::transport::TransportError;
+
+    #[test]
+    fn failed_prompt_reason_has_code_and_bounded_summary() {
+        let timeout = prompt_failure_reason(&TransportError::Timeout(120));
+        assert!(timeout.starts_with("timeout:"), "reason={timeout}");
+        assert!(timeout.chars().count() <= 200);
+
+        let agent = prompt_failure_reason(&TransportError::Agent(serde_json::json!({
+            "code": -32603,
+            "message": "boom",
+        })));
+        assert!(agent.starts_with("-32603:"), "reason={agent}");
+        assert!(agent.contains("boom"));
+    }
+
+    #[test]
+    fn failure_summary_is_truncated_at_200_chars() {
+        let long = "错".repeat(500);
+        let out = truncate_chars(&long, 200);
+        assert_eq!(out.chars().count(), 200);
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn user_stop_and_agent_cancel_reason_produce_one_cancelled_outcome() {
+        let (status, reason) =
+            prompt_success_outcome(true, Some("cancelled".to_string()));
+        assert_eq!(status, "cancelled");
+        assert_eq!(reason.as_deref(), Some("cancelled"));
+
+        let (status, reason) =
+            prompt_success_outcome(false, Some("max_tokens".to_string()));
+        assert_eq!(status, "finished");
+        assert_eq!(reason.as_deref(), Some("max_tokens"));
+    }
+
+    #[test]
+    fn prompt_error_becomes_failed_with_a_reason() {
+        let (status, reason) =
+            prompt_failure_outcome(false, &TransportError::Timeout(120));
+        assert_eq!(status, "failed");
+        assert!(reason.as_deref().is_some_and(|s| !s.is_empty()));
     }
 }
 

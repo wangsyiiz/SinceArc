@@ -129,28 +129,62 @@ impl Routes {
 }
 
 #[derive(Clone, Default)]
-pub struct PendingRequests(Arc<Mutex<HashMap<String, HashSet<u64>>>>);
+pub struct PendingRequests {
+    inner: Arc<Mutex<HashMap<String, HashSet<u64>>>>,
+    /// 请求 → 到达时所在的活动轮次。答完后要靠它把 waiting_approval 复原；
+    /// 两轮之间收到的权限请求没有轮次，不记录。
+    turn_ids: Arc<Mutex<HashMap<(String, u64), String>>>,
+}
 
 impl PendingRequests {
     pub async fn mark(&self, profile_id: &str, id: u64) {
-        self.0
+        self.mark_with_turn(profile_id, id, None).await;
+    }
+
+    /// 登记请求，并记住它属于哪一轮（有活动轮次时）。
+    pub async fn mark_with_turn(&self, profile_id: &str, id: u64, turn_id: Option<String>) {
+        self.inner
             .lock()
             .await
             .entry(profile_id.to_string())
             .or_default()
             .insert(id);
+        let mut turns = self.turn_ids.lock().await;
+        match turn_id {
+            Some(turn_id) => {
+                turns.insert((profile_id.to_string(), id), turn_id);
+            }
+            None => {
+                turns.remove(&(profile_id.to_string(), id));
+            }
+        }
     }
 
     /// 取出并移除。返回 false = 这个 id 不在册（已被回答过，或本来就不是我们发的）。
     pub async fn take(&self, profile_id: &str, id: u64) -> bool {
-        let mut map = self.0.lock().await;
-        map.get_mut(profile_id)
-            .map(|set| set.remove(&id))
-            .unwrap_or(false)
+        self.take_with_turn(profile_id, id).await.0
+    }
+
+    /// 取出并移除，同时返回登记时记下的轮次。
+    pub async fn take_with_turn(&self, profile_id: &str, id: u64) -> (bool, Option<String>) {
+        let known = {
+            let mut map = self.inner.lock().await;
+            map.get_mut(profile_id)
+                .map(|set| set.remove(&id))
+                .unwrap_or(false)
+        };
+        let turn_id = self
+            .turn_ids
+            .lock()
+            .await
+            .remove(&(profile_id.to_string(), id));
+        (known, turn_id)
     }
 
     pub async fn clear(&self, profile_id: &str) {
-        self.0.lock().await.remove(profile_id);
+        self.inner.lock().await.remove(profile_id);
+        let mut turns = self.turn_ids.lock().await;
+        turns.retain(|(profile, _), _| profile.as_str() != profile_id);
     }
 }
 
@@ -308,6 +342,20 @@ mod tests {
         // 同一个 id 号在另一个连接上不算数（JSON-RPC id 只在单条连接内唯一）
         assert!(!pending.take("p2", 7).await);
         assert!(pending.take("p1", 7).await);
+    }
+
+    #[tokio::test]
+    async fn pending_keeps_turn_context_for_approval_resume() {
+        let pending = PendingRequests::default();
+        pending
+            .mark_with_turn("p1", 7, Some("turn-1".into()))
+            .await;
+
+        let (known, turn_id) = pending.take_with_turn("p1", 7).await;
+        assert!(known);
+        assert_eq!(turn_id.as_deref(), Some("turn-1"));
+        // 取走即清，下一次不存在
+        assert_eq!(pending.take_with_turn("p1", 7).await, (false, None));
     }
 
     #[tokio::test]

@@ -146,6 +146,8 @@ export function toTraceView(dtos: TraceTurnDto[]): TraceView {
 
   for (const t of ordered) {
     const lanes = new Map<string, string[]>();
+    // waiting_approval 只是「等用户批准」，这一轮还没结束：支线仍保持开放。
+    const open = t.status === "running" || t.status === "waiting_approval";
 
     for (const item of t.items) {
       const kind = activityKindOf(item);
@@ -174,15 +176,16 @@ export function toTraceView(dtos: TraceTurnDto[]): TraceView {
     turns.push({
       id: t.id,
       at: clock(t.startedAt),
-      // 中途停下的一轮标在提问上：列表视图与图视图都读 userText，改一处两处都看得见
-      userText: t.status === "cancelled" ? `${t.prompt}（已停止）` : t.prompt,
+      // 结局由抬头状态标签统一显示，不再把「已停止」拼进提问正文。
+      userText: t.prompt,
       status: t.status as TraceTurn["status"],
+      stopReason: t.stopReason,
       branches: [...lanes.entries()].map(([playerId, activityIds]) => ({
         playerId,
         activityIds,
         // 支线是否收尾由这一轮的状态决定；面板据此画实线/虚线
-        reply: t.status === "running" ? undefined : "",
-        status: t.status === "running" ? ("running" as const) : ("done" as const),
+        reply: open ? undefined : "",
+        status: open ? ("running" as const) : ("done" as const),
       })),
     });
   }
