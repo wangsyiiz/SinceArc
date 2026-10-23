@@ -139,8 +139,10 @@ v1 的十条硬教训全部保留（见 §8 §9 §10 §11 §12），并补上令
 **不做底边压暗**（`inset 0 -1px 0 rgba(0,0,0,.3~.4)` 这一道）：在深色面上它看起来不是「内边缘」，
 而是元素下面拖了一条阴影，按钮和输入框上最明显（P2a 之后被所有者当场指掉，已从两个令牌里删除）。
 
-**控件边界归 `--control-border`**：暗色 transparent（只留上缘高光）、浅色 `l1`。
-次按钮、选择器触发器、输入框外壳一律用 `border-control`，**不许手写 `border-line-*`** ——
+**控件边界归 `--control-border`**：暗色 transparent（只留上缘高光）、浅色 `l1`；
+映射到 Tailwind 是 `--color-control` → 工具类 `border-control`（不要再加 `--color-control-border`，
+那只会生成没人用的 `border-control-border`）。
+次按钮、选择器触发器、分段控件外壳一律用 `border-control`，**不许手写 `border-line-*`** ——
 那正是"暗色下冒出边框"的来源（2026-10-23 报的探测按钮与 agent 选择框）。
 
 - 输入框聚焦只变 1px 描边色（`focus:border-accent-1`），**不再叠 2px 焦点环**；

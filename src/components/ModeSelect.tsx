@@ -47,7 +47,8 @@ export function ModeSelect({
     {
       id: "follow",
       label: followLabel,
-      hint: fallbackLabel ?? "agent 默认",
+      // 曾经挂在 hint（右侧），和同一条目的对勾抢位置（§3.3）。它是解释不是值，走下行。
+      description: fallbackLabel ?? "agent 默认",
       checked: following,
       onSelect: () => onChoose(null),
     },

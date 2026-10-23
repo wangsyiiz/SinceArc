@@ -176,8 +176,10 @@
   /* 控件上的洗色（暗色白 6% / 浅色黑 4%）：玻璃按钮这类「浮在玻璃上的控件」用它提亮，
      否则同色玻璃叠玻璃只差 2~3/255，等于看不见。 */
   --color-glass-control: var(--glass-control);
-  /* 控件边界：暗色 transparent / 浅色 l1（同一个令牌两套值，组件里只写 border-control） */
-  --color-control-border: var(--control-border);
+  /* 控件边界：暗色 transparent / 浅色 l1。
+     Tailwind 的映射是 --color-<名字> → border-<名字>，所以工具类是 border-control。
+     别再加一个 --color-control-border：那只会生成没人用的 border-control-border。 */
+  --color-control: var(--control-border);
   --color-danger-1: var(--d1);
   --color-ok-1: var(--ok);
   --color-warn-1: var(--warn);
@@ -408,7 +410,7 @@ dialog.sc-dialog[open] {
      这里按桌面端放宽一档；模糊取它的控件档参数 */
   height: 32px;
   padding: 0;
-  border: 1px solid transparent;
+  border: 1px solid var(--control-border);
   border-radius: var(--radius);
   /* 轨道/滑块的明暗方向由主题令牌决定（浅色档滑块是白、轨道是水洗） */
   background: var(--switch-track);

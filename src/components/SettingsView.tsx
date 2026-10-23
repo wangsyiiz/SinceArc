@@ -38,6 +38,7 @@ import {
   type AgentPreset,
 } from "@/lib/agentPresets";
 import { ModeSelect } from "@/components/ModeSelect";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { AgentUserDetail, AgentUsersList } from "@/components/AgentUsers";
 import { CAPABILITY_LABEL } from "@/components/AgentCapabilities";
 import { StatusDot } from "./ui/Badge";
@@ -132,7 +133,7 @@ function AgentSelect({
     ...AGENT_PRESETS.map((preset) => ({
       id: preset.id,
       label: preset.name,
-      hint: preset.requires ?? preset.origin,
+      description: preset.requires ?? preset.origin,
       checked: current?.id === preset.id,
       onSelect: () => onPreset(preset),
     })),
@@ -182,6 +183,7 @@ export function SettingsView({
 }: SettingsViewProps) {
   const [section, setSection] = useState<SectionId>("connection");
   const [connectionId, setConnectionId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [memberDetail, setMemberDetail] = useState<{ user: AgentUser | null } | null>(null);
   const [connectionFocus, setConnectionFocus] = useState<{ id: string; tick: number } | null>(null);
   const [memberFocus, setMemberFocus] = useState<{ id: string; tick: number } | null>(null);
@@ -395,7 +397,7 @@ export function SettingsView({
     if (section === "chat" || section === "appearance") return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
-      if (document.querySelector('[role="menu"]')) return;
+      if (document.querySelector('[role="menu"]') || document.querySelector("dialog[open]")) return;
       event.preventDefault();
       backToList();
     };
@@ -876,11 +878,7 @@ export function SettingsView({
             variant="ghost"
             size="sm"
             danger
-            onClick={() => {
-              setConnectionFocus({ id: profile.id, tick: Date.now() });
-              onRemoveProfile(profile.id);
-              setConnectionId(null);
-            }}
+            onClick={() => setConfirmDeleteId(profile.id)}
           >
             <Trash2 className="size-3" />
             删除连接
@@ -1107,6 +1105,27 @@ export function SettingsView({
           </div>
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmDeleteId !== null}
+        title="删除连接"
+        body={
+          <ul className="list-disc space-y-0.5 pl-4">
+            <li>只删这一条连接配置，<span className="text-ink-1">不会</span>删除任何会话与历史消息；</li>
+            <li>如果它正在连接中，会先断开；</li>
+            <li>删除后无法恢复，需要重新填一遍主机与认证。</li>
+          </ul>
+        }
+        confirmLabel="删除"
+        cancelLabel="取消"
+        onConfirm={() => {
+          if (!confirmDeleteId) return;
+          setConnectionFocus({ id: confirmDeleteId, tick: Date.now() });
+          onRemoveProfile(confirmDeleteId);
+          setConfirmDeleteId(null);
+          setConnectionId(null);
+        }}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </div>
   );
 }
