@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- C 字标：单层 a（开口朝右的 bowl + 右侧竖杆）= 284° 弧，缺口 76° 正对右侧 -->
+  <g transform="translate(-11.0 0.0)" fill="none" stroke="currentColor" stroke-linecap="round">
+    <path d="M 709.0 665.9 A 250 250 0 1 1 709.0 358.1" stroke-width="112"/>
+  </g>
+  <rect x="672" y="300" width="112" height="424" rx="56" fill="currentColor"/>
+</svg>

@@ -1,4 +1,5 @@
 import { CornerDownLeft } from "lucide-react";
+import { BrandMark } from "./BrandMark";
 import { EmptyState as PrimitiveEmptyState } from "./ui/EmptyState";
 import { Button } from "./ui/Button";
 
@@ -14,8 +15,8 @@ export function EmptyState({ cwd, onPick }: { cwd: string; onPick: (text: string
       title="SinceArc"
       description={`一个 ACP 桌面客户端。选择左侧的 agent，在 ${cwd} 里开始对话。`}
       icon={
-        <div className="grid size-12 place-items-center rounded-card border border-line-1 bg-surface-1 text-title text-accent-1">
-          ◇
+        <div className="grid size-12 place-items-center rounded-card border border-line-1 bg-surface-1 text-accent-1">
+          <BrandMark className="size-7" />
         </div>
       }
       action={

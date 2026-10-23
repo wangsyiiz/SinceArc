@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- C-16px：bowl 加粗、缺口收窄到 60°，竖杆加宽 -->
+  <g transform="translate(-45.0 0.0)" fill="none" stroke="currentColor" stroke-linecap="round">
+    <path d="M 723.3 634.0 A 244 244 0 1 1 723.3 390.0" stroke-width="150"/>
+  </g>
+  <rect x="666" y="290" width="150" height="444" rx="75" fill="currentColor"/>
+</svg>

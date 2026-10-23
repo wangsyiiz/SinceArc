@@ -1,6 +1,7 @@
 import { Minus, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AgentProfile } from "@/types";
+import { BrandMark } from "./BrandMark";
 import { StatusDot } from "./ui/Badge";
 
 const IN_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -31,12 +32,7 @@ export function TitleBar({ profile, cwd }: TitleBarProps) {
       className="flex h-9 shrink-0 items-stretch select-none"
     >
       <div className="flex items-center gap-2 pl-3.5" {...drag}>
-        <span
-          className="grid size-5 place-items-center rounded-mark bg-surface-3/55 text-small leading-none text-ink-1"
-          {...drag}
-        >
-          ◇
-        </span>
+        <BrandMark className="size-5" />
         <span className="text-ui font-semibold text-ink-1" {...drag}>
           SinceArc
         </span>

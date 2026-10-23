@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" color="#ffffff">
+  <defs>
+  <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/><stop offset="1" stop-color="#ffffff" stop-opacity="0.06"/></linearGradient>
+  </defs>
+  <!-- D 磁贴 ≤24px：无辉光、标识 0.70、实底 -->
+  <rect x="32" y="32" width="960" height="960" rx="232" fill="#1a1d26"/>
+  <rect x="33" y="33" width="958" height="958" rx="231"
+        fill="none" stroke="url(#edge)" stroke-width="2"/>
+  <g transform="translate(512 512) scale(0.7) translate(-512 -512)">
+    
+    
+    
+  <g transform="translate(46.0 46.0) translate(-197.6 -215.6) scale(1.3860)">
+    <path d="M 300 240 C 700 240, 760 430, 512 520 C 264 610, 324 810, 724 810" fill="none" stroke="currentColor" stroke-width="75.0" stroke-linecap="round"/>
+    <circle cx="300" cy="240" r="66.4" fill="currentColor"/>
+  </g>
+  </g>
+</svg>
