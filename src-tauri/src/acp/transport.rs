@@ -863,25 +863,28 @@ mod tests {
         panic!("timed out waiting for {}", path.display());
     }
 
+    /// 读 pid 文件。**不 panic**：Windows 上 PowerShell 的 Set-Content 还在写时，
+    /// 读取会撞共享冲突（os error 32）。这里把它当成"还没有结果"，交给调用方重试。
     fn read_pids(path: &std::path::Path) -> Vec<u32> {
         std::fs::read_to_string(path)
-            .expect("read pid file")
-            .lines()
-            .filter_map(|line| line.trim().parse::<u32>().ok())
-            .collect()
+            .map(|s| {
+                s.lines()
+                    .filter_map(|line| line.trim().parse::<u32>().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     async fn wait_for_pids(path: &std::path::Path, want: usize) -> Vec<u32> {
-        for _ in 0..150 {
-            if path.exists() {
-                let pids = read_pids(path);
-                if pids.len() >= want {
-                    return pids;
-                }
+        // 10 秒：并行跑整套测试时，PowerShell 冷启动 3 秒很容易超（实测会偶发失败）
+        for _ in 0..500 {
+            let pids = read_pids(path);
+            if pids.len() >= want {
+                return pids;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        panic!("timed out waiting for {want} pids in {}", path.display());
+        Vec::new()
     }
 
     #[cfg(unix)]
@@ -1048,11 +1051,11 @@ mod tests {
             "@echo off\r\n\
              powershell -NoProfile -ExecutionPolicy Bypass -Command \"\
              $child = Start-Process -FilePath powershell.exe \
-             -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 300' \
+             -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 120' \
              -PassThru -WindowStyle Hidden; \
              Set-Content -LiteralPath '{pid_path}' -Value $PID; \
              Add-Content -LiteralPath '{pid_path}' -Value $child.Id; \
-             Start-Sleep -Seconds 300\"\r\n"
+             Start-Sleep -Seconds 120\"\r\n"
         );
         std::fs::write(&script, body).expect("write fake agent");
 
@@ -1069,7 +1072,11 @@ mod tests {
             spawn(&profile, dir.to_str().unwrap()).expect("spawn fake agent");
 
         let pids = wait_for_pids(&pid_file, 2).await;
-        assert_eq!(pids.len(), 2, "expected parent and forked child pids: {pids:?}");
+        if pids.len() < 2 {
+            // 起不来的话别把假进程留在机器上：先回收再失败
+            let _ = proc.kill_tree("test-setup-failed").await;
+            panic!("expected parent and forked child pids, got {pids:?}");
+        }
         for pid in &pids {
             assert!(windows_pid_alive(*pid).await, "pid {pid} should be alive");
         }
