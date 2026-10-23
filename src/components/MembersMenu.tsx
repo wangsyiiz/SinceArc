@@ -126,24 +126,24 @@ export function MembersMenu({
       {open && (
         <div
           ref={panelRef}
-          className="sc-glass fixed z-50 w-64 rounded-[8px] border border-line-1/60 p-2"
+          className="sc-glass fixed sc-z-popover w-64 rounded-control p-2"
           style={{ ...(pos ?? { left: 0, top: 0 }), visibility: pos ? "visible" : "hidden" }}
         >
           <div className="flex items-center gap-1.5 px-1 pb-1.5">
             <Users size={12} className="text-ink-3" />
-            <span className="text-[10.5px] text-ink-1">群成员</span>
-            <span className="ml-auto font-mono text-[9.5px] text-ink-3">
+            <span className="text-caption text-ink-1">群成员</span>
+            <span className="ml-auto font-mono text-micro text-ink-3">
               {members.length} 人
             </span>
           </div>
 
-          <p className="px-1 pb-1.5 text-[9px] leading-relaxed text-ink-3">
+          <p className="px-1 pb-1.5 text-micro text-ink-3">
             只有这里的成员能被 <span className="font-mono">@</span> 到。成员在「设置 → 成员」里创建，
             那些是全局玩家；这里决定谁在这个群里。
           </p>
 
           {users.length === 0 && !error && (
-            <p className="px-1 py-1 text-[9.5px] leading-relaxed text-ink-3">
+            <p className="px-1 py-1 text-micro text-ink-3">
               还没有创建过成员 —— 先去「设置 → 成员」建一个，再回来拉进群。
             </p>
           )}
@@ -159,14 +159,14 @@ export function MembersMenu({
                   disabled={busy === u.id}
                   onClick={() => toggle(u)}
                   className={cn(
-                    "flex w-full items-center gap-1.5 rounded-[4px] px-1.5 py-1 text-left transition-colors hover:bg-surface-3/45",
+                    "flex w-full items-center gap-1.5 rounded-mark px-1.5 py-1 text-left transition-colors hover:bg-surface-3/45",
                     busy === u.id && "opacity-60",
                   )}
                 >
                   <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: u.color }} />
-                  <span className="shrink-0 text-[10.5px] text-ink-1">{u.name}</span>
-                  <span className="shrink-0 font-mono text-[9px] text-ink-3">@{u.handle}</span>
-                  <span className="min-w-0 flex-1 truncate text-[9px] text-ink-3">
+                  <span className="shrink-0 text-caption text-ink-1">{u.name}</span>
+                  <span className="shrink-0 font-mono text-micro text-ink-3">@{u.handle}</span>
+                  <span className="min-w-0 flex-1 truncate text-micro text-ink-3">
                     {p ? profileLabel(p) : "连接已不在"}
                   </span>
                   {joined ? (
@@ -180,13 +180,13 @@ export function MembersMenu({
           </div>
 
           {members.length > 0 && (
-            <p className="mt-1 flex items-center gap-1 border-t border-line-1/40 px-1 pt-1 text-[9px] text-ink-3">
+            <p className="mt-1 flex items-center gap-1 border-t border-line-1/40 px-1 pt-1 text-micro text-ink-3">
               <Check size={10} /> 点一下即加入 / 移出，立即生效
             </p>
           )}
 
           {error && (
-            <p className="mt-1 break-all rounded-[4px] bg-danger-1/[0.09] px-1.5 py-1 font-mono text-[9px] leading-relaxed text-danger-1">
+            <p className="mt-1 break-all rounded-mark bg-danger-1/10 px-1.5 py-1 font-mono text-micro text-danger-1">
               {error}
             </p>
           )}

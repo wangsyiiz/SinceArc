@@ -44,6 +44,10 @@
      --switch-track-bg / --switch-thumb-bg，用 light-dark 表达） */
   /* 浮层边界：暗色靠内边高光（边框透明），浅色靠 1px 边框（高光 none） */
   --glass-border: transparent;
+  /* 控件边界：暗色透明（只靠上内边缘高光），浅色 1px l1。
+     按钮/选择器触发器/输入框外壳一律用它，不许手写 border-line-* ——
+     那正是「暗色下冒出边框」的来源（所有者 2026-10-23 报的探测按钮与 agent 选择框）。 */
+  --control-border: transparent;
 
   /* 列表选中面：暗色取 n-4；浅色要再暗一档才看得出来（n-4 在 #fafafa 上过淡） */
   --row-active: var(--s3);
@@ -52,8 +56,11 @@
   --switch-thumb: var(--s3);
   --switch-thumb-edge: rgb(255 255 255 / 0.07);
 
-  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.07), inset 0 -1px 0 rgb(0 0 0 / 0.4);
-  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.06), inset 0 -1px 0 rgb(0 0 0 / 0.3);
+  /* 只有上缘一道高光：不再带「底边压暗」（inset 0 -1px 0 rgba(0,0,0,.3~.4)）。
+     在深色面上那道底边内阴影看起来就是元素下面拖了一条阴影 —— 而层级已经由面阶差表达，
+     不靠它划界（规范 §1.8）。 */
+  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.07);
+  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.06);
 
   /* 动效（§1.9） */
   --dur-fast: 110ms;
@@ -72,13 +79,17 @@
   --z-toast: 40;
 
   /* 字号（§1.6） */
+  --fs-micro: 10px;
   --fs-caption: 11px;
+  --fs-ui-tight: 11.5px;
   --fs-small: 12px;
   --fs-ui: 13px;
   --fs-body: 14px;
   --fs-lead: 16px;
   --fs-title: 20px;
+  --lh-micro: 14px;
   --lh-caption: 16px;
+  --lh-ui-tight: 16px;
   --lh-small: 18px;
   --lh-ui: 20px;
   --lh-body: 22px;
@@ -104,20 +115,19 @@
 
   --row-active: #e6e6e6;
   --glass-border: var(--l1);
+  --control-border: var(--l1);
 
   --switch-track: color-mix(in srgb, #060606 5%, transparent);
   --switch-thumb: #ffffff;
   --switch-thumb-edge: rgb(255 255 255 / 0.95);
 
-  /* 浅色主题不用内边缘高光划边界：层次交给面阶差 */
-  --edge-highlight: none;
-  --edge-hairline: none;
+  /* 浅色主题同样只有上缘高光（层次交给 1px 边框 + 面阶差） */
+  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9);
+  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.7);
 
   --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
   --glass-2: color-mix(in srgb, var(--s1) 72%, transparent);
   --glass-control: color-mix(in srgb, #000000 4%, transparent);
-  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 -1px 0 rgb(0 0 0 / 0.1);
-  --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.7), inset 0 -1px 0 rgb(0 0 0 / 0.06);
 }
 
 @media (prefers-color-scheme: light) {
@@ -136,21 +146,18 @@
     --ai: #ffffff;
     --row-active: #e6e6e6;
     --glass-border: var(--l1);
-  --glass-border: var(--l1);
 
   --switch-track: color-mix(in srgb, #060606 5%, transparent);
   --switch-thumb: #ffffff;
   --switch-thumb-edge: rgb(255 255 255 / 0.95);
 
-  /* 浅色主题不用内边缘高光划边界：层次交给面阶差 */
-  --edge-highlight: none;
-  --edge-hairline: none;
+    /* 浅色主题同样只有上缘高光（层次交给 1px 边框 + 面阶差） */
+    --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9);
+    --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.7);
 
-  --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
+    --glass-1: color-mix(in srgb, var(--s2) 78%, transparent);
     --glass-2: color-mix(in srgb, var(--s1) 72%, transparent);
     --glass-control: color-mix(in srgb, #000000 4%, transparent);
-    --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 -1px 0 rgb(0 0 0 / 0.1);
-    --edge-hairline: inset 0 1px 0 rgb(255 255 255 / 0.7), inset 0 -1px 0 rgb(0 0 0 / 0.06);
   }
 }
 
@@ -166,11 +173,43 @@
   --color-ink-3: var(--i3);
   --color-accent-1: var(--a1);
   --color-accent-ink: var(--ai);
+  /* 控件上的洗色（暗色白 6% / 浅色黑 4%）：玻璃按钮这类「浮在玻璃上的控件」用它提亮，
+     否则同色玻璃叠玻璃只差 2~3/255，等于看不见。 */
+  --color-glass-control: var(--glass-control);
+  /* 控件边界：暗色 transparent / 浅色 l1。
+     Tailwind 的映射是 --color-<名字> → border-<名字>，所以工具类是 border-control。
+     别再加一个 --color-control-border：那只会生成没人用的 border-control-border。 */
+  --color-control: var(--control-border);
   --color-danger-1: var(--d1);
   --color-ok-1: var(--ok);
   --color-warn-1: var(--warn);
 
   --radius-card: 12px;
+
+  /* 字号（§1.6）：text-caption / text-small / text-ui / text-body / text-lead / text-title */
+  --text-micro: var(--fs-micro);
+  --text-micro--line-height: var(--lh-micro);
+  --text-caption: var(--fs-caption);
+  --text-caption--line-height: var(--lh-caption);
+  /* 紧凑行里的标题与正文（菜单项、会话标题、字段值、Tab 标签）——11.5 这一档是存量界面
+     一直在用的尺寸，提成正式档而不是继续写 text-[11.5px] */
+  --text-ui-tight: var(--fs-ui-tight);
+  --text-ui-tight--line-height: var(--lh-ui-tight);
+  --text-small: var(--fs-small);
+  --text-small--line-height: var(--lh-small);
+  --text-ui: var(--fs-ui);
+  --text-ui--line-height: var(--lh-ui);
+  --text-body: var(--fs-body);
+  --text-body--line-height: var(--lh-body);
+  --text-lead: var(--fs-lead);
+  --text-lead--line-height: var(--lh-lead);
+  --text-title: var(--fs-title);
+  --text-title--line-height: var(--lh-title);
+
+  /* 圆角（§1.7）：rounded-mark 6 / rounded-control 8 / rounded-card 12（已有） */
+  --radius-mark: var(--radius-sm);
+  --radius-control: var(--radius);
+
   --font-sans: "Inter", "Segoe UI Variable Text", "Segoe UI", "PingFang SC",
     "Microsoft YaHei", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, monospace;
@@ -352,6 +391,15 @@ dialog.sc-dialog[open] {
 .sc-orbit { animation: sc-orbit 22s linear infinite; }
 .sc-orbit-rev { animation: sc-orbit 34s linear infinite reverse; }
 
+/* 连接中：徽标状态点呼吸（§3.7，1.6s）。
+   放在这里而不是组件内 <style>：每个状态点各注入一份 keyframes 会让 DOM 里堆重复样式，
+   而且这种「动画写在组件里」的写法逃过所有静态检查。 */
+@keyframes sc-status-pulse {
+  0%, 100% { opacity: 0.45; transform: scale(0.82); }
+  50% { opacity: 1; transform: scale(1); }
+}
+.sc-status-pulse { animation: sc-status-pulse 1.6s ease-in-out infinite; }
+
 /* 分段控件：平铺底框 + 一个磨砂玻璃滑块横移
    （形状照 sincecloud-web 的 .view-switch：轨道 padding 0、净空在槽内、
      滑块宽 = (100% − 档数×2×净空)/档数、步长 = 100% + 2×净空） */
@@ -362,7 +410,7 @@ dialog.sc-dialog[open] {
      这里按桌面端放宽一档；模糊取它的控件档参数 */
   height: 32px;
   padding: 0;
-  border: 1px solid transparent;
+  border: 1px solid var(--control-border);
   border-radius: var(--radius);
   /* 轨道/滑块的明暗方向由主题令牌决定（浅色档滑块是白、轨道是水洗） */
   background: var(--switch-track);
@@ -427,6 +475,32 @@ dialog.sc-dialog[open] {
 }
 
 @layer components {
+  /* 浮层的层次：只许用 --z-* 这一套（§1.10）。手写 z-30 / z-50 / z-[9999] 会让
+     「谁盖住谁」变成各处记忆里的数字，弹窗一出来就对不上。 */
+  .sc-z-popover {
+    z-index: var(--z-popover);
+  }
+
+  /* 标题栏三个窗口按钮：**不受设计令牌约束**（所有者 2026-10-23：跟 Windows 原生
+     caption button 走 —— 用户对这三个键的手感来自系统，换成应用令牌立刻"不像 Windows"）。
+     最小化/最大化用 --glass-control（暗色白 6% / 浅色黑 4%，就是 Win 的 hover 洗色）；
+     关闭键是 Win 的固定红 #c42b1c、按下 #b02617 —— 这两个字面量放在这里是**有意的**，
+     TSX 里仍然一个色值都不许出现（style-guard 照旧拦）。 */
+  .sc-winbtn {
+    color: var(--i2);
+  }
+  .sc-winbtn:hover {
+    background: var(--glass-control);
+    color: var(--i1);
+  }
+  .sc-winbtn-close:hover {
+    background: #c42b1c;
+    color: #ffffff;
+  }
+  .sc-winbtn-close:active {
+    background: #b02617;
+  }
+
   /* 列表 / 导航的选中面：走主题令牌，浅色下比 n-4 再深一档 */
   .sc-row-active {
     background: var(--row-active);

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { ActivityRail } from "@/components/ActivityRail";
 import { Composer } from "@/components/Composer";
 import { EmptyState } from "@/components/EmptyState";
@@ -26,8 +27,8 @@ import { toTraceView } from "@/lib/trace-adapter";
 import { summarizeLocks } from "@/lib/locks";
 import { describeUsage } from "@/lib/usage-format";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
-import { prsByRepo } from "@/mock/data";
 import type {
+  AgentProfile,
   GithubPR,
   GithubRepo,
   PermissionRequest,
@@ -36,9 +37,12 @@ import type {
   Tab,
   ThreadSettings,
 } from "@/types";
+import { DEFAULT_THREAD_SETTINGS } from "@/types";
 import {
   asCmdError,
   mentionResolve,
+  settingsLoad,
+  settingsSave,
   sessionDelete,
   sessionCancel,
   sessionMembers,
@@ -58,7 +62,7 @@ import { useAgentConnect } from "@/hooks/useAgentConnect";
 import { useDiscovery } from "@/hooks/useDiscovery";
 import { useProfileStore } from "@/hooks/useProfileStore";
 import { usePrompt } from "@/hooks/usePrompt";
-import { useRepos } from "@/hooks/useRepos";
+import { EMPTY_PRS, useRepos } from "@/hooks/useRepos";
 import { useScrollFade } from "@/hooks/useScrollFade";
 import { useSessionList } from "@/hooks/useSessionList";
 import { useSessionState } from "@/hooks/useSessionState";
@@ -66,8 +70,21 @@ import { useSessionModes } from "@/hooks/useSessionModes";
 import { useTabs } from "@/hooks/useTabs";
 import { useTheme } from "@/hooks/useTheme";
 
+const SETTINGS_SAVE_DEBOUNCE_MS = 300;
+
 export default function App() {
-  const { theme, setTheme } = useTheme();
+  const [settings, setSettings] = useState<ThreadSettings>(DEFAULT_THREAD_SETTINGS);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const settingsSaveSeq = useRef(0);
+  const settingsPendingKey = useRef<string | null>(null);
+  const savedSettings = useRef(
+    JSON.stringify([
+      DEFAULT_THREAD_SETTINGS.contextMessages,
+      DEFAULT_THREAD_SETTINGS.theme,
+    ]),
+  );
+  useTheme(settings.theme);
   useScrollFade();
   const [mode, setMode] = useState<SidebarMode>("sessions");
   const [traceOpen, setTraceOpen] = useState(false);
@@ -78,7 +95,6 @@ export default function App() {
   const [traceTurns, setTraceTurns] = useState<TraceTurnDto[]>([]);
   const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
   const [playerFilter, setPlayerFilter] = useState<string | null>(null);
-  const [settings, setSettings] = useState<ThreadSettings>({ contextMessages: 5 });
   const [permOpen, setPermOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -98,13 +114,38 @@ export default function App() {
   /** 已发出取消请求、还在等 promptResult / promptFailed 的界面会话 */
   const [cancelling, setCancelling] = useState<Record<string, boolean>>({});
 
+
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    const key = JSON.stringify([settings.contextMessages, settings.theme]);
+    if (key === savedSettings.current && settingsPendingKey.current === null) return;
+    const seq = ++settingsSaveSeq.current;
+    settingsPendingKey.current = key;
+    const timer = window.setTimeout(() => {
+      settingsSave(settings)
+        .then(() => {
+          if (seq !== settingsSaveSeq.current) return;
+          savedSettings.current = key;
+          settingsPendingKey.current = null;
+          setSettingsError(null);
+        })
+        .catch((e) => {
+          if (seq !== settingsSaveSeq.current) return;
+          settingsPendingKey.current = null;
+          const err = asCmdError(e);
+          setSettingsError(`设置没保存成功：${err.msg}`);
+        });
+    }, SETTINGS_SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [settings, settingsLoaded]);
+
   const { profiles, activeProfile, addProfile, updateProfile, removeProfile } = useProfileStore();
   const discovery = useDiscovery(profiles);
   /** 当前群的成员（docs/group-chat.md §1） */
   const [members, setMembers] = useState<AgentUser[]>([]);
 
   /**
-   * 玩家列表：群里有成员就用成员（真实的 Agent User），没有成员才退回 mock。
+   * 玩家列表：只来自群成员（真实的 Agent User）；没有成员时保持空列表。
    * 之所以直接覆盖 `players` 这个名字：轨迹栏、@ 高亮、头像、权限弹窗全都按它取人，
    * 一处派生比到处塞 prop 更不容易漏。
    */
@@ -131,7 +172,7 @@ export default function App() {
       id: MAIN_AGENT_ID,
       name: prof ? profileLabel(prof) : "agent",
       handle: "agent",
-      color: "#9aa4b2",
+      color: "var(--i3)",
       profileId: prof?.id ?? "",
       busy: false,
     };
@@ -197,7 +238,34 @@ export default function App() {
     },
     [permissions.enqueue],
   );
-  const { eventCount, lastEvent, eventLog, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission });
+  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission });
+
+  /* 设置读取放在 useAcpEvents 之后：脏值要推进它的事件流（诊断面板）。 */
+  useEffect(() => {
+    let alive = true;
+    settingsLoad()
+      .then((report) => {
+        if (!alive) return;
+        savedSettings.current = JSON.stringify([
+          report.settings.contextMessages,
+          report.settings.theme,
+        ]);
+        setSettings(report.settings);
+        // 脏值不许静默：后端已经写了日志，这里再推进诊断面板，让用户当场看得见
+        report.issues.forEach((issue) => diag(issue));
+      })
+      .catch((e) => {
+        if (!alive) return;
+        const err = asCmdError(e);
+        setSettingsError(err.msg);
+      })
+      .finally(() => {
+        if (alive) setSettingsLoaded(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [diag]);
   const activeSession = sessions.find((s) => s.id === lastSessionId);
   // 归属跟会话走，不再跟一个全局「选中连接」走：全局选中项的唯一入口（左下角列表）
   // 已经移除，靠它就等于靠一个永远空着的值
@@ -606,11 +674,12 @@ export default function App() {
 
   /**
    * 用发现到的命令直接建连接：program / args / 环境 / 工作目录都已经知道，
-   * 让用户再手填一遍是白费功夫（也最容易填错）。
+   * 让用户再手填一遍是白费功夫（也最容易填错）。这里只组装预填值，
+   * 真正的草稿与入库都在设置页完成。
    */
-  const useDiscovered = (c: DiscoveryCandidate, hit: DiscoveryHit) => {
+  const useDiscovered = (c: DiscoveryCandidate, hit: DiscoveryHit): Partial<AgentProfile> => {
     const wsl = hit.host.startsWith("wsl:");
-    addProfile({
+    return {
       launch: wsl ? "wsl" : "local",
       distro: wsl ? hit.host.slice("wsl:".length) : undefined,
       shell: wsl ? "zsh" : undefined,
@@ -618,12 +687,30 @@ export default function App() {
       args: [...c.acpArgs],
       // 远端命令是 cd '<cwd>'，~ 不会被展开，所以用扫出来的绝对家目录
       cwd: hit.home ?? "",
-    });
+    };
   };
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-surface-0 text-ink-1">
       <TitleBar profile={sessionProfile} cwd={cwd} />
+
+      {settingsError && (
+        <div
+          role="alert"
+          className="sc-glass mx-1 mb-1 flex items-center gap-2 rounded-card px-3 py-1.5 text-caption text-danger-1"
+        >
+          <span className="min-w-0 flex-1 break-words">{settingsError}</span>
+          <button
+            type="button"
+            aria-label="关闭"
+            title="关闭"
+            onClick={() => setSettingsError(null)}
+            className="shrink-0 rounded-mark p-1 text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
+      )}
 
       <div ref={layoutRef} className="flex min-h-0 flex-1 px-1 pb-1">
         <Sidebar
@@ -635,7 +722,7 @@ export default function App() {
           profiles={profiles}
           players={players}
           repos={repoList}
-          prsByRepo={prsByRepo}
+          prsByRepo={EMPTY_PRS}
           onSelect={(id) => openTab({ kind: "session", sessionId: id })}
           onNew={() => newSession()}
           onNewWithProfile={(pid) => newSession(pid)}
@@ -700,6 +787,7 @@ export default function App() {
                 sessionId={sessionProfile ? sessionsByProfile[sessionProfile.id] : undefined}
                 eventCount={eventCount}
                 lastEvent={lastEvent}
+                eventLog={eventLog}
                 modes={activeModeView}
                 fallbackLabel={activeDefaultModeLabel}
                 onChooseMode={(modeId) => {
@@ -762,7 +850,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={requestOlder}
-                          className="mx-auto rounded-md px-2 py-1 text-[11px] text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-2"
+                          className="mx-auto rounded-md px-2 py-1 text-caption text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-2"
                         >
                           {loadingOlder ? "正在加载更早消息…" : "加载更早"}
                         </button>
@@ -814,7 +902,7 @@ export default function App() {
                       {state.pendingPerm && (
                         <button
                           onClick={() => setPermOpen(true)}
-                          className="sc-glass pointer-events-auto mb-2 flex w-full items-center gap-2 rounded-[10px] border-0 shadow-none px-3 py-1.5 text-left text-[11px] text-warn-1 transition-colors hover:brightness-110"
+                          className="sc-glass pointer-events-auto mb-2 flex w-full items-center gap-2 rounded-card px-3 py-1.5 text-left text-caption text-warn-1 transition-colors hover:brightness-110"
                         >
                           <span className="shrink-0 font-medium">
                             {players.find((x) => x.id === state.pendingPerm?.playerId)?.name ??
@@ -829,7 +917,7 @@ export default function App() {
                       <div className="pointer-events-auto">
                         {usageLine && (
                           <div
-                            className={`sc-glass mb-2 flex items-center gap-2 rounded-md border-0 px-3 py-1.5 ${
+                            className={`sc-glass mb-2 flex items-center gap-2 rounded-md px-3 py-1.5 ${
                               usageLine.warn ? "text-warn-1" : "text-ink-3"
                             }`}
                             style={{
@@ -841,7 +929,7 @@ export default function App() {
                           </div>
                         )}
                         {writeHint && (
-                          <div className="sc-glass mb-2 flex items-center gap-2 rounded-md border-0 px-3 py-1.5 text-xs text-ink-3">
+                          <div className="sc-glass mb-2 flex items-center gap-2 rounded-md px-3 py-1.5 text-xs text-ink-3">
                             <span className="truncate">
                               {renderPlayers.find((p) => p.id === (writeHint.playerId ?? MAIN_AGENT_ID))
                                 ?.name ?? "agent"}
@@ -855,7 +943,7 @@ export default function App() {
                           </div>
                         )}
                         {isStopping && (
-                          <div className="sc-glass mb-2 flex items-center gap-2 rounded-[10px] border-0 px-3 py-1.5 text-[11px] text-ink-2">
+                          <div className="sc-glass mb-2 flex items-center gap-2 rounded-card px-3 py-1.5 text-caption text-ink-2">
                             <span className="size-1.5 animate-pulse rounded-full bg-warn-1" />
                             正在停止…（已发送取消请求，等待 agent 收尾）
                           </div>
@@ -879,7 +967,7 @@ export default function App() {
           {activeTab?.kind === "repo" && activeRepo && (
             <RepoBrowser
               repo={activeRepo}
-              prs={prsByRepo[activeRepo.id] ?? []}
+              prs={EMPTY_PRS[activeRepo.id] ?? []}
               onOpenPr={(pr) =>
                 openTab({
                   kind: "pr",
@@ -895,9 +983,9 @@ export default function App() {
             <SettingsView
               settings={settings}
               profiles={profiles}
-              theme={theme}
+              theme={settings.theme}
               onUpdateProfile={updateProfile}
-              onAddProfile={() => addProfile()}
+              onAddProfile={(draft) => addProfile(draft)}
               discovery={discovery.outcome}
               discoveryScanning={discovery.scanning}
               discoveryError={discovery.error}
@@ -909,8 +997,7 @@ export default function App() {
               onDisconnected={permissions.dropProfile}
               modesFor={(pid) => modesByProfile[pid] ?? null}
               onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}
-              onCycleTheme={setTheme}
-              eventLog={eventLog}
+              onCycleTheme={(theme) => setSettings((s) => ({ ...s, theme }))}
             />
           )}
           {activeTab?.kind === "pr" && activePr && activeRepo && (
@@ -942,7 +1029,7 @@ export default function App() {
                 ，你在别处仍然能接着用它。
               </li>
               {deleteError && (
-                <li className="list-none break-all font-mono text-[10.5px] text-danger-1">
+                <li className="list-none break-all font-mono text-caption text-danger-1">
                   没删成：{deleteError}
                 </li>
               )}

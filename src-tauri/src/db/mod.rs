@@ -14,9 +14,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-use crate::commands::ProfileDto;
+use crate::commands::{is_valid_theme, AppSettingsDto, ProfileDto, CONTEXT_MESSAGES_MAX};
 
 pub const SCHEMA: &str = include_str!("schema.sql");
+
+const SETTINGS_KEY_CONTEXT_MESSAGES: &str = "contextMessages";
+const SETTINGS_KEY_THEME: &str = "theme";
 
 /// 结构版本：与 schema.sql 不符时整表重建（自用工具，会话数据可再生）
 const SCHEMA_VERSION: i64 = 4;
@@ -394,6 +397,72 @@ impl Db {
             )?;
         }
 
+        tx.commit()
+    }
+
+    /* ---------------- settings ---------------- */
+
+    pub fn load_settings(&self) -> rusqlite::Result<AppSettingsDto> {
+        Ok(self.load_settings_report()?.0)
+    }
+
+    /// 读设置，**同时把读不出来的脏值收集成给人看的说明**。
+    ///
+    /// 脏值不能让应用打不开（老库可能是别的版本写的），但也不许静默跳过：
+    /// 每条都写日志（`sincearc::settings`），并把说明交给界面进诊断面板
+    /// （所有者 2026-10-23：不阻塞、但必须留下记录）。
+    pub fn load_settings_report(&self) -> rusqlite::Result<(AppSettingsDto, Vec<String>)> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let mut stmt = conn.prepare("SELECT key, value FROM settings")?;
+        let mut rows = stmt.query([])?;
+        let mut settings = AppSettingsDto::default();
+        let mut issues: Vec<String> = Vec::new();
+
+        while let Some(row) = rows.next()? {
+            let key: String = row.get(0)?;
+            let value: String = row.get(1)?;
+            match key.as_str() {
+                SETTINGS_KEY_CONTEXT_MESSAGES => match value.parse::<u32>() {
+                    Ok(n) if n <= CONTEXT_MESSAGES_MAX => settings.context_messages = n,
+                    _ => {
+                        let note = format!(
+                            "设置项 {key} 的值 `{value}` 不认识（应为 0–{CONTEXT_MESSAGES_MAX} 的整数），已用默认值 {}",
+                            settings.context_messages
+                        );
+                        tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
+                        issues.push(note);
+                    }
+                },
+                SETTINGS_KEY_THEME if is_valid_theme(&value) => settings.theme = value,
+                SETTINGS_KEY_THEME => {
+                    let note =
+                        format!("设置项 {key} 的值 `{value}` 不认识（应为 dark/light/system），已用默认值 {}", settings.theme);
+                    tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
+                    issues.push(note);
+                }
+                _ => {}
+            }
+        }
+
+        Ok((settings, issues))
+    }
+
+    pub fn save_settings(&self, settings: &AppSettingsDto) -> rusqlite::Result<()> {
+        let mut conn = self.conn.lock().expect("db poisoned");
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![
+                SETTINGS_KEY_CONTEXT_MESSAGES,
+                settings.context_messages.to_string()
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![SETTINGS_KEY_THEME, settings.theme.as_str()],
+        )?;
         tx.commit()
     }
 
@@ -1186,6 +1255,151 @@ mod tests {
         db.set_mode_override("s-old", None).expect("改回跟随");
         assert_eq!(db.mode_override("s-old").expect("读回"), None);
 
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn settings_new_db_returns_defaults() {
+        let (db, path) = temp_db();
+        let settings = db.load_settings().expect("load settings");
+        assert_eq!(settings.context_messages, 5);
+        assert_eq!(settings.theme, "dark");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn settings_round_trip() {
+        let (db, path) = temp_db();
+        db.save_settings(&AppSettingsDto {
+            context_messages: 17,
+            theme: "system".into(),
+        })
+        .expect("save settings");
+
+        let settings = db.load_settings().expect("load settings");
+        assert_eq!(settings.context_messages, 17);
+        assert_eq!(settings.theme, "system");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn settings_old_db_without_settings_table_keeps_profiles() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "sincearc-db-settings-migrate-{}-{nanos}.db",
+            std::process::id()
+        ));
+
+        {
+            let conn = Connection::open(&path).expect("raw open");
+            conn.execute_batch(
+                "CREATE TABLE profiles (
+                   id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                   launch_kind TEXT NOT NULL CHECK (launch_kind IN ('local','wsl','ssh')),
+                   distro TEXT, shell TEXT, program TEXT NOT NULL,
+                   args_json TEXT NOT NULL DEFAULT '[]', env_json TEXT NOT NULL DEFAULT '{}',
+                   default_cwd TEXT NOT NULL,
+                   ssh_host TEXT, ssh_port INTEGER, ssh_user TEXT, ssh_auth TEXT, ssh_key_path TEXT,
+                   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 CREATE TABLE sessions (
+                   id TEXT PRIMARY KEY, acp_session_id TEXT,
+                   profile_id TEXT REFERENCES profiles(id) ON DELETE CASCADE,
+                   title TEXT NOT NULL DEFAULT '新会话', cwd TEXT NOT NULL DEFAULT '',
+                   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 INSERT INTO profiles
+                   (id, name, launch_kind, program, args_json, default_cwd, created_at, updated_at)
+                   VALUES ('p-old', '旧连接', 'local', 'hermes', '[\"acp\"]', '/tmp', 1, 1);
+                 INSERT INTO sessions
+                   (id, acp_session_id, profile_id, title, cwd, created_at, updated_at)
+                   VALUES ('s-old', 'acp-old', 'p-old', '老会话', '/tmp', 1, 1);",
+            )
+            .expect("seed old schema");
+        }
+
+        let db = Db::open(&path).expect("旧库应能打开并补上 settings 表");
+        let profiles = db.load_profiles().expect("旧连接不该丢");
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, "p-old");
+
+        let settings = db.load_settings().expect("settings 应可用");
+        assert_eq!(settings.context_messages, 5);
+        assert_eq!(settings.theme, "dark");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn settings_unknown_key_is_ignored_and_preserved() {
+        let (db, path) = temp_db();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO settings(key, value) VALUES
+                   ('futureKey', 'keep'),
+                   ('contextMessages', '999'),
+                   ('theme', 'neon');",
+            )
+            .expect("seed settings");
+
+        let defaults = db.load_settings().expect("非法已知值回落默认值");
+        assert_eq!(defaults.context_messages, 5);
+        assert_eq!(defaults.theme, "dark");
+
+        db.save_settings(&AppSettingsDto {
+            context_messages: 12,
+            theme: "light".into(),
+        })
+        .expect("save settings");
+        let loaded = db.load_settings().expect("load settings");
+        assert_eq!(loaded.context_messages, 12);
+        assert_eq!(loaded.theme, "light");
+
+        let future: String = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'futureKey'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("unknown key 应保留");
+        assert_eq!(future, "keep");
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// 脏值不许静默：读的时候必须**收集成给人看的说明**（界面推诊断面板，日志另有一份）。
+    #[test]
+    fn settings_dirty_values_are_reported_not_silently_defaulted() {
+        let (db, path) = temp_db();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO settings(key, value) VALUES
+                   ('contextMessages', '999'),
+                   ('theme', 'neon');",
+            )
+            .expect("seed settings");
+
+        let (settings, issues) = db.load_settings_report().expect("load report");
+        assert_eq!(settings.context_messages, 5, "仍然回落默认值，不能让应用打不开");
+        assert_eq!(settings.theme, "dark");
+        assert_eq!(issues.len(), 2, "两条脏值都要有说明：{issues:?}");
+        assert!(issues.iter().any(|i| i.contains("contextMessages") && i.contains("999")));
+        assert!(issues.iter().any(|i| i.contains("theme") && i.contains("neon")));
+
+        // 合法库不该产生任何噪音
+        db.save_settings(&AppSettingsDto {
+            context_messages: 7,
+            theme: "light".into(),
+        })
+        .expect("save settings");
+        let (_, clean) = db.load_settings_report().expect("load report");
+        assert!(clean.is_empty(), "合法值不该被报成脏值：{clean:?}");
         std::fs::remove_file(&path).ok();
     }
 

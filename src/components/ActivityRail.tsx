@@ -40,16 +40,17 @@ export function ActivityRail({
             onClick={() => onFilter(selected ? null : p.id)}
             title={running ? `${p.name}：${running.title}` : p.name}
             className={cn(
-              "relative grid size-7 place-items-center rounded-full transition-all",
+              "relative grid size-7 place-items-center rounded-full transition-opacity",
               selected ? "ring-2 ring-offset-2 ring-offset-transparent" : "opacity-80 hover:opacity-100",
             )}
-            style={selected ? { boxShadow: `0 0 0 2px ${p.color}66` } : undefined}
+            /* 同上：颜色可能是 CSS 变量，只能走 color-mix，不能拼 hex 后缀 */
+            style={selected ? { boxShadow: `0 0 0 2px color-mix(in srgb, ${p.color} 40%, transparent)` } : undefined}
           >
             <PlayerAvatar player={p} size={24} />
             {running && (
               <span
-                className="absolute -bottom-0.5 -right-0.5 size-2 animate-pulse rounded-full border-2"
-                style={{ background: p.color, borderColor: "var(--s0)" }}
+                className="absolute -bottom-0.5 -right-0.5 size-2 animate-pulse rounded-full border-2 border-surface-0"
+                style={{ background: p.color }}
               />
             )}
           </button>
@@ -66,7 +67,10 @@ export function ActivityRail({
           />
         </div>
       )}
-      <div className={cn("mt-2 shrink-0 text-[9px] tracking-widest text-ink-3 [writing-mode:vertical-rl]")}>
+      <div
+        className="mt-2 shrink-0 text-micro tracking-widest text-ink-3"
+        style={{ writingMode: "vertical-rl" }}
+      >
         {filter ?? "AGENTS"}
       </div>
     </aside>

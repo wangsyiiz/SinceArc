@@ -104,6 +104,10 @@ export interface Activity {
   kind: ActivityKind;
   title: string;
   detail?: string;
+  /** 卡片里的全文；思考保留换行，工具/权限是逐行落点或选项。 */
+  body?: string;
+  /** 后端是否截断过这条 payload（思考的 8KB 上限）。 */
+  truncated?: boolean;
   meta?: string;
   status: ActivityStatus;
   at: string;
@@ -215,4 +219,12 @@ export interface SessionState {
 export interface ThreadSettings {
   /** @ 玩家时附带最近 N 条群聊记录，默认 5 */
   contextMessages: number;
+  theme: ThemeMode;
 }
+
+export const CONTEXT_MESSAGES_MAX = 20;
+export const CONTEXT_MESSAGES_DEFAULT = 5;
+export const DEFAULT_THREAD_SETTINGS: ThreadSettings = {
+  contextMessages: CONTEXT_MESSAGES_DEFAULT,
+  theme: "dark",
+};

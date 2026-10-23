@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from "react";
-import { Check, Minus, Sparkles, Terminal } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Sparkles, Terminal } from "lucide-react";
 import type { AgentCommand, AgentProfile } from "@/types";
 import { commandPreview } from "@/extensions/registry";
 import { cn } from "@/lib/utils";
+import { Badge } from "./ui/Badge";
+import { useAnchoredLayer } from "./ui/Menu";
 
 interface AgentCapabilitiesProps {
   profile: AgentProfile | undefined;
@@ -38,21 +40,14 @@ export const CAPABILITY_LABEL: Record<string, string> = {
  * 而它们的协议能力恰恰是用户最想知道的（`capabilities` 为空 = 还没连过，说清楚而不是藏起来）。
  */
 export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps) {
-  const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState<AgentCommand | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
+  const { triggerRef, panelRef, open, toggle, style } = useAnchoredLayer({
+    align: "end",
+    prefer: "below",
+  });
 
   useEffect(() => {
     let alive = true;
@@ -99,44 +94,46 @@ export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps)
   if (supported === 0 && commands.length === 0) return null;
 
   return (
-    <div ref={ref} className="relative">
+    <div className="relative">
       <button
-        onClick={() => setOpen((v) => !v)}
+        ref={triggerRef}
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={toggle}
         title={profile?.agentName ?? undefined}
         className={cn(
-          "flex h-7 items-center gap-1.5 rounded-[6px] px-2 text-[11px] transition-colors",
+          "flex h-7 items-center gap-1.5 rounded-mark px-2 text-caption transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-1",
           open ? "bg-surface-3/65 text-ink-1" : "text-ink-2 hover:bg-surface-3/55 hover:text-ink-1",
         )}
       >
         <Sparkles className="size-3" />
         能力
-        <span className="font-mono text-[9px] text-ink-3">{supported}</span>
+        <span className="font-mono text-micro text-ink-3">{supported}</span>
       </button>
 
       {open && (
-        <div className="sc-glass absolute top-full right-0 z-30 mt-1.5 w-[320px] rounded-[10px] p-1">
-          <div className="px-2 py-1.5 text-[9.5px] tracking-wide text-ink-3">
+        <div
+          ref={panelRef}
+          role="dialog"
+          aria-label="Agent 能力"
+          style={style}
+          className="sc-glass sc-z-popover w-80 rounded-card p-1"
+        >
+          <div className="px-2 py-1.5 text-micro tracking-wide text-ink-3">
             协议能力（握手报上来的）
           </div>
-          <div className="px-1 pb-1">
+          <div className="flex flex-wrap gap-1 px-1 pb-1">
             {rows.map((r) => (
-              <div
+              <Badge
                 key={r.key}
-                className={cn(
-                  "flex items-center gap-2 rounded-[6px] px-1.5 py-1 text-[11px]",
-                  r.on ? "text-ink-1" : "text-ink-3",
-                )}
-              >
-                {r.on ? (
-                  <Check className="size-3 shrink-0 text-ok-1" />
-                ) : (
-                  <Minus className="size-3 shrink-0 text-ink-3/60" />
-                )}
-                {r.label}
-              </div>
+                status={r.on ? "connected" : "untested"}
+                label={r.label}
+                compact
+              />
             ))}
             {supported === 0 && (
-              <p className="px-1.5 py-1 text-[9.5px] leading-relaxed text-ink-3">
+              <p className="px-1.5 py-1 text-micro text-ink-3">
                 还没连过这个 agent：能力要握手之后才知道。
               </p>
             )}
@@ -144,7 +141,7 @@ export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps)
 
           {commands.length > 0 && (
             <>
-              <div className="mt-1 border-t border-line-1/40 px-2 py-1.5 text-[9.5px] tracking-wide text-ink-3">
+              <div className="mt-1 border-t border-line-1/40 px-2 py-1.5 text-micro tracking-wide text-ink-3">
                 ACP 之外的 {commands.length} 项（预览，未接线）
               </div>
               {commands.map((c) => {
@@ -154,20 +151,20 @@ export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps)
                     key={c.id}
                     onClick={() => setPicked(active ? null : c)}
                     className={cn(
-                      "flex w-full items-start gap-2 rounded-[6px] px-2 py-1.5 text-left transition-colors",
+                      "flex w-full items-start gap-2 rounded-mark px-2 py-1.5 text-left transition-colors",
                       active ? "sc-row-active" : "hover:bg-surface-3/45",
                     )}
                   >
-                    <Terminal className="mt-[3px] size-3 shrink-0 text-ink-3" />
+                    <Terminal className="mt-0.5 size-3 shrink-0 text-ink-3" />
                     <span className="min-w-0 flex-1">
                       <span className="flex items-baseline justify-between gap-2">
-                        <span className="truncate text-[11.5px] text-ink-1">{c.label}</span>
-                        <span className="shrink-0 font-mono text-[9px] text-ink-3">
+                        <span className="truncate text-ui-tight text-ink-1">{c.label}</span>
+                        <span className="shrink-0 font-mono text-micro text-ink-3">
                           {c.argv.join(" ")}
                         </span>
                       </span>
                       {c.note && (
-                        <span className="mt-0.5 block text-[length:var(--fs-caption)] text-ink-3">{c.note}</span>
+                        <span className="mt-0.5 block text-caption text-ink-3">{c.note}</span>
                       )}
                     </span>
                   </button>
@@ -176,19 +173,19 @@ export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps)
 
               {picked && (
                 <div className="mt-1 border-t border-line-1/40 px-2 py-2">
-                  <div className="text-[9.5px] text-ink-3">将执行</div>
+                  <div className="text-micro text-ink-3">将执行</div>
                   {previewLoading && (
-                    <p className="mt-1 text-[length:var(--fs-caption)] text-ink-3">正在生成命令预览…</p>
+                    <p className="mt-1 text-caption text-ink-3">正在生成命令预览…</p>
                   )}
                   {previewFailed && (
-                    <p className="mt-1 text-[length:var(--fs-caption)] text-ink-3">无法生成命令预览</p>
+                    <p className="mt-1 text-caption text-ink-3">无法生成命令预览</p>
                   )}
                   {preview && (
-                    <code className="mt-1 block break-all whitespace-pre-wrap font-mono text-[length:var(--fs-caption)] leading-relaxed text-ink-2">
+                    <code className="mt-1 block break-all whitespace-pre-wrap font-mono text-caption text-ink-2">
                       {preview}
                     </code>
                   )}
-                  <p className="mt-1.5 text-[9.5px] leading-relaxed text-ink-3">
+                  <p className="mt-1.5 text-micro text-ink-3">
                     未接线：目前只显示命令形态，不发起调用。
                   </p>
                 </div>

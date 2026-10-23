@@ -1,92 +1,16 @@
 /**
  * 棘轮清单：P1 之前就存在的违规。
- * 只许减少 —— 修掉一条就从这里删一行；新增违规会让测试红。
+ * 只许减少 —— 修掉一条就从这里删一行（数字必须来自真实扫描，2026-10-23 修正了十进制 px 漏数）；新增违规会让测试红。
  * 每条注明归属（哪个组件、为什么暂时留着），P2 逐个清。
  */
-export const ALLOWED: Record<string, { rule: string; count: number; why: string }[]> = {
-  "App.tsx": [
-    { rule: "arbitrary-value", count: 5, why: "P2 收敛停止提示与输入浮层的尺寸/字号" },
-    { rule: "color-literal", count: 1, why: "P2 把主 agent 颜色改为令牌" },
-  ],
-  "components/ActivityRail.tsx": [
-    { rule: "arbitrary-value", count: 1, why: "P2 轨迹栏字号收敛" },
-    { rule: "transition-all", count: 1, why: "P2 改为按属性过渡" },
-  ],
-  "components/AgentCapabilities.tsx": [
-    { rule: "arbitrary-value", count: 10, why: "P2 能力徽标尺寸与字号收敛" },
-  ],
-  "components/AgentUsers.tsx": [
-    { rule: "arbitrary-value", count: 29, why: "P2 成员管理表单改为令牌尺寸" },
-    { rule: "color-literal", count: 6, why: "P2 内置成员色板改为令牌" },
-    { rule: "outline-none", count: 4, why: "P2 统一输入框焦点环" },
-  ],
-  "components/Composer.tsx": [
-    { rule: "arbitrary-value", count: 8, why: "P2 输入框与提及面板改为令牌尺寸" },
-    { rule: "color-literal", count: 2, why: "P2 按钮内高光改用令牌" },
-    { rule: "outline-none", count: 1, why: "P2 文本域补可替代的焦点样式" },
-    { rule: "transition-all", count: 1, why: "P2 发送按钮改为按属性过渡" },
-  ],
-  "components/ConfirmDialog.tsx": [
-    { rule: "arbitrary-value", count: 6, why: "P2 对话框间距与字号收敛" },
-  ],
-  "components/EmptyState.tsx": [
-    { rule: "arbitrary-value", count: 4, why: "P2 空态尺寸与字号收敛" },
-  ],
-  "components/MembersMenu.tsx": [
-    { rule: "arbitrary-value", count: 8, why: "P2 成员菜单字号与圆角收敛" },
-  ],
-  "components/MessageItem.tsx": [
-    { rule: "arbitrary-value", count: 8, why: "P2 消息气泡尺寸与字号收敛" },
-  ],
-  "components/ModeSelect.tsx": [
-    { rule: "arbitrary-value", count: 11, why: "P2 模式菜单宽度与字号收敛" },
-  ],
-  "components/MoreMenu.tsx": [
-    { rule: "arbitrary-value", count: 5, why: "P2 更多菜单尺寸与字号收敛" },
-  ],
-  "components/PermissionDialog.tsx": [
-    { rule: "arbitrary-value", count: 7, why: "P2 权限对话框尺寸与字号收敛" },
-    { rule: "color-literal", count: 1, why: "P2 主按钮内高光改用令牌" },
-  ],
-  "components/PrView.tsx": [
-    { rule: "arbitrary-value", count: 11, why: "P2 PR 状态与按钮尺寸收敛" },
-    { rule: "color-literal", count: 5, why: "P2 PR 状态色改为令牌" },
-    { rule: "transition-all", count: 1, why: "P2 主按钮改为按属性过渡" },
-  ],
-  "components/RepoBrowser.tsx": [
-    { rule: "arbitrary-value", count: 11, why: "P2 仓库列表尺寸与字号收敛" },
-    { rule: "color-literal", count: 1, why: "P2 merged 状态色改为令牌" },
-  ],
-  "components/SettingsView.tsx": [
-    { rule: "arbitrary-value", count: 67, why: "P2 重写设置页时统一尺寸与字号" },
-    { rule: "native-control", count: 1, why: "P2 移除第 606 行说明注释里的 <select> 字样" },
-    { rule: "outline-none", count: 3, why: "P2 统一设置页输入框焦点环" },
-  ],
-  "components/Sidebar.tsx": [
-    { rule: "arbitrary-value", count: 18, why: "P2 侧栏行高与字号收敛" },
-    { rule: "outline-none", count: 1, why: "P2 搜索框补可替代的焦点样式" },
-  ],
-  "components/StatusBar.tsx": [
-    { rule: "arbitrary-value", count: 8, why: "P2 状态栏尺寸与字号收敛" },
-  ],
-  "components/TabStrip.tsx": [
-    { rule: "arbitrary-value", count: 2, why: "P2 标签宽度与字号收敛" },
-    { rule: "color-literal", count: 1, why: "P2 标签高光改用令牌" },
-  ],
-  "components/ThinkingRow.tsx": [
-    { rule: "arbitrary-value", count: 8, why: "P2 思考行动画点与字号收敛" },
-  ],
-  "components/TitleBar.tsx": [
-    { rule: "arbitrary-value", count: 3, why: "P2 窗口按钮尺寸收敛" },
-    { rule: "color-literal", count: 2, why: "P2 关闭按钮危险色改为令牌" },
-  ],
-  "components/TracePanel.tsx": [
-    { rule: "arbitrary-value", count: 14, why: "P2 轨迹面板尺寸与字号收敛" },
-  ],
-  "components/WorkspaceEmpty.tsx": [
-    { rule: "arbitrary-value", count: 5, why: "P2 空工作区尺寸与字号收敛" },
-  ],
-  "mock/data.ts": [
-    { rule: "color-literal", count: 3, why: "P2 mock 玩家颜色改为令牌" },
-  ],
-};
+/**
+ * 按文件豁免某条规则。
+ *
+ * `color-literal` 只豁免 `lib/player-colors.ts`：那是**成员标识色板**，属于数据
+ * （用户靠色相分辨"这是谁"），不是 UI 配色，不能进设计令牌体系（所有者 2026-10-23 定）。
+ * 豁免必须按文件枚举，不许按目录、不许按"包含 color 字样"这类宽判据 ——
+ * 那等于把色值禁令废掉。
+ */
+export const COLOR_LITERAL_EXEMPT: string[] = ["lib/player-colors.ts"];
+
+export const ALLOWED: Record<string, { rule: string; count: number; why: string }[]> = {};

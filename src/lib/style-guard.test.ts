@@ -9,7 +9,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import test from "node:test";
 
-import { ALLOWED } from "./style-guard.allowlist.ts";
+import { ALLOWED, COLOR_LITERAL_EXEMPT } from "./style-guard.allowlist.ts";
 
 const ROOT = new URL("../../", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 const SRC = join(ROOT, "src");
@@ -21,7 +21,10 @@ const TEXT_RULES = [
   },
   {
     id: "arbitrary-value",
-    re: /-\[[0-9]+px\]|-\[[0-9.]+rem\]/g,
+    /* 小数也要认：字号里最常用的是 9.5 / 10.5 / 11.5 / 12.5 / 13.5px。
+       旧判据只写 `[0-9]+px`，这 101 处十进制的任意值一直被漏数 ——
+       棘轮报的“总债务”因此比真实值低一整截（2026-10-23 发现并修正）。 */
+    re: /-\[[0-9.]+px\]|-\[[0-9.]+rem\]/g,
   },
   {
     id: "native-control",
@@ -55,6 +58,9 @@ function countMatches(text: string, re: RegExp): number {
 /**
  * `outline-none` 只看同一字符串里的替代焦点样式。
  * 当前违规都写在单个 className 字符串或 cn() 的单个参数里；拆到多个参数的情况目前没有。
+ *
+ * `outline-0` 是同一个意思（`outline-width: 0px`），P2b 里真被用来绕过了这条判据 ——
+ * 判据照着 Tailwind 的两种写法一起认，否则改一个类名就能躲过棘轮。
  */
 function countOutlineNone(text: string): number {
   let count = 0;
@@ -76,8 +82,25 @@ function countOutlineNone(text: string): number {
       end += 1;
     }
     const value = text.slice(start, end);
-    if (value.includes("outline-none") && !value.includes("focus-visible:")) count += 1;
+    const hidesOutline = value.includes("outline-none") || value.includes("outline-0");
+    if (hidesOutline && !value.includes("focus-visible:")) count += 1;
     index = end + 1;
+  }
+  return count;
+}
+
+/**
+ * 玻璃上把边界写死：`sc-glass` 的边界由 `--glass-border` 按主题给
+ * （暗色 transparent + 上缘高光、浅色 1px l1）。在同一个 className 里再写
+ * `border-0` / `border-transparent` 会把**浅色**那一道边框也删掉 ——
+ * 暗色看不出差别，浅色主题直接失去浮层边界（所有者 2026-10-23 点名这条）。
+ * 反过来写 `border-line-*` 是给暗色多套一圈实线，同样由人眼判，不在机器规则里。
+ */
+function countGlassBorderKill(text: string): number {
+  let count = 0;
+  for (const match of text.matchAll(/"[^"\n]*"|`[^`\n]*`/g)) {
+    const value = match[0];
+    if (value.includes("sc-glass") && /\bborder-(0|transparent)\b/.test(value)) count += 1;
   }
   return count;
 }
@@ -91,11 +114,14 @@ function scanActual(): Record<string, Record<string, number>> {
     const text = readFileSync(path, "utf8");
     const counts: Record<string, number> = {};
     for (const rule of TEXT_RULES) {
+      if (rule.id === "color-literal" && COLOR_LITERAL_EXEMPT.includes(rel)) continue;
       const count = countMatches(text, rule.re);
       if (count > 0) counts[rule.id] = count;
     }
     const outline = countOutlineNone(text);
     if (outline > 0) counts["outline-none"] = outline;
+    const glassBorder = countGlassBorderKill(text);
+    if (glassBorder > 0) counts["glass-border-kill"] = glassBorder;
     if (Object.keys(counts).length > 0) actual[rel] = counts;
   }
   return actual;
