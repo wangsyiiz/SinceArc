@@ -2,7 +2,7 @@
  * 轨迹适配器的用例。
  *
  * 这些断言对应真实数据（2026-10-22 真机采集）：tool_call 与它的增量更新已由后端合并，
- * thought 超长被截断（要显示「…（已截断）」），群聊里不同 author 走不同支线。
+ * thought 超长被截断（正文进悬停卡片，并显示 truncated 提示），群聊里不同 author 走不同支线。
  * 映射错了的症状是「面板看起来有东西，但少一条 / 混到别人泳道里」—— 肉眼很难发现。
  */
 import assert from "node:assert/strict";
@@ -49,7 +49,89 @@ test("截断的思考带可见标记，不能只是被裁短", () => {
     ],
   });
   const view = toTraceView([dto]);
-  assert.equal(view.activities[0].detail, "…（已截断）");
+  assert.equal(view.activities[0].body, "很长的一段思考");
+  assert.equal(view.activities[0].detail, "很长的一段思考");
+  assert.equal(view.activities[0].truncated, true);
+});
+
+test("思考正文保留换行，摘要压成一行前 80 字", () => {
+  const text = `${"甲".repeat(90)}\n第二行`;
+  const dto = turn({
+    items: [{ seq: 1, at: t0, authorId: null, kind: "thought", payload: { text }, truncated: false }],
+  });
+  const activity = toTraceView([dto]).activities[0];
+  assert.equal(activity.body, text);
+  assert.equal(activity.detail, "甲".repeat(80));
+});
+
+test("工具卡片把 locations 逐行写入正文，摘要取第一个路径", () => {
+  const dto = turn({
+    items: [
+      {
+        seq: 1,
+        at: t0,
+        authorId: null,
+        kind: "tool_call",
+        payload: {
+          toolCallId: "c1",
+          title: "读取文件",
+          kind: "read",
+          status: "completed",
+          locations: [
+            { path: "src/a.ts", line: 10, endLine: 12 },
+            { path: "src/b.ts", range: { start: { line: 3 }, end: { line: 5 } } },
+          ],
+        },
+        truncated: true,
+      },
+    ],
+  });
+  const activity = toTraceView([dto]).activities[0];
+  assert.equal(activity.body, "src/a.ts:10-12\nsrc/b.ts:3-5");
+  assert.equal(activity.detail, "src/a.ts");
+  assert.equal(activity.truncated, true);
+});
+
+test("工具没有 locations 时正文保持 undefined", () => {
+  const dto = turn({
+    items: [
+      {
+        seq: 1,
+        at: t0,
+        authorId: null,
+        kind: "tool_call",
+        payload: { toolCallId: "c1", title: "terminal: date", kind: "execute" },
+        truncated: false,
+      },
+    ],
+  });
+  const activity = toTraceView([dto]).activities[0];
+  assert.equal(activity.body, undefined);
+  assert.equal(activity.detail, undefined);
+});
+
+test("权限卡片列出选项名，摘要用斜线连接", () => {
+  const dto = turn({
+    items: [
+      {
+        seq: 1,
+        at: t0,
+        authorId: null,
+        kind: "permission",
+        payload: {
+          toolCall: { title: "执行 rm" },
+          options: [
+            { kind: "allow_once", optionId: "1", name: "允许一次" },
+            { kind: "allow_always", optionId: "2", name: "总是允许" },
+          ],
+        },
+        truncated: false,
+      },
+    ],
+  });
+  const activity = toTraceView([dto]).activities[0];
+  assert.equal(activity.body, "允许一次\n总是允许");
+  assert.equal(activity.detail, "允许一次 / 总是允许");
 });
 
 test("群聊里不同 author 分到不同支线", () => {
