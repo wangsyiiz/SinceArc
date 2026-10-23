@@ -481,6 +481,7 @@ interface TracePanelProps {
   turns: TraceTurn[];
   activities: Activity[];
   players: Player[];
+  resumeGap: number | null;
   onClose: () => void;
   width: number;
   animate: boolean;
@@ -493,6 +494,7 @@ export function TracePanel({
   turns,
   activities,
   players,
+  resumeGap,
   onClose,
   width,
   animate,
@@ -673,6 +675,9 @@ export function TracePanel({
         )}
 
         <footer className="shrink-0 border-t border-line-1/60 px-3 py-2 text-micro leading-relaxed text-ink-3">
+          {resumeGap !== null && resumeGap > 0 && (
+            <div className="mb-1 text-warn-1">恢复后可能丢了 {resumeGap} 条事件（事件水位断档）</div>
+          )}
           主干是你的时间轴；一轮里被 @ 的玩家各开一条支线并行跑，答完弯回主干，虚线头表示还在答。
         </footer>
       </div>

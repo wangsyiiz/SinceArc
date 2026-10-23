@@ -1,5 +1,11 @@
 import { useCallback } from "react";
-import { asCmdError, messagesAppend, sessionLoad, sessionPrompt } from "@/lib/ipc";
+import {
+  asCmdError,
+  messagesAppend,
+  sessionLoad,
+  sessionPrompt,
+  type ResumeOutcome,
+} from "@/lib/ipc";
 import { now } from "@/lib/format";
 import { pushSystemNotice } from "@/lib/notices";
 import { clog } from "@/lib/log";
@@ -24,6 +30,7 @@ export function usePrompt({
   acp,
   profileIdOf,
   ensureConnected,
+  onResume,
 }: {
   lastSessionId: string;
   patchSession: PatchSession;
@@ -35,6 +42,8 @@ export function usePrompt({
   profileIdOf: (uiSid: string) => string | null;
   /** 无感启动：没连就现连，永不抛异常 */
   ensureConnected: (profileId: string | null | undefined, uiSid?: string) => Promise<EnsureResult>;
+  /** 恢复结果统一交给 App：通知条、诊断与会话头标记都在那里。 */
+  onResume: (uiSid: string, outcome: ResumeOutcome, lastEventSeq: number | null) => void;
 }) {
   const { acpToTurn } = acp;
 
@@ -116,6 +125,12 @@ export function usePrompt({
           pushSystemNotice(patchSession, sid, `连接失败：${r.error!.code} ${r.error!.msg}`);
           return;
         }
+        if (r.resume) onResume(sid, r.resume, r.lastEventSeq);
+        if (r.resume?.kind === "unavailable") {
+          setBusy(sid, false);
+          pushSystemNotice(patchSession, sid, `续不上：${r.resume.reason}`);
+          return;
+        }
         acpSid = target ? target.acpSessionId : (r.acpSid ?? undefined);
         // 连上了，接下来真要发 prompt
         patchSession(sid, (s) => ({ ...s, busy: true }));
@@ -125,7 +140,13 @@ export function usePrompt({
         // 成员的会话必须在那个进程里「活着」，否则 prompt 只会拿到 not_found。
         // 放在这里而不是连接时做：成员可能来自别的会话，连接阶段并不知道要 load 谁。
         try {
-          await sessionLoad(target.profileId, target.acpSessionId, target.cwd, sid);
+          const loaded = await sessionLoad(target.profileId, target.acpSessionId, target.cwd, sid);
+          onResume(sid, loaded.resume, loaded.lastEventSeq ?? null);
+          if (loaded.resume.kind === "unavailable") {
+            setBusy(sid, false);
+            pushSystemNotice(patchSession, sid, `续不上：${loaded.resume.reason}`);
+            return;
+          }
         } catch (e) {
           const err = asCmdError(e);
           setBusy(sid, false);
@@ -202,6 +223,7 @@ export function usePrompt({
       acp,
       profileIdOf,
       ensureConnected,
+      onResume,
     ],
   );
 

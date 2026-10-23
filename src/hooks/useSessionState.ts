@@ -10,6 +10,7 @@ export const emptySession = (): SessionState => ({
   turns: [],
   busy: false,
   pendingPerm: null,
+  resume: null,
   locks: {},
   usage: null,
 });

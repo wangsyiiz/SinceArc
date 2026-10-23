@@ -280,6 +280,95 @@ pub struct ConnectOutcome {
     #[ts(optional = nullable)]
     pub session_id: Option<String>,
     pub modes: Option<acp::SessionModes>,
+    /// 这次连接是新建、续上，还是有句柄但续不上。
+    pub resume: ResumeOutcome,
+    /// 续上前本地事件水位；新建会话时为 None。
+    /// 不用 ts(optional)：和 ts(type=…) 一起用时 ts-rs 会丢掉类型覆盖，生成出 bigint。
+    #[ts(type = "number | null")]
+    pub last_event_seq: Option<i64>,
+}
+
+/// 一条已存 ACP 会话能否在当前进程里恢复。
+///
+/// `Unavailable` 是终态：调用方必须显示失败并由用户决定是否新建，
+/// 不允许在这里悄悄回退到 `session/new`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub enum ResumeOutcome {
+    Resumed {
+        acp_session_id: String,
+        note: String,
+    },
+    Unavailable {
+        acp_session_id: String,
+        reason: String,
+    },
+    Fresh,
+}
+
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct SessionLoadOutcome {
+    pub resume: ResumeOutcome,
+    pub modes: Option<acp::SessionModes>,
+    /// 同 SessionConnectOutcome：不用 ts(optional)，否则类型会被生成成 bigint。
+    #[ts(type = "number | null")]
+    pub last_event_seq: Option<i64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ResumeDecision {
+    Fresh,
+    CanLoad,
+    Unavailable {
+        acp_session_id: String,
+        reason: String,
+    },
+}
+
+const RESUME_UNSUPPORTED: &str = "这个 agent 不支持恢复会话（没报 loadSession 能力）";
+
+fn resume_decision(
+    handle: Option<&db::ResumeHandle>,
+    load_session: bool,
+) -> ResumeDecision {
+    match handle {
+        None => ResumeDecision::Fresh,
+        Some(h) if !load_session => ResumeDecision::Unavailable {
+            acp_session_id: h.acp_session_id.clone(),
+            reason: RESUME_UNSUPPORTED.to_string(),
+        },
+        Some(_) => ResumeDecision::CanLoad,
+    }
+}
+
+fn resumed_note(expected_agent: Option<&str>, current_agent: &str) -> String {
+    match expected_agent {
+        Some(prev) if !prev.is_empty() && prev != current_agent => format!(
+            "注意：上次是 {prev}，这次是 {current_agent}，上下文可能不等价"
+        ),
+        _ => String::new(),
+    }
+}
+
+fn resumed_outcome(
+    acp_session_id: &str,
+    expected_agent_name: Option<&str>,
+    current_agent_name: &str,
+) -> ResumeOutcome {
+    ResumeOutcome::Resumed {
+        acp_session_id: acp_session_id.to_string(),
+        note: resumed_note(expected_agent_name, current_agent_name),
+    }
+}
+
+fn resume_load_failed(acp_session_id: &str, e: &transport::TransportError) -> ResumeOutcome {
+    ResumeOutcome::Unavailable {
+        acp_session_id: acp_session_id.to_string(),
+        reason: format!("session/load 失败：{e}"),
+    }
 }
 
 /// SSH 的必填项缺失时逐个点名，不给默认值 ——
@@ -1499,11 +1588,8 @@ pub async fn agent_connect(
 
     // 会话归属：优先复用上次的（agent 侧因此不会每连一次就多一个空会话）
     let handle = state.get(&id).await.expect("just inserted");
-    let (session_id, modes) =
-        match attach_session(&state, &id, &handle, &cwd, ui_session_id.clone()).await {
-            Some((session_id, modes)) => (Some(session_id), modes),
-            None => (None, None),
-        };
+    let (session_id, modes, resume, last_event_seq) =
+        attach_session(&state, &id, &handle, &cwd, ui_session_id.clone()).await;
 
     // 自检：这条如果前端也没收到，问题在 Channel 本身而不是 ACP 事件
     tracing::info!(target: "sincearc::ipc", "hello -> webview");
@@ -1526,6 +1612,8 @@ pub async fn agent_connect(
         capabilities: outcome.capabilities,
         session_id,
         modes,
+        resume,
+        last_event_seq,
     })
 }
 
@@ -1539,59 +1627,58 @@ async fn attach_session(
     handle: &AgentHandle,
     cwd: &str,
     ui_session_id: Option<String>,
-) -> Option<(String, Option<acp::SessionModes>)> {
-    let mut warnings: Vec<String> = Vec::new();
+) -> (Option<String>, Option<acp::SessionModes>, ResumeOutcome, Option<i64>) {
+    let resume_handle = match ui_session_id.as_deref() {
+        Some(ui_sid) => state.db.live_handle(ui_sid).unwrap_or_else(|e| {
+            tracing::warn!(target: "sincearc::ipc", error = %e, session = %ui_sid, "读取恢复句柄失败");
+            None
+        }),
+        // 设置页手动连接没有界面会话：这里只是连通性验证，不做恢复。
+        // 恢复是"打开会话"的动作。此处若拿 last_acp_session 去 load，在不支持 loadSession 的
+        // agent 上会直接变成 Unavailable，让用户误以为"连接失败"（旧实现在这里是静默回退到 session/new，
+        // 那正是 E13.7 要消灭的静默降级）。所以显式声明为"没有句柄"。
+        None => None,
+    };
+    let watermark = resume_handle.as_ref().and_then(|h| h.last_event_seq);
 
-    if handle.outcome.load_session {
-        match state.db.last_acp_session(profile_id) {
-            Ok(Some(prev)) => {
-                let params = serde_json::json!({
-                    "sessionId": prev,
-                    "cwd": cwd,
-                    "mcpServers": [],
-                });
-                match handle
-                    .proc
-                    .request("session/load", params, Duration::from_secs(120))
-                    .await
-                {
-                    Ok(v) => {
-                        let modes = acp::modes_from_response(&v);
-                        if let Some(m) = &modes {
-                            state.set_modes(prev.clone(), m.clone()).await;
-                        }
-                        tracing::info!(
-                            target: "sincearc::ipc",
-                            session = %prev,
-                            "session resumed"
-                        );
-                        state
-                            .insert_session(
-                                prev.clone(),
-                                SessionRecord {
-                                    profile_id: profile_id.to_string(),
-                                    cwd: cwd.to_string(),
-                                    ui_session_id: ui_session_id.clone(),
-                                    author_id: None,
-                                },
-                            )
-                            .await;
-                        return Some((prev, modes));
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            target: "sincearc::ipc",
-                            session = %prev,
-                            error = %e,
-                            "session/load failed, creating a new one"
-                        );
-                        warnings.push(format!("load {prev}: {e}"));
-                    }
-                }
-            }
-            Ok(None) => {}
-            Err(e) => tracing::warn!(target: "sincearc::ipc", error = %e, "读取会话记录失败"),
+    match resume_decision(resume_handle.as_ref(), handle.outcome.load_session) {
+        ResumeDecision::Unavailable {
+            acp_session_id,
+            reason,
+        } => {
+            tracing::warn!(
+                target: "sincearc::ipc", session = %acp_session_id, reason = %reason,
+                "resume unavailable; refusing to create a fresh session"
+            );
+            return (
+                None,
+                None,
+                ResumeOutcome::Unavailable {
+                    acp_session_id,
+                    reason,
+                },
+                watermark,
+            );
         }
+        ResumeDecision::CanLoad => {
+            let h = resume_handle.expect("CanLoad implies a handle");
+            let (outcome, modes) = load_resume_handle(
+                state,
+                profile_id,
+                handle,
+                &h.acp_session_id,
+                cwd,
+                ui_session_id.as_deref(),
+                h.agent_name.as_deref(),
+            )
+            .await;
+            let session_id = match &outcome {
+                ResumeOutcome::Resumed { acp_session_id, .. } => Some(acp_session_id.clone()),
+                _ => None,
+            };
+            return (session_id, modes, outcome, watermark);
+        }
+        ResumeDecision::Fresh => {}
     }
 
     let created = handle
@@ -1605,7 +1692,21 @@ async fn attach_session(
 
     match created {
         Ok(v) => {
-            let sid = v["sessionId"].as_str()?.to_string();
+            // ACP 规定 session/new 必须回 sessionId；没回就是协议不符。
+            // 这里不能 `?`（本函数已改成返回四元组、不是 Result），也不能假装成功：
+            // 显式走 Unavailable，让界面把原因写出来、由用户决定重试。
+            let Some(sid) = v["sessionId"].as_str().map(str::to_string) else {
+                tracing::warn!(target: "sincearc::ipc", "session/new 没有返回 sessionId");
+                return (
+                    None,
+                    None,
+                    ResumeOutcome::Unavailable {
+                        acp_session_id: String::new(),
+                        reason: "agent 返回的 session/new 没有 sessionId（协议不符）".to_string(),
+                    },
+                    None,
+                );
+            };
             let modes = acp::modes_from_response(&v);
             if let Some(m) = &modes {
                 state.set_modes(sid.clone(), m.clone()).await;
@@ -1622,17 +1723,109 @@ async fn attach_session(
                     },
                 )
                 .await;
-            Some((sid, modes))
+            if let Some(ui_sid) = ui_session_id.as_deref() {
+                if let Err(e) = state.db.bind_acp_session_with_agent(
+                    ui_sid,
+                    &sid,
+                    cwd,
+                    "created",
+                    Some(&handle.outcome.agent_name),
+                ) {
+                    tracing::warn!(target: "sincearc::ipc", error = %e, "记录新会话绑定失败");
+                }
+            }
+            (Some(sid), modes, ResumeOutcome::Fresh, None)
         }
         Err(e) => {
             tracing::warn!(target: "sincearc::ipc", error = %e, "session/new failed");
-            // 上次 load 失败的线索留在日志里，别让它只在内存里闪一下
-            for w in warnings {
-                tracing::warn!(target: "sincearc::ipc", "previous attempt: {w}");
-            }
-            None
+            (None, None, ResumeOutcome::Fresh, None)
         }
     }
+}
+
+/// 统一恢复入口：能力检查、session/load、失败归类、等价性提示都在这里。
+/// 调用方拿到 `Unavailable` 后必须显式处理，不能自行改走新建。
+async fn load_resume_handle(
+    state: &AppState,
+    profile_id: &str,
+    handle: &AgentHandle,
+    acp_session_id: &str,
+    cwd: &str,
+    ui_session_id: Option<&str>,
+    expected_agent_name: Option<&str>,
+) -> (ResumeOutcome, Option<acp::SessionModes>) {
+    let params = serde_json::json!({
+        "sessionId": acp_session_id,
+        "cwd": cwd,
+        "mcpServers": [],
+    });
+    let v = match handle
+        .proc
+        .request("session/load", params, Duration::from_secs(120))
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            // 明确拒绝才算会话失效；超时/断管是环境问题，交给重连处理。
+            if matches!(e, transport::TransportError::Agent(_)) {
+                if let Some(ui_id) = ui_session_id {
+                    if let Err(db_err) = state.db.mark_acp_invalid(ui_id) {
+                        tracing::warn!(target: "sincearc::ipc", error = %db_err, "标记会话失效失败");
+                    }
+                }
+            }
+            return (resume_load_failed(acp_session_id, &e), None);
+        }
+    };
+
+    let modes = acp::modes_from_response(&v);
+    if let Some(m) = &modes {
+        state
+            .set_modes(acp_session_id.to_string(), m.clone())
+            .await;
+    }
+    let author_id = state
+        .db
+        .agent_user_by_acp_session(acp_session_id)
+        .ok()
+        .flatten()
+        .map(|u| u.id);
+
+    if let Some(ui_id) = ui_session_id {
+        if let Err(e) = state.db.bind_acp_session_with_agent(
+            ui_id,
+            acp_session_id,
+            cwd,
+            "loaded",
+            Some(&handle.outcome.agent_name),
+        ) {
+            tracing::warn!(target: "sincearc::ipc", error = %e, "记录恢复绑定失败");
+        }
+    }
+
+    state
+        .insert_session(
+            acp_session_id.to_string(),
+            SessionRecord {
+                profile_id: profile_id.to_string(),
+                cwd: cwd.to_string(),
+                ui_session_id: ui_session_id.map(str::to_string),
+                author_id,
+            },
+        )
+        .await;
+    tracing::info!(
+        target: "sincearc::ipc", profile = %profile_id, session = %acp_session_id,
+        "session resumed"
+    );
+    (
+        resumed_outcome(
+            acp_session_id,
+            expected_agent_name,
+            &handle.outcome.agent_name,
+        ),
+        modes,
+    )
 }
 
 #[tauri::command]
@@ -1735,7 +1928,13 @@ pub async fn session_new(
     if let Some(ui_id) = ui_session_id.as_deref() {
         state
             .db
-            .bind_acp_session(ui_id, &session_id, &cwd, "created")
+            .bind_acp_session_with_agent(
+                ui_id,
+                &session_id,
+                &cwd,
+                "created",
+                Some(&handle.outcome.agent_name),
+            )
             .map_err(|e| CmdError::new(50000, format!("记录会话绑定失败：{e}")))?;
     }
 
@@ -1791,7 +1990,13 @@ pub async fn session_rebind(
 
     state
         .db
-        .bind_acp_session(&ui_session_id, &session_id, &cwd, "replaced")
+        .bind_acp_session_with_agent(
+            &ui_session_id,
+            &session_id,
+            &cwd,
+            "replaced",
+            Some(&handle.outcome.agent_name),
+        )
         .map_err(|e| CmdError::new(50000, format!("记录重建绑定失败：{e}")))?;
 
     tracing::info!(
@@ -2724,5 +2929,97 @@ mod settings_tests {
         let err = settings.validate().expect_err("未知主题必须被拒");
         assert_eq!(err.code, 50001);
         assert_eq!(err.msg, "未知主题");
+    }
+}
+
+
+#[cfg(test)]
+mod resume_decision_tests {
+    use super::*;
+
+    fn handle(agent: Option<&str>) -> db::ResumeHandle {
+        db::ResumeHandle {
+            acp_session_id: "acp-1".into(),
+            cwd: "/w".into(),
+            agent_name: agent.map(str::to_string),
+            last_event_seq: Some(9),
+            bound_at: 1,
+        }
+    }
+
+    /// 没有句柄才是 Fresh —— 这是唯一允许"新建会话"的分支。
+    #[test]
+    fn no_handle_is_fresh() {
+        assert_eq!(resume_decision(None, true), ResumeDecision::Fresh);
+        assert_eq!(resume_decision(None, false), ResumeDecision::Fresh);
+    }
+
+    /// 有句柄但 agent 没报 loadSession：必须是 Unavailable。
+    /// 退回 Fresh 就等于静默新建空会话，用户会以为历史还在。
+    #[test]
+    fn handle_without_load_session_is_unavailable_not_fresh() {
+        let h = handle(Some("hermes"));
+        match resume_decision(Some(&h), false) {
+            ResumeDecision::Unavailable {
+                acp_session_id,
+                reason,
+            } => {
+                assert_eq!(acp_session_id, "acp-1");
+                assert!(reason.contains("loadSession"), "原因要说清缺哪项能力：{reason}");
+            }
+            other => panic!("有句柄且不支持恢复时必须 Unavailable，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_with_load_session_can_load() {
+        let h = handle(Some("hermes"));
+        assert_eq!(resume_decision(Some(&h), true), ResumeDecision::CanLoad);
+    }
+
+    #[test]
+    fn successful_load_is_resumed_with_the_expected_note() {
+        assert_eq!(
+            resumed_outcome("acp-1", Some("hermes"), "hermes"),
+            ResumeOutcome::Resumed {
+                acp_session_id: "acp-1".into(),
+                note: String::new(),
+            }
+        );
+        match resumed_outcome("acp-1", Some("hermes"), "codex") {
+            ResumeOutcome::Resumed { note, .. } => {
+                assert!(note.contains("上下文可能不等价"), "{note}");
+            }
+            other => panic!("成功 load 必须是 Resumed，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_error_is_unavailable_with_the_original_message() {
+        let err = crate::acp::transport::TransportError::Agent(serde_json::json!({
+            "code": -32000,
+            "message": "session not found",
+        }));
+        match resume_load_failed("acp-1", &err) {
+            ResumeOutcome::Unavailable {
+                acp_session_id,
+                reason,
+            } => {
+                assert_eq!(acp_session_id, "acp-1");
+                assert!(reason.starts_with("session/load 失败："), "{reason}");
+                assert!(reason.contains("session not found"), "{reason}");
+            }
+            other => panic!("load 失败必须是 Unavailable，实际 {other:?}"),
+        }
+    }
+
+    /// 换了 agent 才提示；同一个 agent 或老库没记录 agent 名时都不要噪音。
+    #[test]
+    fn note_only_when_agent_changed() {
+        assert_eq!(resumed_note(Some("hermes"), "hermes"), "");
+        assert_eq!(resumed_note(None, "codex"), "");
+        assert_eq!(resumed_note(Some(""), "codex"), "");
+        let n = resumed_note(Some("hermes"), "codex");
+        assert!(n.contains("hermes") && n.contains("codex") && n.contains("不等价"), "{n}");
     }
 }

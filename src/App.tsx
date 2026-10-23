@@ -27,6 +27,7 @@ import { toTraceView } from "@/lib/trace-adapter";
 import { summarizeLocks } from "@/lib/locks";
 import { describeUsage } from "@/lib/usage-format";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
+import { Button } from "@/components/ui/Button";
 import type {
   AgentProfile,
   GithubPR,
@@ -46,11 +47,13 @@ import {
   sessionDelete,
   sessionCancel,
   sessionMembers,
+  sessionRebind,
   sessionUpsert,
   type AgentUser,
   type DiscoveryCandidate,
   type DiscoveryHit,
   type ModesSnapshot,
+  type ResumeOutcome,
 } from "@/lib/ipc";
 import { now } from "@/lib/format";
 import { clog } from "@/lib/log";
@@ -113,6 +116,7 @@ export default function App() {
   const [composerH, setComposerH] = useState(128);
   /** 已发出取消请求、还在等 promptResult / promptFailed 的界面会话 */
   const [cancelling, setCancelling] = useState<Record<string, boolean>>({});
+  const [resumeBusy, setResumeBusy] = useState(false);
 
 
   useEffect(() => {
@@ -240,6 +244,44 @@ export default function App() {
   );
   const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission });
 
+  /** 恢复判定只有一个出口：通知条、诊断与会话头标记都从它更新。 */
+  const reportResume = useCallback(
+    (uiSid: string, outcome: ResumeOutcome, lastEventSeq: number | null) => {
+      if (outcome.kind === "fresh") {
+        patchSession(uiSid, (s) => ({ ...s, resume: null }));
+        return;
+      }
+      if (outcome.kind === "resumed") {
+        diag(
+          `RESUME ok ui=${uiSid} acp=${outcome.acpSessionId}${outcome.note ? ` · ${outcome.note}` : ""}`,
+        );
+        patchSession(uiSid, (s) => ({
+          ...s,
+          resume: {
+            kind: "resumed",
+            acpSessionId: outcome.acpSessionId,
+            note: outcome.note || undefined,
+            lastEventSeq,
+            noticeDismissed: true,
+          },
+        }));
+        return;
+      }
+      diag(`RESUME unavailable ui=${uiSid} acp=${outcome.acpSessionId} · ${outcome.reason}`);
+      patchSession(uiSid, (s) => ({
+        ...s,
+        resume: {
+          kind: "unavailable",
+          acpSessionId: outcome.acpSessionId,
+          reason: outcome.reason,
+          lastEventSeq,
+          noticeDismissed: false,
+        },
+      }));
+    },
+    [diag, patchSession],
+  );
+
   /* 设置读取放在 useAcpEvents 之后：脏值要推进它的事件流（诊断面板）。 */
   useEffect(() => {
     let alive = true;
@@ -308,11 +350,47 @@ export default function App() {
     acp,
     profileIdOf,
     ensureConnected,
+    onResume: reportResume,
   });
   const { sidebarW, setSidebarW, traceW, setTraceW, dragging, setDragging, layoutRef, mainMin, sidebarMax, traceMax } = usePaneLayout(traceOpen);
   const { repoList, addRepo, activeRepo, activePr } = useRepos(activeTab);
 
   const cwd = activeSession?.cwd ?? sessionProfile?.cwd ?? "";
+  const resumeGap = useMemo(() => {
+    const watermark = state.resume?.lastEventSeq;
+    if (watermark == null) return null;
+    let firstAfter: number | null = null;
+    for (const turn of traceTurns) {
+      for (const item of turn.items) {
+        if (item.seq > watermark && (firstAfter == null || item.seq < firstAfter)) {
+          firstAfter = item.seq;
+        }
+      }
+    }
+    if (firstAfter == null) return null;
+    const missing = firstAfter - watermark - 1;
+    return missing > 0 ? missing : null;
+  }, [traceTurns, state.resume?.lastEventSeq]);
+
+  const startFreshSession = useCallback(() => {
+    const sid = lastSessionId;
+    const pid = sessionProfile?.id;
+    if (!sid || !pid) return;
+    setResumeBusy(true);
+    sessionRebind(sid, pid, cwd)
+      .then((info) => {
+        onSession(pid, info.sessionId, null, sid);
+        reportResume(sid, { kind: "fresh" }, null);
+        diag(`RESUME new ui=${sid} acp=${info.sessionId}`);
+      })
+      .catch((e) => {
+        const err = asCmdError(e);
+        diag(`RESUME new failed ui=${sid} · ${err.code} ${err.msg}`);
+        pushSystemNotice(patchSession, sid, `新建会话失败：${err.code} ${err.msg}`);
+      })
+      .finally(() => setResumeBusy(false));
+  }, [cwd, diag, lastSessionId, onSession, patchSession, reportResume, sessionProfile?.id]);
+
   const activeModeView = modesBySid[lastSessionId] ?? null;
   const activeDefaultModeLabel = sessionProfile?.defaultMode
     ? ((modesByProfile[sessionProfile.id]?.available ?? activeModeView?.available ?? []).find(
@@ -430,6 +508,8 @@ export default function App() {
     autoTried.current.set(sid, attemptKey);
     // 带上当前会话：映射要靠它，不能靠「渲染时谁打开着」
     void ensureConnected(pid, sid).then((r) => {
+      if (r.resume) reportResume(sid, r.resume, r.lastEventSeq);
+      if (r.resume?.kind === "unavailable") return;
       if (!r.error) return;
       patchSession(sid, (s) => ({
         ...s,
@@ -444,7 +524,7 @@ export default function App() {
         ],
       }));
     });
-  }, [activeTab, ensureConnected, sessions, activeProfile, sessionsByProfile, patchSession]);
+  }, [activeTab, ensureConnected, sessions, activeProfile, sessionsByProfile, patchSession, reportResume]);
 
   /** 把 PR 作为引用塞进会话：优先复用已打开的会话标签 */
   const quotePr = useCallback(
@@ -756,6 +836,7 @@ export default function App() {
           turns={traceView.turns}
           activities={traceView.activities}
           players={players}
+          resumeGap={resumeGap}
           onClose={() => {
             setTraceOpen(false);
             setFocus(null);
@@ -790,6 +871,7 @@ export default function App() {
                 eventLog={eventLog}
                 modes={activeModeView}
                 fallbackLabel={activeDefaultModeLabel}
+                resume={state.resume}
                 onChooseMode={(modeId) => {
                   const acpSid = sessionProfile ? sessionsByProfile[sessionProfile.id] : undefined;
                   if (sessionProfile && acpSid) {
@@ -819,6 +901,42 @@ export default function App() {
                   />
                 }
               />
+              {state.resume?.kind === "unavailable" && !state.resume.noticeDismissed && (
+                <div
+                  role="alert"
+                  className="sc-glass mx-3 mt-2 flex items-center gap-2 rounded-card px-3 py-2 text-caption text-warn-1"
+                >
+                  <span className="min-w-0 flex-1 break-words">
+                    续不上：{state.resume.reason ?? "原因不明"}
+                  </span>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={resumeBusy}
+                    onClick={startFreshSession}
+                  >
+                    新建会话
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label="关闭"
+                    title="关闭"
+                    onClick={() =>
+                      patchSession(lastSessionId, (s) =>
+                        s.resume
+                          ? {
+                              ...s,
+                              resume: { ...s.resume, noticeDismissed: true },
+                            }
+                          : s,
+                      )
+                    }
+                  >
+                    <X className="size-3.5" />
+                  </Button>
+                </div>
+              )}
               <div className="flex min-h-0 flex-1">
                 <ActivityRail
                   players={players}

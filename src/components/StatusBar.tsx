@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { ChevronDown, Waypoints } from "lucide-react";
-import type { AgentProfile } from "@/types";
+import type { AgentProfile, SessionResumeState } from "@/types";
 import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
 import { ModeSelect } from "@/components/ModeSelect";
@@ -28,6 +28,8 @@ interface StatusBarProps {
   fallbackLabel?: string | null;
   /** 右侧插槽：agent 能力入口等 */
   right?: ReactNode;
+  /** 最近一次会话恢复判定；无标记表示新会话/尚未恢复 */
+  resume?: SessionResumeState | null;
 }
 
 export function StatusBar({
@@ -43,6 +45,7 @@ export function StatusBar({
   onChooseMode,
   fallbackLabel,
   right,
+  resume,
 }: StatusBarProps) {
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line-1/60 px-3">
@@ -84,6 +87,28 @@ export function StatusBar({
           />
         )}
         {right}
+        {resume && (
+          <span
+            className={cn(
+              "mr-1 max-w-60 truncate text-micro",
+              resume.kind === "unavailable" ? "text-warn-1" : "text-ink-3",
+            )}
+            title={
+              resume.kind === "unavailable"
+                ? `续不上：${resume.reason ?? "原因不明"}`
+                : [
+                    `续上（${resume.acpSessionId}）`,
+                    resume.note,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")
+            }
+          >
+            {resume.kind === "unavailable"
+              ? `续不上：${resume.reason ?? "原因不明"}`
+              : `续上（${resume.acpSessionId.slice(0, 12)}）${resume.note ? " · 注意" : ""}`}
+          </span>
+        )}
         {sessionId && (
           <span
             className="mr-1 font-mono text-micro text-ink-3"

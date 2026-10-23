@@ -35,6 +35,7 @@ import {
   type DiscoveryOutcome,
   type ModesSnapshot,
   type ProbeOutcome,
+  type ResumeOutcome,
 } from "@/lib/ipc";
 import {
   AGENT_PRESETS,
@@ -60,7 +61,10 @@ interface SettingsViewProps {
   profiles: AgentProfile[];
   onUpdateProfile: (next: AgentProfile) => void;
   /** 连接/断开都走 App 里的那一份实现（并发去重、状态回写都在那边） */
-  onConnect: (p: AgentProfile) => Promise<string>;
+  onConnect: (p: AgentProfile) => Promise<{
+    acpSid: string | null;
+    resume: ResumeOutcome | null;
+  }>;
   onDisconnect: (profileId: string) => Promise<void>;
   onAddProfile: (draft?: Partial<AgentProfile>) => string;
   onRemoveProfile: (id: string) => void;
@@ -280,7 +284,13 @@ export function SettingsView({
     setErrors((prev) => ({ ...prev, [profile.id]: "" }));
     try {
       // 连接、状态回写、会话绑定都在 useAgentConnect 里，这里只负责把错误显示出来
-      await onConnect(profile);
+      const result = await onConnect(profile);
+      if (result.resume?.kind === "unavailable") {
+        throw { code: 50403, msg: result.resume.reason };
+      }
+      if (!result.acpSid) {
+        throw new Error("agent 没有给出会话");
+      }
     } catch (e) {
       const err = asCmdError(e);
       setErrors((prev) => ({ ...prev, [profile.id]: `${err.code} ${err.msg}` }));

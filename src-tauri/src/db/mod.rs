@@ -22,7 +22,7 @@ const SETTINGS_KEY_CONTEXT_MESSAGES: &str = "contextMessages";
 const SETTINGS_KEY_THEME: &str = "theme";
 
 /// 结构版本：与 schema.sql 不符时整表重建（自用工具，会话数据可再生）
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -89,6 +89,18 @@ pub struct BindingRow {
     pub reason: String,
     #[ts(type = "number | null")]
     pub superseded_at: Option<i64>,
+}
+
+/// 恢复一个界面会话所需的句柄。只有 `superseded_at IS NULL` 的绑定才算数。
+#[derive(Debug, Clone)]
+pub struct ResumeHandle {
+    pub acp_session_id: String,
+    pub cwd: String,
+    /// 老库里的绑定可能还没有这一项。
+    pub agent_name: Option<String>,
+    /// 恢复前本地事件水位；第一条恢复后事件的 seq 与它比较。
+    pub last_event_seq: Option<i64>,
+    pub bound_at: i64,
 }
 
 #[derive(Debug, Default, Clone, Serialize, ts_rs::TS)]
@@ -237,6 +249,23 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, decl: &str) -> ru
     Ok(())
 }
 
+/// 事件写入与显式 touch 共用的一条 SQL：只升不降，因此丢失/乱序的 touch 不会让水位倒退。
+fn touch_handle_seq_on(
+    conn: &Connection,
+    session_id: &str,
+    acp_session_id: Option<&str>,
+    seq: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE session_bindings
+            SET last_event_seq = MAX(COALESCE(last_event_seq, 0), ?3)
+          WHERE session_id = ?1 AND superseded_at IS NULL
+            AND (?2 IS NULL OR acp_session_id = ?2)",
+        params![session_id, acp_session_id, seq],
+    )?;
+    Ok(())
+}
+
 impl Db {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
@@ -281,6 +310,9 @@ impl Db {
         ensure_column(&conn, "messages", "author_id", "TEXT")?;
         // E13.3：轮次终态要能解释「为什么停」。老库这里补列，不能整表重建。
         ensure_column(&conn, "turns", "stop_reason", "TEXT")?;
+        // E13.7：会话恢复句柄。老库补列；已有 live 绑定保留，字段为 NULL。
+        ensure_column(&conn, "session_bindings", "agent_name", "TEXT")?;
+        ensure_column(&conn, "session_bindings", "last_event_seq", "INTEGER")?;
         // 轨迹时间列早期写成秒，与毫秒级的保留策略混用会把一切判成过期。
         // 一次性换算（< 1e11 一定不是毫秒：那相当于 1973 年之前），幂等。
         conn.execute_batch(
@@ -543,6 +575,20 @@ impl Db {
         cwd: &str,
         reason: &str,
     ) -> rusqlite::Result<()> {
+        self.bind_acp_session_with_agent(id, acp_session_id, cwd, reason, None)
+    }
+
+    /// 绑定 ACP 会话，同时记下这次握手的 agent 名（恢复时做等价性检查）。
+    ///
+    /// 同一个 live acp id 重复绑定时不清水位；只有换到新 id 才新开一行。
+    pub fn bind_acp_session_with_agent(
+        &self,
+        id: &str,
+        acp_session_id: &str,
+        cwd: &str,
+        reason: &str,
+        agent_name: Option<&str>,
+    ) -> rusqlite::Result<()> {
         let mut conn = self.conn.lock().expect("db poisoned");
         let tx = conn.transaction()?;
         let bound_at = now_ms();
@@ -564,9 +610,20 @@ impl Db {
             )?;
             tx.execute(
                 "INSERT INTO session_bindings
-                   (session_id, acp_session_id, cwd, bound_at, reason)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, acp_session_id, cwd, bound_at, reason],
+                   (session_id, acp_session_id, cwd, agent_name, bound_at, reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![id, acp_session_id, cwd, agent_name, bound_at, reason],
+            )?;
+        } else {
+            // 前端连接成功后还会幂等绑定一次（不带 agent 名）。
+            // 这次更新不能让已经记下的 agent 名/水位归空。
+            tx.execute(
+                "UPDATE session_bindings
+                    SET cwd = CASE WHEN ?2 <> '' THEN ?2 ELSE cwd END,
+                        agent_name = COALESCE(?3, agent_name)
+                  WHERE session_id = ?1 AND acp_session_id = ?4
+                    AND superseded_at IS NULL",
+                params![id, cwd, agent_name, acp_session_id],
             )?;
         }
 
@@ -576,6 +633,38 @@ impl Db {
             params![id, acp_session_id, now()],
         )?;
         tx.commit()
+    }
+
+    pub fn live_handle(&self, session_id: &str) -> rusqlite::Result<Option<ResumeHandle>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.query_row(
+            "SELECT acp_session_id, cwd, agent_name, last_event_seq, bound_at
+               FROM session_bindings
+              WHERE session_id = ?1 AND superseded_at IS NULL
+              ORDER BY bound_at DESC, id DESC LIMIT 1",
+            params![session_id],
+            |r| {
+                Ok(ResumeHandle {
+                    acp_session_id: r.get(0)?,
+                    cwd: r.get(1)?,
+                    agent_name: r.get(2)?,
+                    last_event_seq: r.get(3)?,
+                    bound_at: r.get(4)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    /// 记本地事件水位。只更新匹配 acp id 的 live 绑定，旧绑定/别的成员不会串。
+    pub fn touch_handle_seq(
+        &self,
+        session_id: &str,
+        acp_session_id: &str,
+        seq: i64,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        touch_handle_seq_on(&conn, session_id, Some(acp_session_id), seq)
     }
 
     pub fn mark_acp_invalid(&self, id: &str) -> rusqlite::Result<()> {
@@ -935,6 +1024,9 @@ impl Db {
                 ],
             )?;
         }
+        // 水位更新与事件写入共用同一个事务：不为每条事件多开一次写事务。
+        // 一次 append 里无论多少条，只更新最终 seq。
+        touch_handle_seq_on(&tx, session_id, None, seq)?;
         tx.commit()?;
         Ok(events.len())
     }
@@ -2252,6 +2344,143 @@ mod tests {
         assert!(db.load_events("s-1", 500).expect("l3").is_empty());
         // 时间过滤会带走它：一轮 90 天还没收尾，说明那次运行已经死了，留着只会显示「永远在跑」
         assert!(db.load_turns("s-1", 10).expect("t3").is_empty());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ---------- E13.7 可恢复句柄 ----------
+
+    /// 会话行只是外键落点，句柄测试不关心它的语义。
+    fn seed_session(db: &Db, id: &str) {
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions (id, acp_session_id, profile_id, title, cwd, created_at, updated_at)
+                 VALUES (?1, NULL, NULL, 't', '/w', 1, 1)",
+                params![id],
+            )
+            .expect("seed session");
+    }
+
+    #[test]
+    fn live_handle_roundtrips_and_old_binding_is_superseded() {
+        let (db, path) = temp_db();
+        seed_session(&db, "s-h1");
+
+        db.bind_acp_session_with_agent("s-h1", "acp-1", "/w", "created", Some("hermes"))
+            .expect("bind");
+        let h = db.live_handle("s-h1").expect("read").expect("有句柄");
+        assert_eq!(h.acp_session_id, "acp-1");
+        assert_eq!(h.agent_name.as_deref(), Some("hermes"));
+        assert_eq!(h.last_event_seq, None, "刚绑定还没有事件水位");
+
+        // 水位只升不降：乱序/重放的 touch 不能让它倒退
+        db.touch_handle_seq("s-h1", "acp-1", 7).expect("seq7");
+        db.touch_handle_seq("s-h1", "acp-1", 3).expect("seq3");
+        assert_eq!(db.live_handle("s-h1").unwrap().unwrap().last_event_seq, Some(7));
+
+        // 换 acp id = 新绑定，旧行 superseded；新行不继承旧水位
+        db.bind_acp_session_with_agent("s-h1", "acp-2", "/w", "replaced", Some("hermes"))
+            .expect("rebind");
+        let h2 = db.live_handle("s-h1").unwrap().expect("新句柄");
+        assert_eq!(h2.acp_session_id, "acp-2");
+        assert_eq!(h2.last_event_seq, None);
+        assert_eq!(db.bindings("s-h1").unwrap().len(), 2, "旧绑定留着做审计");
+
+        // 拿已被顶替的 acp id 写水位，不应串到 live 行上
+        db.touch_handle_seq("s-h1", "acp-1", 99).expect("stale touch");
+        assert_eq!(db.live_handle("s-h1").unwrap().unwrap().last_event_seq, None);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn rebinding_same_acp_id_keeps_agent_name_and_watermark() {
+        let (db, path) = temp_db();
+        seed_session(&db, "s-h2");
+        db.bind_acp_session_with_agent("s-h2", "acp-1", "/w", "created", Some("hermes"))
+            .expect("bind");
+        db.touch_handle_seq("s-h2", "acp-1", 12).expect("seq");
+
+        // 前端连接成功后会幂等再绑一次，且不带 agent 名 —— 不能把已有信息洗掉
+        db.bind_acp_session("s-h2", "acp-1", "/w2", "created").expect("rebind");
+        let h = db.live_handle("s-h2").unwrap().unwrap();
+        assert_eq!(h.agent_name.as_deref(), Some("hermes"));
+        assert_eq!(h.last_event_seq, Some(12));
+        assert_eq!(h.cwd, "/w2");
+
+        // 前端 session_bind_acp 只带空 cwd；空串不能把真实工作目录洗掉。
+        db.bind_acp_session("s-h2", "acp-1", "", "replaced").expect("empty cwd");
+        let h = db.live_handle("s-h2").unwrap().unwrap();
+        assert_eq!(h.cwd, "/w2");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn appending_events_advances_the_live_handle_watermark() {
+        let (db, path) = temp_db();
+        seed_session(&db, "s-h3");
+        db.bind_acp_session_with_agent("s-h3", "acp-1", "/w", "created", Some("hermes"))
+            .expect("bind");
+        let ev = |turn: &str| EventInput {
+            turn_id: turn.into(),
+            author_id: None,
+            kind: "thought".into(),
+            payload_json: r#"{"text":"x"}"#.into(),
+            source: "live".into(),
+            truncated: false,
+        };
+
+        // 同一批多写几条也只落最终 seq；不额外开事务。
+        db.append_events("s-h3", &[ev("t1"), ev("t1")]).expect("append");
+        assert_eq!(db.live_handle("s-h3").unwrap().unwrap().last_event_seq, Some(2));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn old_binding_table_gains_handle_columns() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "sincearc-db-handle-mig-{}-{nanos}.db",
+            std::process::id()
+        ));
+        {
+            // E13.7 之前的表：只有 acp id / cwd / reason，没有 agent_name 与水位
+            let conn = Connection::open(&path).expect("old db");
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                   id TEXT PRIMARY KEY, acp_session_id TEXT, profile_id TEXT,
+                   title TEXT NOT NULL DEFAULT '新会话', cwd TEXT NOT NULL DEFAULT '',
+                   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 INSERT INTO sessions (id, acp_session_id, title, cwd, created_at, updated_at)
+                   VALUES ('s-old', 'acp-old', '老会话', '/w', 1, 1);
+                 CREATE TABLE session_bindings (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   session_id TEXT NOT NULL,
+                   acp_session_id TEXT NOT NULL,
+                   cwd TEXT NOT NULL DEFAULT '',
+                   bound_at INTEGER NOT NULL,
+                   reason TEXT NOT NULL,
+                   superseded_at INTEGER);
+                 INSERT INTO session_bindings (session_id, acp_session_id, cwd, bound_at, reason)
+                   VALUES ('s-old', 'acp-old', '/w', 1, 'created');",
+            )
+            .expect("seed old binding table");
+        }
+
+        let db = Db::open(&path).expect("旧库应能打开并补列");
+        let h = db.live_handle("s-old").expect("read").expect("老绑定仍是 live");
+        assert_eq!(h.acp_session_id, "acp-old");
+        assert_eq!(h.agent_name, None, "老数据没有 agent 名，不能凭空编一个");
+        assert_eq!(h.last_event_seq, None);
+        db.touch_handle_seq("s-old", "acp-old", 5).expect("新列可写");
+        assert_eq!(db.live_handle("s-old").unwrap().unwrap().last_event_seq, Some(5));
 
         std::fs::remove_file(&path).ok();
     }

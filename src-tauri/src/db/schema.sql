@@ -159,6 +159,10 @@ CREATE TABLE IF NOT EXISTS session_bindings (
   session_id     TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   acp_session_id TEXT NOT NULL,
   cwd            TEXT NOT NULL DEFAULT '',
+  -- 上次成功握手/恢复时 agent 自报的名字。恢复时用它判断「还是不是同一个 agent」。
+  agent_name     TEXT,
+  -- 本地 session_events 已写到的最后一个 seq。恢复后拿第一条新事件与它比，判断有没有断档。
+  last_event_seq INTEGER,
   bound_at       INTEGER NOT NULL,
   reason         TEXT NOT NULL CHECK (reason IN ('created', 'loaded', 'replaced')),
   superseded_at  INTEGER
