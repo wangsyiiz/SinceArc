@@ -474,7 +474,7 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [traceOpen, lastSessionId, state.busy]);
+  }, [traceOpen, lastSessionId, state.busy, state.pendingPerm]);
 
   const traceView = useMemo(() => toTraceView(traceTurns), [traceTurns]);
 

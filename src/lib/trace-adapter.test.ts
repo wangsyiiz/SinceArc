@@ -155,12 +155,25 @@ test("群聊里不同 author 分到不同支线", () => {
 test("还在跑的轮次支线不收尾，结束的收尾", () => {
   const running = toTraceView([turn({ status: "running", endedAt: null })]);
   assert.equal(running.turns[0].branches.length, 0);
+  const waiting = toTraceView([
+    turn({
+      status: "waiting_approval",
+      endedAt: null,
+      items: [{ seq: 1, at: t0, authorId: null, kind: "permission", payload: { toolCall: { title: "执行 rm" } }, truncated: false }],
+    }),
+  ]);
+  assert.equal(waiting.turns[0].branches[0].status, "running", "等批准不是结束");
   const done = toTraceView([
     turn({
       items: [{ seq: 1, at: t0, authorId: null, kind: "thought", payload: { text: "x" }, truncated: false }],
     }),
   ]);
   assert.equal(done.turns[0].branches[0].status, "done");
+});
+
+test("轮次的 stopReason 透传，供抬头显示结局", () => {
+  const view = toTraceView([turn({ status: "finished", stopReason: "max_tokens" })]);
+  assert.equal(view.turns[0].stopReason, "max_tokens");
 });
 
 test("多轮按时间正序，最新一轮在最后", () => {

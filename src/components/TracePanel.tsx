@@ -21,7 +21,10 @@ interface TraceRow {
   meta?: string;
   at: string;
   color: string;
-  status?: "ok" | "running" | "error" | "cancelled";
+  status?: "ok" | "running" | "waiting" | "error" | "cancelled";
+  /** 轮次抬头专用：结局文字与悬停原因（活动行不用） */
+  statusLabel?: string;
+  statusTitle?: string;
   activity?: Activity;
   playerName?: string;
 }
@@ -41,6 +44,7 @@ function buildTrace(turns: TraceTurn[], activities: Activity[], players: Player[
 
   for (const t of turns) {
     const p0 = players.find((x) => x.id === t.branches[0]?.playerId);
+    const outcome = turnOutcome(t);
 
     rows.push({
       id: `${t.id}-user`,
@@ -50,6 +54,9 @@ function buildTrace(turns: TraceTurn[], activities: Activity[], players: Player[
       title: t.userText,
       at: t.at,
       color: "var(--i2)",
+      status: outcome.dot,
+      statusLabel: outcome.label,
+      statusTitle: outcome.title,
     });
 
     const branchStart = y + ROW;
@@ -154,9 +161,39 @@ const KIND_ICON: Record<ActivityKind, typeof FileText> = {
 function statusDotClass(status: TraceRow["status"]): string | undefined {
   if (status === "ok") return "bg-ok-1/70";
   if (status === "running") return "animate-pulse bg-accent-1";
+  if (status === "waiting") return "bg-warn-1";
   if (status === "error") return "bg-danger-1";
   if (status === "cancelled") return "bg-ink-3";
   return undefined;
+}
+
+function turnOutcome(turn: TraceTurn): {
+  label: string;
+  dot?: TraceRow["status"];
+  title?: string;
+} {
+  switch (turn.status) {
+    case "running":
+      return { label: "进行中", dot: "running" };
+    case "waiting_approval":
+      return { label: "等你批准", dot: "waiting" };
+    case "cancelled":
+      return { label: "已停止", dot: "cancelled" };
+    case "failed":
+      return { label: "失败", dot: "error", title: turn.stopReason };
+    case "finished":
+      return turn.stopReason && turn.stopReason !== "end_turn"
+        ? { label: `已结束（${turn.stopReason}）`, dot: "ok", title: turn.stopReason }
+        : { label: "已结束", dot: "ok" };
+    default:
+      return { label: "结局未知" };
+  }
+}
+
+function turnStatusTextClass(status: TraceRow["status"]): string {
+  if (status === "waiting") return "text-warn-1";
+  if (status === "error") return "text-danger-1";
+  return "text-ink-3";
 }
 
 function HoverContent({ row }: { row: TraceRow }) {
@@ -201,6 +238,9 @@ function HoverContent({ row }: { row: TraceRow }) {
       </div>
       {body && (
         <div className="mt-2 whitespace-pre-wrap break-words text-caption text-ink-2">{body}</div>
+      )}
+      {row.statusTitle && (
+        <div className="mt-2 break-words text-micro text-ink-3">{row.statusTitle}</div>
       )}
       {activity?.truncated && (
         <div className="mt-2 text-micro text-ink-3">已截断，仅保留最早 8KB</div>
@@ -380,6 +420,7 @@ function GraphLabelRow({
         }}
         {...hover.triggerProps(el)}
         style={{ height: ROW }}
+        title={r.statusTitle}
         className={cn(
           "flex items-center gap-1.5 rounded-mark pr-2 transition-colors hover:bg-surface-2/50",
           r.id === focusId && "sc-row-fade",
@@ -389,7 +430,21 @@ function GraphLabelRow({
         {r.kind === "user" ? (
           <>
             <span className="shrink-0 font-mono text-micro text-ink-3">{r.at}</span>
-            <span className="truncate text-caption">{r.title}</span>
+            <span className="min-w-0 truncate text-caption">{r.title}</span>
+            {r.statusLabel && (
+              <span
+                className={cn(
+                  "ml-auto flex shrink-0 items-center gap-1 text-micro",
+                  turnStatusTextClass(r.status),
+                )}
+                title={r.statusTitle}
+              >
+                {r.status && (
+                  <span className={cn("size-1.5 shrink-0 rounded-full", statusDotClass(r.status))} />
+                )}
+                <span className="truncate">{r.statusLabel}</span>
+              </span>
+            )}
           </>
         ) : r.kind === "reply" ? (
           <span className="flex min-w-0 items-baseline gap-1.5">
@@ -456,6 +511,15 @@ export function TracePanel({
   }, [open, focusId, focusTick]);
 
   const actionCount = activities.length;
+  const listGroups = useMemo(() => {
+    return turns.map((turn) => {
+      const ids = new Set(turn.branches.flatMap((branch) => branch.activityIds));
+      return {
+        turn,
+        activities: activities.filter((activity) => ids.has(activity.id)),
+      };
+    });
+  }, [turns, activities]);
 
   return (
     <div
@@ -508,16 +572,44 @@ export function TracePanel({
 
         {view === "list" && (
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1">
-            {activities.length === 0 && (
+            {turns.length === 0 && (
               <div className="py-8 text-center text-caption text-ink-3">没有活动</div>
             )}
-            {activities.map((a) => (
-              <ActivityListRow
-                key={a.id}
-                activity={a}
-                player={players.find((x) => x.id === a.playerId)}
-              />
-            ))}
+            {listGroups.map(({ turn, activities: rows }) => {
+              const outcome = turnOutcome(turn);
+              return (
+                <div key={turn.id} className="mb-1">
+                  <div className="flex items-center gap-1.5 px-1 py-1" title={outcome.title}>
+                    <span className="shrink-0 font-mono text-micro text-ink-3">{turn.at}</span>
+                    <span className="min-w-0 truncate text-caption text-ink-2">{turn.userText}</span>
+                    <span
+                      className={cn(
+                        "ml-auto flex shrink-0 items-center gap-1 text-micro",
+                        turnStatusTextClass(outcome.dot),
+                      )}
+                      title={outcome.title}
+                    >
+                      {outcome.dot && (
+                        <span
+                          className={cn(
+                            "size-1.5 shrink-0 rounded-full",
+                            statusDotClass(outcome.dot),
+                          )}
+                        />
+                      )}
+                      <span className="truncate">{outcome.label}</span>
+                    </span>
+                  </div>
+                  {rows.map((a) => (
+                    <ActivityListRow
+                      key={a.id}
+                      activity={a}
+                      player={players.find((x) => x.id === a.playerId)}
+                    />
+                  ))}
+                </div>
+              );
+            })}
           </div>
         )}
 

@@ -22,7 +22,7 @@ const SETTINGS_KEY_CONTEXT_MESSAGES: &str = "contextMessages";
 const SETTINGS_KEY_THEME: &str = "theme";
 
 /// 结构版本：与 schema.sql 不符时整表重建（自用工具，会话数据可再生）
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -114,6 +114,8 @@ pub struct TurnRow {
     #[ts(type = "number | null")]
     pub ended_at: Option<i64>,
     pub status: String,
+    /// agent 原始的 stopReason；老库/孤儿轮为 None
+    pub stop_reason: Option<String>,
 }
 
 /// 一条待落库的轨迹事件（已由 `trace` 解析、截断）。
@@ -277,6 +279,8 @@ impl Db {
         )?;
         // 群聊里的消息要能指认「谁说的」：不加这列，多 agent 群所有回复长得一样（docs/group-chat.md §4）
         ensure_column(&conn, "messages", "author_id", "TEXT")?;
+        // E13.3：轮次终态要能解释「为什么停」。老库这里补列，不能整表重建。
+        ensure_column(&conn, "turns", "stop_reason", "TEXT")?;
         // 轨迹时间列早期写成秒，与毫秒级的保留策略混用会把一切判成过期。
         // 一次性换算（< 1e11 一定不是毫秒：那相当于 1973 年之前），幂等。
         conn.execute_batch(
@@ -792,10 +796,11 @@ impl Db {
             }
         }
 
-        // 事件被清空的轮次没有展示价值，但**正在跑**的轮次不能动（它还没收尾）
+        // 事件被清空的轮次没有展示价值，但**还没收尾**的轮次不能动：
+        // running 与 waiting_approval 都算活动轮。
         report.turns_deleted += tx.execute(
             "DELETE FROM turns
-              WHERE status != 'running'
+              WHERE status NOT IN ('running', 'waiting_approval')
                 AND NOT EXISTS (SELECT 1 FROM session_events e WHERE e.turn_id = turns.id)",
             [],
         )? as i64;
@@ -826,20 +831,48 @@ impl Db {
     }
 
     /// 收一轮。`status` 允许 finished / failed / cancelled —— 「是否还在跑」不该由调用方随口决定。
-    pub fn end_turn(&self, turn_id: &str, status: &str) -> rusqlite::Result<()> {
+    /// `stop_reason` 是 agent 返回的原文，不能只留映射后的状态。
+    pub fn end_turn(
+        &self,
+        turn_id: &str,
+        status: &str,
+        stop_reason: Option<&str>,
+    ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().expect("db poisoned");
         conn.execute(
-            "UPDATE turns SET ended_at = ?1, status = ?2 WHERE id = ?3",
-            params![now_ms(), status, turn_id],
+            "UPDATE turns SET ended_at = ?1, status = ?2, stop_reason = ?3 WHERE id = ?4",
+            params![now_ms(), status, stop_reason, turn_id],
         )?;
         Ok(())
+    }
+
+    /// 权限请求到达：只有仍在 running 的轮才进入 waiting_approval。
+    /// 返回受影响行数，0 表示这一轮已经结束或不在等待态。
+    pub fn mark_turn_waiting_approval(&self, turn_id: &str) -> rusqlite::Result<usize> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "UPDATE turns SET status = 'waiting_approval'
+              WHERE id = ?1 AND status = 'running'",
+            params![turn_id],
+        )
+    }
+
+    /// 权限答完：只把仍停在 waiting_approval 的轮恢复成 running。
+    /// 若 agent 已经先一步回了终态，这里不能把 finished / cancelled 盖回去。
+    pub fn resume_turn_after_approval(&self, turn_id: &str) -> rusqlite::Result<usize> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "UPDATE turns SET status = 'running'
+              WHERE id = ?1 AND status = 'waiting_approval'",
+            params![turn_id],
+        )
     }
 
     /// 最近几轮（含正文与耗时），倒序。
     pub fn load_turns(&self, session_id: &str, limit: i64) -> rusqlite::Result<Vec<TurnRow>> {
         let conn = self.conn.lock().expect("db poisoned");
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, prompt, author_id, started_at, ended_at, status
+            "SELECT id, session_id, prompt, author_id, started_at, ended_at, status, stop_reason
                FROM turns WHERE session_id = ?1
               -- 同一毫秒内连续开两轮时，只按 started_at 排会不稳定；rowid 兜底保证确定性
               ORDER BY started_at DESC, rowid DESC LIMIT ?2",
@@ -854,6 +887,7 @@ impl Db {
                     started_at: r.get(4)?,
                     ended_at: r.get(5)?,
                     status: r.get(6)?,
+                    stop_reason: r.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1254,6 +1288,65 @@ mod tests {
 
         db.set_mode_override("s-old", None).expect("改回跟随");
         assert_eq!(db.mode_override("s-old").expect("读回"), None);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// E13.3 之前建的 turns 表没有 stop_reason；打开旧库后要能补列并正常读写。
+    #[test]
+    fn old_db_gains_turn_stop_reason_without_losing_turns() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "sincearc-db-turn-migrate-{}-{nanos}.db",
+            std::process::id()
+        ));
+
+        {
+            let conn = Connection::open(&path).expect("raw open");
+            conn.execute_batch(
+                "CREATE TABLE profiles (
+                   id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                   launch_kind TEXT NOT NULL CHECK (launch_kind IN ('local','wsl','ssh')),
+                   distro TEXT, shell TEXT, program TEXT NOT NULL,
+                   args_json TEXT NOT NULL DEFAULT '[]', env_json TEXT NOT NULL DEFAULT '{}',
+                   default_cwd TEXT NOT NULL,
+                   ssh_host TEXT, ssh_port INTEGER, ssh_user TEXT, ssh_auth TEXT, ssh_key_path TEXT,
+                   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 CREATE TABLE sessions (
+                   id TEXT PRIMARY KEY, acp_session_id TEXT,
+                   profile_id TEXT REFERENCES profiles(id) ON DELETE CASCADE,
+                   title TEXT NOT NULL DEFAULT '新会话', cwd TEXT NOT NULL DEFAULT '',
+                   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 CREATE TABLE turns (
+                   id TEXT PRIMARY KEY,
+                   session_id TEXT NOT NULL,
+                   prompt TEXT NOT NULL DEFAULT '',
+                   author_id TEXT,
+                   started_at INTEGER NOT NULL,
+                   ended_at INTEGER,
+                   status TEXT NOT NULL DEFAULT 'running');
+                 INSERT INTO sessions (id, acp_session_id, title, cwd, created_at, updated_at)
+                   VALUES ('s-old', 'acp-old', '老会话', '/tmp', 1, 1);
+                 INSERT INTO turns (id, session_id, prompt, started_at, status)
+                   VALUES ('t-old', 's-old', '老问题', 1, 'running');",
+            )
+            .expect("seed old schema");
+        }
+
+        let db = Db::open(&path).expect("迁移后应当能打开");
+        let turns = db.load_turns("s-old", 10).expect("旧轮次不该丢");
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].id, "t-old");
+        assert_eq!(turns[0].stop_reason, None);
+
+        db.end_turn("t-old", "finished", Some("end_turn"))
+            .expect("新列可写");
+        let turns = db.load_turns("s-old", 10).expect("新列可读");
+        assert_eq!(turns[0].status, "finished");
+        assert_eq!(turns[0].stop_reason.as_deref(), Some("end_turn"));
 
         std::fs::remove_file(&path).ok();
     }
@@ -1964,7 +2057,8 @@ mod tests {
 
         db.start_turn("s-1", "t1", "现在几点", None).expect("start");
         db.start_turn("s-1", "t2", "写个文件", None).expect("start2");
-        db.end_turn("t2", "failed").expect("end");
+        db.end_turn("t2", "failed", Some("timeout: timed out after 120s"))
+            .expect("end");
 
         let turns = db.load_turns("s-1", 10).expect("load");
         assert_eq!(turns.len(), 2);
@@ -2002,16 +2096,99 @@ mod tests {
             }],
         )
         .expect("append partial");
-        db.end_turn("t-cancel", "cancelled").expect("end cancelled");
+        db.end_turn("t-cancel", "cancelled", Some("cancelled"))
+            .expect("end cancelled");
 
         let turns = db.load_turns("s-1", 10).expect("load turns");
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].status, "cancelled");
+        assert_eq!(turns[0].stop_reason.as_deref(), Some("cancelled"));
         assert!(turns[0].ended_at.is_some());
 
         let messages = db.load_messages("s-1", 10).expect("load messages");
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].payload["text"], "写了一半");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn turn_moves_through_waiting_approval_and_records_stop_reason() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+
+        db.start_turn("s-1", "t1", "改个文件", None).expect("start");
+        assert_eq!(
+            db.load_turns("s-1", 1).expect("running")[0].status,
+            "running"
+        );
+
+        assert_eq!(
+            db.mark_turn_waiting_approval("t1").expect("waiting"),
+            1
+        );
+        assert_eq!(
+            db.load_turns("s-1", 1).expect("waiting row")[0].status,
+            "waiting_approval"
+        );
+
+        assert_eq!(
+            db.resume_turn_after_approval("t1").expect("resume"),
+            1
+        );
+        assert_eq!(
+            db.load_turns("s-1", 1).expect("resumed row")[0].status,
+            "running"
+        );
+
+        db.end_turn("t1", "finished", Some("end_turn"))
+            .expect("end finished");
+        let turns = db.load_turns("s-1", 1).expect("finished row");
+        assert_eq!(turns[0].status, "finished");
+        assert_eq!(turns[0].stop_reason.as_deref(), Some("end_turn"));
+        assert!(turns[0].ended_at.is_some());
+
+        // 已结束的轮不能再被权限回包改回 running
+        assert_eq!(
+            db.resume_turn_after_approval("t1").expect("no-op resume"),
+            0
+        );
+        // 也不能被迟到的权限请求重新标成 waiting_approval
+        assert_eq!(
+            db.mark_turn_waiting_approval("t1")
+                .expect("no-op waiting"),
+            0
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn failed_turn_records_non_empty_stop_reason() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+
+        db.start_turn("s-1", "t-fail", "跑一下", None)
+            .expect("start");
+        db.end_turn(
+            "t-fail",
+            "failed",
+            Some("-32603: agent returned error: boom"),
+        )
+        .expect("end failed");
+
+        let turns = db.load_turns("s-1", 1).expect("load");
+        assert_eq!(turns[0].status, "failed");
+        assert!(
+            turns[0]
+                .stop_reason
+                .as_deref()
+                .is_some_and(|reason| !reason.is_empty()),
+            "失败轮必须留下可解释的原因"
+        );
+        assert!(turns[0].ended_at.is_some());
 
         std::fs::remove_file(&path).ok();
     }
@@ -2038,6 +2215,11 @@ mod tests {
         }
         // 一个正在跑的轮次（不收尾）：它的事件清空后，轮次本身不能被删
         db.start_turn("s-1", "t-running", "还在跑", None).expect("turn2");
+        // 等用户批准的轮次同样还没收尾，不能当成「没有事件的历史轮」清掉
+        db.start_turn("s-1", "t-waiting", "等你批准", None)
+            .expect("turn3");
+        db.mark_turn_waiting_approval("t-waiting")
+            .expect("waiting");
 
         let report = db
             .prune_traces(crate::trace::now_ms() - 90 * 24 * 3600 * 1000, 50, false)
@@ -2051,6 +2233,9 @@ mod tests {
         // running 的轮次不许被清理逻辑带走
         let turns = db.load_turns("s-1", 10).expect("turns");
         assert!(turns.iter().any(|t| t.id == "t-running" && t.status == "running"));
+        assert!(turns
+            .iter()
+            .any(|t| t.id == "t-waiting" && t.status == "waiting_approval"));
 
         // 全部事件都过期时，事件与轮次一起清掉
         // cutoff 在未来 = 会清空全部：不带 allow_wipe 时必须被挡下

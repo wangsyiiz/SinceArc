@@ -145,8 +145,11 @@ CREATE TABLE IF NOT EXISTS turns (
   author_id    TEXT,
   started_at   INTEGER NOT NULL,
   ended_at     INTEGER,
-  -- running / finished / failed
-  status       TEXT NOT NULL DEFAULT 'running'
+  -- running / waiting_approval / finished / cancelled / failed
+  -- unknown 只用于「有事件、没有轮次行」的孤儿轮兜底
+  status       TEXT NOT NULL DEFAULT 'running',
+  -- agent 给的原始 stopReason（end_turn / max_tokens / refusal / cancelled …）
+  stop_reason  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, started_at DESC);

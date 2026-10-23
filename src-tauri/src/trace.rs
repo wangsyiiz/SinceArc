@@ -205,6 +205,11 @@ pub struct TraceTurn {
     #[ts(type = "number | null")]
     pub ended_at: Option<i64>,
     pub status: String,
+    /// agent 原始的停止原因；老数据/孤儿轮没有就是 None。
+    /// `finished` + 非 `end_turn` 时要让界面显示出「撞上限」这类结局。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub stop_reason: Option<String>,
     pub items: Vec<TraceItem>,
 }
 
@@ -313,6 +318,7 @@ pub fn aggregate(turns: Vec<crate::db::TurnRow>, events: Vec<crate::db::EventRow
                 started_at: t.started_at,
                 ended_at: t.ended_at,
                 status: t.status,
+                stop_reason: t.stop_reason,
                 items,
             }
         })
@@ -351,6 +357,7 @@ pub fn with_orphan_turns(
             started_at: start,
             ended_at: Some(end),
             status: "unknown".to_string(),
+            stop_reason: None,
         });
     }
     turns.sort_by_key(|t| std::cmp::Reverse(t.started_at));
@@ -438,6 +445,7 @@ mod tests {
             started_at: 1,
             ended_at: Some(9),
             status: "finished".into(),
+            stop_reason: Some("end_turn".into()),
         };
         let ev = |seq: i64, kind: &str, payload: &str| EventRow {
             id: format!("s1-{seq}"),
@@ -457,6 +465,7 @@ mod tests {
         ];
         let out = aggregate(vec![turn], events);
         assert_eq!(out.len(), 1);
+        assert_eq!(out[0].stop_reason.as_deref(), Some("end_turn"));
         let items = &out[0].items;
         assert_eq!(items.len(), 2, "update 必须并回 tool_call，不能多一条");
         assert_eq!(items[0].kind, "tool_call");
@@ -485,6 +494,7 @@ mod tests {
         assert_eq!(out.len(), 1, "有事件就必须有一轮，不能静默丢掉");
         assert_eq!(out[0].id, "turn-x");
         assert_eq!(out[0].status, "unknown");
+        assert_eq!(out[0].stop_reason, None);
         assert!(out[0].prompt.contains("没有记录"));
     }
 
@@ -500,6 +510,7 @@ mod tests {
             started_at: 1,
             ended_at: Some(9),
             status: "finished".into(),
+            stop_reason: Some("end_turn".into()),
         };
         let ev = |seq: i64, text: &str| EventRow {
             id: format!("s1-{seq}"),
