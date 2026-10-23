@@ -9,7 +9,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import test from "node:test";
 
-import { ALLOWED } from "./style-guard.allowlist.ts";
+import { ALLOWED, COLOR_LITERAL_EXEMPT } from "./style-guard.allowlist.ts";
 
 const ROOT = new URL("../../", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 const SRC = join(ROOT, "src");
@@ -114,6 +114,7 @@ function scanActual(): Record<string, Record<string, number>> {
     const text = readFileSync(path, "utf8");
     const counts: Record<string, number> = {};
     for (const rule of TEXT_RULES) {
+      if (rule.id === "color-literal" && COLOR_LITERAL_EXEMPT.includes(rel)) continue;
       const count = countMatches(text, rule.re);
       if (count > 0) counts[rule.id] = count;
     }

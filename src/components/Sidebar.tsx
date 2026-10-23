@@ -202,6 +202,11 @@ export function Sidebar({
             <div className="px-2 pt-1 pb-1 text-micro font-medium tracking-wide text-ink-3">
               项目
             </div>
+            {repos.length === 0 && (
+              <p className="px-2.5 py-1.5 text-micro leading-relaxed text-ink-3">
+                还没有项目。把本地仓库路径粘到下面添加，之后 PR 与分支都会挂在这里。
+              </p>
+            )}
             {repos.map((r) => {
               const count = (prsByRepo[r.id] ?? []).length;
               return (

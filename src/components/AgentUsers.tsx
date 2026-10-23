@@ -13,6 +13,7 @@ import {
   type AgentUser,
 } from "@/lib/ipc";
 import { profileLabel } from "@/lib/format";
+import { PLAYER_COLORS } from "@/lib/player-colors";
 import { PlayerAvatar } from "./PlayerAvatar";
 import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
@@ -30,14 +31,7 @@ import { Segmented } from "./ui/Segmented";
  * 3. 没通过时保存禁用，并且**说清为什么**，不是灰着不解释。
  */
 
-const COLORS = [
-  "var(--player-1)",
-  "var(--player-2)",
-  "var(--player-3)",
-  "var(--player-4)",
-  "var(--player-5)",
-  "var(--player-6)",
-];
+const COLORS = PLAYER_COLORS;
 
 const SESSION_SOURCE_OPTIONS: { value: "new" | "existing"; label: string }[] = [
   { value: "new", label: "新建会话" },
