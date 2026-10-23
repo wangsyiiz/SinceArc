@@ -33,7 +33,7 @@ export function TitleBar({ profile, cwd }: TitleBarProps) {
     >
       <div className="flex items-center gap-2 pl-3.5" {...drag}>
         <BrandMark className="size-5" />
-        <span className="text-ui font-semibold text-ink-1" {...drag}>
+        <span className="sc-brand-glow text-ui font-semibold text-ink-1" {...drag}>
           SinceArc
         </span>
       </div>

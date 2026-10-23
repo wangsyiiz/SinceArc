@@ -475,6 +475,15 @@ dialog.sc-dialog[open] {
 }
 
 @layer components {
+  /* 字标辉光：只给标题栏的 sincearc 字样，属于品牌物料的最小一片。
+     用 currentColor 派生，不引入新颜色 —— 暗色下是近白的发光，浅色下是近黑的晕，
+     换主题时跟着文字色走。两层：近处 10px 定轮廓，远处 26px 给体积。 */
+  .sc-brand-glow {
+    text-shadow:
+      0 0 10px color-mix(in srgb, currentColor 38%, transparent),
+      0 0 26px color-mix(in srgb, currentColor 20%, transparent);
+  }
+
   /* 浮层的层次：只许用 --z-* 这一套（§1.10）。手写 z-30 / z-50 / z-[9999] 会让
      「谁盖住谁」变成各处记忆里的数字，弹窗一出来就对不上。 */
   .sc-z-popover {
