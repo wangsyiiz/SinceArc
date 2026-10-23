@@ -575,7 +575,7 @@ pub async fn agent_user_test(
         .map_err(|e| launch_error(&profile, e))?;
 
     if !outcome.load_session {
-        proc.kill().await;
+        let _ = proc.kill_tree("disconnect").await;
         return Ok(AgentUserTestOutcome {
             ok: false,
             detail: format!(
@@ -593,7 +593,7 @@ pub async fn agent_user_test(
     let res = proc
         .request("session/load", params, Duration::from_secs(120))
         .await;
-    proc.kill().await;
+    let _ = proc.kill_tree("disconnect").await;
 
     match res {
         Ok(v) => {
@@ -986,7 +986,7 @@ pub async fn agent_probe(profile: ProfileDto) -> Result<ProbeOutcome, CmdError> 
             );
             launch_error(&profile, e)
         })?;
-    proc.kill().await;
+    let _ = proc.kill_tree("disconnect").await;
     tracing::info!(
         target: "sincearc::ipc", profile = %profile.id,
         agent = %outcome.agent_name, version = %outcome.agent_version,
@@ -1222,6 +1222,89 @@ async fn record_trace(
     }
 }
 
+/// 把 kill_tree 的结论送到诊断面板；只有降级才额外触发一次性通知条。
+fn report_process_cleanup(
+    state: &AppState,
+    profile_id: &str,
+    ui_session_id: Option<&str>,
+    why: &str,
+    agent_id: &str,
+    outcome: &transport::KillOutcome,
+) {
+    let message = format!("proc {agent_id} {why} -> {}", outcome.describe());
+    let topic = if outcome.may_leave_residue() {
+        "proc.warning"
+    } else {
+        "proc.diag"
+    };
+    let payload = serde_json::json!({
+        "message": message,
+        "why": why,
+        "agentId": agent_id,
+        "uiSessionId": ui_session_id,
+    });
+    let delivered = state.bus.emit_json(
+        topic,
+        true,
+        Meta {
+            profile_id: Some(profile_id.to_string()),
+            ui_session_id: ui_session_id.map(str::to_string),
+            ..Default::default()
+        },
+        &payload,
+    );
+    if !delivered {
+        tracing::debug!(
+            target: "sincearc::proc", profile = %profile_id,
+            "diagnostics event not delivered (webview not subscribed)"
+        );
+    }
+}
+
+/// 摘掉一个 profile 的所有运行期状态并回收进程树。
+///
+/// 取消一轮会真的结束 agent：下一轮由前端重新连接（会话句柄仍在库里，可 resume）。
+/// 断开连接同理。返回 None 表示这个 profile 本来就没连接。
+async fn teardown_profile(
+    state: &AppState,
+    profile_id: &str,
+    why: &str,
+) -> Option<transport::KillOutcome> {
+    let ui_sessions = state.ui_sessions_of(profile_id).await;
+    let handle = state.take(profile_id).await;
+    let outcome = if let Some(handle) = &handle {
+        let outcome = handle.proc.kill_tree(why).await;
+        report_process_cleanup(
+            state,
+            profile_id,
+            ui_sessions.first().map(String::as_str),
+            why,
+            handle.proc.agent_id(),
+            &outcome,
+        );
+        Some(outcome)
+    } else {
+        None
+    };
+
+    let dead = state.drop_sessions_of(profile_id).await;
+    for session_id in &dead {
+        state.take_cancel(session_id).await;
+        state.turns.end(session_id).await;
+    }
+    state.pending.clear(profile_id).await;
+    tracing::info!(
+        target: "sincearc::ipc",
+        profile = %profile_id,
+        why,
+        sessions = dead.len(),
+        process = handle.is_some(),
+        clean = ?outcome.as_ref().map(|o| o.clean),
+        "profile torn down"
+    );
+    outcome
+}
+
 #[tauri::command]
 pub async fn agent_connect(
     state: State<'_, AppState>,
@@ -1235,9 +1318,7 @@ pub async fn agent_connect(
 
     // 重连语义：先摘掉旧的（幂等），再起新的。不静默复用旧进程 ——
     // 用户点「连接」就是想要一个新会话。
-    if let Some(old) = state.take(&id).await {
-        old.proc.kill().await;
-    }
+    let _ = teardown_profile(state.inner(), &id, "replace").await;
 
     let cwd = profile.cwd.clone();
     let (proc, mut incoming, outcome) = acp::initialize(&parsed, &cwd, HANDSHAKE_TIMEOUT)
@@ -1565,6 +1646,10 @@ pub async fn agent_connect(
             },
             &AcpEvent::Exited,
         );
+        // 输出流结束不等于整棵树结束：主进程可能先退出，而 cargo / tsc / node
+        // 这类子孙还挂在同一进程组里。这里再走一次同侧回收；若调用方已经
+        // kill 过，kill_tree 的幂等分支会立即返回。
+        let _ = proc_for_task.kill_tree("exit").await;
     });
 
     tracing::info!(
@@ -2297,20 +2382,20 @@ pub async fn session_cancel(
     );
     // 先打标记再发通知：agent 可能立刻回终态，晚一步就区分不出「取消导致的失败」
     state.request_cancel(&session_id).await;
-    handle
+    if let Err(e) = handle
         .proc
         .notify(
             "session/cancel",
             serde_json::json!({ "sessionId": session_id.clone() }),
         )
         .await
-        .map_err(|e| {
-            tracing::warn!(
-                target: "sincearc::ipc", profile = %profile_id, error = %e,
-                "session cancel notify failed"
-            );
-            CmdError::new(50500, format!("取消请求没送达：{e}"))
-        })?;
+    {
+        // 通知送不到也要继续回收：agent 可能已经半死，正是最需要清理的时候。
+        tracing::warn!(
+            target: "sincearc::ipc", profile = %profile_id, error = %e,
+            "session cancel notify failed; killing tree anyway"
+        );
+    }
 
     // 停止请求已送达：写提示不必等一个可能永远不来的终态。
     // 若 agent 在收尾期间还发 tool_call，会重新点亮；下一轮/终态再清。
@@ -2319,7 +2404,7 @@ pub async fn session_cancel(
         let ui_sid = record.as_ref().and_then(|r| r.ui_session_id.clone());
         let author_id = record.as_ref().and_then(|r| r.author_id.clone());
         let meta = Meta::for_session(
-            profile_id,
+            profile_id.clone(),
             session_id.clone(),
             ui_sid.clone(),
             author_id,
@@ -2328,6 +2413,10 @@ pub async fn session_cancel(
             .bus
             .emit_json("session.lock", false, meta, &SessionLockDto::unlocked(session_id.clone(), ui_sid));
     }
+
+    // 停止 = 这一轮连同它 fork 出来的工具一起结束。进程树回收后，
+    // 下一轮由前端重新连接（会话句柄还在库里，可 resume）。
+    teardown_profile(state.inner(), &profile_id, "cancel").await;
     Ok(())
 }
 
@@ -2395,23 +2484,15 @@ pub async fn agent_disconnect(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<(), CmdError> {
-    // 会话跟着进程一起死：先摘记录，别让 prompt 打到已关闭的进程上
-    let dead = state.drop_sessions_of(&profile_id).await;
-    // 进程没了，挂在它上面的权限请求也答不了了，登记表一并清掉
-    state.pending.clear(&profile_id).await;
-    if !dead.is_empty() {
-        tracing::info!(target: "sincearc::ipc", profile = %profile_id, sessions = dead.len(), "drop sessions on disconnect");
+    // 断开一个没连的东西不算错误：调用方想要的结果（没有连接）已经成立。
+    // teardown 会先摘运行期记录，再回收进程树，最后清权限登记。
+    if teardown_profile(state.inner(), &profile_id, "disconnect")
+        .await
+        .is_some()
+    {
+        tracing::info!(target: "sincearc::ipc", profile = %profile_id, "disconnected");
     }
-
-    match state.take(&profile_id).await {
-        Some(handle) => {
-            handle.proc.kill().await;
-            tracing::info!(target: "sincearc::ipc", profile = %profile_id, "disconnected");
-            Ok(())
-        }
-        // 断开一个没连的东西不算错误：调用方想要的结果（没有连接）已经成立
-        None => Ok(()),
-    }
+    Ok(())
 }
 
 #[tauri::command]

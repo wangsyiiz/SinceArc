@@ -30,7 +30,9 @@ stdio，**换行分隔的 JSON**，UTF-8，消息内不得含裸换行。
 ## 进程生命周期
 
 - 拉起 `wsl.exe` 只是 relay，kill 它不会杀 WSL 里的 agent：
-  用 `setsid` 起，记 pid，退出时 `wsl.exe -d fedora -- kill -TERM <pid>`。
+  用 `setsid` 起，把 pid（也就是 pgid）记进 `/tmp/sincearc-<id>.pid`，
+  回收时在 WSL/SSH 同一侧执行 `kill -TERM -<pid>`，2 秒后 `kill -KILL -<pid>`。
+- 远端没有 `setsid` 时写 `*.nosetsid` marker，回收降级为只杀直接子进程并明确提示可能残留。
 - `wsl.exe` 的退出码不是 agent 的退出码，agent 崩溃只能从 stderr 判断。
 
 ## 路径语义

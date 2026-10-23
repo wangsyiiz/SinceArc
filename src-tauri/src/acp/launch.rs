@@ -6,11 +6,12 @@
 //!
 //! SSH 的两条硬约束（都来自实测）：
 //! - 必须 `-T`：开 PTY 会加 CRLF 与回显，直接破坏 JSON-RPC 的按行分帧；
-//! - 远端命令必须 `exec`：这样杀本地 ssh 客户端时 agent 收到 SIGHUP 直接退出，
-//!   否则远端起的是个 shell，bash 默认不把 SIGHUP 传给子进程，agent 会变孤儿。
+//! - 远端命令必须 `exec`：少一层 shell，pid 才对得上；真正的清理不靠断开 ssh
+//!   （setsid 之后 SIGHUP 也不能保证传到），而是 kill_tree 在同一侧按进程组杀。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SshAuth {
@@ -39,6 +40,26 @@ pub enum Launch {
     Ssh(SshSpec),
 }
 
+/// 杀死一棵进程树时要执行的东西。
+///
+/// 本机直起时由 `transport` 按平台处理（Windows = taskkill，Unix = 进程组）；
+/// WSL/SSH 则把「同侧的 relay 命令」预先算好，kill 时原样执行 ——
+/// 远端进程必须在远端杀，不能靠杀本地的 wsl.exe / ssh.exe 碰运气。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KillTarget {
+    Local,
+    Remote {
+        /// 日志里的方式名：wsl / ssh
+        kind: &'static str,
+        program: String,
+        args: Vec<String>,
+        env: BTreeMap<String, String>,
+        /// 本次启动的 uuid（只允许 [a-z0-9-]）
+        id: String,
+        pid_file: String,
+    },
+}
+
 /// `wsl.exe` / `ssh.exe` 用绝对路径：从资源管理器或 IDE 启动的 GUI 进程，
 /// PATH 里不一定有 System32，靠名字解析会 spawn 失败（表现为 50200）。
 pub(crate) fn system_tool(name: &str) -> String {
@@ -62,11 +83,15 @@ pub struct SpawnSpec {
     pub env: BTreeMap<String, String>,
     /// askpass 之类的临时文件，进程结束后删除
     pub cleanup: Option<PathBuf>,
-    /// 远端 pid 文件（WSL / SSH）：远端 shell 在 exec 前把 $$ 写进去，
-    /// exec 不改 pid，所以它就是 agent 的 pid。断连后靠它判断有没有残留 ——
+    /// 远端 pid 文件（WSL / SSH）：setsid 里的 shell 在 exec 前把 $$ 写进去，
+    /// exec 不改 pid，所以它就是 agent 的 pid / pgid。断连后靠它判断有没有残留 ——
     /// 靠 `ps | grep 'hermes acp'` 是不行的：hermes 是 python 入口，
     /// argv 里根本没有 "hermes acp" 这个子串。
     pub pid_file: Option<String>,
+    /// 本次启动的短 uuid，日志与远端临时文件名都用它
+    pub agent_id: String,
+    /// kill_tree 要执行的回收方式
+    pub kill: KillTarget,
 }
 
 /// 把「真的会执行的东西」渲染成一条人能读、能粘贴的命令行。
@@ -110,14 +135,38 @@ fn quote_arg(arg: &str) -> String {
 #[derive(Debug)]
 pub enum LaunchError {
     Io(std::io::Error),
+    InvalidAgentId(String),
 }
 
 impl std::fmt::Display for LaunchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(e) => write!(f, "launch preparation failed: {e}"),
+            Self::InvalidAgentId(id) => write!(f, "invalid agent id for remote cleanup: {id}"),
         }
     }
+}
+
+static AGENT_ID_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// 生成短 uuid。不引 `uuid` 依赖：进程 id + 纳秒 + 递增序号已经足够唯一，
+/// 而且天然只含 `[a-z0-9-]`，可以直接拼进 shell 命令。
+fn next_agent_id() -> String {
+    let seq = AGENT_ID_SEQ.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{:x}-{:x}-{:x}", std::process::id(), nanos, seq)
+}
+
+/// uuid 会原样拼进远端 shell 命令，必须只允许 `[a-z0-9-]`。
+pub(crate) fn valid_agent_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 96
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 #[derive(Debug, Clone)]
@@ -137,20 +186,24 @@ impl AgentProfile {
     pub fn command_line(&self, cwd: &str) -> Result<SpawnSpec, LaunchError> {
         let mut env = self.env.clone();
         let mut cleanup = None;
-        let pid_file = match self.launch {
+        let agent_id = next_agent_id();
+        if !valid_agent_id(&agent_id) {
+            return Err(LaunchError::InvalidAgentId(agent_id));
+        }
+        let pid_file = match &self.launch {
             Launch::Local => None,
-            _ => Some(format!(
-                "/tmp/sincearc-agent-{}-{}.pid",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0)
-            )),
+            _ => Some(format!("/tmp/sincearc-{agent_id}.pid")),
         };
+        let marker_file = pid_file
+            .as_ref()
+            .map(|f| f.replace(".pid", ".nosetsid"));
 
-        let (program, args) = match &self.launch {
-            Launch::Local => (self.program.clone(), self.args.clone()),
+        let (program, args, kill) = match &self.launch {
+            Launch::Local => (
+                self.program.clone(),
+                self.args.clone(),
+                KillTarget::Local,
+            ),
             Launch::Wsl { distro, shell } => {
                 let mut argv = vec![
                     "-d".to_string(),
@@ -162,63 +215,50 @@ impl AgentProfile {
                     "-lc".to_string(),
                 ];
                 // login shell 不读 ~/.zshrc，PATH 里没有 ~/.local/bin（hermes 就装在那儿）；
-                // 显式补上，并用 exec 让 agent 顶替 shell 进程，pid 才好对得上。
-                let mut cmd = String::new();
-                if let Some(f) = &pid_file {
-                    // 远端 shell 的 $$，exec 之后 pid 不变
-                    cmd.push_str(&format!("echo $$ > {f}; "));
-                }
-                cmd.push_str("export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; exec ");
-                cmd.push_str(&self.program);
-                if !self.args.is_empty() {
-                    cmd.push(' ');
-                    cmd.push_str(&self.args.join(" "));
-                }
-                argv.push(cmd);
-                (system_tool("wsl.exe"), argv)
+                // 显式补上；setsid 让远端 shell 成为新会话首进程，pid == pgid，
+                // 之后 `kill -TERM -<pid>` 才能带走整棵树。
+                let pid = pid_file.as_deref().expect("wsl always records pid");
+                let marker = marker_file.as_deref().expect("wsl always records marker");
+                argv.push(format!(
+                    "export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; {}",
+                    guarded_exec(&self.program, &self.args, pid, marker)
+                ));
+
+                let kill_script = remote_kill_script(&agent_id, pid, marker)?;
+                let kill = KillTarget::Remote {
+                    kind: "wsl",
+                    program: system_tool("wsl.exe"),
+                    args: vec![
+                        "-d".to_string(),
+                        distro.clone(),
+                        "--".to_string(),
+                        "bash".to_string(),
+                        "-lc".to_string(),
+                        kill_script,
+                    ],
+                    env: BTreeMap::from([("WSL_UTF8".to_string(), "1".to_string())]),
+                    id: agent_id.clone(),
+                    pid_file: pid.to_string(),
+                };
+                (system_tool("wsl.exe"), argv, kill)
             }
             Launch::Ssh(spec) => {
-                let mut argv = vec![
-                    "-T".to_string(),
-                    "-p".to_string(),
-                    spec.port.to_string(),
-                    // 首次连接不问人（stdio 没人回答），但记进 known_hosts
-                    "-o".to_string(),
-                    "StrictHostKeyChecking=accept-new".to_string(),
-                ];
+                let mut argv = ssh_common_args(spec, &mut env, &mut cleanup)?;
+                let mut kill_args = argv.clone();
+                let pid = pid_file.as_deref().expect("ssh always records pid");
+                let marker = marker_file.as_deref().expect("ssh always records marker");
+                argv.push(remote_command(&self.program, &self.args, cwd, pid, marker));
 
-                match &spec.auth {
-                    SshAuth::Key { path } => {
-                        argv.push("-i".into());
-                        argv.push(path.clone());
-                        argv.push("-o".into());
-                        argv.push("IdentitiesOnly=yes".into());
-                        // 密钥模式下禁止一切交互提示，连不上就立刻失败
-                        argv.push("-o".into());
-                        argv.push("BatchMode=yes".into());
-                    }
-                    SshAuth::Password { secret } => {
-                        // 密码认证必须关掉 BatchMode，否则 ssh 直接拒绝走密码；
-                        // 同时把尝试次数钉成 1，避免密码错时反复问。
-                        argv.push("-o".into());
-                        argv.push("NumberOfPasswordPrompts=1".into());
-                        argv.push("-o".into());
-                        argv.push("PreferredAuthentications=password".into());
-
-                        let (script, path) = write_askpass(secret)?;
-                        env.insert("SSH_ASKPASS".into(), script);
-                        env.insert("SSH_ASKPASS_REQUIRE".into(), "force".into());
-                        cleanup = Some(path);
-                    }
-                }
-
-                argv.push("--".into());
-                argv.push(format!("{}@{}", spec.user, spec.host));
-
-                let remote = remote_command(&self.program, &self.args, cwd, pid_file.as_deref());
-                argv.push(remote);
-
-                (system_tool("ssh.exe"), argv)
+                kill_args.push(remote_kill_script(&agent_id, pid, marker)?);
+                let kill = KillTarget::Remote {
+                    kind: "ssh",
+                    program: system_tool("ssh.exe"),
+                    args: kill_args,
+                    env: env.clone(),
+                    id: agent_id.clone(),
+                    pid_file: pid.to_string(),
+                };
+                (system_tool("ssh.exe"), argv, kill)
             }
         };
 
@@ -228,32 +268,158 @@ impl AgentProfile {
             env,
             cleanup,
             pid_file,
+            agent_id,
+            kill,
         })
     }
 }
 
-/// 远端要执行的整条命令：先 cd（失败就整条失败），再 exec 顶替 shell。
-fn remote_command(program: &str, args: &[String], cwd: &str, pid_file: Option<&str>) -> String {
+/// SSH 的公共参数：连接目标、认证方式、`--` 与服务端命令前缀。
+fn ssh_common_args(
+    spec: &SshSpec,
+    env: &mut BTreeMap<String, String>,
+    cleanup: &mut Option<PathBuf>,
+) -> Result<Vec<String>, LaunchError> {
+    let mut argv = vec![
+        "-T".to_string(),
+        "-p".to_string(),
+        spec.port.to_string(),
+        // 首次连接不问人（stdio 没人回答），但记进 known_hosts
+        "-o".to_string(),
+        "StrictHostKeyChecking=accept-new".to_string(),
+    ];
+
+    match &spec.auth {
+        SshAuth::Key { path } => {
+            argv.push("-i".into());
+            argv.push(path.clone());
+            argv.push("-o".into());
+            argv.push("IdentitiesOnly=yes".into());
+            // 密钥模式下禁止一切交互提示，连不上就立刻失败
+            argv.push("-o".into());
+            argv.push("BatchMode=yes".into());
+        }
+        SshAuth::Password { secret } => {
+            // 密码认证必须关掉 BatchMode，否则 ssh 直接拒绝走密码；
+            // 同时把尝试次数钉成 1，避免密码错时反复问。
+            argv.push("-o".into());
+            argv.push("NumberOfPasswordPrompts=1".into());
+            argv.push("-o".into());
+            argv.push("PreferredAuthentications=password".into());
+
+            let (script, path) = write_askpass(secret)?;
+            env.insert("SSH_ASKPASS".into(), script);
+            env.insert("SSH_ASKPASS_REQUIRE".into(), "force".into());
+            *cleanup = Some(path);
+        }
+    }
+
+    argv.push("--".into());
+    argv.push(format!("{}@{}", spec.user, spec.host));
+    Ok(argv)
+}
+
+/// 远端要执行的整条命令：先 cd（失败就整条失败），再在 setsid 里 exec 顶替 shell。
+fn remote_command(
+    program: &str,
+    args: &[String],
+    cwd: &str,
+    pid_file: &str,
+    marker_file: &str,
+) -> String {
     let mut cmd = String::new();
     if !cwd.is_empty() {
         cmd.push_str("cd ");
         cmd.push_str(&shell_quote(cwd));
-        cmd.push_str(" && ");
-    }
-    if let Some(f) = pid_file {
-        cmd.push_str("echo $$ > ");
-        cmd.push_str(f);
-        cmd.push_str(" && ");
+        cmd.push_str(" && { ");
     }
     // 非交互 ssh 会话不读 ~/.zshrc，PATH 里没有 ~/.local/bin（hermes 就装在那儿）。
-    // 用 env 前缀赋值而不是 export：保持 && 链，cd 失败时不会继续 exec。
-    cmd.push_str("PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\" exec ");
-    cmd.push_str(program);
-    for a in args {
-        cmd.push(' ');
-        cmd.push_str(&shell_quote(a));
+    cmd.push_str("export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; ");
+    cmd.push_str(&guarded_exec(program, args, pid_file, marker_file));
+    if !cwd.is_empty() {
+        cmd.push_str("; }");
     }
     cmd
+}
+
+/// 在远端把 agent 放进新会话，并在 exec 前把 `$$` 写进 pid 文件。
+///
+/// `setsid` 不存在时不能假装干净：写一个 marker 让 kill 侧明确降级为
+/// 「只杀直接子进程」，并把原因报到界面。
+pub(crate) fn guarded_exec(
+    program: &str,
+    args: &[String],
+    pid_file: &str,
+    marker_file: &str,
+) -> String {
+    let exec = command_words(program, args);
+    let inner = format!(
+        "old_umask=$(umask); umask 077; echo $$ > {}; umask \"$old_umask\"; exec {exec}",
+        shell_quote(pid_file)
+    );
+    format!(
+        "if command -v setsid >/dev/null 2>&1; then exec setsid sh -c {}; \
+         else echo {} >&2; old_umask=$(umask); umask 077; echo $$ > {}; : > {}; umask \"$old_umask\"; exec {exec}; fi",
+        shell_quote(&inner),
+        shell_quote("sincearc: setsid not found; process-tree cleanup degraded"),
+        shell_quote(pid_file),
+        shell_quote(marker_file),
+    )
+}
+
+/// 远端回收脚本。与启动脚本约定同一个 pid / marker 文件。
+///
+/// 正常路径杀整个进程组；marker 存在（启动时没 setsid）时只杀直接子进程，
+/// 并显式输出 `SINCEARC_DEGRADED`，调用方据此提示「可能残留」。
+pub(crate) fn remote_kill_script(
+    id: &str,
+    pid_file: &str,
+    marker_file: &str,
+) -> Result<String, LaunchError> {
+    if !valid_agent_id(id) {
+        return Err(LaunchError::InvalidAgentId(id.to_string()));
+    }
+    let pidfile = shell_quote(pid_file);
+    let marker = shell_quote(marker_file);
+    Ok(format!(
+        "pidfile={pidfile}; marker={marker}; \
+         if [ ! -s \"$pidfile\" ]; then echo SINCEARC_NO_PID; rm -f \"$pidfile\" \"$marker\"; exit 4; fi; \
+         pid=$(cat \"$pidfile\"); \
+         case \"$pid\" in ''|*[!0-9]*) echo SINCEARC_BAD_PID; rm -f \"$pidfile\" \"$marker\"; exit 5;; esac; \
+         if [ \"$pid\" -le 1 ] 2>/dev/null; then echo SINCEARC_BAD_PID; rm -f \"$pidfile\" \"$marker\"; exit 5; fi; \
+         degraded=0; \
+         if [ -f \"$marker\" ]; then degraded=1; echo \"SINCEARC_TERM $pid direct\"; kill -TERM \"$pid\" 2>/dev/null; \
+         elif kill -0 -\"$pid\" 2>/dev/null; then \
+           if kill -TERM -\"$pid\" 2>/dev/null; then echo \"SINCEARC_TERM $pid group\"; \
+           else degraded=1; echo \"SINCEARC_TERM $pid direct-fallback\"; kill -TERM \"$pid\" 2>/dev/null; fi; \
+         else echo \"SINCEARC_TERM $pid skipped\"; fi; \
+         sleep 2; \
+         if [ \"$degraded\" = 1 ]; then \
+           if kill -0 \"$pid\" 2>/dev/null; then echo \"SINCEARC_KILL $pid direct\"; kill -KILL \"$pid\" 2>/dev/null; \
+           else echo \"SINCEARC_KILL $pid skipped\"; fi; \
+         else \
+           if kill -0 -\"$pid\" 2>/dev/null; then echo \"SINCEARC_KILL $pid group\"; kill -KILL -\"$pid\" 2>/dev/null; \
+           else echo \"SINCEARC_KILL $pid skipped\"; fi; \
+         fi; \
+         alive=0; \
+         if [ \"$degraded\" = 1 ]; then kill -0 \"$pid\" 2>/dev/null && alive=1; \
+         else kill -0 -\"$pid\" 2>/dev/null && alive=1; fi; \
+         rm -f \"$pidfile\" \"$marker\"; \
+         if [ \"$degraded\" = 1 ]; then echo SINCEARC_DEGRADED; exit 3; fi; \
+         if [ \"$alive\" = 1 ]; then echo SINCEARC_STILL_ALIVE; exit 6; fi; \
+         echo SINCEARC_KILLED; exit 0"
+    ))
+}
+
+fn command_words(program: &str, args: &[String]) -> String {
+    // program 沿用旧行为按原样拼（通常是 hermes / node 这类单 token），
+    // args 逐个 shell_quote，避免参数里的空格与元字符改变命令含义。
+    let mut out = program.to_string();
+    for a in args {
+        out.push(' ');
+        out.push_str(&shell_quote(a));
+    }
+    out
 }
 
 /// 远端用 /bin/sh 执行，单引号最省事：内部单引号用 '\'' 断开再拼。
@@ -335,8 +501,13 @@ mod tests {
         let script = spec.args.last().expect("script is last arg");
         // login shell 的 PATH 不含 ~/.local/bin，必须显式补
         assert!(script.contains("$HOME/.local/bin"));
-        // 用 exec 顶替 shell，pid 才对得上
-        assert!(script.ends_with("exec hermes acp"), "got: {script}");
+        // setsid 让 pid == pgid；pid 文件是后续整组回收的依据
+        assert!(script.contains("command -v setsid"), "got: {script}");
+        assert!(script.contains("exec setsid sh -c"), "got: {script}");
+        assert!(script.contains("/tmp/sincearc-"), "got: {script}");
+        assert!(script.contains("exec hermes"), "got: {script}");
+        assert!(script.contains("acp"), "got: {script}");
+        assert!(matches!(spec.kill, KillTarget::Remote { kind: "wsl", .. }));
     }
 
     #[test]
@@ -361,12 +532,15 @@ mod tests {
 
         assert_eq!(spec.args[spec.args.len() - 2], "root@example.com");
         let remote = spec.args.last().unwrap();
-        // cd、pid 记账、exec 三段都在；exec 让 SIGHUP 直达 agent
+        // cd、setsid、pid 记账、exec 都在；kill 时同一条 ssh 参数还能复用
         assert!(
-            remote.starts_with("cd '/srv/app' && echo $$ > /tmp/sincearc-agent-"),
+            remote.starts_with("cd '/srv/app' && { export PATH="),
             "got: {remote:?}"
         );
-        assert!(remote.ends_with("exec hermes 'acp'"), "got: {remote:?}");
+        assert!(remote.contains("exec setsid sh -c"), "got: {remote:?}");
+        assert!(remote.contains("exec hermes"), "got: {remote:?}");
+        assert!(remote.contains("acp"), "got: {remote:?}");
+        assert!(matches!(spec.kill, KillTarget::Remote { kind: "ssh", .. }));
         assert!(spec.cleanup.is_none());
     }
 
@@ -401,10 +575,17 @@ mod tests {
 
     #[test]
     fn remote_command_without_cwd_skips_cd() {
-        assert_eq!(
-            remote_command("hermes", &["acp".into()], "", None),
-            "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\" exec hermes 'acp'"
+        let cmd = remote_command(
+            "hermes",
+            &["acp".into()],
+            "",
+            "/tmp/sincearc-x.pid",
+            "/tmp/sincearc-x.nosetsid",
         );
+        assert!(cmd.starts_with("export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; "));
+        assert!(cmd.contains("exec setsid sh -c"));
+        assert!(cmd.contains("exec hermes"));
+        assert!(cmd.contains("acp"));
     }
 
     fn bare_spec(program: &str, args: &[&str]) -> SpawnSpec {
@@ -414,7 +595,24 @@ mod tests {
             env: BTreeMap::new(),
             cleanup: None,
             pid_file: None,
+            agent_id: "test-1".into(),
+            kill: KillTarget::Local,
         }
+    }
+
+    #[test]
+    fn agent_id_only_allows_shell_safe_characters() {
+        assert!(valid_agent_id("abc-123"));
+        assert!(!valid_agent_id("abc;rm -rf /"));
+        assert!(!valid_agent_id("ABC"));
+        assert!(remote_kill_script("bad;id", "/tmp/x.pid", "/tmp/x.nosetsid").is_err());
+        let script = remote_kill_script("ok-123", "/tmp/x.pid", "/tmp/x.nosetsid").unwrap();
+        assert!(script.contains("kill -0 -\"$pid\""));
+        assert!(script.contains("kill -TERM -\"$pid\""));
+        assert!(script.contains("kill -KILL -\"$pid\""));
+        assert!(script.contains("SINCEARC_KILL $pid skipped"));
+        assert!(script.contains("SINCEARC_STILL_ALIVE"));
+        assert!(script.contains("SINCEARC_DEGRADED"));
     }
 
     #[test]

@@ -221,6 +221,38 @@ export function useAcpEvents({
     (profileId: string, event: AcpEvent, topic: string) => {
       setEventCount((n) => n + 1);
 
+      // 进程没了 = 这个 profile 下次必须重新连接。停止/断开都会走到这里；
+      // 不清映射的话，下一轮会复用已经死掉的 AgentProcess。
+      if (topic === "conn.exited") {
+        setSessionsByProfile((m) => {
+          if (!(profileId in m)) return m;
+          const next = { ...m };
+          delete next[profileId];
+          return next;
+        });
+        setEventLog((prev) => [...prev, { at: Date.now(), text: "conn.exited" }].slice(-80));
+        setLastEvent("conn.exited");
+        return;
+      }
+
+      // 进程树回收的观测行。只有 proc.warning（降级/可能残留）才弹一次性提示；
+      // 正常回收只进诊断面板。
+      if (topic === "proc.diag" || topic === "proc.warning") {
+        const report = event as unknown as {
+          message?: string;
+          uiSessionId?: string | null;
+        };
+        const message = report.message ?? "process tree cleanup";
+        setEventLog((prev) => [...prev, { at: Date.now(), text: message }].slice(-80));
+        setLastEvent(topic);
+        if (topic === "proc.warning") {
+          const text = `进程树回收不完整，可能有残留：${message}`;
+          if (report.uiSessionId) pushSystemNotice(patchSession, report.uiSessionId, text);
+          else diag(text);
+        }
+        return;
+      }
+
       // usage 只认 topic：形状兜底会让「带 used/size 的任意载荷」都被当成用量，
       // 这和上一轮 session.lock 靠载荷形状认事件是同一个错。
       // used/size 形状兜底一次（UsageDto 没有 AcpEvent 的 kind 字段）。

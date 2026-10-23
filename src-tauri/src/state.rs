@@ -236,6 +236,27 @@ impl AppState {
         self.agents.lock().await.keys().cloned().collect()
     }
 
+    /// 退出兜底：把所有活着的 agent 从注册表摘走，交给调用方并发回收。
+    pub async fn take_all(&self) -> Vec<Arc<AgentHandle>> {
+        let mut map = self.agents.lock().await;
+        map.drain().map(|(_, handle)| handle).collect()
+    }
+
+    /// 这个 profile 当前挂着的界面会话（去重）；断连降级提示要投给它们。
+    pub async fn ui_sessions_of(&self, profile_id: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .sessions
+            .lock()
+            .await
+            .values()
+            .filter(|record| record.profile_id == profile_id)
+            .filter_map(|record| record.ui_session_id.clone())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     pub async fn insert_session(&self, session_id: String, record: SessionRecord) {
         // 两张表同源写入：`sessions` 给命令层判断归属，`routes` 给事件转发 task 查投递目标
         self.routes.bind(&session_id, record.clone()).await;

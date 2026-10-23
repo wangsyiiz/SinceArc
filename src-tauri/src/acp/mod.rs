@@ -297,6 +297,9 @@ pub async fn initialize(
             if !tail.is_empty() {
                 tracing::error!(target: "sincearc::acp", "agent stderr tail:\n{}", tail.join("\n"));
             }
+            // 握手失败也不能只靠 Drop 杀 relay：WSL/SSH 的真正 agent 在远端，
+            // 和正常断连一样要走同一棵进程树的回收。
+            let _ = proc.kill_tree("disconnect").await;
             Err(transport::TransportError::Handshake {
                 reason: e.to_string(),
                 stderr_tail: tail,
