@@ -15,11 +15,11 @@ export function useProfileStore() {
   const activeProfile =
     profiles.find((p) => p.id === activeProfileId) ?? profiles[0];
 
-  const addProfile = (draft?: Partial<AgentProfile>) =>
+  const addProfile = (draft?: Partial<AgentProfile>): string => {
+    const id = draft?.id ?? newId("p-new");
     setProfiles((list) => [
       ...list,
       {
-        id: newId("p-new"),
         name: "", // 空名走 profileLabel 派生（程序 · 位置），比所有连接都叫「新连接」有用
         launch: "ssh",
         detail: "",
@@ -32,8 +32,11 @@ export function useProfileStore() {
         ssh: { host: "", port: 22, user: "", auth: "key" },
         // 发现结果可以直接带完整启动配置进来，用户不必再手填 program/args
         ...draft,
+        id,
       },
     ]);
+    return id;
+  };
   const removeProfile = (id: string) => setProfiles((list) => list.filter((p) => p.id !== id));
   // 启动时读本机库：有记录就用记录，第一次运行才播种 mock
   useEffect(() => {

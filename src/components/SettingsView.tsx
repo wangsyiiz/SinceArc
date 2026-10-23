@@ -20,6 +20,12 @@ import type {
 } from "@/types";
 import { CONTEXT_MESSAGES_DEFAULT, CONTEXT_MESSAGES_MAX } from "@/types";
 import { cn } from "@/lib/utils";
+import { newId } from "@/lib/ids";
+import {
+  canSaveConnection,
+  createEmptyConnection,
+  isProfileDirty,
+} from "@/lib/connection-draft";
 import {
   agentProbe,
   asCmdError,
@@ -56,7 +62,7 @@ interface SettingsViewProps {
   /** 连接/断开都走 App 里的那一份实现（并发去重、状态回写都在那边） */
   onConnect: (p: AgentProfile) => Promise<string>;
   onDisconnect: (profileId: string) => Promise<void>;
-  onAddProfile: () => void;
+  onAddProfile: (draft?: Partial<AgentProfile>) => string;
   onRemoveProfile: (id: string) => void;
   /** 连接已经断开：App 用它清掉这个连接下待答的权限请求 */
   onDisconnected?: (profileId: string) => void;
@@ -69,8 +75,11 @@ interface SettingsViewProps {
   discoveryScanning?: boolean;
   discoveryError?: string | null;
   onScanDiscovery?: () => void;
-  /** 用发现到的命令直接建一个连接（program/args/cwd 都带好，用户不用手填） */
-  onUseDiscovered?: (candidate: DiscoveryCandidate, hit: DiscoveryHit) => void;
+  /** 把发现结果组装成草稿预填值；不落库，由设置页负责建草稿并自动探测。 */
+  onUseDiscovered?: (
+    candidate: DiscoveryCandidate,
+    hit: DiscoveryHit,
+  ) => Partial<AgentProfile> | undefined;
 }
 
 const THEMES: { id: ThemeMode; label: string }[] = [
@@ -104,6 +113,12 @@ const LAUNCH_LABEL: Record<LaunchKind, string> = {
 type ProbeResult =
   | { ok: true; outcome: ProbeOutcome }
   | { ok: false; error: string };
+
+type Draft = { profile: AgentProfile; isNew: boolean };
+
+function cloneProfile(profile: AgentProfile): AgentProfile {
+  return { ...profile, args: [...(profile.args ?? [])], ssh: profile.ssh ? { ...profile.ssh } : undefined };
+}
 
 function connectionTarget(profile: AgentProfile): string {
   const cwd = profile.cwd?.trim();
@@ -183,11 +198,13 @@ export function SettingsView({
 }: SettingsViewProps) {
   const [section, setSection] = useState<SectionId>("connection");
   const [connectionId, setConnectionId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [discardOpen, setDiscardOpen] = useState(false);
+  const pendingDiscardRef = useRef<(() => void) | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [memberDetail, setMemberDetail] = useState<{ user: AgentUser | null } | null>(null);
   const [connectionFocus, setConnectionFocus] = useState<{ id: string; tick: number } | null>(null);
   const [memberFocus, setMemberFocus] = useState<{ id: string; tick: number } | null>(null);
-  const [pendingNewProfile, setPendingNewProfile] = useState<Set<string> | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   /** 探测会真的 spawn 进程，和连接用的 busy 分开，避免互相锁住 */
@@ -200,19 +217,21 @@ export function SettingsView({
   const [discoveryProbe, setDiscoveryProbe] = useState<
     Record<string, { busy?: boolean; ok?: string; error?: string }>
   >({});
+  const probeSeq = useRef<Record<string, number>>({});
   const connectionRowRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
-  const connection = profiles.find((profile) => profile.id === connectionId) ?? null;
   const detailOpen =
-    (section === "connection" && !!connection) || (section === "members" && !!memberDetail);
+    (section === "connection" && !!draft) || (section === "members" && !!memberDetail);
 
-  const clearProbe = (id: string) => {
+  const invalidateProbe = (id: string) => {
+    probeSeq.current[id] = (probeSeq.current[id] ?? 0) + 1;
     setProbeResults((prev) => {
       if (!(id in prev)) return prev;
       const next = { ...prev };
       delete next[id];
       return next;
     });
+    setProbeBusy((current) => (current === id ? null : current));
   };
 
   const clearCommandDraft = (id: string) => {
@@ -223,6 +242,21 @@ export function SettingsView({
       return next;
     });
   };
+
+  /** 命令输入框可能还没 blur：保存/探测都按框里的内容算。 */
+  const effectiveProfile = (profile: AgentProfile): AgentProfile => {
+    const raw = commandDrafts[profile.id];
+    return raw !== undefined && raw.trim() ? { ...profile, ...splitCommand(raw) } : profile;
+  };
+
+  const draftEffective = draft ? effectiveProfile(draft.profile) : null;
+  const draftBaseline = draft
+    ? draft.isNew
+      ? createEmptyConnection(draft.profile.id)
+      : (profiles.find((profile) => profile.id === draft.profile.id) ?? draft.profile)
+    : null;
+  const draftDirty =
+    draftEffective && draftBaseline ? isProfileDirty(draftEffective, draftBaseline) : false;
 
   const notePath = (profile: AgentProfile) => {
     const cwd = profile.cwd?.trim();
@@ -266,19 +300,32 @@ export function SettingsView({
     }
   };
 
-  const choosePreset = (profile: AgentProfile, preset: AgentPreset) => {
-    clearProbe(profile.id);
-    clearCommandDraft(profile.id);
-    setCommandEditing((prev) => ({ ...prev, [profile.id]: false }));
-    onUpdateProfile({ ...profile, program: preset.program, args: [...preset.args] });
+  const patchDraft = (patch: Partial<AgentProfile>) => {
+    if (!draft) return;
+    invalidateProbe(draft.profile.id);
+    setDraft((current) =>
+      current ? { ...current, profile: { ...current.profile, ...patch } } : current,
+    );
   };
 
-  const chooseCustom = (profile: AgentProfile) => {
-    clearCommandDraft(profile.id);
-    setCommandEditing((prev) => ({ ...prev, [profile.id]: true }));
+  const choosePreset = (preset: AgentPreset) => {
+    if (!draft) return;
+    const id = draft.profile.id;
+    clearCommandDraft(id);
+    setCommandEditing((prev) => ({ ...prev, [id]: false }));
+    patchDraft({ program: preset.program, args: [...preset.args] });
   };
 
-  const commitCommand = (profile: AgentProfile) => {
+  const chooseCustom = () => {
+    if (!draft) return;
+    const id = draft.profile.id;
+    clearCommandDraft(id);
+    setCommandEditing((prev) => ({ ...prev, [id]: true }));
+  };
+
+  const commitCommand = () => {
+    if (!draft) return;
+    const profile = draft.profile;
     const raw = commandDrafts[profile.id];
     if (raw === undefined) return;
     if (!raw.trim()) {
@@ -292,31 +339,35 @@ export function SettingsView({
       args.join("\u0000") === (profile.args ?? []).join("\u0000");
     clearCommandDraft(profile.id);
     if (unchanged) return;
-    clearProbe(profile.id);
-    onUpdateProfile({ ...profile, program, args });
+    patchDraft({ program, args });
   };
 
   const handleProbe = async (profile: AgentProfile) => {
-    const draft = commandDrafts[profile.id];
+    const raw = commandDrafts[profile.id];
     // 点探测时输入框可能还没 blur：按框里的内容探测，而不是上一次提交的值
     const target =
-      draft !== undefined && draft.trim()
-        ? { ...profile, ...splitCommand(draft) }
+      raw !== undefined && raw.trim()
+        ? { ...profile, ...splitCommand(raw) }
         : profile;
+    invalidateProbe(profile.id);
+    const seq = probeSeq.current[profile.id] ?? 0;
     notePath(target);
     setProbeBusy(profile.id);
-    clearProbe(profile.id);
     try {
       const outcome = await agentProbe(target);
+      if (probeSeq.current[profile.id] !== seq) return;
       setProbeResults((prev) => ({ ...prev, [profile.id]: { ok: true, outcome } }));
     } catch (e) {
+      if (probeSeq.current[profile.id] !== seq) return;
       const err = asCmdError(e);
       setProbeResults((prev) => ({
         ...prev,
         [profile.id]: { ok: false, error: `${err.code} ${err.msg}` },
       }));
     } finally {
-      setProbeBusy((current) => (current === profile.id ? null : current));
+      if (probeSeq.current[profile.id] === seq) {
+        setProbeBusy((current) => (current === profile.id ? null : current));
+      }
     }
   };
 
@@ -326,25 +377,15 @@ export function SettingsView({
     return ` · ${caps.map((key) => CAPABILITY_LABEL[key] ?? key).join(" / ")}`;
   };
 
-  /** 把「发现到的一条命令 + 它所在的环境」翻译成一条可探测/可保存的连接配置 */
-  const profileFromHit = (candidate: DiscoveryCandidate, hit: DiscoveryHit): AgentProfile => {
-    const wsl = hit.host.startsWith("wsl:");
-    return {
-      id: "p-discovery",
-      name: "",
-      launch: wsl ? "wsl" : "local",
-      detail: "",
-      connected: false,
-      agentName: null,
-      protocolVersion: null,
-      program: candidate.acpProgram,
-      args: [...candidate.acpArgs],
-      // cd '<cwd>' 里的 ~ 不会被展开，所以必须用扫出来的绝对家目录
-      cwd: hit.home ?? "",
-      distro: wsl ? hit.host.slice("wsl:".length) : undefined,
-      shell: wsl ? "zsh" : undefined,
-      ssh: { host: "", port: 22, user: "", auth: "key" },
-    };
+  /** 发现结果的预填值由 App 组装；这里只负责合并默认值。 */
+  const discoveredProfile = (
+    id: string,
+    candidate: DiscoveryCandidate,
+    hit: DiscoveryHit,
+  ): AgentProfile | null => {
+    const partial = onUseDiscovered?.(candidate, hit);
+    if (!partial) return null;
+    return { ...createEmptyConnection(id), ...partial, id };
   };
 
   /**
@@ -353,9 +394,11 @@ export function SettingsView({
    */
   const handleDiscoveryProbe = async (candidate: DiscoveryCandidate, hit: DiscoveryHit) => {
     const key = `${candidate.id}@${hit.host}`;
+    const profile = discoveredProfile("p-discovery", candidate, hit);
+    if (!profile) return;
     setDiscoveryProbe((prev) => ({ ...prev, [key]: { busy: true } }));
     try {
-      const outcome = await agentProbe(profileFromHit(candidate, hit));
+      const outcome = await agentProbe(profile);
       setDiscoveryProbe((prev) => ({
         ...prev,
         [key]: {
@@ -370,29 +413,67 @@ export function SettingsView({
     }
   };
 
+  const closeDraft = useCallback(
+    (after?: () => void) => {
+      const current = draft;
+      setDraft(null);
+      if (current) {
+        invalidateProbe(current.profile.id);
+        clearCommandDraft(current.profile.id);
+        setCommandEditing((prev) => ({ ...prev, [current.profile.id]: false }));
+        setConnectionId(current.isNew ? null : current.profile.id);
+        const focusId = current.isNew ? profiles[0]?.id : current.profile.id;
+        if (focusId) setConnectionFocus({ id: focusId, tick: Date.now() });
+      }
+      after?.();
+    },
+    [draft, profiles],
+  );
+
+  const discardDraft = useCallback(
+    (after?: () => void) => {
+      if (!draft) {
+        after?.();
+        return;
+      }
+      if (draftDirty) {
+        pendingDiscardRef.current = after ?? null;
+        setDiscardOpen(true);
+        return;
+      }
+      closeDraft(after);
+    },
+    [closeDraft, draft, draftDirty],
+  );
+
   const switchSection = (next: SectionId) => {
-    setSection(next);
-    setConnectionId(null);
-    setMemberDetail(null);
-    setConnectionFocus(null);
-    setMemberFocus(null);
-    setPendingNewProfile(null);
+    const apply = () => {
+      setSection(next);
+      setConnectionId(null);
+      setMemberDetail(null);
+      setConnectionFocus(null);
+      setMemberFocus(null);
+    };
+    if (draft) {
+      discardDraft(apply);
+      return;
+    }
+    apply();
   };
 
   const backToList = useCallback(() => {
-    if (connectionId) {
-      setConnectionId(null);
-      setConnectionFocus({ id: connectionId, tick: Date.now() });
+    if (draft) {
+      discardDraft();
       return;
     }
     if (memberDetail) {
       setMemberDetail(null);
       setMemberFocus({ id: memberDetail.user?.id ?? "", tick: Date.now() });
     }
-  }, [connectionId, memberDetail]);
+  }, [discardDraft, draft, memberDetail]);
 
   useEffect(() => {
-    if (section === "connection" && !connectionId) return;
+    if (section === "connection" && !draft) return;
     if (section === "members" && !memberDetail) return;
     if (section === "chat" || section === "appearance") return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -403,16 +484,16 @@ export function SettingsView({
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [backToList, connectionId, memberDetail, section]);
+  }, [backToList, draft, memberDetail, section]);
 
   useEffect(() => {
-    if (!connectionFocus || connectionId) return;
+    if (!connectionFocus || draft) return;
     const target =
       connectionRowRefs.current[connectionFocus.id] ??
       profiles.map((profile) => connectionRowRefs.current[profile.id]).find(Boolean);
     target?.focus();
     setConnectionFocus(null);
-  }, [connectionFocus, connectionId, profiles]);
+  }, [connectionFocus, draft, profiles]);
 
   useEffect(() => {
     if (!connectionId) return;
@@ -420,17 +501,51 @@ export function SettingsView({
     setConnectionId(null);
   }, [connectionId, profiles]);
 
-  useEffect(() => {
-    if (!pendingNewProfile) return;
-    const added = profiles.find((profile) => !pendingNewProfile.has(profile.id));
-    if (!added) return;
-    setConnectionId(added.id);
-    setPendingNewProfile(null);
-  }, [pendingNewProfile, profiles]);
+  const startNewConnection = () => {
+    const id = newId("p-draft");
+    invalidateProbe(id);
+    setDraft({ profile: createEmptyConnection(id), isNew: true });
+    setConnectionId(null);
+  };
 
-  const addConnection = () => {
-    setPendingNewProfile(new Set(profiles.map((profile) => profile.id)));
-    onAddProfile();
+  const openConnection = (profile: AgentProfile) => {
+    invalidateProbe(profile.id);
+    clearCommandDraft(profile.id);
+    setCommandEditing((prev) => ({ ...prev, [profile.id]: false }));
+    setDraft({ profile: cloneProfile(profile), isNew: false });
+    setConnectionId(profile.id);
+  };
+
+  const startDiscoveredDraft = (candidate: DiscoveryCandidate, hit: DiscoveryHit) => {
+    const id = newId("p-draft");
+    const profile = discoveredProfile(id, candidate, hit);
+    if (!profile) return;
+    const start = () => {
+      invalidateProbe(id);
+      setDraft({ profile, isNew: true });
+      setConnectionId(null);
+      void handleProbe(profile);
+    };
+    if (draft) {
+      discardDraft(start);
+      return;
+    }
+    start();
+  };
+
+  const saveDraft = (profile: AgentProfile) => {
+    if (!draft) return;
+    const effective = effectiveProfile(profile);
+    const gate = canSaveConnection(probeResults[effective.id]?.ok === true, effective);
+    if (!gate.ok) return;
+    const id = draft.isNew ? onAddProfile(effective) : effective.id;
+    if (!draft.isNew) onUpdateProfile(effective);
+    setConnectionId(id);
+    setConnectionFocus({ id, tick: Date.now() });
+    invalidateProbe(id);
+    clearCommandDraft(id);
+    setCommandEditing((prev) => ({ ...prev, [id]: false }));
+    setDraft(null);
   };
 
   const n = settings.contextMessages;
@@ -438,6 +553,11 @@ export function SettingsView({
 
   const renderConnectionDetail = (profile: AgentProfile) => {
     const ssh = profile.ssh;
+    const isNew = draft?.isNew ?? false;
+    const savedProfile = isNew
+      ? null
+      : (profiles.find((item) => item.id === profile.id) ?? null);
+    const connected = savedProfile?.connected ?? false;
     const snapshot = modesFor(profile.id);
     const availableModes = snapshot?.available ?? [];
     // snapshot.current 是 session/new 那一刻 agent 自己的值（那时我们还没推值），
@@ -448,40 +568,72 @@ export function SettingsView({
     const command = commandDrafts[profile.id] ?? joinCommand(profile.program, profile.args);
     const showCommand = currentPreset === null || commandEditing[profile.id];
     const probe = probeResults[profile.id];
+    const saveGate = canSaveConnection(probe?.ok === true, effectiveProfile(profile));
     const history = (recentPaths[profile.id] ?? []).filter(
       (path) => path !== (profile.cwd ?? ""),
     );
 
     return (
       <div className="mt-5 space-y-5">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <span className="flex items-center gap-1.5 text-caption text-ink-3">
-            <StatusDot status={profile.connected ? "connected" : "untested"} />
-            {profile.connected ? profile.agentName || "已连接" : "未连接"}
+            <StatusDot status={connected ? "connected" : "untested"} />
+            {connected ? savedProfile?.agentName || "已连接" : "未连接"}
           </span>
-          <Button
-            variant={profile.connected ? "secondary" : "primary"}
-            size="sm"
-            disabled={busy === profile.id}
-            onClick={() =>
-              profile.connected
-                ? void handleDisconnect(profile)
-                : void handleConnect(profile)
-            }
-          >
-            {busy === profile.id
-              ? "处理中…"
-              : profile.connected
-                ? "断开"
-                : "连接"}
-          </Button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={probeBusy === profile.id}
+              onClick={() => void handleProbe(effectiveProfile(profile))}
+            >
+              {probeBusy === profile.id ? "探测中…" : "探测"}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={!saveGate.ok}
+              title={saveGate.reason}
+              onClick={() => saveDraft(profile)}
+            >
+              保存
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => discardDraft()}>
+              取消
+            </Button>
+            {!isNew && (
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={busy === profile.id || draftDirty}
+                title={draftDirty ? "先保存再连接" : undefined}
+                onClick={() =>
+                  connected
+                    ? void handleDisconnect(profile)
+                    : void handleConnect(profile)
+                }
+              >
+                {busy === profile.id
+                  ? "处理中…"
+                  : connected
+                    ? "断开"
+                    : "连接"}
+              </Button>
+            )}
+          </div>
         </div>
+        {(!saveGate.ok || (!isNew && draftDirty)) && (
+          <div className="text-right text-caption text-ink-3">
+            {!saveGate.ok && <p>{saveGate.reason}</p>}
+            {!isNew && draftDirty && <p>先保存再连接</p>}
+          </div>
+        )}
 
         <Field label="名称" htmlFor={`connection-name-${profile.id}`}>
           <Input
             id={`connection-name-${profile.id}`}
             value={profile.name}
-            onChange={(e) => onUpdateProfile({ ...profile, name: e.target.value })}
+            onChange={(e) => patchDraft({ name: e.target.value })}
             placeholder="留空时按命令与位置自动命名"
           />
         </Field>
@@ -496,8 +648,7 @@ export function SettingsView({
             }))}
             value={profile.launch}
             onChange={(kind) =>
-              onUpdateProfile({
-                ...profile,
+              patchDraft({
                 launch: kind,
                 ssh:
                   kind === "ssh"
@@ -515,9 +666,7 @@ export function SettingsView({
                 id={`ssh-host-${profile.id}`}
                 value={ssh.host}
                 placeholder="47.109.56.213 或 ~/.ssh/config 的别名"
-                onChange={(e) =>
-                  onUpdateProfile({ ...profile, ssh: { ...ssh, host: e.target.value } })
-                }
+                onChange={(e) => patchDraft({ ssh: { ...ssh, host: e.target.value } })}
                 className="font-mono"
               />
             </Field>
@@ -527,10 +676,7 @@ export function SettingsView({
                 value={String(ssh.port)}
                 inputMode="numeric"
                 onChange={(e) =>
-                  onUpdateProfile({
-                    ...profile,
-                    ssh: { ...ssh, port: Number(e.target.value) || 22 },
-                  })
+                  patchDraft({ ssh: { ...ssh, port: Number(e.target.value) || 22 } })
                 }
                 className="font-mono"
               />
@@ -540,9 +686,7 @@ export function SettingsView({
                 id={`ssh-user-${profile.id}`}
                 value={ssh.user}
                 placeholder="root"
-                onChange={(e) =>
-                  onUpdateProfile({ ...profile, ssh: { ...ssh, user: e.target.value } })
-                }
+                onChange={(e) => patchDraft({ ssh: { ...ssh, user: e.target.value } })}
                 className="font-mono"
               />
             </Field>
@@ -552,9 +696,7 @@ export function SettingsView({
                 ariaLabel="SSH 认证方式"
                 options={SSH_AUTH_OPTIONS}
                 value={ssh.auth}
-                onChange={(auth) =>
-                  onUpdateProfile({ ...profile, ssh: { ...ssh, auth } })
-                }
+                onChange={(auth) => patchDraft({ ssh: { ...ssh, auth } })}
               />
             </div>
             <div className="md:col-span-2">
@@ -565,10 +707,7 @@ export function SettingsView({
                     value={ssh.keyPath ?? ""}
                     placeholder="C:\\Users\\you\\.ssh\\id_ed25519"
                     onChange={(e) =>
-                      onUpdateProfile({
-                        ...profile,
-                        ssh: { ...ssh, keyPath: e.target.value },
-                      })
+                      patchDraft({ ssh: { ...ssh, keyPath: e.target.value } })
                     }
                     className="font-mono"
                   />
@@ -581,10 +720,7 @@ export function SettingsView({
                     value={ssh.password ?? ""}
                     placeholder="仅本次运行有效，不落盘"
                     onChange={(e) =>
-                      onUpdateProfile({
-                        ...profile,
-                        ssh: { ...ssh, password: e.target.value },
-                      })
+                      patchDraft({ ssh: { ...ssh, password: e.target.value } })
                     }
                   />
                 </Field>
@@ -598,8 +734,8 @@ export function SettingsView({
             <span className="text-ui font-medium text-ink-2">Agent</span>
             <AgentSelect
               profile={profile}
-              onPreset={(preset) => choosePreset(profile, preset)}
-              onCustom={() => chooseCustom(profile)}
+              onPreset={(preset) => choosePreset(preset)}
+              onCustom={() => chooseCustom()}
             />
           </div>
 
@@ -610,10 +746,11 @@ export function SettingsView({
                 spellCheck={false}
                 value={command}
                 placeholder="npx -y @google/gemini-cli@0.65.0 --acp"
-                onChange={(e) =>
+                onChange={(e) => {
+                  invalidateProbe(profile.id);
                   setCommandDrafts((prev) => ({ ...prev, [profile.id]: e.target.value }))
-                }
-                onBlur={() => commitCommand(profile)}
+                }}
+                onBlur={() => commitCommand()}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
@@ -639,14 +776,6 @@ export function SettingsView({
                 编辑命令
               </Button>
             )}
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => void handleProbe(profile)}
-              disabled={probeBusy === profile.id}
-            >
-              {probeBusy === profile.id ? "探测中…" : "探测"}
-            </Button>
           </div>
 
           <p className="mt-1.5 text-caption text-ink-3">
@@ -675,7 +804,7 @@ export function SettingsView({
               )}
             </>
           )}
-          {profile.connected && (
+          {connected && (
             <p className="mt-1 text-caption text-warn-1">
               改了 agent 命令需要重新连接才会生效
             </p>
@@ -692,7 +821,7 @@ export function SettingsView({
                   ? "C:\\source\\your-project"
                   : "/mnt/c/source/your-project"
               }
-              onChange={(e) => onUpdateProfile({ ...profile, cwd: e.target.value })}
+              onChange={(e) => patchDraft({ cwd: e.target.value })}
               className="font-mono"
             />
           </Field>
@@ -710,7 +839,7 @@ export function SettingsView({
                   size="sm"
                   className="max-w-60"
                   title={path}
-                  onClick={() => onUpdateProfile({ ...profile, cwd: path })}
+                  onClick={() => patchDraft({ cwd: path })}
                 >
                   <span className="truncate font-mono text-caption">{path}</span>
                 </Button>
@@ -731,7 +860,7 @@ export function SettingsView({
               current={profile.defaultMode ?? snapshot?.current ?? null}
               available={availableModes}
               following={profile.defaultMode == null}
-              onChoose={(modeId) => onUpdateProfile({ ...profile, defaultMode: modeId })}
+              onChoose={(modeId) => patchDraft({ defaultMode: modeId })}
             />
           </div>
           {availableModes.length === 0 && (
@@ -844,7 +973,7 @@ export function SettingsView({
                             variant="ghost"
                             size="sm"
                             className="h-6 px-2 text-caption text-accent-1"
-                            onClick={() => onUseDiscovered?.(candidate, hit)}
+                            onClick={() => startDiscoveredDraft(candidate, hit)}
                           >
                             用它建连接
                           </Button>
@@ -934,7 +1063,7 @@ export function SettingsView({
                   </h1>
                 </div>
 
-                {section === "connection" && connection && renderConnectionDetail(connection)}
+                {section === "connection" && draft && renderConnectionDetail(draft.profile)}
                 {section === "members" && memberDetail && (
                   <AgentUserDetail
                     key={memberDetail.user?.id ?? "new"}
@@ -959,7 +1088,7 @@ export function SettingsView({
                   <div className="mt-5">
                     <div className="flex items-center justify-between gap-3">
                       <h2 className="text-small font-medium text-ink-2">连接</h2>
-                      <Button variant="secondary" size="sm" onClick={addConnection}>
+                      <Button variant="secondary" size="sm" onClick={startNewConnection}>
                         <Plus className="size-3" />
                         新建
                       </Button>
@@ -972,7 +1101,7 @@ export function SettingsView({
                           title="还没有连接配置"
                           description="新建一个连接，填好 agent 命令与工作目录。"
                           action={
-                            <Button variant="secondary" size="sm" onClick={addConnection}>
+                            <Button variant="secondary" size="sm" onClick={startNewConnection}>
                               <Plus className="size-3" />
                               新建连接
                             </Button>
@@ -988,7 +1117,7 @@ export function SettingsView({
                               connectionRowRefs.current[profile.id] = el;
                             }}
                             type="button"
-                            onClick={() => setConnectionId(profile.id)}
+                            onClick={() => openConnection(profile)}
                             className="flex w-full items-center gap-3 rounded-card border border-line-1/70 bg-surface-1 px-3 py-2.5 text-left transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
                           >
                             <span className="min-w-0 flex-1">
@@ -1106,6 +1235,23 @@ export function SettingsView({
         </div>
       </div>
       <ConfirmDialog
+        open={discardOpen}
+        title="放弃未保存的修改"
+        body={<p>这些改动没有保存，放弃后就没了。</p>}
+        confirmLabel="放弃"
+        cancelLabel="继续编辑"
+        onConfirm={() => {
+          const after = pendingDiscardRef.current;
+          pendingDiscardRef.current = null;
+          setDiscardOpen(false);
+          closeDraft(after ?? undefined);
+        }}
+        onCancel={() => {
+          pendingDiscardRef.current = null;
+          setDiscardOpen(false);
+        }}
+      />
+      <ConfirmDialog
         open={confirmDeleteId !== null}
         title="删除连接"
         body={
@@ -1123,6 +1269,8 @@ export function SettingsView({
           onRemoveProfile(confirmDeleteId);
           setConfirmDeleteId(null);
           setConnectionId(null);
+          // 删掉的那条可能正开着（draft 是它的副本），不清掉会留下一个指向已删 id 的详情
+          setDraft(null);
         }}
         onCancel={() => setConfirmDeleteId(null)}
       />
