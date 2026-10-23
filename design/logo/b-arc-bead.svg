@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- B 弧+点：一条 270° 的弧，末端一颗实心点 = 轨迹上的“现在” -->
+  <g transform="translate(-5.0 -5.0)" fill="none" stroke="currentColor" stroke-linecap="round">
+    <path d="M 285.7 738.3 A 320 320 0 1 1 738.3 738.3" stroke-width="120"/>
+  </g>
+  <circle cx="738.3" cy="738.3" r="104" fill="currentColor"/>
+</svg>

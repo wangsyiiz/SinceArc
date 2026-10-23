@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- A-16px：一条弧更粗 + 第二弧缩短，保证 16 栅格下不糊 -->
+  <g transform="translate(46.0 70.0)" fill="none" stroke="currentColor" stroke-linecap="round">
+    <path d="M 692.8 360.3 A 236 236 0 1 1 276.0 512.0" stroke-width="130"/>
+    <path d="M 211.7 764.0 A 392 392 0 0 1 812.3 260.0" stroke-width="130"/>
+  </g>
+</svg>
