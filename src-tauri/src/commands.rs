@@ -1662,16 +1662,15 @@ async fn attach_session(
         }
         ResumeDecision::CanLoad => {
             let h = resume_handle.expect("CanLoad implies a handle");
-            let (outcome, modes) = load_resume_handle(
-                state,
+            let req = ResumeRequest {
                 profile_id,
-                handle,
-                &h.acp_session_id,
+                acp_session_id: &h.acp_session_id,
                 cwd,
-                ui_session_id.as_deref(),
-                h.agent_name.as_deref(),
-            )
-            .await;
+                ui_session_id: ui_session_id.as_deref(),
+                expected_agent_name: h.agent_name.as_deref(),
+                bind_ui_handle: true,
+            };
+            let (outcome, modes) = load_resume_handle(state, handle, &req).await;
             let session_id = match &outcome {
                 ResumeOutcome::Resumed { acp_session_id, .. } => Some(acp_session_id.clone()),
                 _ => None,
@@ -1745,15 +1744,26 @@ async fn attach_session(
 
 /// 统一恢复入口：能力检查、session/load、失败归类、等价性提示都在这里。
 /// 调用方拿到 `Unavailable` 后必须显式处理，不能自行改走新建。
+struct ResumeRequest<'a> {
+    profile_id: &'a str,
+    acp_session_id: &'a str,
+    cwd: &'a str,
+    /// 这次恢复的事件投递目标；成员会话也带群 id。
+    ui_session_id: Option<&'a str>,
+    expected_agent_name: Option<&'a str>,
+    /// 是否把这次 load 写回 ui 会话的 live 句柄。
+    /// 成员 load 必须为 false：它带的是群 id，重绑会把群的句柄换成成员的。
+    bind_ui_handle: bool,
+}
+
 async fn load_resume_handle(
     state: &AppState,
-    profile_id: &str,
     handle: &AgentHandle,
-    acp_session_id: &str,
-    cwd: &str,
-    ui_session_id: Option<&str>,
-    expected_agent_name: Option<&str>,
+    req: &ResumeRequest<'_>,
 ) -> (ResumeOutcome, Option<acp::SessionModes>) {
+    let acp_session_id = req.acp_session_id;
+    let cwd = req.cwd;
+    let ui_session_id = req.ui_session_id;
     let params = serde_json::json!({
         "sessionId": acp_session_id,
         "cwd": cwd,
@@ -1767,7 +1777,7 @@ async fn load_resume_handle(
         Ok(v) => v,
         Err(e) => {
             // 明确拒绝才算会话失效；超时/断管是环境问题，交给重连处理。
-            if matches!(e, transport::TransportError::Agent(_)) {
+            if req.bind_ui_handle && matches!(e, transport::TransportError::Agent(_)) {
                 if let Some(ui_id) = ui_session_id {
                     if let Err(db_err) = state.db.mark_acp_invalid(ui_id) {
                         tracing::warn!(target: "sincearc::ipc", error = %db_err, "标记会话失效失败");
@@ -1791,15 +1801,19 @@ async fn load_resume_handle(
         .flatten()
         .map(|u| u.id);
 
-    if let Some(ui_id) = ui_session_id {
-        if let Err(e) = state.db.bind_acp_session_with_agent(
-            ui_id,
-            acp_session_id,
-            cwd,
-            "loaded",
-            Some(&handle.outcome.agent_name),
-        ) {
-            tracing::warn!(target: "sincearc::ipc", error = %e, "记录恢复绑定失败");
+    // 成员 load 也带群会话 id（事件要投递回群），但那份 live 句柄属于群主会话：
+    // 在这里重绑会把「打开这个群时该恢复哪个 ACP 会话」悄悄换成某个成员的。
+    if req.bind_ui_handle {
+        if let Some(ui_id) = ui_session_id {
+            if let Err(e) = state.db.bind_acp_session_with_agent(
+                ui_id,
+                acp_session_id,
+                cwd,
+                "loaded",
+                Some(&handle.outcome.agent_name),
+            ) {
+                tracing::warn!(target: "sincearc::ipc", error = %e, "记录恢复绑定失败");
+            }
         }
     }
 
@@ -1807,7 +1821,7 @@ async fn load_resume_handle(
         .insert_session(
             acp_session_id.to_string(),
             SessionRecord {
-                profile_id: profile_id.to_string(),
+                profile_id: req.profile_id.to_string(),
                 cwd: cwd.to_string(),
                 ui_session_id: ui_session_id.map(str::to_string),
                 author_id,
@@ -1815,13 +1829,13 @@ async fn load_resume_handle(
         )
         .await;
     tracing::info!(
-        target: "sincearc::ipc", profile = %profile_id, session = %acp_session_id,
+        target: "sincearc::ipc", profile = %req.profile_id, session = %acp_session_id,
         "session resumed"
     );
     (
         resumed_outcome(
             acp_session_id,
-            expected_agent_name,
+            req.expected_agent_name,
             &handle.outcome.agent_name,
         ),
         modes,
@@ -2037,77 +2051,51 @@ pub async fn session_load(
     cwd: String,
     // 这次 load 是为了向哪个界面会话投递（群里 @ 成员时就是那个群）
     ui_session_id: Option<String>,
-) -> Result<Option<acp::SessionModes>, CmdError> {
+) -> Result<SessionLoadOutcome, CmdError> {
     if acp_session_id.trim().is_empty() {
         return Err(CmdError::new(50602, "session id 不能为空"));
     }
-    // 连接没建立是环境问题，不是「凭证失效」——
-    // 在这里标 invalid 会让用户以为这个 session id 废了，跑去重建一个本来有效的会话。
     let handle = state
         .get(&profile_id)
         .await
         .ok_or_else(|| CmdError::new(50400, "这条连接还没建立 —— 先连接它，再向成员发消息"))?;
-    let params = serde_json::json!({
-        "sessionId": acp_session_id,
-        "cwd": cwd,
-        "mcpServers": [],
-    });
-    let v = match handle
-        .proc
-        .request("session/load", params, Duration::from_secs(120))
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            // 只有 agent **明确拒绝**（JSON-RPC error）才算凭证失效。
-            // 超时、进程挂了、管道断了都是环境问题：标 invalid 会误导用户去重建会话，
-            // 而真正该做的是重连。
-            if matches!(e, transport::TransportError::Agent(_)) {
-                if let Some(ui_id) = ui_session_id.as_deref() {
-                    if let Err(db_err) = state.db.mark_acp_invalid(ui_id) {
-                        tracing::warn!(target: "sincearc::ipc", error = %db_err, "标记会话失效失败");
-                    }
-                }
-            }
-            return Err(CmdError::new(50402, format!("session/load 失败：{e}")));
-        }
-    };
-    let modes = acp::modes_from_response(&v);
-    if let Some(m) = &modes {
-        state.set_modes(acp_session_id.clone(), m.clone()).await;
-    }
-    // 这个 ACP 会话若是某个群成员的身份，记下作者 id —— 前端据此把回答记在成员名下，
-    // 不需要自己维护「acp → 成员」的映射表。
-    let author_id = state
-        .db
-        .agent_user_by_acp_session(&acp_session_id)
-        .ok()
-        .flatten()
-        .map(|u| u.id);
-
-    if let Some(ui_id) = ui_session_id.as_deref() {
-        state
+    let live = match ui_session_id.as_deref() {
+        Some(ui_id) => state
             .db
-            .bind_acp_session(ui_id, &acp_session_id, &cwd, "loaded")
-            .map_err(|e| CmdError::new(50000, format!("记录会话绑定失败：{e}")))?;
+            .live_handle(ui_id)
+            .map_err(|e| CmdError::new(50000, format!("读取恢复句柄失败：{e}")))?
+            .filter(|h| h.acp_session_id == acp_session_id),
+        None => None,
+    };
+    let expected_agent_name = live.as_ref().and_then(|h| h.agent_name.clone());
+    let last_event_seq = live.as_ref().and_then(|h| h.last_event_seq);
+
+    if !handle.outcome.load_session {
+        return Ok(SessionLoadOutcome {
+            resume: ResumeOutcome::Unavailable {
+                acp_session_id,
+                reason: RESUME_UNSUPPORTED.to_string(),
+            },
+            modes: None,
+            last_event_seq,
+        });
     }
 
-    state
-        .insert_session(
-            acp_session_id.clone(),
-            SessionRecord {
-                profile_id: profile_id.clone(),
-                cwd,
-                ui_session_id,
-                author_id,
-            },
-        )
-        .await;
-    tracing::info!(
-        target: "sincearc::ipc", profile = %profile_id, session = %acp_session_id,
-        "member session loaded"
-    );
-    Ok(modes)
+    let req = ResumeRequest {
+        profile_id: &profile_id,
+        acp_session_id: &acp_session_id,
+        cwd: &cwd,
+        ui_session_id: ui_session_id.as_deref(),
+        expected_agent_name: expected_agent_name.as_deref(),
+        // 成员 load 带着群会话 id，但那份 live 句柄属于群本身
+        bind_ui_handle: false,
+    };
+    let (resume, modes) = load_resume_handle(&state, &handle, &req).await;
+    Ok(SessionLoadOutcome {
+        resume,
+        modes,
+        last_event_seq,
+    })
 }
 
 #[tauri::command]
