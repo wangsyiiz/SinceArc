@@ -219,4 +219,12 @@ export interface SessionState {
 export interface ThreadSettings {
   /** @ 玩家时附带最近 N 条群聊记录，默认 5 */
   contextMessages: number;
+  theme: ThemeMode;
 }
+
+export const CONTEXT_MESSAGES_MAX = 20;
+export const CONTEXT_MESSAGES_DEFAULT = 5;
+export const DEFAULT_THREAD_SETTINGS: ThreadSettings = {
+  contextMessages: CONTEXT_MESSAGES_DEFAULT,
+  theme: "dark",
+};

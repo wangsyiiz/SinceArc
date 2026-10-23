@@ -19,19 +19,68 @@ fn app_info() -> serde_json::Value {
     })
 }
 
-pub fn run() {
+/// 日志同时写 stderr 与 `app_data_dir/logs/sincearc.log`。
+///
+/// 只写 stdout 在桌面应用里等于没记录：双击启动时没有终端，`tracing::warn!` 谁也看不见
+/// （所有者 2026-10-23：脏值不阻塞启动，但**必须留下记录**）。
+/// 这里不引 `tracing-appender`：一个追加写的小 writer 足够，少一个依赖。
+struct SinkWriter {
+    file: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
+}
+
+impl std::io::Write for SinkWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Ok(mut file) = self.file.lock() {
+            let _ = file.write_all(buf);
+        }
+        let _ = std::io::stderr().write_all(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if let Ok(mut file) = self.file.lock() {
+            let _ = file.flush();
+        }
+        std::io::stderr().flush()
+    }
+}
+
+/// 超过阈值就把旧的挪成 `.1`（只留一代），避免日志无限长。
+const LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+fn init_logging(app_dir: &std::path::Path) -> std::io::Result<()> {
+    let log_dir = app_dir.join("logs");
+    std::fs::create_dir_all(&log_dir)?;
+    let path = log_dir.join("sincearc.log");
+    if std::fs::metadata(&path).map(|m| m.len() > LOG_MAX_BYTES).unwrap_or(false) {
+        let _ = std::fs::rename(&path, log_dir.join("sincearc.log.1"));
+    }
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    let sink = std::sync::Arc::new(std::sync::Mutex::new(file));
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "sincearc=info,tauri=info".into()),
         )
+        .with_writer(move || SinkWriter { file: sink.clone() })
         .init();
 
+    tracing::info!(
+        target: "sincearc::ipc",
+        path = %path.display(),
+        "日志已挂到文件（同时写 stderr）"
+    );
+    Ok(())
+}
+
+pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             use tauri::Manager as _;
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
+            init_logging(&dir)?;
             let db = db::Db::open(&dir.join("sincearc.db"))?;
             tracing::info!(target: "sincearc::ipc", path = %dir.join("sincearc.db").display(), "db ready");
             app.manage(AppState::new(db));
@@ -101,6 +150,8 @@ pub fn run() {
             commands::session_cancel,
             commands::profiles_load,
             commands::profiles_save,
+            commands::settings_load,
+            commands::settings_save,
             commands::sessions_list,
             commands::session_upsert,
             commands::session_delete,

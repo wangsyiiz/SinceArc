@@ -83,6 +83,11 @@ CREATE TABLE IF NOT EXISTS app_meta (
   value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 -- 群聊成员模型（docs/group-chat.md）：agent user 是全局实体，锚在某条连接的一个 ACP 会话上。
 -- 同一个 (连接, 会话) 只能是一个人 —— 否则「两个人其实同一个会话」，群聊语义当场崩掉。
 CREATE TABLE IF NOT EXISTS agent_users (

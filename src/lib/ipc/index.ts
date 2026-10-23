@@ -5,3 +5,4 @@ export * from "./events";
 export * from "./domains/acp";
 export * from "./domains/session";
 export * from "./domains/member";
+export * from "./domains/settings";

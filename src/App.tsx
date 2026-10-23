@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { ActivityRail } from "@/components/ActivityRail";
 import { Composer } from "@/components/Composer";
 import { EmptyState } from "@/components/EmptyState";
@@ -35,9 +36,12 @@ import type {
   Tab,
   ThreadSettings,
 } from "@/types";
+import { DEFAULT_THREAD_SETTINGS } from "@/types";
 import {
   asCmdError,
   mentionResolve,
+  settingsLoad,
+  settingsSave,
   sessionDelete,
   sessionCancel,
   sessionMembers,
@@ -65,8 +69,21 @@ import { useSessionModes } from "@/hooks/useSessionModes";
 import { useTabs } from "@/hooks/useTabs";
 import { useTheme } from "@/hooks/useTheme";
 
+const SETTINGS_SAVE_DEBOUNCE_MS = 300;
+
 export default function App() {
-  const { theme, setTheme } = useTheme();
+  const [settings, setSettings] = useState<ThreadSettings>(DEFAULT_THREAD_SETTINGS);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const settingsSaveSeq = useRef(0);
+  const settingsPendingKey = useRef<string | null>(null);
+  const savedSettings = useRef(
+    JSON.stringify([
+      DEFAULT_THREAD_SETTINGS.contextMessages,
+      DEFAULT_THREAD_SETTINGS.theme,
+    ]),
+  );
+  useTheme(settings.theme);
   useScrollFade();
   const [mode, setMode] = useState<SidebarMode>("sessions");
   const [traceOpen, setTraceOpen] = useState(false);
@@ -77,7 +94,6 @@ export default function App() {
   const [traceTurns, setTraceTurns] = useState<TraceTurnDto[]>([]);
   const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
   const [playerFilter, setPlayerFilter] = useState<string | null>(null);
-  const [settings, setSettings] = useState<ThreadSettings>({ contextMessages: 5 });
   const [permOpen, setPermOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -96,6 +112,31 @@ export default function App() {
   const [composerH, setComposerH] = useState(128);
   /** 已发出取消请求、还在等 promptResult / promptFailed 的界面会话 */
   const [cancelling, setCancelling] = useState<Record<string, boolean>>({});
+
+
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    const key = JSON.stringify([settings.contextMessages, settings.theme]);
+    if (key === savedSettings.current && settingsPendingKey.current === null) return;
+    const seq = ++settingsSaveSeq.current;
+    settingsPendingKey.current = key;
+    const timer = window.setTimeout(() => {
+      settingsSave(settings)
+        .then(() => {
+          if (seq !== settingsSaveSeq.current) return;
+          savedSettings.current = key;
+          settingsPendingKey.current = null;
+          setSettingsError(null);
+        })
+        .catch((e) => {
+          if (seq !== settingsSaveSeq.current) return;
+          settingsPendingKey.current = null;
+          const err = asCmdError(e);
+          setSettingsError(`设置没保存成功：${err.msg}`);
+        });
+    }, SETTINGS_SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [settings, settingsLoaded]);
 
   const { profiles, activeProfile, addProfile, updateProfile, removeProfile } = useProfileStore();
   const discovery = useDiscovery(profiles);
@@ -196,7 +237,34 @@ export default function App() {
     },
     [permissions.enqueue],
   );
-  const { eventCount, lastEvent, eventLog, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission });
+  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission });
+
+  /* 设置读取放在 useAcpEvents 之后：脏值要推进它的事件流（诊断面板）。 */
+  useEffect(() => {
+    let alive = true;
+    settingsLoad()
+      .then((report) => {
+        if (!alive) return;
+        savedSettings.current = JSON.stringify([
+          report.settings.contextMessages,
+          report.settings.theme,
+        ]);
+        setSettings(report.settings);
+        // 脏值不许静默：后端已经写了日志，这里再推进诊断面板，让用户当场看得见
+        report.issues.forEach((issue) => diag(issue));
+      })
+      .catch((e) => {
+        if (!alive) return;
+        const err = asCmdError(e);
+        setSettingsError(err.msg);
+      })
+      .finally(() => {
+        if (alive) setSettingsLoaded(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [diag]);
   const activeSession = sessions.find((s) => s.id === lastSessionId);
   // 归属跟会话走，不再跟一个全局「选中连接」走：全局选中项的唯一入口（左下角列表）
   // 已经移除，靠它就等于靠一个永远空着的值
@@ -624,6 +692,24 @@ export default function App() {
     <div className="relative flex h-full flex-col overflow-hidden bg-surface-0 text-ink-1">
       <TitleBar profile={sessionProfile} cwd={cwd} />
 
+      {settingsError && (
+        <div
+          role="alert"
+          className="sc-glass mx-1 mb-1 flex items-center gap-2 rounded-card px-3 py-1.5 text-caption text-danger-1"
+        >
+          <span className="min-w-0 flex-1 break-words">{settingsError}</span>
+          <button
+            type="button"
+            aria-label="关闭"
+            title="关闭"
+            onClick={() => setSettingsError(null)}
+            className="shrink-0 rounded-mark p-1 text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
+      )}
+
       <div ref={layoutRef} className="flex min-h-0 flex-1 px-1 pb-1">
         <Sidebar
           width={sidebarW}
@@ -895,7 +981,7 @@ export default function App() {
             <SettingsView
               settings={settings}
               profiles={profiles}
-              theme={theme}
+              theme={settings.theme}
               onUpdateProfile={updateProfile}
               onAddProfile={() => addProfile()}
               discovery={discovery.outcome}
@@ -909,7 +995,7 @@ export default function App() {
               onDisconnected={permissions.dropProfile}
               modesFor={(pid) => modesByProfile[pid] ?? null}
               onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}
-              onCycleTheme={setTheme}
+              onCycleTheme={(theme) => setSettings((s) => ({ ...s, theme }))}
             />
           )}
           {activeTab?.kind === "pr" && activePr && activeRepo && (
