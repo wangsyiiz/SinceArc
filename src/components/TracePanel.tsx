@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { AlignLeft, FileText, PencilLine, Play, Search, Sparkles, ShieldAlert, Waypoints, X } from "lucide-react";
 import type { Activity, ActivityKind, Player, TraceTurn } from "@/types";
 import { cn } from "@/lib/utils";
@@ -163,14 +162,31 @@ function statusDotClass(status: TraceRow["status"]): string | undefined {
 function HoverContent({ row }: { row: TraceRow }) {
   const activity = row.activity;
   const Icon = activity ? KIND_ICON[activity.kind] : Waypoints;
-  const text = activity?.body ?? activity?.detail ?? row.meta;
+
+  /* 抬头是「这是什么」，正文是「内容」—— 两者别混。
+     思考条目的 title 在列表里被切成 42 字（列表宽度决定），如果照搬到卡片抬头，
+     看起来就像卡片里的内容也被截了；所以抬头只写「思考」，全文进正文（后端保留 8KB，含换行）。 */
+  const headline =
+    row.kind === "user"
+      ? "提问"
+      : row.kind === "reply"
+        ? `${row.playerName ?? "玩家"} 回复`
+        : activity?.kind === "thinking"
+          ? "思考"
+          : (activity?.title ?? row.title);
+  const body =
+    row.kind === "user"
+      ? row.title
+      : row.kind === "reply"
+        ? (row.meta || "回复正文在聊天区")
+        : (activity?.body ?? activity?.detail ?? row.meta);
 
   return (
     <div>
       <div className="flex items-start gap-2">
         <Icon className="mt-0.5 size-3 shrink-0 text-ink-3" />
         <div className="min-w-0 flex-1">
-          <div className="break-words text-caption font-medium text-ink-1">{row.title}</div>
+          <div className="break-words text-caption font-medium text-ink-1">{headline}</div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-micro text-ink-3">
             {row.at && <span className="font-mono">{row.at}</span>}
             {row.playerName && <span style={{ color: row.color }}>{row.playerName}</span>}
@@ -183,8 +199,8 @@ function HoverContent({ row }: { row: TraceRow }) {
           </div>
         </div>
       </div>
-      {text && (
-        <div className="mt-2 whitespace-pre-wrap break-words text-caption text-ink-2">{text}</div>
+      {body && (
+        <div className="mt-2 whitespace-pre-wrap break-words text-caption text-ink-2">{body}</div>
       )}
       {activity?.truncated && (
         <div className="mt-2 text-micro text-ink-3">已截断，仅保留最早 8KB</div>
@@ -324,14 +340,81 @@ function Mark({ row, focused, tick }: { row: TraceRow; focused: boolean; tick: n
       </>
     );
 
-  const card = hover.card(<HoverContent row={row} />);
-
   return (
     <>
       <g ref={setEl} {...hover.triggerProps(el)}>
+        {/* 命中区：圆点本身只有 7~8px，指针几乎点不中。透明 circle 只接事件、不参与绘制。
+            r=9 是逐档试出来的上限：行距 34、泳道 22，再大就会和邻行/邻道抢指针。 */}
+        <circle cx={row.x} cy={row.y} r={9} fill="transparent" />
         {glyph}
       </g>
-      {card ? createPortal(card, document.body) : null}
+      {hover.card(<HoverContent row={row} />)}
+    </>
+  );
+}
+
+/**
+ * 图视图右侧的文字列。**人眼的落点在这里**（不是 SVG 里 7~8px 的圆点），
+ * 所以 hover 卡片绑在这一行上；行 hover 面与列表视图的行一致（§3.6），
+ * 否则同一块面板里两种视图的悬停反馈不一样。
+ */
+function GraphLabelRow({
+  row: r,
+  focusId,
+  register,
+}: {
+  row: TraceRow;
+  focusId: string | null;
+  register: (id: string, el: HTMLDivElement | null) => void;
+}) {
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  const hover = useHoverCard();
+  const Icon = r.activity ? KIND_ICON[r.activity.kind] : null;
+
+  return (
+    <>
+      <div
+        ref={(node) => {
+          setEl(node);
+          register(r.id, node);
+        }}
+        {...hover.triggerProps(el)}
+        style={{ height: ROW }}
+        className={cn(
+          "flex items-center gap-1.5 rounded-mark pr-2 transition-colors hover:bg-surface-2/50",
+          r.id === focusId && "sc-row-fade",
+          r.kind === "reply" ? "text-ink-1" : "text-ink-2",
+        )}
+      >
+        {r.kind === "user" ? (
+          <>
+            <span className="shrink-0 font-mono text-micro text-ink-3">{r.at}</span>
+            <span className="truncate text-caption">{r.title}</span>
+          </>
+        ) : r.kind === "reply" ? (
+          <span className="flex min-w-0 items-baseline gap-1.5">
+            <span className="shrink-0 text-caption font-medium" style={{ color: r.color }}>
+              {r.playerName}
+            </span>
+            <span className="truncate text-caption text-ink-2">{r.meta ?? "回复"}</span>
+          </span>
+        ) : (
+          <>
+            {Icon && <Icon className="size-2.5 shrink-0 text-ink-3" />}
+            <span className="truncate text-caption">{r.title}</span>
+            {r.meta && (
+              <span className="min-w-0 truncate font-mono text-micro text-ink-3">{r.meta}</span>
+            )}
+            {r.status === "running" && (
+              <span
+                className="ml-auto size-1 shrink-0 animate-pulse rounded-full"
+                style={{ background: r.color }}
+              />
+            )}
+          </>
+        )}
+      </div>
+      {hover.card(<HoverContent row={r} />)}
     </>
   );
 }
@@ -481,52 +564,17 @@ export function TracePanel({
             </svg>
 
             <div className="min-w-0 flex-1">
-              {rows.map((r) => {
-                const Icon = r.activity ? KIND_ICON[r.activity.kind] : null;
-                return (
-                  <div
-                    key={`${r.id}:${r.id === focusId ? focusTick : 0}`}
-                    ref={(el) => {
-                      if (el) rowRefs.current.set(r.id, el);
-                      else rowRefs.current.delete(r.id);
-                    }}
-                    style={{ height: ROW }}
-                    className={cn(
-                      "flex items-center gap-1.5 pr-2",
-                      r.id === focusId && "sc-row-fade",
-                      r.kind === "reply" ? "text-ink-1" : "text-ink-2",
-                    )}
-                  >
-                    {r.kind === "user" ? (
-                      <>
-                        <span className="shrink-0 font-mono text-micro text-ink-3">{r.at}</span>
-                        <span className="truncate text-caption">{r.title}</span>
-                      </>
-                    ) : r.kind === "reply" ? (
-                      <span className="flex min-w-0 items-baseline gap-1.5">
-                        <span className="shrink-0 text-caption font-medium" style={{ color: r.color }}>
-                          {r.playerName}
-                        </span>
-                        <span className="truncate text-caption text-ink-2">{r.meta ?? "回复"}</span>
-                      </span>
-                    ) : (
-                      <>
-                        {Icon && <Icon className="size-2.5 shrink-0 text-ink-3" />}
-                        <span className="truncate text-caption">{r.title}</span>
-                        {r.meta && (
-                          <span className="min-w-0 truncate font-mono text-micro text-ink-3">{r.meta}</span>
-                        )}
-                        {r.status === "running" && (
-                          <span
-                            className="ml-auto size-1 shrink-0 animate-pulse rounded-full"
-                            style={{ background: r.color }}
-                          />
-                        )}
-                      </>
-                    )}
-                  </div>
-                );
-              })}
+              {rows.map((r) => (
+                <GraphLabelRow
+                  key={`${r.id}:${r.id === focusId ? focusTick : 0}`}
+                  row={r}
+                  focusId={focusId}
+                  register={(id, el) => {
+                    if (el) rowRefs.current.set(id, el);
+                    else rowRefs.current.delete(id);
+                  }}
+                />
+              ))}
             </div>
           </div>
         </div>
