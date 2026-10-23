@@ -4,11 +4,6 @@
  * 每条注明归属（哪个组件、为什么暂时留着），P2 逐个清。
  */
 export const ALLOWED: Record<string, { rule: string; count: number; why: string }[]> = {
-  "components/AgentUsers.tsx": [
-    { rule: "arbitrary-value", count: 52, why: "P2 成员管理表单改为令牌尺寸" },
-    { rule: "color-literal", count: 6, why: "P2 内置成员色板改为令牌" },
-    { rule: "outline-none", count: 4, why: "P2 统一输入框焦点环" },
-  ],
   "components/PrView.tsx": [
     { rule: "arbitrary-value", count: 14, why: "P2 PR 状态与按钮尺寸收敛" },
     { rule: "color-literal", count: 5, why: "P2 PR 状态色改为令牌" },
@@ -17,13 +12,5 @@ export const ALLOWED: Record<string, { rule: string; count: number; why: string 
   "components/RepoBrowser.tsx": [
     { rule: "arbitrary-value", count: 16, why: "P2 仓库列表尺寸与字号收敛" },
     { rule: "color-literal", count: 1, why: "P2 merged 状态色改为令牌" },
-  ],
-  "components/SettingsView.tsx": [
-    { rule: "arbitrary-value", count: 108, why: "P2 重写设置页时统一尺寸与字号" },
-    { rule: "native-control", count: 1, why: "P2 移除第 606 行说明注释里的 <select> 字样" },
-    { rule: "outline-none", count: 3, why: "P2 统一设置页输入框焦点环" },
-  ],
-  "mock/data.ts": [
-    { rule: "color-literal", count: 3, why: "P2 mock 玩家颜色改为令牌" },
   ],
 };

@@ -4,6 +4,7 @@ import type { AgentProfile } from "@/types";
 import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
 import { ModeSelect } from "@/components/ModeSelect";
+import { DiagnosticsPanel } from "@/components/DiagnosticsPanel";
 import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import type { ModeView } from "@/hooks/useSessionModes";
@@ -18,6 +19,8 @@ interface StatusBarProps {
   /** 调试用：累计收到的 inbound 事件数与其方法名 */
   eventCount?: number;
   lastEvent?: string;
+  /** 诊断浮层的事件流；已经在别处截断到最近 80 条 */
+  eventLog?: { at: number; text: string }[];
   /** 当前会话的审批模式；为空时状态栏不显示选择器 */
   modes?: ModeView | null;
   onChooseMode?: (modeId: string | null) => void;
@@ -35,6 +38,7 @@ export function StatusBar({
   sessionId,
   eventCount = 0,
   lastEvent,
+  eventLog = [],
   modes,
   onChooseMode,
   fallbackLabel,
@@ -55,6 +59,8 @@ export function StatusBar({
       >
         <Waypoints className="size-3.5" />
       </Button>
+
+      <DiagnosticsPanel eventLog={eventLog} />
 
       <Button
         variant="ghost"

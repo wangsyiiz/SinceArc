@@ -26,7 +26,6 @@ import { toTraceView } from "@/lib/trace-adapter";
 import { summarizeLocks } from "@/lib/locks";
 import { describeUsage } from "@/lib/usage-format";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
-import { prsByRepo } from "@/mock/data";
 import type {
   GithubPR,
   GithubRepo,
@@ -58,7 +57,7 @@ import { useAgentConnect } from "@/hooks/useAgentConnect";
 import { useDiscovery } from "@/hooks/useDiscovery";
 import { useProfileStore } from "@/hooks/useProfileStore";
 import { usePrompt } from "@/hooks/usePrompt";
-import { useRepos } from "@/hooks/useRepos";
+import { EMPTY_PRS, useRepos } from "@/hooks/useRepos";
 import { useScrollFade } from "@/hooks/useScrollFade";
 import { useSessionList } from "@/hooks/useSessionList";
 import { useSessionState } from "@/hooks/useSessionState";
@@ -104,7 +103,7 @@ export default function App() {
   const [members, setMembers] = useState<AgentUser[]>([]);
 
   /**
-   * 玩家列表：群里有成员就用成员（真实的 Agent User），没有成员才退回 mock。
+   * 玩家列表：只来自群成员（真实的 Agent User）；没有成员时保持空列表。
    * 之所以直接覆盖 `players` 这个名字：轨迹栏、@ 高亮、头像、权限弹窗全都按它取人，
    * 一处派生比到处塞 prop 更不容易漏。
    */
@@ -635,7 +634,7 @@ export default function App() {
           profiles={profiles}
           players={players}
           repos={repoList}
-          prsByRepo={prsByRepo}
+          prsByRepo={EMPTY_PRS}
           onSelect={(id) => openTab({ kind: "session", sessionId: id })}
           onNew={() => newSession()}
           onNewWithProfile={(pid) => newSession(pid)}
@@ -700,6 +699,7 @@ export default function App() {
                 sessionId={sessionProfile ? sessionsByProfile[sessionProfile.id] : undefined}
                 eventCount={eventCount}
                 lastEvent={lastEvent}
+                eventLog={eventLog}
                 modes={activeModeView}
                 fallbackLabel={activeDefaultModeLabel}
                 onChooseMode={(modeId) => {
@@ -879,7 +879,7 @@ export default function App() {
           {activeTab?.kind === "repo" && activeRepo && (
             <RepoBrowser
               repo={activeRepo}
-              prs={prsByRepo[activeRepo.id] ?? []}
+              prs={EMPTY_PRS[activeRepo.id] ?? []}
               onOpenPr={(pr) =>
                 openTab({
                   kind: "pr",
@@ -910,7 +910,6 @@ export default function App() {
               modesFor={(pid) => modesByProfile[pid] ?? null}
               onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}
               onCycleTheme={setTheme}
-              eventLog={eventLog}
             />
           )}
           {activeTab?.kind === "pr" && activePr && activeRepo && (
