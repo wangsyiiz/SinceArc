@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { agentRespondRequest, type RespondOutcome } from "@/lib/ipc";
+import { pickAllowOption, shouldAutoApprove, type AutoApproveLevel } from "@/lib/auto-approve";
 import { clog } from "@/lib/log";
+import { permissionKindLabel } from "@/lib/permission-kind";
 import type { PermissionOption, PermissionRequest } from "@/types";
 
 export interface QueueItem {
@@ -52,6 +54,13 @@ function nonEmptyString(v: unknown): string | undefined {
 function normalizeNote(note: string | null | undefined): string | null {
   const text = note?.trim() ?? "";
   return text.length > 0 ? text : null;
+}
+
+/** 开了自动同意却没动手时，要让人看得出是哪一种「没满足」。 */
+function autoSkippedReason(kind: string | null): string {
+  return permissionKindLabel(kind) === "未分类"
+    ? "未分类，需要你决定"
+    : "这条没法自动同意";
 }
 
 function toneOf(kind: string | undefined): PermissionOption["tone"] {
@@ -130,9 +139,15 @@ function parsePermissionRequest(
 
 export function usePermissions({
   onHead,
+  getAutoApprove = () => "off",
+  diag,
 }: {
   /** 队列头变化时通知 App 更新 pendingPerm 镜像 */
   onHead: (uiSid: string, request: PermissionRequest | null) => void;
+  /** 实时读取会话档位；不要传入某次渲染时的策略快照 */
+  getAutoApprove?: (uiSid: string) => AutoApproveLevel;
+  /** 自动放行时留一条诊断 */
+  diag?: (text: string) => void;
 }) {
   const [queues, setQueues] = useState<Queues>({});
   // state 是渲染用的；ref 让连续入队和异步应答都能拿到最新的不可变快照，
@@ -146,6 +161,8 @@ export function usePermissions({
   }, [onHead]);
   /** 同一会话同一时刻只让一条应答在路上，挡住双击导致的二次出队 */
   const inFlight = useRef<Record<string, string>>({});
+  /** 同一条请求的自动应答还在飞时，重复事件不再发第二次 */
+  const autoInFlight = useRef<Set<string>>(new Set());
 
   const commit = useCallback((next: Queues, changed: string[]) => {
     queuesRef.current = next;
@@ -155,8 +172,31 @@ export function usePermissions({
     }
   }, []);
 
+  const enqueueItem = useCallback(
+    (uiSid: string, item: QueueItem, skippedReason?: string) => {
+      const prev = queuesRef.current;
+      // 已过期的条目不再占队头：它们不能再被作答，留着只会挡住这一轮真正要问的那条。
+      const queue = (prev[uiSid] ?? []).filter(
+        (entry) => entry.request.expiredReason === undefined,
+      );
+      // 事件通道重复投递同一条请求时不能排两次，否则会被后端当成第二次应答拒收。
+      if (
+        queue.some(
+          (entry) => entry.profileId === item.profileId && entry.requestId === item.requestId,
+        )
+      ) {
+        return;
+      }
+      const request = skippedReason
+        ? { ...item.request, autoSkippedReason: skippedReason }
+        : item.request;
+      commit({ ...prev, [uiSid]: [...queue, { ...item, request }] }, [uiSid]);
+    },
+    [commit],
+  );
+
   const enqueue = useCallback(
-    (
+    async (
       uiSid: string,
       profileId: string,
       requestId: number,
@@ -177,9 +217,48 @@ export function usePermissions({
         requestId,
         request: parsePermissionRequest(requestId, params, playerId),
       };
-      commit({ ...prev, [uiSid]: [...queue, item] }, [uiSid]);
+
+      const level = getAutoApprove(uiSid);
+      if (level === "edits") {
+        if (shouldAutoApprove(level, item.request.kind)) {
+          const allow = pickAllowOption(item.request.options);
+          if (allow) {
+            const flightKey = `${profileId}:${requestId}`;
+            if (autoInFlight.current.has(flightKey)) return;
+            autoInFlight.current.add(flightKey);
+            try {
+              await agentRespondRequest(
+                profileId,
+                requestId,
+                { outcome: "selected", optionId: allow.id },
+                {
+                  verdict: "allow",
+                  optionId: allow.id,
+                  optionLabel: allow.label,
+                  actorMemberId: item.request.playerId || null,
+                  note: null,
+                  via: "auto:edits",
+                },
+              );
+              diag?.(`AUTO-APPROVE ui=${uiSid} id=${requestId} kind=${item.request.kind}`);
+              return;
+            } catch (e) {
+              // 失败不能把轮卡住：把请求放回队列，弹窗由 onHead 打开。
+              clog("AUTO-APPROVE-ERR", `profile=${profileId} id=${requestId} ${String(e)}`);
+            } finally {
+              autoInFlight.current.delete(flightKey);
+            }
+            enqueueItem(uiSid, item);
+            return;
+          }
+        }
+        enqueueItem(uiSid, item, autoSkippedReason(item.request.kind));
+        return;
+      }
+
+      enqueueItem(uiSid, item);
     },
-    [commit],
+    [enqueueItem, getAutoApprove, diag],
   );
 
   const current = useCallback(

@@ -207,6 +207,8 @@ export interface PermissionRequest {
    * 轮次终态或连接断开后，选项不能再作答。
    */
   expiredReason?: string;
+  /** 开了自动同意但这条请求不满足条件时，弹窗里要说明为什么没自动答。 */
+  autoSkippedReason?: string;
 }
 
 /* ---------- 右侧工作区标签 ---------- */

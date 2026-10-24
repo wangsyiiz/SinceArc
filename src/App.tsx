@@ -14,6 +14,7 @@ import { SettingsView } from "@/components/SettingsView";
 import { AgentCapabilities } from "@/components/AgentCapabilities";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { MAIN_AGENT_ID } from "@/hooks/usePrompt";
+import { autoApproveCovered, type AutoApproveLevel } from "@/lib/auto-approve";
 import { profileLabel } from "@/lib/format";
 import { pushSystemNotice } from "@/lib/notices";
 import { commandLineOf, commandsFor } from "@/extensions/registry";
@@ -100,6 +101,7 @@ export default function App() {
   const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
   const [playerFilter, setPlayerFilter] = useState<string | null>(null);
   const [permOpen, setPermOpen] = useState(false);
+  const [autoApprove, setAutoApprove] = useState<Record<string, AutoApproveLevel>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const scrollAnchorRef = useRef<{
@@ -236,7 +238,17 @@ export default function App() {
     },
     [patchSession],
   );
-  const permissions = usePermissions({ onHead: onPermHead });
+  const getAutoApprove = useCallback(
+    (uiSid: string): AutoApproveLevel => autoApprove[uiSid] ?? "off",
+    [autoApprove],
+  );
+  const permissionDiagRef = useRef<(text: string) => void>(() => {});
+  const permissionDiag = useCallback((text: string) => permissionDiagRef.current(text), []);
+  const permissions = usePermissions({
+    onHead: onPermHead,
+    getAutoApprove,
+    diag: permissionDiag,
+  });
   const onPermission = useCallback(
     (args: {
       uiSid: string;
@@ -245,7 +257,7 @@ export default function App() {
       params: unknown;
       authorId: string | null;
     }) => {
-      permissions.enqueue(
+      void permissions.enqueue(
         args.uiSid,
         args.profileId,
         args.requestId,
@@ -256,12 +268,35 @@ export default function App() {
     [permissions.enqueue],
   );
   const onPermissionsExpired = useCallback(
-    (args: { uiSid?: string; profileId: string; reason: string }) => {
+    (args: {
+      uiSid?: string;
+      profileId: string;
+      reason: string;
+      cause: "turn-end" | "disconnected";
+    }) => {
       permissions.expire(args);
+      // 规范的时间边界：连接退出即结束本次授权，重连后回到默认关闭。
+      if (args.cause === "disconnected") {
+        setAutoApprove((prev) => {
+          let changed = false;
+          const next = { ...prev };
+          for (const session of sessions) {
+            if (session.profileId === args.profileId && session.id in next) {
+              delete next[session.id];
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      }
     },
-    [permissions.expire],
+    [permissions.expire, sessions],
   );
   const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired });
+
+  useEffect(() => {
+    permissionDiagRef.current = diag;
+  }, [diag]);
 
   /** 恢复判定只有一个出口：错误态、诊断与会话头标记都从它更新。 */
   const reportResume = useCallback(
@@ -420,6 +455,25 @@ export default function App() {
         (m) => m.id === sessionProfile.defaultMode,
       )?.name ?? sessionProfile.defaultMode)
     : null;
+  const activeAutoApprove: AutoApproveLevel = lastSessionId
+    ? (autoApprove[lastSessionId] ?? "off")
+    : "off";
+  const autoApproveCoveredByAgent = autoApproveCovered(activeModeView?.current ?? null);
+  const toggleAutoApprove = useCallback(() => {
+    if (!lastSessionId) return;
+    setAutoApprove((prev) => ({
+      ...prev,
+      [lastSessionId]: (prev[lastSessionId] ?? "off") === "off" ? "edits" : "off",
+    }));
+  }, [lastSessionId]);
+  const clearAutoApprove = useCallback((uiSid: string) => {
+    setAutoApprove((prev) => {
+      if (!(uiSid in prev)) return prev;
+      const next = { ...prev };
+      delete next[uiSid];
+      return next;
+    });
+  }, []);
 
   const requestOlder = useCallback(() => {
     if (!hasMore || loadingOlder) return;
@@ -683,8 +737,11 @@ export default function App() {
     const tab = tabs.find((t) => t.id === id);
     closeTab(id);
     // 标签关掉后这条会话不会再有界面来回答权限请求，队列一并丢弃。
-    if (tab?.kind === "session" && tab.sessionId) permissions.dropSession(tab.sessionId);
-  }, [closeTab, permissions.dropSession, tabs]);
+    if (tab?.kind === "session" && tab.sessionId) {
+      permissions.dropSession(tab.sessionId);
+      clearAutoApprove(tab.sessionId);
+    }
+  }, [clearAutoApprove, closeTab, permissions.dropSession, tabs]);
 
   const removeProfileAndPerms = useCallback((id: string) => {
     removeProfile(id);
@@ -735,6 +792,7 @@ export default function App() {
       setSessions((list) => list.filter((x) => x.id !== target.id));
       const tab = tabs.find((t) => t.kind === "session" && t.sessionId === target.id);
       if (tab) closeTab(tab.id);
+      clearAutoApprove(target.id);
       setPendingDelete(null);
     } catch (e) {
       const err = asCmdError(e);
@@ -1156,6 +1214,9 @@ export default function App() {
                             isStopping ? "正在停止…" : "输入消息，@ 玩家提问…"
                           }
                           players={players}
+                          autoApprove={activeAutoApprove}
+                          autoApproveCovered={autoApproveCoveredByAgent}
+                          onToggleAutoApprove={toggleAutoApprove}
                         />
                       </div>
                     </div>

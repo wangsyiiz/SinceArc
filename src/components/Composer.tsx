@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Square, Paperclip } from "lucide-react";
 import type { Player } from "@/types";
+import type { AutoApproveLevel } from "@/lib/auto-approve";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/Button";
 
@@ -10,9 +11,22 @@ interface ComposerProps {
   onStop: () => void;
   placeholder?: string;
   players?: Player[];
+  autoApprove?: AutoApproveLevel;
+  /** agent 档为 accept_edits / dont_ask：客户端这道闸被覆盖 */
+  autoApproveCovered?: boolean;
+  onToggleAutoApprove?: () => void;
 }
 
-export function Composer({ busy, onSend, onStop, placeholder, players = [] }: ComposerProps) {
+export function Composer({
+  busy,
+  onSend,
+  onStop,
+  placeholder,
+  players = [],
+  autoApprove = "off",
+  autoApproveCovered = false,
+  onToggleAutoApprove,
+}: ComposerProps) {
   const [value, setValue] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
   /**
@@ -81,6 +95,17 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [] }: Co
   }, [value]);
 
   const canSend = value.trim().length > 0 && !busy;
+
+  const autoApproveText = autoApproveCovered
+    ? "已被 agent 档覆盖"
+    : autoApprove === "edits"
+      ? "自动同意 · 编辑"
+      : "自动同意：关";
+  const autoApproveLabel = autoApproveCovered
+    ? "自动同意已被 agent 审批档覆盖，当前不可切换"
+    : autoApprove === "edits"
+      ? "自动同意仅编辑类，已开启；点击关闭"
+      : "自动同意已关闭；点击开启编辑类自动同意";
 
   const submit = () => {
     if (!canSend) return;
@@ -191,7 +216,24 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [] }: Co
           {busy ? "agent 正在输出" : "ACP · stdio"}
         </span>
 
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            type="button"
+            disabled={autoApproveCovered}
+            aria-label={autoApproveLabel}
+            aria-pressed={!autoApproveCovered && autoApprove === "edits"}
+            onClick={onToggleAutoApprove}
+            className={cn(
+              "inline-flex h-7 shrink-0 items-center rounded-control border px-2 text-caption transition-colors",
+              autoApproveCovered
+                ? "cursor-not-allowed border-line-1 text-ink-3 opacity-45"
+                : autoApprove === "edits"
+                  ? "border-accent-1/50 bg-accent-1/10 text-accent-1 hover:bg-accent-1/15"
+                  : "border-line-1 text-ink-2 hover:bg-surface-3/50",
+            )}
+          >
+            {autoApproveText}
+          </button>
           {busy ? (
             <Button
               variant="secondary"

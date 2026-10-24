@@ -76,6 +76,12 @@ export function PermissionDialog({
         </div>
       )}
 
+      {request.autoSkippedReason && (
+        <div className="mb-3 rounded-control border border-line-1 bg-surface-2 px-2.5 py-1.5 text-small text-ink-3">
+          {request.autoSkippedReason}
+        </div>
+      )}
+
       <p>{request.detail}</p>
 
       <div className="mt-4 flex flex-col gap-1.5">

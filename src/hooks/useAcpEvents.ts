@@ -143,6 +143,8 @@ export function useAcpEvents({
     uiSid?: string;
     profileId: string;
     reason: string;
+    /** 失效的成因：界面按它决定要不要顺带清掉本会话的自动同意档（别去比对中文文案） */
+    cause: "turn-end" | "disconnected";
   }) => void;
 }) {
   const [sessionsByProfile, setSessionsByProfile] = useState<Record<string, string>>({});
@@ -235,6 +237,7 @@ export function useAcpEvents({
         onPermissionsExpired?.({
           profileId,
           reason: "连接已断开",
+          cause: "disconnected",
         });
         setSessionsByProfile((m) => {
           if (!(profileId in m)) return m;
@@ -442,6 +445,7 @@ export function useAcpEvents({
           uiSid,
           profileId,
           reason: event.kind === "promptResult" ? "这一轮已结束" : "这一轮已失败",
+          cause: "turn-end",
         });
         const st = acpSid ? streams.current[acpSid] : undefined;
         const actId = `act-stream-${acpSid ?? "x"}`;
