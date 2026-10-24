@@ -1,15 +1,18 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
-import { Check, Plus, UserMinus, Users } from "lucide-react";
+import { Check, Plus, SendHorizontal, UserMinus, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   agentUsersList,
   asCmdError,
+  delegateTask,
+  delegateWait,
   sessionMemberAdd,
   sessionMemberRemove,
   type AgentUser,
 } from "@/lib/ipc";
 import { profileLabel } from "@/lib/format";
 import type { AgentProfile } from "@/types";
+import { DelegateDialog } from "./DelegateDialog";
 
 /**
  * 群成员入口：把 Agent User 拉进当前会话（docs/group-chat.md §1）。
@@ -36,6 +39,7 @@ export function MembersMenu({
   const [users, setUsers] = useState<AgentUser[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [delegateTarget, setDelegateTarget] = useState<AgentUser | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -107,6 +111,13 @@ export function MembersMenu({
     }
   };
 
+  const submitDelegation = async (target: AgentUser, task: string) => {
+    const handle = await delegateTask(sessionId, target.id, task);
+    void delegateWait(handle.handleId, 120_000).catch((e) => {
+      console.warn("[delegate] wait failed", e);
+    });
+  };
+
   return (
     <div ref={ref} className="relative">
       <button
@@ -153,28 +164,46 @@ export function MembersMenu({
               const joined = isMember(u.id);
               const p = profiles.find((x) => x.id === u.profileId);
               return (
-                <button
+                <div
                   key={u.id}
-                  type="button"
-                  disabled={busy === u.id}
-                  onClick={() => toggle(u)}
                   className={cn(
-                    "flex w-full items-center gap-1.5 rounded-mark px-1.5 py-1 text-left transition-colors hover:bg-surface-3/45",
+                    "flex w-full items-center rounded-mark transition-colors hover:bg-surface-3/45",
                     busy === u.id && "opacity-60",
                   )}
                 >
-                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: u.color }} />
-                  <span className="shrink-0 text-caption text-ink-1">{u.name}</span>
-                  <span className="shrink-0 font-mono text-micro text-ink-3">@{u.handle}</span>
-                  <span className="min-w-0 flex-1 truncate text-micro text-ink-3">
-                    {p ? profileLabel(p) : "连接已不在"}
-                  </span>
-                  {joined ? (
-                    <UserMinus size={11} className="shrink-0 text-ink-3" />
-                  ) : (
-                    <Plus size={11} className="shrink-0 text-accent-1" />
+                  <button
+                    type="button"
+                    disabled={busy === u.id}
+                    onClick={() => toggle(u)}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 py-1 text-left"
+                  >
+                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: u.color }} />
+                    <span className="shrink-0 text-caption text-ink-1">{u.name}</span>
+                    <span className="shrink-0 font-mono text-micro text-ink-3">@{u.handle}</span>
+                    <span className="min-w-0 flex-1 truncate text-micro text-ink-3">
+                      {p ? profileLabel(p) : "连接已不在"}
+                    </span>
+                    {joined ? (
+                      <UserMinus size={11} className="shrink-0 text-ink-3" />
+                    ) : (
+                      <Plus size={11} className="shrink-0 text-accent-1" />
+                    )}
+                  </button>
+                  {joined && (
+                    <button
+                      type="button"
+                      aria-label={`派活给 ${u.name}`}
+                      title={`派活给 ${u.name}`}
+                      onClick={() => {
+                        setOpen(false);
+                        setDelegateTarget(u);
+                      }}
+                      className="mr-1 grid size-5 shrink-0 place-items-center rounded-mark text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-1"
+                    >
+                      <SendHorizontal size={11} />
+                    </button>
                   )}
-                </button>
+                </div>
               );
             })}
           </div>
@@ -191,6 +220,17 @@ export function MembersMenu({
             </p>
           )}
         </div>
+      )}
+
+      {delegateTarget && (
+        <DelegateDialog
+          open
+          targetName={delegateTarget.name}
+          profile={profiles.find((p) => p.id === delegateTarget.profileId)}
+          onClose={() => setDelegateTarget(null)}
+          onDelegated={() => setDelegateTarget(null)}
+          onSubmit={(task) => submitDelegation(delegateTarget, task)}
+        />
       )}
     </div>
   );

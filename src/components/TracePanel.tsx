@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlignLeft, FileText, PencilLine, Play, Search, Sparkles, ShieldAlert, ShieldCheck, ShieldX, Waypoints, X } from "lucide-react";
+import { AlignLeft, FileText, PencilLine, Play, Search, SendHorizontal, Sparkles, ShieldAlert, ShieldCheck, ShieldX, Waypoints, X } from "lucide-react";
 import type { Activity, ActivityKind, Player, TraceTurn } from "@/types";
 import { cn } from "@/lib/utils";
 import { useHoverCard } from "./ui/HoverCard";
@@ -156,6 +156,7 @@ const KIND_ICON: Record<ActivityKind, typeof FileText> = {
   search: Search,
   plan: ShieldAlert,
   permission: ShieldAlert,
+  delegate: SendHorizontal,
 };
 
 function activityIcon(activity?: Activity): typeof FileText {

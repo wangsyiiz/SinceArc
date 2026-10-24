@@ -97,7 +97,8 @@ export type ActivityKind =
   | "execute"
   | "search"
   | "plan"
-  | "permission";
+  | "permission"
+  | "delegate";
 
 /** cancelled = 用户中途停止；它既不是成功也不是错误，界面上不能用红色 */
 export type ActivityStatus = "running" | "ok" | "error" | "cancelled";

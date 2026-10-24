@@ -9,6 +9,8 @@ export type {
   AgentUserTestOutcome as AgentUserTestResult,
   BindingRow,
   ConnectOutcome,
+  DelegateHandleDto,
+  DelegateOutcomeDto,
   MessageRow as MessageRowDto,
   ModeChoice,
   ModeOption,

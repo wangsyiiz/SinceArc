@@ -6,6 +6,8 @@ export type { AgentUserTestOutcome } from "./AgentUserTestOutcome";
 export type { BindingRow } from "./BindingRow";
 export type { Candidate } from "./Candidate";
 export type { ConnectOutcome } from "./ConnectOutcome";
+export type { DelegateHandleDto } from "./DelegateHandleDto";
+export type { DelegateOutcomeDto } from "./DelegateOutcomeDto";
 export type { DiscoverOutcome } from "./DiscoverOutcome";
 export type { Found } from "./Found";
 export type { MessageRow } from "./MessageRow";

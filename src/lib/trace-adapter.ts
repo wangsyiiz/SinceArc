@@ -8,12 +8,14 @@ import type { TraceTurnDto } from "./ipc/types";
 import { MAIN_AGENT_ID } from "./main-agent.ts";
 import { permissionKindLabel } from "./permission-kind.ts";
 import type { Activity, ActivityKind, TraceTurn } from "@/types";
+import { delegateCapsDetail as delegateCapsDetailText } from "./delegate-target.ts";
 
 /** agent 的工具调用类型 → 面板的图标类别。 */
 function activityKindOf(item: TraceTurnDto["items"][number]): ActivityKind | null {
   if (item.kind === "thought") return "thinking";
   if (item.kind === "permission") return "permission";
   if (item.kind === "permission_decision") return "permission";
+  if (item.kind === "delegate" || item.kind === "delegate_result") return "delegate";
   if (item.kind === "tool_call") {
     const raw = String(item.payload.kind ?? "");
     if (raw === "edit" || raw === "execute" || raw === "read" || raw === "search") return raw;
@@ -35,6 +37,40 @@ function stringOf(value: unknown): string | undefined {
 
 function numberOf(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function delegateCapsDetail(payload: Record<string, unknown>): string | undefined {
+  const context = stringOf(payload.context);
+  if (context !== "inherited" && context !== "task_only") return undefined;
+  // 档位必须带成因：「只带任务描述 · 这个 agent 没报 fork 能力」——这一步就是用户
+  // 事后对得上「为什么这个 agent 带了上下文、那个没带」的地方（orchestration.md §3 落点②）。
+  return delegateCapsDetailText(context, stringOf(payload.reason));
+}
+
+function delegateTargetName(payload: Record<string, unknown>): string {
+  return stringOf(payload.targetName) ?? "成员";
+}
+
+function delegateResultTitle(targetName: string, payload: Record<string, unknown>): string {
+  const elapsed = numberOf(payload.elapsedMs);
+  return elapsed === undefined
+    ? `${targetName} 回来了`
+    : `${targetName} 回来了 · ${elapsed}ms`;
+}
+
+function delegateResultDetail(
+  payload: Record<string, unknown>,
+  fallback: string | undefined,
+): string | undefined {
+  if (stringOf(payload.status) !== "failed") return fallback;
+  return stringOf(payload.stopReason) ?? stringOf(payload.reason) ?? "失败";
+}
+
+function delegateResultStatus(payload: Record<string, unknown>): Activity["status"] {
+  const status = stringOf(payload.status);
+  if (status === "failed") return "error";
+  if (status === "finished") return "ok";
+  return "running";
 }
 
 function lineOf(value: unknown): number | undefined {
@@ -311,6 +347,14 @@ function summaryOf(
     return { body: decision.body, detail: decision.detail };
   }
 
+  if (item.kind === "delegate") {
+    return { detail: delegateCapsDetail(payload) };
+  }
+
+  if (item.kind === "delegate_result") {
+    return { detail: delegateResultDetail(payload, undefined) };
+  }
+
   return {};
 }
 
@@ -325,6 +369,8 @@ function titleOf(item: TraceTurnDto["items"][number], decision?: DecisionText): 
     return text.length > 0 ? text.slice(0, 42) : "思考";
   }
   if (item.kind === "permission_decision" && decision) return decision.title;
+  if (item.kind === "delegate") return `派活给 ${delegateTargetName(p)}`;
+  if (item.kind === "delegate_result") return delegateResultTitle(delegateTargetName(p), p);
   return String(p.title ?? "工具调用");
 }
 
@@ -347,6 +393,10 @@ export interface TraceView {
 export function toTraceView(dtos: TraceTurnDto[]): TraceView {
   const activities: Activity[] = [];
   const turns: TraceTurn[] = [];
+  const delegateSteps = new Map<
+    string,
+    { activity: Activity; detail?: string; targetName: string }
+  >();
 
   // 后端按 startedAt 倒序给（最新的先），面板要正序读
   const ordered = [...dtos].sort((a, b) => a.startedAt - b.startedAt);
@@ -358,11 +408,23 @@ export function toTraceView(dtos: TraceTurnDto[]): TraceView {
     const open = t.status === "running" || t.status === "waiting_approval";
 
     for (const item of t.items) {
+      if (item.kind === "delegate_result") {
+        const payload = recordOf(item.payload) ?? {};
+        const handleId = stringOf(payload.handleId);
+        const prior = handleId ? delegateSteps.get(handleId) : undefined;
+        if (prior) {
+          prior.activity.title = delegateResultTitle(prior.targetName, payload);
+          prior.activity.detail = delegateResultDetail(payload, prior.detail);
+          prior.activity.status = delegateResultStatus(payload);
+          continue;
+        }
+      }
+
       const kind = activityKindOf(item);
       if (!kind) continue;
+      const payload = recordOf(item.payload) ?? {};
       if (item.kind === "permission") {
-        const payload = recordOf(item.payload);
-        if (payload) rememberPermissionOptions(payload, permissionOptions);
+        rememberPermissionOptions(payload, permissionOptions);
       }
       const decision =
         item.kind === "permission_decision"
@@ -372,7 +434,7 @@ export function toTraceView(dtos: TraceTurnDto[]): TraceView {
       // 主 agent 没有 authorId（它就是「这个会话本身」），与聊天里的玩家表用同一个 id
       const playerId = item.authorId ?? MAIN_AGENT_ID;
       const id = `${t.id}-${item.seq}`;
-      activities.push({
+      const activity: Activity = {
         id,
         playerId,
         kind,
@@ -383,8 +445,27 @@ export function toTraceView(dtos: TraceTurnDto[]): TraceView {
         truncated: item.truncated,
         at: clock(item.at),
         status:
-          t.status === "failed" ? "error" : t.status === "cancelled" ? "cancelled" : "ok",
-      });
+          item.kind === "delegate_result"
+            ? delegateResultStatus(payload)
+            : item.kind === "delegate"
+              ? "running"
+              : t.status === "failed"
+                ? "error"
+                : t.status === "cancelled"
+                  ? "cancelled"
+                  : "ok",
+      };
+      activities.push(activity);
+      if (item.kind === "delegate") {
+        const handleId = stringOf(payload.handleId);
+        if (handleId) {
+          delegateSteps.set(handleId, {
+            activity,
+            detail: summary.detail,
+            targetName: delegateTargetName(payload),
+          });
+        }
+      }
       const list = lanes.get(playerId) ?? [];
       list.push(id);
       lanes.set(playerId, list);

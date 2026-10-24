@@ -249,6 +249,102 @@ test("群聊里不同 author 分到不同支线", () => {
   assert.match(view.activities[2].title, /请求权限：执行 rm/);
 });
 
+test("派活是一步进行中的活动，档位写在 detail", () => {
+  const dto = turn({
+    items: [
+      {
+        seq: 1,
+        at: t0,
+        authorId: null,
+        kind: "delegate",
+        payload: {
+          handleId: "dlg-1",
+          targetName: "Kimi",
+          task: "列出 md 文件",
+          context: "task_only",
+          reason: "fork_unsupported",
+        },
+        truncated: false,
+      },
+    ],
+  });
+  const activity = toTraceView([dto]).activities[0];
+  assert.equal(activity.kind, "delegate");
+  assert.equal(activity.title, "派活给 Kimi");
+  assert.equal(
+    activity.detail,
+    "只带任务描述 · 这个 agent 没报 fork 能力",
+    "档位必须带成因：用户要能对得上为什么这个 agent 没带上下文",
+  );
+  assert.equal(activity.status, "running", "结果没回来时派活仍在跑");
+});
+
+test("delegate_result 合进原步骤并转终态，不新增第二行", () => {
+  const dto = turn({
+    items: [
+      {
+        seq: 1,
+        at: t0,
+        authorId: null,
+        kind: "delegate",
+        payload: {
+          handleId: "dlg-1",
+          targetName: "Kimi",
+          context: "inherited",
+          reason: "fork",
+        },
+        truncated: false,
+      },
+      {
+        seq: 2,
+        at: t0 + 8123,
+        authorId: null,
+        kind: "delegate_result",
+        payload: {
+          handleId: "dlg-1",
+          status: "finished",
+          summary: "列完了",
+          elapsedMs: 8123,
+          stopReason: "end_turn",
+        },
+        truncated: false,
+      },
+    ],
+  });
+  const view = toTraceView([dto]);
+  assert.equal(view.activities.length, 1);
+  assert.equal(view.activities[0].title, "Kimi 回来了 · 8123ms");
+  assert.equal(view.activities[0].detail, "带上下文");
+  assert.equal(view.activities[0].status, "ok");
+});
+
+test("派活失败时同一步写失败原因", () => {
+  const dto = turn({
+    items: [
+      {
+        seq: 1,
+        at: t0,
+        authorId: null,
+        kind: "delegate",
+        payload: { handleId: "dlg-2", targetName: "Kimi", context: "task_only" },
+        truncated: false,
+      },
+      {
+        seq: 2,
+        at: t0 + 900,
+        authorId: null,
+        kind: "delegate_result",
+        payload: { handleId: "dlg-2", status: "failed", elapsedMs: 900, stopReason: "overloaded" },
+        truncated: false,
+      },
+    ],
+  });
+  const activity = toTraceView([dto]).activities[0];
+  assert.equal(activity.title, "Kimi 回来了 · 900ms");
+  assert.equal(activity.detail, "overloaded");
+  assert.equal(activity.status, "error");
+});
+
 test("还在跑的轮次支线不收尾，结束的收尾", () => {
   const running = toTraceView([turn({ status: "running", endedAt: null })]);
   assert.equal(running.turns[0].branches.length, 0);
