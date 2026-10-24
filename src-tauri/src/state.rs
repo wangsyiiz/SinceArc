@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 
 use crate::acp::launch::AgentProfile;
 use crate::acp::{transport, InitializeOutcome, SessionModes};
+use crate::commands::CommandDto;
 use crate::lock::WriteLocks;
 
 pub struct AgentHandle {
@@ -191,6 +192,33 @@ impl Delegates {
     }
 }
 
+/// 每个 ACP 会话最近一次报上来的命令列表。
+///
+/// 条目随 ACP 会话 id 生命周期存在；连接退出时不做清理，断开重连会覆盖。
+/// 应用退出时随内存一起消失；`session/new` / `session/load` 会重新推一份，
+/// 所以既不需要落库，也不需要按 profile 反查清理。
+#[derive(Clone, Default)]
+pub struct Commands(Arc<Mutex<HashMap<String, Vec<CommandDto>>>>);
+
+impl Commands {
+    /// 同一会话后来的命令覆盖先前的：界面要的是「当前可用列表」，不是历史。
+    pub async fn put_commands(&self, acp_session_id: &str, commands: Vec<CommandDto>) {
+        self.0
+            .lock()
+            .await
+            .insert(acp_session_id.to_string(), commands);
+    }
+
+    pub async fn commands_of(&self, acp_session_id: &str) -> Vec<CommandDto> {
+        self.0
+            .lock()
+            .await
+            .get(acp_session_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
 pub struct AppState {
     /// 全局事件总线：所有域的出站事件都从这里走（wire.rs）。
     pub bus: Arc<crate::wire::EventBus>,
@@ -207,6 +235,8 @@ pub struct AppState {
     pub turns: Arc<Turns>,
     /// 客户端拥有的 delegate 句柄；转发 task 与命令层共用。
     pub delegates: Arc<Delegates>,
+    /// ACP 会话 id → 最近一次 `availableCommands`（会话状态，不落库）。
+    pub commands: Commands,
     /// 配置与会话记账（同步 SQLite，操作都是毫秒级，直接锁用）
     pub db: Arc<crate::db::Db>,
     /// 已经请求取消、还没等到终态的 ACP 会话。
@@ -340,6 +370,7 @@ impl AppState {
             pending: PendingRequests::default(),
             turns: Arc::new(Turns::default()),
             delegates: Arc::new(Delegates::default()),
+            commands: Commands::default(),
             db: Arc::new(db),
             cancel_requested: Cancels::default(),
             locks: WriteLocks::default(),
@@ -442,9 +473,17 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::{
-        Cancels, ContextMode, ContextReason, DelegateEntry, DelegateStatus, Delegates,
-        PendingRequests, Routes, SessionRecord,
+        Cancels, CommandDto, Commands, ContextMode, ContextReason, DelegateEntry, DelegateStatus,
+        Delegates, PendingRequests, Routes, SessionRecord,
     };
+
+    fn command(name: &str) -> CommandDto {
+        CommandDto {
+            name: name.into(),
+            description: None,
+            hint: None,
+        }
+    }
 
     fn rec(ui: Option<&str>, author: Option<&str>) -> SessionRecord {
         SessionRecord {
@@ -628,5 +667,38 @@ mod tests {
         c.mark("s-1").await;
         assert!(!c.take("s-2").await);
         assert!(c.take("s-1").await);
+    }
+
+    #[tokio::test]
+    async fn commands_last_write_wins_for_the_same_acp_session() {
+        let commands = Commands::default();
+        commands
+            .put_commands("acp-1", vec![command("old")])
+            .await;
+        commands
+            .put_commands("acp-1", vec![command("new-1"), command("new-2")])
+            .await;
+
+        let got = commands.commands_of("acp-1").await;
+        assert_eq!(
+            got.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["new-1", "new-2"]
+        );
+    }
+
+    #[tokio::test]
+    async fn commands_are_scoped_per_acp_session() {
+        let commands = Commands::default();
+        commands.put_commands("acp-1", vec![command("one")]).await;
+        commands.put_commands("acp-2", vec![command("two")]).await;
+
+        assert_eq!(commands.commands_of("acp-1").await[0].name, "one");
+        assert_eq!(commands.commands_of("acp-2").await[0].name, "two");
+    }
+
+    #[tokio::test]
+    async fn commands_of_unknown_session_is_empty() {
+        let commands = Commands::default();
+        assert!(commands.commands_of("never-seen").await.is_empty());
     }
 }

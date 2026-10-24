@@ -31,6 +31,10 @@ pub const THOUGHT_MAX_BYTES: usize = 8 * 1024;
 pub const FIELD_MAX_BYTES: usize = 16 * 1024;
 /// 单条事件上限：超过就截断并标记。
 pub const PAYLOAD_MAX_BYTES: usize = 64 * 1024;
+/// `availableCommands` 最多保留多少条。
+pub const COMMANDS_MAX_ITEMS: usize = 100;
+/// `availableCommands` 归一化后的 payload 上限。
+pub const COMMANDS_MAX_BYTES: usize = 8 * 1024;
 
 /// `usage_update` 的 payload → `(used, size)`。
 ///
@@ -39,6 +43,64 @@ pub fn usage_of(payload: &Value) -> Option<(u64, u64)> {
     let used = payload.get("used")?.as_u64()?;
     let size = payload.get("size")?.as_u64()?;
     Some((used, size))
+}
+
+/// 单条命令只保留协议里对界面有用的三个字段。
+fn command_of(value: &Value) -> Option<Value> {
+    let name = value.get("name").and_then(Value::as_str)?;
+    if name.trim().is_empty() {
+        return None;
+    }
+    let mut command = serde_json::Map::new();
+    command.insert("name".to_string(), Value::String(name.to_string()));
+    if let Some(description) = value.get("description").and_then(Value::as_str) {
+        command.insert(
+            "description".to_string(),
+            Value::String(description.to_string()),
+        );
+    }
+    if let Some(hint) = value
+        .get("input")
+        .and_then(|input| input.get("hint"))
+        .and_then(Value::as_str)
+    {
+        command.insert("hint".to_string(), Value::String(hint.to_string()));
+    }
+    Some(Value::Object(command))
+}
+
+/// 归一化 `update.availableCommands`：最多 100 条，整体 payload 不超过 8KB。
+fn commands_payload(update: &Value) -> (Value, bool) {
+    let raw = update
+        .get("availableCommands")
+        .and_then(Value::as_array)
+        .map(|items| items.as_slice())
+        .unwrap_or_default();
+    let mut commands: Vec<Value> = raw
+        .iter()
+        .filter_map(command_of)
+        .take(COMMANDS_MAX_ITEMS + 1)
+        .collect();
+    let mut truncated = commands.len() > COMMANDS_MAX_ITEMS;
+    commands.truncate(COMMANDS_MAX_ITEMS);
+
+    let size = serde_json::to_string(&json!({ "commands": commands }))
+        .map(|text| text.len())
+        .unwrap_or(0);
+    if size > COMMANDS_MAX_BYTES {
+        truncated = true;
+        while !commands.is_empty() {
+            commands.pop();
+            let size = serde_json::to_string(&json!({ "commands": commands }))
+                .map(|text| text.len())
+                .unwrap_or(0);
+            if size <= COMMANDS_MAX_BYTES {
+                break;
+            }
+        }
+    }
+
+    (json!({ "commands": commands }), truncated)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -149,6 +211,19 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
         }
         "session/update" => {
             let update = params.get("update")?;
+            // 两种形状都带同一份 availableCommands：session/new 没有 sessionUpdate，
+            // session/load 是 available_commands_update。必须在取判别符前接住。
+            if update
+                .get("availableCommands")
+                .is_some_and(Value::is_array)
+            {
+                let (payload, truncated) = commands_payload(update);
+                return Some(Captured {
+                    kind: "commands",
+                    payload,
+                    truncated,
+                });
+            }
             let kind = update.get("sessionUpdate").and_then(Value::as_str)?;
             match kind {
                 "agent_thought_chunk" => {
@@ -315,6 +390,10 @@ pub fn aggregate(turns: Vec<crate::db::TurnRow>, events: Vec<crate::db::EventRow
             let mut calls: HashMap<String, usize> = HashMap::new();
 
             for e in rows {
+                // 命令是会话能力，不是用户某一轮里发生的动作，不进轨迹展示。
+                if e.kind == "commands" {
+                    continue;
+                }
                 let payload: Value = serde_json::from_str(&e.payload_json)
                     .unwrap_or_else(|_| json!({ "raw": e.payload_json }));
 

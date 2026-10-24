@@ -165,6 +165,48 @@ impl UsageDto {
     }
 }
 
+/// agent 通过 `session/update.availableCommands` 报上来的一项命令。
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct CommandDto {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub hint: Option<String>,
+}
+
+impl CommandDto {
+    fn from_value(value: &serde_json::Value) -> Option<Self> {
+        let name = value.get("name").and_then(serde_json::Value::as_str)?;
+        if name.trim().is_empty() {
+            return None;
+        }
+        Some(Self {
+            name: name.to_string(),
+            description: value
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            hint: value
+                .get("hint")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+        })
+    }
+}
+
+fn commands_from_payload(payload: &serde_json::Value) -> Vec<CommandDto> {
+    payload
+        .get("commands")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| items.iter().filter_map(CommandDto::from_value).collect())
+        .unwrap_or_default()
+}
+
 /// 整数百分比。`used > 0` 时至少给 1%，避免「明明用了一点却显示 0%」。
 fn usage_percent(used: u64, size: u64) -> u8 {
     if size == 0 {
@@ -1251,6 +1293,8 @@ fn event_author(e: &AcpEvent) -> Option<String> {
 /// 1. 不是轨迹类消息（`agent_message_chunk` 是对话正文，走 messages）；
 /// 2. 当前没有活动轮次 —— 那是 `session/load` 的重放，不是这一轮的历史；
 /// 3. 没有界面会话归属 —— 落下去就是孤儿行，谁也没法看。
+///
+/// 命令列表不走这里：它只进内存并按 ACP 会话 id 覆盖，不属于任何一轮轨迹。
 async fn record_trace(
     db: &Arc<db::Db>,
     routes: &crate::state::Routes,
@@ -1264,13 +1308,13 @@ async fn record_trace(
     let Some(acp_sid) = params.get("sessionId").and_then(serde_json::Value::as_str) else {
         return;
     };
-    let Some(turn_id) = turns.current(acp_sid).await else {
-        return;
-    };
     let Some(record) = routes.get(acp_sid).await else {
         return;
     };
     let Some(ui_sid) = record.ui_session_id.clone() else {
+        return;
+    };
+    let Some(turn_id) = turns.current(acp_sid).await else {
         return;
     };
     let input = db::EventInput {
@@ -1408,6 +1452,8 @@ pub async fn agent_connect(
     let routes = state.routes.clone();
     // delegate 正文缓冲：子会话的 chunk 要在落轨迹之前进入 registry，终态才能取摘要。
     let delegates = state.delegates.clone();
+    // 命令是 ACP 会话的运行时属性：按会话 id 覆盖，不落库、不依赖界面会话归属。
+    let commands_for_task = state.commands.clone();
     // 轨迹采集：事件落地需要库和「这一轮是谁」——两者都在 task 外面，clone 进去
     let db_for_trace = state.db.clone();
     let turns_for_trace = state.turns.clone();
@@ -1490,14 +1536,18 @@ pub async fn agent_connect(
             let payload = match msg {
                 transport::Incoming::Notification { method, params } => {
                     tracing::debug!(target: "sincearc::acp", %method, "notification");
-                    record_trace(
-                        &db_for_trace,
-                        &routes,
-                        &turns_for_trace,
-                        &method,
-                        &params,
-                    )
-                    .await;
+                    let commands_captured = crate::trace::parse(&method, &params)
+                        .filter(|captured| captured.kind == "commands");
+                    if commands_captured.is_none() {
+                        record_trace(
+                            &db_for_trace,
+                            &routes,
+                            &turns_for_trace,
+                            &method,
+                            &params,
+                        )
+                        .await;
+                    }
                     let (session_id, ui_session_id, author_id) = route(&routes, &params).await;
                     // usage 是计量而不是轨迹动作：照样落 session_events（供重启后恢复），
                     // 同时单独推一条可丢的 acp.usage，下一帧会补上。
@@ -1518,6 +1568,36 @@ pub async fn agent_connect(
                             author_id: author_id.clone(),
                         };
                         bus.emit_json("acp.usage", false, usage_meta, &dto);
+                    }
+                    // 命令列表只存在内存里，键是 ACP 会话 id；到得再早也不影响归属。
+                    // 连接退出时不清理，断开重连会覆盖；session/new / session/load 会再推。
+                    if let Some(captured) = commands_captured {
+                        if let Some(acp_sid) = session_id.as_deref() {
+                            let commands = commands_from_payload(&captured.payload);
+                            let count = commands.len();
+                            commands_for_task
+                                .put_commands(acp_sid, commands.clone())
+                                .await;
+                            let payload = serde_json::json!({
+                                "acpSessionId": acp_sid,
+                                "commands": commands,
+                            });
+                            let meta = Meta {
+                                profile_id: Some(profile_for_task.clone()),
+                                session_id: Some(acp_sid.to_string()),
+                                ..Default::default()
+                            };
+                            bus.emit_json("acp.commands", false, meta, &payload);
+                            tracing::debug!(
+                                target: "sincearc::trace", profile = %profile_for_task,
+                                acp_session = %acp_sid, count, "commands updated in memory"
+                            );
+                        } else {
+                            tracing::debug!(
+                                target: "sincearc::trace", profile = %profile_for_task,
+                                "commands dropped: notification has no acp session id"
+                            );
+                        }
                     }
                     // 只认「我们自己发起的一轮」里的写操作：`session/load` 会把上一轮
                     // 的 tool_call 重放一遍，那不是正在写，不能把提示条点亮。
@@ -2143,7 +2223,7 @@ pub async fn session_new(
         .insert_session(
             session_id.clone(),
             SessionRecord {
-                profile_id,
+                profile_id: profile_id.clone(),
                 cwd,
                 ui_session_id,
                 author_id: None,
@@ -2209,7 +2289,7 @@ pub async fn session_rebind(
         .insert_session(
             session_id.clone(),
             SessionRecord {
-                profile_id,
+                profile_id: profile_id.clone(),
                 cwd,
                 ui_session_id: Some(ui_session_id),
                 author_id: None,

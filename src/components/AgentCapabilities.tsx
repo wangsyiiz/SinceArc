@@ -3,25 +3,33 @@ import { Sparkles, Terminal } from "lucide-react";
 import type { AgentCommand, AgentProfile } from "@/types";
 import { commandPreview } from "@/extensions/registry";
 import { capsRows, type CapsGroup } from "@/lib/caps-format";
+import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import { cn } from "@/lib/utils";
 import { useAnchoredLayer } from "./ui/Menu";
 
 interface AgentCapabilitiesProps {
   profile: AgentProfile | undefined;
+  /** agent 通过 availableCommands 主动报上来的命令，只读展示 */
+  acpCommands?: CommandDto[];
   /** ACP 之外的 CLI 扩展（目前只有 hermes 配了表） */
   commands: AgentCommand[];
 }
 
 /**
- * 能力面板。两块内容严格分开，因为它们的来源不同：
+ * 能力面板。三块内容严格分开，因为它们的来源不同：
  *
  * - **协议能力**：来自握手，每个 agent 都有，换 agent 后跟着变；
  * - **ACP 之外的 CLI 扩展**：agent 自己的子命令，目前只有 hermes 配了表。
+ * - **命令**：agent 通过 `availableCommands` 主动报上来的 `/+` 命令，只读展示。
  *
  * 以前这个按钮只在「有 CLI 扩展」时出现，于是 Codex / Claude 这类 agent 根本没有入口 ——
  * 而它们的协议能力恰恰是用户最想知道的（`caps` 为 null = 还没连过，说清楚而不是藏起来）。
  */
-export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps) {
+export function AgentCapabilities({
+  profile,
+  acpCommands = [],
+  commands,
+}: AgentCapabilitiesProps) {
   const [picked, setPicked] = useState<AgentCommand | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
@@ -68,9 +76,9 @@ export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps)
   const groups: CapsGroup[] = ["输入", "会话", "MCP"];
   const supported = rows.filter((r) => r.on).length;
 
-  // 既没握手过（caps = null）也没有 CLI 扩展 → 按钮不出现。
+  // 既没握手过（caps = null）也没有 agent 命令 / CLI 扩展 → 按钮不出现。
   // 握手过但一项都不支持时仍然显示：那本身就是「这个 agent 什么也不报」的事实。
-  if (rows.length === 0 && commands.length === 0) return null;
+  if (rows.length === 0 && commands.length === 0 && acpCommands.length === 0) return null;
 
   return (
     <div className="relative">
@@ -136,6 +144,27 @@ export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps)
               })
             )}
           </div>
+
+          {acpCommands.length > 0 && (
+            <>
+              <div className="mt-1 border-t border-line-1/40 px-2 py-1.5 text-micro tracking-wide text-ink-3">
+                命令
+              </div>
+              {acpCommands.map((command) => (
+                <div key={command.name} className="px-2 py-1">
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="font-mono text-caption text-ink-1">{command.name}</span>
+                    {command.hint && (
+                      <span className="text-micro text-ink-3">{`<${command.hint}>`}</span>
+                    )}
+                  </div>
+                  {command.description && (
+                    <div className="mt-0.5 text-caption text-ink-2">{command.description}</div>
+                  )}
+                </div>
+              ))}
+            </>
+          )}
 
           {commands.length > 0 && (
             <>

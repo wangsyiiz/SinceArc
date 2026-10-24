@@ -265,8 +265,29 @@ async function handleLine(line) {
       log("session/new");
       adoptSessionCwd(message.params);
       sessionCounter += 1;
-      activeSessionId = `fake-session-${sessionCounter}`;
-      reply(message.id, { sessionId: activeSessionId });
+      const sessionId = `fake-session-${sessionCounter}`;
+      activeSessionId = sessionId;
+      reply(message.id, { sessionId });
+      // 真 agent 在 session/new 之后主动推；稍等客户端完成归属登记，避免测试竞态。
+      setTimeout(() => {
+        send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId,
+            update: {
+              availableCommands: [
+                { name: "help", description: "List available commands" },
+                {
+                  name: "model",
+                  description: "Show current model and provider, or switch models",
+                  input: { hint: "model name to switch to" },
+                },
+              ],
+            },
+          },
+        });
+      }, 100);
       return;
     case "session/prompt":
       if (promptInFlight) {

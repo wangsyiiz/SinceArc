@@ -341,7 +341,7 @@ export default function App() {
     },
     [permissions.expire, sessions],
   );
-  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired, onTraceChanged: () => setTraceTick((t) => t + 1) });
+  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, commandsByAcpSession, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired, onTraceChanged: () => setTraceTick((t) => t + 1) });
 
   useEffect(() => {
     permissionDiagRef.current = diag;
@@ -413,6 +413,10 @@ export default function App() {
   // 归属跟会话走，不再跟一个全局「选中连接」走：全局选中项的唯一入口（左下角列表）
   // 已经移除，靠它就等于靠一个永远空着的值
   const sessionProfile = profiles.find((p) => p.id === activeSession?.profileId) ?? activeProfile;
+  // 命令属于 ACP 会话，不属于 UI 会话：没有 acpSessionId 就不传，块不出现。
+  const acpCommands = activeSession?.acpSessionId
+    ? commandsByAcpSession[activeSession.acpSessionId]
+    : undefined;
   const isStopping = !!cancelling[lastSessionId] && state.busy;
 
   /**
@@ -1114,6 +1118,7 @@ export default function App() {
                 right={
                   <AgentCapabilities
                     profile={sessionProfile}
+                    acpCommands={acpCommands}
                     commands={commandsFor(
                       sessionProfile?.agentName,
                       // 只用于按命令行识别 agent，不用于展示；展示由后端 command_preview 生成。

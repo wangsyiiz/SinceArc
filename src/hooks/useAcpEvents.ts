@@ -12,6 +12,7 @@ import { clog } from "@/lib/log";
 import { applyLock } from "@/lib/locks";
 import { newId } from "@/lib/ids";
 import { pushSystemNotice } from "@/lib/notices";
+import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import type { UsageDto } from "@/lib/ipc/types.gen/UsageDto";
 import type { SessionSummary } from "@/types";
 import { MAIN_AGENT_ID } from "./usePrompt";
@@ -88,6 +89,32 @@ function asUsage(event: unknown): UsageDto | null {
   };
 }
 
+interface AcpCommandsPayload {
+  acpSessionId: string;
+  commands: CommandDto[];
+}
+
+function asCommands(event: unknown): AcpCommandsPayload | null {
+  if (!event || typeof event !== "object") return null;
+  const value = event as Partial<Record<keyof AcpCommandsPayload, unknown>>;
+  if (typeof value.acpSessionId !== "string" || !value.acpSessionId) return null;
+  if (!Array.isArray(value.commands)) return null;
+  const commands: CommandDto[] = [];
+  for (const raw of value.commands) {
+    if (!raw || typeof raw !== "object") return null;
+    const item = raw as Record<string, unknown>;
+    if (typeof item.name !== "string" || !item.name.trim()) return null;
+    const command: CommandDto = { name: item.name };
+    if (typeof item.description === "string") command.description = item.description;
+    if (typeof item.hint === "string") command.hint = item.hint;
+    commands.push(command);
+  }
+  return {
+    acpSessionId: value.acpSessionId,
+    commands,
+  };
+}
+
 /** 主 agent 优先；没有主 agent 的报告时，取占用百分比最高的成员。 */
 function pickUsage(byAuthor: Record<string, UsageDto>): UsageDto | null {
   const main = byAuthor[""];
@@ -154,6 +181,10 @@ export function useAcpEvents({
   const [eventCount, setEventCount] = useState(0);
   const [lastEvent, setLastEvent] = useState("");
   const [eventLog, setEventLog] = useState<{ at: number; text: string }[]>([]);
+  /** ACP 会话 id -> 最近一次命令列表；会话断开重连会覆盖。 */
+  const [commandsByAcpSession, setCommandsByAcpSession] = useState<
+    Record<string, CommandDto[]>
+  >({});
   const diag = useCallback((text: string) => {
     setEventLog((prev) => [...prev, { at: Date.now(), text: `· ${text}` }].slice(-80));
   }, []);
@@ -296,6 +327,19 @@ export function useAcpEvents({
               }
             : null,
         }));
+        return;
+      }
+
+      if (topic === "acp.commands") {
+        const payload = asCommands(event);
+        if (payload) {
+          setEventLog((prev) => [...prev, { at: Date.now(), text: "acp.commands" }].slice(-80));
+          setLastEvent("acp.commands");
+          setCommandsByAcpSession((prev) => ({
+            ...prev,
+            [payload.acpSessionId]: payload.commands,
+          }));
+        }
         return;
       }
 
@@ -607,6 +651,7 @@ export function useAcpEvents({
     eventLog,
     diag,
     sessionsByProfile,
+    commandsByAcpSession,
     flushStream,
     onAgentEvent,
     onSession,

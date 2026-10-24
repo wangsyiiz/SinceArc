@@ -10,6 +10,7 @@ export type {
   AgentUserRow as AgentUser,
   AgentUserTestOutcome as AgentUserTestResult,
   BindingRow,
+  CommandDto,
   ConnectOutcome,
   DelegateHandleDto,
   DelegateOutcomeDto,
