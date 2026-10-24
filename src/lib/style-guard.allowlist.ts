@@ -6,11 +6,11 @@
 /**
  * 按文件豁免某条规则。
  *
- * `color-literal` 只豁免 `lib/player-colors.ts`：那是**成员标识色板**，属于数据
- * （用户靠色相分辨"这是谁"），不是 UI 配色，不能进设计令牌体系（所有者 2026-10-23 定）。
+ * `color-literal` 只豁免 `lib/player-colors.ts` 与 `lib/agent-brands.ts`：前者是**成员标识色板**，
+ * 后者是**agent 品牌数据**，都属于数据而不是 UI 配色，不能进设计令牌体系。
  * 豁免必须按文件枚举，不许按目录、不许按"包含 color 字样"这类宽判据 ——
  * 那等于把色值禁令废掉。
  */
-export const COLOR_LITERAL_EXEMPT: string[] = ["lib/player-colors.ts"];
+export const COLOR_LITERAL_EXEMPT: string[] = ["lib/player-colors.ts", "lib/agent-brands.ts"];
 
 export const ALLOWED: Record<string, { rule: string; count: number; why: string }[]> = {};

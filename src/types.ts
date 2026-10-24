@@ -149,8 +149,16 @@ export interface TraceTurn {
 }
 
 /* ---------- 聊天流：只留「人对人的话」 ---------- */
+export interface MessageDelegate {
+  handleId: string;
+  targetMemberId: string;
+  targetName: string;
+  context: "inherited" | "task_only";
+  reason: string;
+}
+
 export type Message =
-  | { id: string; role: "user"; text: string; at: string; quoted?: QuotedRef }
+  | { id: string; role: "user"; text: string; at: string; quoted?: QuotedRef; delegate?: MessageDelegate }
   | { id: string; role: "player"; playerId: string; text: string; at: string; streaming?: boolean; /** 用户中途点了停止：已生成的部分保留，但要标出来 */ stopped?: boolean }
   | { id: string; role: "system"; text: string; at: string };
 

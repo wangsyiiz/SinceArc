@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { messagesLoad, sessionUsage } from "@/lib/ipc";
+import { messageFromPayload, messagesLoad, sessionUsage } from "@/lib/ipc";
 import { mergeMessages, minSeq } from "@/lib/messages-merge";
 import { clog } from "@/lib/log";
-import type { Message, SessionState } from "@/types";
+import type { SessionState } from "@/types";
 
 export const emptySession = (): SessionState => ({
   msgs: [],
@@ -100,7 +100,7 @@ export function useSessionState(lastSessionId: string) {
       const nextSeqs = { ...previousSeqs };
       for (const row of page.messages) nextSeqs[row.id] = row.seq;
       seqBySession.current[sid] = nextSeqs;
-      const fromDb = page.messages.map((r) => r.payload as Message);
+      const fromDb = page.messages.map((r) => messageFromPayload(r.payload));
 
       setSessionState((prev) => {
         const cur = prev[sid] ?? emptySession();
@@ -161,7 +161,7 @@ export function useSessionState(lastSessionId: string) {
     const nextSeqs = { ...(seqBySession.current[sid] ?? {}) };
     for (const row of page.messages) nextSeqs[row.id] = row.seq;
     seqBySession.current[sid] = nextSeqs;
-    const older = page.messages.map((r) => r.payload as Message);
+    const older = page.messages.map((r) => messageFromPayload(r.payload));
 
     setSessionState((prev) => {
       const cur = prev[sid] ?? emptySession();

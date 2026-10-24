@@ -2713,6 +2713,34 @@ pub async fn delegate_task(
         emit_trace_tick(&state.bus, &member.profile_id, &child_acp_session_id, &parent_ui_session_id);
     }
 
+    // 消息流里的发起行与轨迹事件是两份记录：前者回答「这话从哪来」，后者只是过程。
+    // 两者独立落库，任一份失败都不应该中断派活。
+    let delegate_message_id = format!("delegate-{}", handle_id);
+    let delegate_message = db::MessageInput {
+        id: delegate_message_id.clone(),
+        role: "user".into(),
+        author_id: None,
+        kind: "delegate".into(),
+        payload: serde_json::json!({
+            "id": delegate_message_id,
+            "role": "user",
+            "text": task,
+            "delegate": {
+                "handleId": handle_id,
+                "targetMemberId": member.id,
+                "targetName": member.name,
+                "context": context,
+                "reason": reason,
+            },
+        }),
+    };
+    if let Err(e) = state
+        .db
+        .append_messages(&parent_ui_session_id, &[delegate_message])
+    {
+        tracing::warn!(target: "sincearc::ipc", error = %e, "delegate 发起行落库失败");
+    }
+
     state
         .delegates
         .insert(DelegateEntry {

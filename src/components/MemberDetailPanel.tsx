@@ -1,33 +1,61 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
-import { Eye, SendHorizontal, UserMinus } from "lucide-react";
+import {
+  AtSign,
+  Eye,
+  FolderOpen,
+  Hash,
+  Layers,
+  Plug,
+  SendHorizontal,
+  UserMinus,
+} from "lucide-react";
 import { asCmdError, type AgentUser } from "@/lib/ipc";
+import { agentBrand } from "@/lib/agent-brands";
 import { delegateCapsLabel, delegateTargetCaps } from "@/lib/delegate-target";
 import { profileLabel } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { AgentProfile } from "@/types";
+import { AgentLogo } from "./AgentLogo";
 
-const PANEL_WIDTH = 260;
 const ANCHOR_GAP = 8;
 const VIEWPORT_MARGIN = 8;
+const ACTION_CLASS =
+  "inline-flex h-7 items-center gap-1.5 rounded-mark px-2 text-caption transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1";
 
 function DetailRow({
   label,
   value,
+  icon,
+  before,
   mono = false,
 }: {
   label: string;
   value: string;
+  icon: ReactNode;
+  before?: ReactNode;
   mono?: boolean;
 }) {
   return (
-    <div className="flex min-w-0 items-baseline gap-3">
+    <div className="flex min-w-0 items-start gap-2">
+      <span className="mt-0.5 shrink-0 text-ink-3">{icon}</span>
       <span className="shrink-0 text-caption text-ink-3">{label}</span>
       <span
-        className={cn("min-w-0 flex-1 truncate text-right text-caption text-ink-2", mono && "font-mono")}
+        className={cn(
+          "flex min-w-0 flex-1 items-start justify-end gap-1.5 text-right text-caption text-ink-2",
+          mono && "font-mono",
+        )}
         title={value}
       >
-        {value}
+        {before}
+        <span className="min-w-0 break-all">{value}</span>
       </span>
     </div>
   );
@@ -75,7 +103,7 @@ export function MemberDetailPanel({
       Math.min(centered, window.innerHeight - p.height - VIEWPORT_MARGIN),
     );
     setPos({ left, top });
-  }, [anchor, error, member.id]);
+  }, [anchor, error, member.id, member.acpSessionId, profile]);
 
   useEffect(() => {
     setError(null);
@@ -108,6 +136,11 @@ export function MemberDetailPanel({
   if (!anchor) return null;
 
   const connection = profile ? profileLabel(profile) : "连接已不在";
+  const logoAgent = profile
+    ? ([profile.agentName, profile.program, profileLabel(profile)].find(
+        (candidate): candidate is string => !!candidate && agentBrand(candidate) !== null,
+      ) ?? profileLabel(profile))
+    : null;
   const workDir = profile?.cwd?.trim() || "—";
 
   const remove = async () => {
@@ -131,7 +164,9 @@ export function MemberDetailPanel({
       aria-label={`${member.name} 的详情`}
       className="sc-glass fixed sc-z-popover rounded-control p-2.5 text-ink-1"
       style={{
-        width: PANEL_WIDTH,
+        width: "max-content",
+        minWidth: 240,
+        maxWidth: 380,
         left: pos?.left ?? 0,
         top: pos?.top ?? 0,
         visibility: pos ? "visible" : "hidden",
@@ -142,12 +177,20 @@ export function MemberDetailPanel({
       </div>
 
       <div className="space-y-1.5">
-        <DetailRow label="@短名" value={`@${member.handle}`} />
-        <DetailRow label="连接" value={connection} />
-        <DetailRow label="连接 id" value={member.profileId} />
-        <DetailRow label="ACP 会话" value={member.acpSessionId} mono />
-        <DetailRow label="工作目录" value={workDir} />
-        <DetailRow label="派活档位" value={delegateCapsLabel(delegateTargetCaps(profile))} />
+        <DetailRow icon={<AtSign size={13} />} label="@短名" value={`@${member.handle}`} />
+        <DetailRow
+          icon={<Plug size={13} />}
+          label="连接"
+          value={connection}
+          before={<AgentLogo agent={logoAgent} size={14} />}
+        />
+        <DetailRow icon={<Hash size={13} />} label="ACP 会话" value={member.acpSessionId} mono />
+        <DetailRow icon={<FolderOpen size={13} />} label="工作目录" value={workDir} />
+        <DetailRow
+          icon={<Layers size={13} />}
+          label="派活档位"
+          value={delegateCapsLabel(delegateTargetCaps(profile))}
+        />
       </div>
 
       <div className="mt-2.5 flex items-center gap-1">
@@ -156,9 +199,10 @@ export function MemberDetailPanel({
           title="派活…"
           aria-label="派活…"
           onClick={onDelegate}
-          className="grid size-7 place-items-center rounded-mark text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+          className={cn(ACTION_CLASS, "text-ink-3 hover:bg-surface-3/55 hover:text-ink-1")}
         >
           <SendHorizontal size={13} />
+          <span>派活…</span>
         </button>
         <button
           type="button"
@@ -167,13 +211,14 @@ export function MemberDetailPanel({
           aria-pressed={filtered}
           onClick={onFilter}
           className={cn(
-            "grid size-7 place-items-center rounded-mark transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1",
+            ACTION_CLASS,
             filtered
               ? "bg-surface-3/60 text-ink-1"
               : "text-ink-3 hover:bg-surface-3/55 hover:text-ink-1",
           )}
         >
           <Eye size={13} />
+          <span>只看 TA</span>
         </button>
         <button
           type="button"
@@ -181,9 +226,13 @@ export function MemberDetailPanel({
           aria-label="移出群"
           disabled={removing}
           onClick={() => void remove()}
-          className="ml-auto grid size-7 place-items-center rounded-mark text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1 disabled:cursor-not-allowed disabled:opacity-45"
+          className={cn(
+            ACTION_CLASS,
+            "ml-auto text-ink-3 hover:bg-surface-3/55 hover:text-ink-1 disabled:cursor-not-allowed disabled:opacity-45",
+          )}
         >
           <UserMinus size={13} />
+          <span>移出群</span>
         </button>
       </div>
 

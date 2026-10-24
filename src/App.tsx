@@ -20,6 +20,7 @@ import { autoApproveCovered, type AutoApproveLevel } from "@/lib/auto-approve";
 import { settingsKey } from "@/lib/settings-key";
 import { profileLabel } from "@/lib/format";
 import { pushSystemNotice } from "@/lib/notices";
+import { mergeMessages } from "@/lib/messages-merge";
 import { commandLineOf, commandsFor } from "@/extensions/registry";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
@@ -48,6 +49,8 @@ import {
   asCmdError,
   delegateTask,
   delegateWait,
+  messageFromPayload,
+  messagesLoad,
   mentionResolve,
   settingsLoad,
   settingsSave,
@@ -1338,10 +1341,32 @@ export default function App() {
           onClose={() => setDelegateTarget(null)}
           onDelegated={() => setDelegateTarget(null)}
           onSubmit={async (task) => {
-            const handle = await delegateTask(lastSessionId, delegateTarget.id, task);
-            void delegateWait(handle.handleId, 120_000).catch((e) => {
-              console.warn("[delegate] wait failed", e);
-            });
+            const sid = lastSessionId;
+            const handle = await delegateTask(sid, delegateTarget.id, task);
+            void messagesLoad(sid)
+              .then((page) => {
+                const fromDb = page.messages.map((row) => messageFromPayload(row.payload));
+                const seqs: Record<string, number> = {};
+                for (const row of page.messages) seqs[row.id] = row.seq;
+                patchSession(sid, (s) => ({
+                  ...s,
+                  msgs: mergeMessages(s.msgs, fromDb, seqs),
+                }));
+              })
+              .catch((e) => console.warn("[delegate] messages refresh failed", e));
+            void delegateWait(handle.handleId, 120_000)
+              .then((outcome) => {
+                if (outcome.status === "failed") {
+                  pushSystemNotice(
+                    patchSession,
+                    sid,
+                    `这条派活没成功：${outcome.stopReason ?? "原因不明"}`,
+                  );
+                }
+              })
+              .catch(() => {
+                // 超时/异常不写消息，轨迹那一步已经写着进行中
+              });
           }}
         />
       )}

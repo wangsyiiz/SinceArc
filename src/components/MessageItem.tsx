@@ -1,6 +1,8 @@
-import { FileText, GitPullRequest, CircleDot } from "lucide-react";
+import { useState } from "react";
+import { FileText, GitPullRequest, CircleDot, SendHorizontal } from "lucide-react";
 import type { Message, Player, QuotedRef } from "@/types";
 import { cn } from "@/lib/utils";
+import { delegateCapsDetail } from "@/lib/delegate-target";
 import { PlayerAvatar } from "./PlayerAvatar";
 
 /**
@@ -50,6 +52,8 @@ function QuoteBlock({ quoted }: { quoted: QuotedRef }) {
 }
 
 export function MessageItem({ message, players }: { message: Message; players: Player[] }) {
+  const [delegateExpanded, setDelegateExpanded] = useState(false);
+
   if (message.role === "system") {
     return (
       <div className="flex justify-center py-0.5">
@@ -61,6 +65,34 @@ export function MessageItem({ message, players }: { message: Message; players: P
   }
 
   if (message.role === "user") {
+    if (message.delegate) {
+      return (
+        <button
+          type="button"
+          aria-expanded={delegateExpanded}
+          onClick={() => setDelegateExpanded((expanded) => !expanded)}
+          className="flex w-full flex-col gap-1 border-l-2 border-line-1/60 pl-2.5 text-left"
+        >
+          <div className="flex items-center gap-1.5 text-micro text-ink-3">
+            <SendHorizontal size={12} className="shrink-0" />
+            <span className="min-w-0 truncate">
+              派活给 {message.delegate.targetName} ·{" "}
+              {delegateCapsDetail(message.delegate.context, message.delegate.reason)}
+            </span>
+          </div>
+          <div
+            title={message.text}
+            className={cn(
+              "text-ink-2",
+              delegateExpanded ? "whitespace-pre-wrap text-ui" : "truncate text-small",
+            )}
+          >
+            {renderText(message.text, players)}
+          </div>
+        </button>
+      );
+    }
+
     return (
       <div className="flex flex-col items-end gap-1.5">
         {message.quoted && <div className="max-w-3/4"><QuoteBlock quoted={message.quoted} /></div>}

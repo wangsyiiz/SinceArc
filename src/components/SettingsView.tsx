@@ -52,6 +52,8 @@ import {
 import { ModeSelect } from "@/components/ModeSelect";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { AgentUserDetail, AgentUsersList } from "@/components/AgentUsers";
+import { AgentLogo } from "@/components/AgentLogo";
+import { agentBrand } from "@/lib/agent-brands";
 import { capsRows } from "@/lib/caps-format";
 import { StatusDot } from "./ui/Badge";
 import { Button } from "./ui/Button";
@@ -164,6 +166,13 @@ function connectionTarget(profile: AgentProfile): string {
     return `${profile.distro || "WSL"}${cwd ? ` · ${cwd}` : ""}`;
   }
   return cwd || profile.program || "未配置";
+}
+
+function agentOfProfile(profile: AgentProfile): string {
+  const branded = [profile.agentName, profile.program, profile.name].find(
+    (candidate): candidate is string => !!candidate && agentBrand(candidate) !== null,
+  );
+  return branded || profile.name || profile.program || "";
 }
 
 /** 预设选择：统一走菜单原语，不再自己维护浮层与外部点击关闭。 */
@@ -1042,6 +1051,9 @@ export function SettingsView({
                     <ArrowLeft className="size-3.5" />
                     返回
                   </Button>
+                  {section === "connection" && draft && (
+                    <AgentLogo agent={agentOfProfile(draft.profile)} />
+                  )}
                   <h1 className="text-title font-medium text-ink-1">
                     {section === "connection"
                       ? "连接详情"
@@ -1108,6 +1120,7 @@ export function SettingsView({
                             onClick={() => openConnection(profile)}
                             className="flex w-full items-center gap-3 rounded-card border border-line-1/70 bg-surface-1 px-3 py-2.5 text-left transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
                           >
+                            <AgentLogo agent={agentOfProfile(profile)} />
                             <span className="min-w-0 flex-1">
                               <span className="block truncate text-ui font-medium text-ink-1">
                                 {profile.name || profile.program || "未命名连接"}

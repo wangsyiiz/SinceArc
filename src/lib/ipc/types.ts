@@ -1,6 +1,8 @@
 // 与 Rust 对应的 IPC 类型由 `cargo test --lib export_bindings` 生成到 ./types.gen/。
 // 手写副本已删除；这里只保留 Rust 侧没有对应 struct、或定义在生成范围之外的类型。
 
+import type { Message } from "@/types";
+
 export type {
   AcpEvent,
   AgentCaps,
@@ -64,6 +66,43 @@ export interface SessionUpdate {
     currentModeId?: string;
     content?: { type?: string; text?: string };
     [k: string]: unknown;
+  };
+}
+
+/**
+ * 历史行的 payload 就是前端 `Message` 的形状。派活发起行额外带 `delegate`，
+ * 这里只做一次结构校验：读不到或形状不对就原样当普通用户消息，不能让一条坏记录消失。
+ */
+export function messageFromPayload(payload: unknown): Message {
+  if (!payload || typeof payload !== "object") return payload as Message;
+  const raw = payload as Record<string, unknown>;
+  if (raw.role !== "user" || !raw.delegate || typeof raw.delegate !== "object") {
+    return payload as Message;
+  }
+
+  const delegate = raw.delegate as Record<string, unknown>;
+  const context = delegate.context;
+  const delegateContext =
+    context === "inherited" || context === "task_only" ? context : null;
+  const handleId = typeof delegate.handleId === "string" ? delegate.handleId : "";
+  if (
+    typeof delegate.targetMemberId !== "string" ||
+    typeof delegate.targetName !== "string" ||
+    delegateContext === null ||
+    typeof delegate.reason !== "string"
+  ) {
+    return payload as Message;
+  }
+
+  return {
+    ...(raw as Extract<Message, { role: "user" }>),
+    delegate: {
+      handleId,
+      targetMemberId: delegate.targetMemberId,
+      targetName: delegate.targetName,
+      context: delegateContext,
+      reason: delegate.reason,
+    },
   };
 }
 
