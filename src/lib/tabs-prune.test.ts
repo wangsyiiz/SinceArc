@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { nextActiveTabId, pruneSessionTabs } from "./tabs-prune.ts";
+import { nextActiveTabId, pruneSessionTabs, sessionIdForActiveTab } from "./tabs-prune.ts";
 import type { Tab } from "../types.ts";
 
 const tab = (id: string, sessionId: string): Tab => ({ id, kind: "session", title: id, sessionId });
@@ -33,4 +33,23 @@ test("剪掉的正好是当前标签时，落到右边邻居", () => {
 test("当前标签还在就不动", () => {
   const before = [tab("tab-a", "a"), tab("tab-b", "b")];
   assert.equal(nextActiveTabId(before, "tab-a", before), "tab-a");
+});
+
+test("关掉当前会话标签、落到右邻居时，返回邻居的 sessionId", () => {
+  const before = [tab("tab-a", "a"), tab("tab-b", "b"), tab("tab-c", "c")];
+  const after = [tab("tab-a", "a"), tab("tab-c", "c")];
+  const activeId = nextActiveTabId(after, "tab-b", before);
+  assert.equal(sessionIdForActiveTab(after, activeId), "c");
+});
+
+test("只剩非会话标签时返回 null", () => {
+  assert.equal(sessionIdForActiveTab([settings], "tab-settings"), null);
+});
+
+test("一个标签都没有时返回空字符串", () => {
+  assert.equal(sessionIdForActiveTab([], null), "");
+});
+
+test("激活的是设置页时返回 null", () => {
+  assert.equal(sessionIdForActiveTab([tab("tab-a", "a"), settings], "tab-settings"), null);
 });

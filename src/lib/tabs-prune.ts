@@ -35,3 +35,17 @@ export function nextActiveTabId(tabs: Tab[], activeId: string | null, before: Ta
   }
   return tabs[0]?.id ?? null;
 }
+
+/**
+ * 当前激活标签对应的会话 id。
+ *
+ * 返回值同时承担两个空态：
+ * - `""`：没有任何标签，调用方应清空聊天区；
+ * - `null`：激活的不是会话标签（或标签已不在），调用方不要改当前会话。
+ */
+export function sessionIdForActiveTab(tabs: Tab[], activeTabId: string | null): string | null {
+  if (activeTabId === null) return "";
+  const active = tabs.find((tab) => tab.id === activeTabId);
+  if (active?.kind !== "session") return null;
+  return active.sessionId ?? null;
+}

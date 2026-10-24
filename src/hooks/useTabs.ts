@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionSummary, Tab } from "@/types";
-import { nextActiveTabId, pruneSessionTabs } from "@/lib/tabs-prune";
+import { nextActiveTabId, pruneSessionTabs, sessionIdForActiveTab } from "@/lib/tabs-prune";
 
 export function useTabs(sessions: SessionSummary[]) {
   const [tabs, setTabs] = useState<Tab[]>([]);
@@ -8,6 +8,14 @@ export function useTabs(sessions: SessionSummary[]) {
   const [lastSessionId, setLastSessionId] = useState("");
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+
+  // 标签关闭、剪枝、切换都只保证 activeTabId 正确；这里统一把它同步成聊天区
+  // 应该渲染的会话，避免关掉当前标签后聊天区还停在被关掉的会话上。
+  useEffect(() => {
+    const sessionId = sessionIdForActiveTab(tabs, activeTabId);
+    if (sessionId === null) return;
+    setLastSessionId(sessionId);
+  }, [tabs, activeTabId]);
 
   // openTab 原本依赖数组是 []，读的是首帧的 sessions；用 ref 存最新值，
   // 但不把 sessions 塞进依赖数组，保持原来的行为。

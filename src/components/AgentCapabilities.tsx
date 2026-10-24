@@ -105,120 +105,126 @@ export function AgentCapabilities({
           role="dialog"
           aria-label="Agent 能力"
           style={style}
-          className="sc-glass sc-z-popover w-80 rounded-card p-1"
+          className="sc-glass sc-z-popover flex max-h-[min(70vh,34rem)] w-80 flex-col rounded-card p-1"
         >
-          <div className="px-2 py-1.5 text-micro tracking-wide text-ink-3">
+          <div className="shrink-0 px-2 py-1.5 text-micro tracking-wide text-ink-3">
             协议能力（握手报上来的）
           </div>
-          <div className="px-1 pb-1">
-            {rows.length === 0 ? (
-              <p className="px-1.5 py-1 text-micro text-ink-3">
-                还没连过这个 agent：能力要握手之后才知道。
-              </p>
-            ) : (
-              groups.map((group) => {
-                const groupRows = rows.filter((r) => r.group === group);
-                return (
-                  <div key={group} className="mt-1 first:mt-0">
-                    <div className="px-1.5 py-1 text-micro tracking-wide text-ink-3">
-                      {group}
-                    </div>
-                    {groupRows.map((r) => (
-                      <div
-                        key={r.key}
-                        className="flex items-center gap-1.5 px-1.5 py-0.5 text-caption"
-                      >
-                        <span
-                          className={cn(
-                            "w-3 shrink-0 text-center font-mono",
-                            r.on ? "text-ok-1" : "text-ink-3",
-                          )}
-                        >
-                          {r.on ? "✓" : "✗"}
-                        </span>
-                        <span className={r.on ? "text-ink-1" : "text-ink-3"}>{r.label}</span>
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            <div className="px-1 pb-1">
+              {rows.length === 0 ? (
+                <p className="px-1.5 py-1 text-micro text-ink-3">
+                  还没连过这个 agent：能力要握手之后才知道。
+                </p>
+              ) : (
+                groups.map((group) => {
+                  const groupRows = rows.filter((r) => r.group === group);
+                  return (
+                    <div key={group} className="mt-1 first:mt-0">
+                      <div className="px-1.5 py-1 text-micro tracking-wide text-ink-3">
+                        {group}
                       </div>
-                    ))}
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+                        {groupRows.map((r) => (
+                          <div
+                            key={r.key}
+                            className="flex items-center gap-1.5 px-1.5 py-0.5 text-caption"
+                          >
+                            <span
+                              className={cn(
+                                "w-3 shrink-0 text-center font-mono",
+                                r.on ? "text-ok-1" : "text-ink-3",
+                              )}
+                            >
+                              {r.on ? "✓" : "✗"}
+                            </span>
+                            <span className={r.on ? "text-ink-1" : "text-ink-3"}>{r.label}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {acpCommands.length > 0 && (
+              <>
+                <div className="mt-1 border-t border-line-1/40 px-2 py-1.5 text-micro tracking-wide text-ink-3">
+                  命令
+                </div>
+                {acpCommands.map((command) => (
+                  <div key={command.name} className="px-2 py-1">
+                    <div className="flex items-baseline gap-1.5">
+                      <span className="font-mono text-caption text-ink-1">{command.name}</span>
+                      {command.hint && (
+                        <span className="text-micro text-ink-3">{`<${command.hint}>`}</span>
+                      )}
+                    </div>
+                    {command.description && (
+                      <div className="mt-0.5 truncate text-caption text-ink-2">
+                        {command.description}
+                      </div>
+                    )}
                   </div>
-                );
-              })
+                ))}
+              </>
+            )}
+
+            {commands.length > 0 && (
+              <>
+                <div className="mt-1 border-t border-line-1/40 px-2 py-1.5 text-micro tracking-wide text-ink-3">
+                  ACP 之外的 {commands.length} 项（预览，未接线）
+                </div>
+                {commands.map((c) => {
+                  const active = picked?.id === c.id;
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => setPicked(active ? null : c)}
+                      className={cn(
+                        "flex w-full items-start gap-2 rounded-mark px-2 py-1.5 text-left transition-colors",
+                        active ? "sc-row-active" : "hover:bg-surface-3/45",
+                      )}
+                    >
+                      <Terminal className="mt-0.5 size-3 shrink-0 text-ink-3" />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-baseline justify-between gap-2">
+                          <span className="truncate text-ui-tight text-ink-1">{c.label}</span>
+                          <span className="shrink-0 font-mono text-micro text-ink-3">
+                            {c.argv.join(" ")}
+                          </span>
+                        </span>
+                        {c.note && (
+                          <span className="mt-0.5 block text-caption text-ink-3">{c.note}</span>
+                        )}
+                      </span>
+                    </button>
+                  );
+                })}
+
+                {picked && (
+                  <div className="mt-1 border-t border-line-1/40 px-2 py-2">
+                    <div className="text-micro text-ink-3">将执行</div>
+                    {previewLoading && (
+                      <p className="mt-1 text-caption text-ink-3">正在生成命令预览…</p>
+                    )}
+                    {previewFailed && (
+                      <p className="mt-1 text-caption text-ink-3">无法生成命令预览</p>
+                    )}
+                    {preview && (
+                      <code className="mt-1 block break-all whitespace-pre-wrap font-mono text-caption text-ink-2">
+                        {preview}
+                      </code>
+                    )}
+                    <p className="mt-1.5 text-micro text-ink-3">
+                      未接线：目前只显示命令形态，不发起调用。
+                    </p>
+                  </div>
+                )}
+              </>
             )}
           </div>
-
-          {acpCommands.length > 0 && (
-            <>
-              <div className="mt-1 border-t border-line-1/40 px-2 py-1.5 text-micro tracking-wide text-ink-3">
-                命令
-              </div>
-              {acpCommands.map((command) => (
-                <div key={command.name} className="px-2 py-1">
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="font-mono text-caption text-ink-1">{command.name}</span>
-                    {command.hint && (
-                      <span className="text-micro text-ink-3">{`<${command.hint}>`}</span>
-                    )}
-                  </div>
-                  {command.description && (
-                    <div className="mt-0.5 text-caption text-ink-2">{command.description}</div>
-                  )}
-                </div>
-              ))}
-            </>
-          )}
-
-          {commands.length > 0 && (
-            <>
-              <div className="mt-1 border-t border-line-1/40 px-2 py-1.5 text-micro tracking-wide text-ink-3">
-                ACP 之外的 {commands.length} 项（预览，未接线）
-              </div>
-              {commands.map((c) => {
-                const active = picked?.id === c.id;
-                return (
-                  <button
-                    key={c.id}
-                    onClick={() => setPicked(active ? null : c)}
-                    className={cn(
-                      "flex w-full items-start gap-2 rounded-mark px-2 py-1.5 text-left transition-colors",
-                      active ? "sc-row-active" : "hover:bg-surface-3/45",
-                    )}
-                  >
-                    <Terminal className="mt-0.5 size-3 shrink-0 text-ink-3" />
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-baseline justify-between gap-2">
-                        <span className="truncate text-ui-tight text-ink-1">{c.label}</span>
-                        <span className="shrink-0 font-mono text-micro text-ink-3">
-                          {c.argv.join(" ")}
-                        </span>
-                      </span>
-                      {c.note && (
-                        <span className="mt-0.5 block text-caption text-ink-3">{c.note}</span>
-                      )}
-                    </span>
-                  </button>
-                );
-              })}
-
-              {picked && (
-                <div className="mt-1 border-t border-line-1/40 px-2 py-2">
-                  <div className="text-micro text-ink-3">将执行</div>
-                  {previewLoading && (
-                    <p className="mt-1 text-caption text-ink-3">正在生成命令预览…</p>
-                  )}
-                  {previewFailed && (
-                    <p className="mt-1 text-caption text-ink-3">无法生成命令预览</p>
-                  )}
-                  {preview && (
-                    <code className="mt-1 block break-all whitespace-pre-wrap font-mono text-caption text-ink-2">
-                      {preview}
-                    </code>
-                  )}
-                  <p className="mt-1.5 text-micro text-ink-3">
-                    未接线：目前只显示命令形态，不发起调用。
-                  </p>
-                </div>
-              )}
-            </>
-          )}
         </div>
       )}
     </div>
