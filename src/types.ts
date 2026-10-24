@@ -223,8 +223,6 @@ export interface SessionResumeState {
   reason?: string;
   /** 恢复前本地事件水位；轨迹面板据此判断断档 */
   lastEventSeq?: number | null;
-  /** 通知条关掉后，会话头标记仍然保留 */
-  noticeDismissed?: boolean;
 }
 
 export interface SessionState {
@@ -235,6 +233,8 @@ export interface SessionState {
   pendingPerm: PermissionRequest | null;
   /** 当前会话最近一次恢复判定的结果；无标记 = 新会话/未恢复 */
   resume?: SessionResumeState | null;
+  /** 这次打开会话的连接失败；成功连接后清空，不落库 */
+  connectError?: { code: string; message: string } | null;
   /**
    * 后端推送的写提示：键是 ACP 会话 id（群聊里每个成员一个），只用于显示，不参与发送拦截。
    * 用映射而不是单个槽位，是因为多个 agent 可能同时在写。

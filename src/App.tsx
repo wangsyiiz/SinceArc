@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { X } from "lucide-react";
 import { ActivityRail } from "@/components/ActivityRail";
 import { Composer } from "@/components/Composer";
+import { ConnectErrorState } from "@/components/ConnectErrorState";
 import { EmptyState } from "@/components/EmptyState";
 import { MessageItem } from "@/components/MessageItem";
 import { PermissionDialog } from "@/components/PermissionDialog";
@@ -27,7 +28,6 @@ import { toTraceView } from "@/lib/trace-adapter";
 import { summarizeLocks } from "@/lib/locks";
 import { describeUsage } from "@/lib/usage-format";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
-import { Button } from "@/components/ui/Button";
 import type {
   AgentProfile,
   GithubPR,
@@ -61,7 +61,7 @@ import { newId } from "@/lib/ids";
 import { useAcpEvents } from "@/hooks/useAcpEvents";
 import { usePaneLayout } from "@/hooks/usePaneLayout";
 import { usePermissions } from "@/hooks/usePermissions";
-import { useAgentConnect } from "@/hooks/useAgentConnect";
+import { useAgentConnect, type EnsureResult } from "@/hooks/useAgentConnect";
 import { useDiscovery } from "@/hooks/useDiscovery";
 import { useProfileStore } from "@/hooks/useProfileStore";
 import { usePrompt } from "@/hooks/usePrompt";
@@ -244,7 +244,7 @@ export default function App() {
   );
   const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission });
 
-  /** 恢复判定只有一个出口：通知条、诊断与会话头标记都从它更新。 */
+  /** 恢复判定只有一个出口：错误态、诊断与会话头标记都从它更新。 */
   const reportResume = useCallback(
     (uiSid: string, outcome: ResumeOutcome, lastEventSeq: number | null) => {
       if (outcome.kind === "fresh") {
@@ -262,7 +262,6 @@ export default function App() {
             acpSessionId: outcome.acpSessionId,
             note: outcome.note || undefined,
             lastEventSeq,
-            noticeDismissed: true,
           },
         }));
         return;
@@ -275,7 +274,6 @@ export default function App() {
           acpSessionId: outcome.acpSessionId,
           reason: outcome.reason,
           lastEventSeq,
-          noticeDismissed: false,
         },
       }));
     },
@@ -321,6 +319,11 @@ export default function App() {
    */
   const writeHint = useMemo(() => summarizeLocks(state.locks ?? {}), [state.locks]);
   const usageLine = state.usage ? describeUsage(state.usage) : null;
+  const connectProblem: { code?: string; message: string } | null = state.connectError
+    ? { code: state.connectError.code, message: state.connectError.message }
+    : state.resume?.kind === "unavailable"
+      ? { message: state.resume.reason ?? "原因不明" }
+      : null;
 
   useEffect(() => {
     if (state.busy) return;
@@ -381,6 +384,7 @@ export default function App() {
       .then((info) => {
         onSession(pid, info.sessionId, null, sid);
         reportResume(sid, { kind: "fresh" }, null);
+        patchSession(sid, (s) => ({ ...s, connectError: null }));
         diag(`RESUME new ui=${sid} acp=${info.sessionId}`);
       })
       .catch((e) => {
@@ -495,8 +499,24 @@ export default function App() {
   // 无感启动：切到某个会话标签（含从侧栏点开）就把它的 agent 拉起来。
   //
   // 尝试记录记的是「会话 + 当时的连接状态」而不是单纯的会话 id：失败之后状态不变，
-  // 所以不会每次重渲染都重试（否则消息流会被同一条错误刷屏）；而断开一次状态就变了，
+  // 所以不会每次重渲染都重试（否则错误态会被同一个结果反复刷新）；而断开一次状态就变了，
   // 用户再点回来就能重连 —— 断开是「现在别连」，不是「永久别连」（docs/desktop-ux.md §1.5）。
+  const handleConnectResult = useCallback(
+    (sid: string, result: EnsureResult) => {
+      if (result.resume) reportResume(sid, result.resume, result.lastEventSeq);
+      const error = result.error;
+      if (error) {
+        patchSession(sid, (s) => ({
+          ...s,
+          connectError: { code: String(error.code), message: error.msg },
+        }));
+        return;
+      }
+      patchSession(sid, (s) => ({ ...s, connectError: null }));
+    },
+    [patchSession, reportResume],
+  );
+
   const autoTried = useRef<Map<string, string>>(new Map());
   useEffect(() => {
     if (activeTab?.kind !== "session" || !activeTab.sessionId) return;
@@ -507,24 +527,34 @@ export default function App() {
     if (autoTried.current.get(sid) === attemptKey) return;
     autoTried.current.set(sid, attemptKey);
     // 带上当前会话：映射要靠它，不能靠「渲染时谁打开着」
-    void ensureConnected(pid, sid).then((r) => {
-      if (r.resume) reportResume(sid, r.resume, r.lastEventSeq);
-      if (r.resume?.kind === "unavailable") return;
-      if (!r.error) return;
-      patchSession(sid, (s) => ({
-        ...s,
-        msgs: [
-          ...s.msgs,
-          {
-            id: newId("conn-err"),
-            role: "system",
-            text: `连接失败：${r.error!.code} ${r.error!.msg}`,
-            at: now(),
-          },
-        ],
-      }));
-    });
-  }, [activeTab, ensureConnected, sessions, activeProfile, sessionsByProfile, patchSession, reportResume]);
+    void ensureConnected(pid, sid).then((r) => handleConnectResult(sid, r));
+  }, [activeTab, ensureConnected, sessions, activeProfile, sessionsByProfile, handleConnectResult]);
+
+  const retryConnection = useCallback(() => {
+    const sid = lastSessionId;
+    const pid = sessionProfile?.id;
+    if (!sid || !pid) return;
+    autoTried.current.set(sid, `${pid}:${sessionsByProfile[pid] ?? "-"}`);
+    void ensureConnected(pid, sid).then((r) => handleConnectResult(sid, r));
+  }, [ensureConnected, handleConnectResult, lastSessionId, sessionProfile?.id, sessionsByProfile]);
+
+  /**
+   * 会话打不开时的那块错误态：同一块，两种落点（docs/desktop-ux.md §8）。
+   * 没有历史就占满消息区，有历史就接在最后一条消息之后 —— 视觉只有一份，避免两处走样。
+   */
+  const errorState = connectProblem ? (
+    <ConnectErrorState
+      code={connectProblem.code}
+      message={connectProblem.message}
+      resumeUnavailable={state.resume?.kind === "unavailable"}
+      newSessionBusy={resumeBusy}
+      onRetry={retryConnection}
+      onNewSession={startFreshSession}
+      onOpenSettings={
+        state.connectError ? () => openTab({ kind: "settings", title: "设置" }) : undefined
+      }
+    />
+  ) : null;
 
   /** 把 PR 作为引用塞进会话：优先复用已打开的会话标签 */
   const quotePr = useCallback(
@@ -872,6 +902,7 @@ export default function App() {
                 modes={activeModeView}
                 fallbackLabel={activeDefaultModeLabel}
                 resume={state.resume}
+                connectError={state.connectError}
                 onChooseMode={(modeId) => {
                   const acpSid = sessionProfile ? sessionsByProfile[sessionProfile.id] : undefined;
                   if (sessionProfile && acpSid) {
@@ -901,42 +932,6 @@ export default function App() {
                   />
                 }
               />
-              {state.resume?.kind === "unavailable" && !state.resume.noticeDismissed && (
-                <div
-                  role="alert"
-                  className="sc-glass mx-3 mt-2 flex items-center gap-2 rounded-card px-3 py-2 text-caption text-warn-1"
-                >
-                  <span className="min-w-0 flex-1 break-words">
-                    续不上：{state.resume.reason ?? "原因不明"}
-                  </span>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={resumeBusy}
-                    onClick={startFreshSession}
-                  >
-                    新建会话
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    aria-label="关闭"
-                    title="关闭"
-                    onClick={() =>
-                      patchSession(lastSessionId, (s) =>
-                        s.resume
-                          ? {
-                              ...s,
-                              resume: { ...s.resume, noticeDismissed: true },
-                            }
-                          : s,
-                      )
-                    }
-                  >
-                    <X className="size-3.5" />
-                  </Button>
-                </div>
-              )}
               <div className="flex min-h-0 flex-1">
                 <ActivityRail
                   players={players}
@@ -961,7 +956,7 @@ export default function App() {
                     className="h-full overflow-y-auto"
                   >
                     <div
-                      className="sc-selectable mx-auto flex max-w-3xl flex-col gap-3.5 px-4 pt-4"
+                      className="sc-selectable mx-auto flex min-h-full max-w-3xl flex-col gap-3.5 px-4 pt-4"
                       style={{ paddingBottom: composerH + 16 }}
                     >
                       {hasMore && (
@@ -974,14 +969,18 @@ export default function App() {
                         </button>
                       )}
                       {state.msgs.length === 0 ? (
-                        <div className="py-12">
-                          <EmptyState
-                            cwd={cwd}
-                            onPick={(t) => {
-                              void send(t).then(refreshTitles);
-                            }}
-                          />
-                        </div>
+                        connectProblem ? (
+                          errorState
+                        ) : (
+                          <div className="py-12">
+                            <EmptyState
+                              cwd={cwd}
+                              onPick={(t) => {
+                                void send(t).then(refreshTitles);
+                              }}
+                            />
+                          </div>
+                        )
                       ) : (
                         <>
                           {state.msgs.map((m) => (
@@ -1008,6 +1007,7 @@ export default function App() {
                                 />
                               );
                             })}
+                          {errorState}
                         </>
                       )}
                     </div>

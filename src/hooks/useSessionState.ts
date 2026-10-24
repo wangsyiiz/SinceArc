@@ -11,6 +11,7 @@ export const emptySession = (): SessionState => ({
   busy: false,
   pendingPerm: null,
   resume: null,
+  connectError: null,
   locks: {},
   usage: null,
 });

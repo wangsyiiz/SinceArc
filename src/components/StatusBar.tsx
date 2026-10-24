@@ -30,6 +30,8 @@ interface StatusBarProps {
   right?: ReactNode;
   /** 最近一次会话恢复判定；无标记表示新会话/尚未恢复 */
   resume?: SessionResumeState | null;
+  /** 最近一次连接尝试失败；用来区分“未连接”和“连接失败” */
+  connectError?: { code: string; message: string } | null;
 }
 
 export function StatusBar({
@@ -46,6 +48,7 @@ export function StatusBar({
   fallbackLabel,
   right,
   resume,
+  connectError,
 }: StatusBarProps) {
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line-1/60 px-3">
@@ -130,16 +133,18 @@ export function StatusBar({
           <span
             className="mr-1 flex min-w-0 items-center gap-1.5"
             title={
-              profile.connected
-                ? `${profile.agentName ?? "agent"} · 协议 v${profile.protocolVersion ?? 1}`
-                : "这个会话还没有连上 agent（打开会话会自动连）"
+              connectError
+                ? `连接失败：${connectError.code} ${connectError.message}`
+                : profile.connected
+                  ? `${profile.agentName ?? "agent"} · 协议 v${profile.protocolVersion ?? 1}`
+                  : "这个会话还没有连上 agent（打开会话会自动连）"
             }
           >
             <span className="max-w-30 truncate text-caption text-ink-2">{profileLabel(profile)}</span>
             <Badge
               compact
-              status={profile.connected ? "connected" : "untested"}
-              label={profile.connected ? "已连接" : "未连接"}
+              status={connectError ? "error" : profile.connected ? "connected" : "untested"}
+              label={connectError ? "连接失败" : profile.connected ? "已连接" : "未连接"}
             />
           </span>
         )}
