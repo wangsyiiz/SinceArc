@@ -3,6 +3,7 @@ import { AlignLeft, FileText, PencilLine, Play, Search, SendHorizontal, Sparkles
 import type { Activity, ActivityKind, Player, TraceTurn } from "@/types";
 import { cn } from "@/lib/utils";
 import { useHoverCard } from "./ui/HoverCard";
+import { RemovedBadge } from "./RemovedBadge";
 
 const ROW = 34;
 const MAIN_X = 13;
@@ -27,6 +28,8 @@ interface TraceRow {
   statusTitle?: string;
   activity?: Activity;
   playerName?: string;
+  removed?: boolean;
+  deleted?: boolean;
 }
 
 interface TraceEdge {
@@ -91,6 +94,8 @@ function buildTrace(turns: TraceTurn[], activities: Activity[], players: Player[
           status: a.status,
           activity: a,
           playerName: p?.name,
+          removed: p?.removed,
+          deleted: p?.deleted,
         });
         cursor += ROW;
       }
@@ -108,6 +113,8 @@ function buildTrace(turns: TraceTurn[], activities: Activity[], players: Player[
           color,
           status: "ok",
           playerName: p?.name,
+          removed: p?.removed,
+          deleted: p?.deleted,
         });
         lastY = cursor;
         cursor += ROW;
@@ -234,6 +241,7 @@ function HoverContent({ row }: { row: TraceRow }) {
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-micro text-ink-3">
             {row.at && <span className="font-mono">{row.at}</span>}
             {row.playerName && <span style={{ color: row.color }}>{row.playerName}</span>}
+            <RemovedBadge player={row} />
             {row.status && (
               <span
                 aria-hidden="true"
@@ -275,6 +283,8 @@ function ActivityListRow({ activity, player }: { activity: Activity; player?: Pl
     status: activity.status,
     activity,
     playerName: player?.name,
+    removed: player?.removed,
+    deleted: player?.deleted,
   };
 
   return (
@@ -461,6 +471,7 @@ function GraphLabelRow({
             <span className="shrink-0 text-caption font-medium" style={{ color: r.color }}>
               {r.playerName}
             </span>
+            <RemovedBadge player={r} />
             <span className="truncate text-caption text-ink-2">{r.meta ?? "回复"}</span>
           </span>
         ) : (

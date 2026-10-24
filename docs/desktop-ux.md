@@ -383,11 +383,15 @@ manifest 上不做自动断连：进程随应用退出。用户主动「断开�
 
 ### AgentLogo（连接的品牌标记）
 
-- 数据在 `src/lib/agent-brands.ts`：按 agent 名关键字匹配 → `{ label, color, icon }`；不认识的 agent 走中性色 + `Terminal` 图标。
-  **它是数据，不是设计令牌**（与 `player-colors.ts` 同一类），色值只活在这个模块里，
-  并按文件加进 `style-guard.allowlist.ts` 的豁免 —— 不许写成按目录/按关键字的宽判据。
-- 组件 `src/components/AgentLogo.tsx`：圆角方块，底色 `color-mix(in srgb, <color> 14%, transparent)`、图标同色，尺寸可传（默认 18）。
-- 用在三处：成员详情面板的「连接」行、设置页连接列表行、设置页连接详情的标题。
+- 形状用**真实的品牌 mark**，不是拿 lucide 图标假装：`src/lib/agent-brands.ts` 里的数据来自
+  simple-icons 转录的官方 24×24 path（CC0 1.0 图标文件，品牌本身仍属其所有者），
+  认得的：OpenAI / Claude / Anthropic / Google Gemini / Qwen / OpenCode。
+- **只取形状、不着色**：应用是单色体系，品牌色属于品牌自己的规范，取二手 hex 会失真 ——
+  glyph 一律 `currentColor`，底色中性（`bg-surface-3/40`）。所以 `color-literal` 不再需要为它豁免。
+- **没有官方 mark 的（Nous Research 的 Hermes、Block 的 Goose）不编图标**：落成字母牌（首字母 + 中性底）。
+  编一个「看起来像」的图标比没有更糟 —— 用户会以为那就是官方标识。
+- 组件 `src/components/AgentLogo.tsx`，尺寸可传（默认 18）；用在成员详情面板的「连接」行、
+  设置页连接列表行、设置页连接详情标题。
 
 **派活对话框**（面板底部「派活…」打开）：居中对话框。
 不做 `/delegate` 语法、不做工具栏按钮 —— 派活是「对某个人」的动作，入口就该长在那个人身上。

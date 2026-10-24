@@ -69,6 +69,8 @@ export interface Player {
   color: string;
   profileId: string;
   busy: boolean;
+  removed?: boolean;
+  deleted?: boolean;
 }
 
 export interface SessionSummary {

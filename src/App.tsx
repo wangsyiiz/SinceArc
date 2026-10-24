@@ -21,6 +21,7 @@ import { settingsKey } from "@/lib/settings-key";
 import { profileLabel } from "@/lib/format";
 import { pushSystemNotice } from "@/lib/notices";
 import { mergeMessages } from "@/lib/messages-merge";
+import { buildPlayers } from "@/lib/players";
 import { commandLineOf, commandsFor } from "@/extensions/registry";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
@@ -47,6 +48,7 @@ import type {
 import { DEFAULT_THREAD_SETTINGS } from "@/types";
 import {
   asCmdError,
+  agentUsersList,
   delegateTask,
   delegateWait,
   messageFromPayload,
@@ -162,24 +164,8 @@ export default function App() {
   const discovery = useDiscovery(profiles);
   /** 当前群的成员（docs/group-chat.md §1） */
   const [members, setMembers] = useState<AgentUser[]>([]);
-
-  /**
-   * 玩家列表：只来自群成员（真实的 Agent User）；没有成员时保持空列表。
-   * 之所以直接覆盖 `players` 这个名字：轨迹栏、@ 高亮、头像、权限弹窗全都按它取人，
-   * 一处派生比到处塞 prop 更不容易漏。
-   */
-  const players = useMemo(
-    () =>
-      members.map((u) => ({
-        id: u.id,
-        name: u.name,
-        handle: u.handle,
-        color: u.color,
-        profileId: u.profileId,
-        busy: false,
-      })),
-    [members],
-  );
+  /** 全局 Agent User：当前成员被移出后，历史作者仍能从这里解析回身份。 */
+  const [knownUsers, setKnownUsers] = useState<AgentUser[]>([]);
   /**
    * 主 agent 自己的身份（只用于渲染它说过的话）。
    * 不进左栏：左栏列的是群成员，主 agent 不是成员 —— 但它的回复也该有名字，
@@ -197,6 +183,37 @@ export default function App() {
     };
   }, [activeProfile]);
 
+  const { sessions, setSessions, reload: reloadSessions } = useSessionList();
+  const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
+  const { state, patchSession, initSession, sessionState, hasMore, loadOlder, loadingOlder, opening } =
+    useSessionState(lastSessionId);
+
+  const authorIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const message of state.msgs) {
+      if (message.role === "player" && message.playerId !== MAIN_AGENT_ID) {
+        ids.push(message.playerId);
+      }
+    }
+    for (const activity of state.acts) {
+      if (activity.playerId !== MAIN_AGENT_ID) ids.push(activity.playerId);
+    }
+    return ids;
+  }, [state.msgs, state.acts]);
+
+  /**
+   * 玩家列表 = 当前成员 + 历史里出现过的作者。
+   * 轨迹栏、@ 高亮、头像、权限弹窗全都按它取人，一处派生比到处塞 prop 更不容易漏。
+   */
+  const players = useMemo<Player[]>(
+    () =>
+      buildPlayers({ members, known: knownUsers, authorIds }).map((player) => ({
+        ...player,
+        busy: false,
+      })),
+    [members, knownUsers, authorIds],
+  );
+
   /**
    * 渲染用的完整玩家表 = 群成员 + 主 agent。
    * 消息和思考行都必须用它：思考行的 playerId 对主 agent 是 `MAIN_AGENT_ID`，
@@ -207,13 +224,11 @@ export default function App() {
     [players, mainAgentPlayer],
   );
 
-  const { sessions, setSessions, reload: reloadSessions } = useSessionList();
-  const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
-  const { state, patchSession, initSession, sessionState, hasMore, loadOlder, loadingOlder, opening } =
-    useSessionState(lastSessionId);
-
   /** 重新读当前群的成员：换群、加入、移出都走它 */
   const reloadMembers = useCallback(() => {
+    agentUsersList()
+      .then(setKnownUsers)
+      .catch((e) => console.warn("[group] load known users failed", e));
     if (!lastSessionId) {
       setMembers([]);
       return;
@@ -1257,7 +1272,7 @@ export default function App() {
                           placeholder={
                             isStopping ? "正在停止…" : "输入消息，@ 玩家提问…"
                           }
-                          players={players}
+                          players={players.filter((player) => !player.removed)}
                           autoApprove={activeAutoApprove}
                           autoApproveCovered={autoApproveCoveredByAgent}
                           onAutoApproveChange={setAutoApproveLevel}

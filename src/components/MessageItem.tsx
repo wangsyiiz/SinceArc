@@ -4,6 +4,7 @@ import type { Message, Player, QuotedRef } from "@/types";
 import { cn } from "@/lib/utils";
 import { delegateCapsDetail } from "@/lib/delegate-target";
 import { PlayerAvatar } from "./PlayerAvatar";
+import { RemovedBadge } from "./RemovedBadge";
 
 /**
  * 把 @handle 渲染成该玩家的颜色。
@@ -112,6 +113,7 @@ export function MessageItem({ message, players }: { message: Message; players: P
           <span className="text-caption font-medium" style={{ color: p?.color }}>
             {p?.name ?? "agent"}
           </span>
+          <RemovedBadge player={p} />
           <span className="font-mono text-micro text-ink-3">{message.at}</span>
         </div>
         <div
