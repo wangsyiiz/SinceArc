@@ -13,6 +13,8 @@ import { ResizeHandles } from "@/components/ResizeHandles";
 import { SettingsView } from "@/components/SettingsView";
 import { AgentCapabilities } from "@/components/AgentCapabilities";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DelegateDialog } from "@/components/DelegateDialog";
+import { MemberDetailPanel } from "@/components/MemberDetailPanel";
 import { MAIN_AGENT_ID } from "@/hooks/usePrompt";
 import { autoApproveCovered, type AutoApproveLevel } from "@/lib/auto-approve";
 import { settingsKey } from "@/lib/settings-key";
@@ -44,11 +46,14 @@ import type {
 import { DEFAULT_THREAD_SETTINGS } from "@/types";
 import {
   asCmdError,
+  delegateTask,
+  delegateWait,
   mentionResolve,
   settingsLoad,
   settingsSave,
   sessionDelete,
   sessionCancel,
+  sessionMemberRemove,
   sessionMembers,
   sessionRebind,
   sessionUpsert,
@@ -102,6 +107,8 @@ export default function App() {
   const [traceTick, setTraceTick] = useState(0);
   const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
   const [playerFilter, setPlayerFilter] = useState<string | null>(null);
+  const [memberPanel, setMemberPanel] = useState<{ id: string; anchor: HTMLElement } | null>(null);
+  const [delegateTarget, setDelegateTarget] = useState<AgentUser | null>(null);
   const [permOpen, setPermOpen] = useState(false);
   const [autoApprove, setAutoApprove] = useState<Record<string, AutoApproveLevel>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -217,6 +224,27 @@ export default function App() {
   useEffect(() => {
     reloadMembers();
   }, [reloadMembers]);
+
+  useEffect(() => {
+    setMemberPanel(null);
+    setDelegateTarget(null);
+  }, [lastSessionId]);
+
+  useEffect(() => {
+    if (!memberPanel) return;
+    if (members.some((m) => m.id === memberPanel.id)) return;
+    setMemberPanel(null);
+  }, [memberPanel, members]);
+
+  const removeGroupMember = useCallback(
+    async (member: AgentUser) => {
+      if (!lastSessionId) return;
+      await sessionMemberRemove(lastSessionId, member.id);
+      if (playerFilter === member.id) setPlayerFilter(null);
+      reloadMembers();
+    },
+    [lastSessionId, playerFilter, reloadMembers],
+  );
 
   const { bySid: modesBySid, byProfile: modesByProfile, applyFor, choose, noteAgentSwitch } = useSessionModes();
   const onSessionBound = useCallback(
@@ -936,6 +964,13 @@ export default function App() {
     };
   };
 
+  const memberPanelMember = memberPanel
+    ? members.find((m) => m.id === memberPanel.id)
+    : undefined;
+  const memberPanelProfile = memberPanelMember
+    ? profiles.find((p) => p.id === memberPanelMember.profileId)
+    : undefined;
+
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-surface-0 text-ink-1">
       <TitleBar profile={sessionProfile} cwd={cwd} />
@@ -1074,7 +1109,7 @@ export default function App() {
                   players={players}
                   activities={state.acts}
                   filter={playerFilter}
-                  onFilter={setPlayerFilter}
+                  onOpenMember={(member, anchor) => setMemberPanel({ id: member.id, anchor })}
                   group={
                     lastSessionId
                       ? {
@@ -1276,6 +1311,40 @@ export default function App() {
         </main>
       </div>
       <ResizeHandles />
+      {memberPanel && memberPanelMember && (
+        <MemberDetailPanel
+          member={memberPanelMember}
+          profile={memberPanelProfile}
+          anchor={memberPanel.anchor}
+          onClose={() => setMemberPanel(null)}
+          onDelegate={() => {
+            setDelegateTarget(memberPanelMember);
+            setMemberPanel(null);
+          }}
+          onFilter={() =>
+            setPlayerFilter((current) =>
+              current === memberPanelMember.id ? null : memberPanelMember.id,
+            )
+          }
+          filtered={playerFilter === memberPanelMember.id}
+          onRemove={() => removeGroupMember(memberPanelMember)}
+        />
+      )}
+      {delegateTarget && lastSessionId && (
+        <DelegateDialog
+          open
+          targetName={delegateTarget.name}
+          profile={profiles.find((p) => p.id === delegateTarget.profileId)}
+          onClose={() => setDelegateTarget(null)}
+          onDelegated={() => setDelegateTarget(null)}
+          onSubmit={async (task) => {
+            const handle = await delegateTask(lastSessionId, delegateTarget.id, task);
+            void delegateWait(handle.handleId, 120_000).catch((e) => {
+              console.warn("[delegate] wait failed", e);
+            });
+          }}
+        />
+      )}
       {state.pendingPerm && (
         <PermissionDialog
           request={state.pendingPerm}

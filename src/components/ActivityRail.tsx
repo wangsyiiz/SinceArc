@@ -9,7 +9,7 @@ interface ActivityRailProps {
   players: Player[];
   activities: Activity[];
   filter: string | null;
-  onFilter: (playerId: string | null) => void;
+  onOpenMember: (member: AgentUser, anchor: HTMLElement) => void;
   /** 群成员入口（没选中会话时不传：草稿会话还没 id，拉不了人） */
   group?: {
     sessionId: string;
@@ -23,7 +23,7 @@ export function ActivityRail({
   players,
   activities,
   filter,
-  onFilter,
+  onOpenMember,
   group,
 }: ActivityRailProps) {
   return (
@@ -37,7 +37,11 @@ export function ActivityRail({
         return (
           <button
             key={p.id}
-            onClick={() => onFilter(selected ? null : p.id)}
+            onClick={(event) => {
+              const member = group?.members.find((m) => m.id === p.id);
+              if (member) onOpenMember(member, event.currentTarget);
+            }}
+            aria-label={`打开 ${p.name} 的详情`}
             title={running ? `${p.name}：${running.title}` : p.name}
             className={cn(
               "relative grid size-7 place-items-center rounded-full transition-opacity",

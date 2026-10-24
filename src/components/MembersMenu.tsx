@@ -1,18 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
-import { Check, Plus, SendHorizontal, UserMinus, Users } from "lucide-react";
+import { Check, Plus, UserMinus, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   agentUsersList,
   asCmdError,
-  delegateTask,
-  delegateWait,
   sessionMemberAdd,
   sessionMemberRemove,
   type AgentUser,
 } from "@/lib/ipc";
 import { profileLabel } from "@/lib/format";
 import type { AgentProfile } from "@/types";
-import { DelegateDialog } from "./DelegateDialog";
 
 /**
  * 群成员入口：把 Agent User 拉进当前会话（docs/group-chat.md §1）。
@@ -39,7 +36,6 @@ export function MembersMenu({
   const [users, setUsers] = useState<AgentUser[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [delegateTarget, setDelegateTarget] = useState<AgentUser | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -109,13 +105,6 @@ export function MembersMenu({
     } finally {
       setBusy(null);
     }
-  };
-
-  const submitDelegation = async (target: AgentUser, task: string) => {
-    const handle = await delegateTask(sessionId, target.id, task);
-    void delegateWait(handle.handleId, 120_000).catch((e) => {
-      console.warn("[delegate] wait failed", e);
-    });
   };
 
   return (
@@ -189,20 +178,6 @@ export function MembersMenu({
                       <Plus size={11} className="shrink-0 text-accent-1" />
                     )}
                   </button>
-                  {joined && (
-                    <button
-                      type="button"
-                      aria-label={`派活给 ${u.name}`}
-                      title={`派活给 ${u.name}`}
-                      onClick={() => {
-                        setOpen(false);
-                        setDelegateTarget(u);
-                      }}
-                      className="mr-1 grid size-5 shrink-0 place-items-center rounded-mark text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-1"
-                    >
-                      <SendHorizontal size={11} />
-                    </button>
-                  )}
                 </div>
               );
             })}
@@ -222,16 +197,6 @@ export function MembersMenu({
         </div>
       )}
 
-      {delegateTarget && (
-        <DelegateDialog
-          open
-          targetName={delegateTarget.name}
-          profile={profiles.find((p) => p.id === delegateTarget.profileId)}
-          onClose={() => setDelegateTarget(null)}
-          onDelegated={() => setDelegateTarget(null)}
-          onSubmit={(task) => submitDelegation(delegateTarget, task)}
-        />
-      )}
     </div>
   );
 }
