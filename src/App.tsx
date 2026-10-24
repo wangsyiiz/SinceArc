@@ -239,8 +239,9 @@ export default function App() {
     [patchSession],
   );
   const getAutoApprove = useCallback(
-    (uiSid: string): AutoApproveLevel => autoApprove[uiSid] ?? "off",
-    [autoApprove],
+    // 会话内没有显式切过就用设置里的默认档（设置页「新会话默认自动同意」）
+    (uiSid: string): AutoApproveLevel => autoApprove[uiSid] ?? settings.autoApproveDefault,
+    [autoApprove, settings.autoApproveDefault],
   );
   const permissionDiagRef = useRef<(text: string) => void>(() => {});
   const permissionDiag = useCallback((text: string) => permissionDiagRef.current(text), []);
@@ -456,8 +457,8 @@ export default function App() {
       )?.name ?? sessionProfile.defaultMode)
     : null;
   const activeAutoApprove: AutoApproveLevel = lastSessionId
-    ? (autoApprove[lastSessionId] ?? "off")
-    : "off";
+    ? (autoApprove[lastSessionId] ?? settings.autoApproveDefault)
+    : settings.autoApproveDefault;
   const autoApproveCoveredByAgent = autoApproveCovered(activeModeView?.current ?? null);
   const toggleAutoApprove = useCallback(() => {
     if (!lastSessionId) return;
@@ -1259,6 +1260,9 @@ export default function App() {
               modesFor={(pid) => modesByProfile[pid] ?? null}
               onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}
               onCycleTheme={(theme) => setSettings((s) => ({ ...s, theme }))}
+              onChangeAutoApproveDefault={(autoApproveDefault) =>
+                setSettings((s) => ({ ...s, autoApproveDefault }))
+              }
             />
           )}
           {activeTab?.kind === "pr" && activePr && activeRepo && (

@@ -244,12 +244,19 @@ pub fn is_valid_theme(theme: &str) -> bool {
     matches!(theme, "dark" | "light" | "system")
 }
 
+/// 自动同意的默认档（新会话的初始态）。`off` = 不替用户答；`edits` = 编辑类自动答。
+pub fn is_valid_auto_approve(level: &str) -> bool {
+    matches!(level, "off" | "edits")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct AppSettingsDto {
     pub context_messages: u32,
     pub theme: String,
+    /// 新会话默认自动同意档：off | edits
+    pub auto_approve_default: String,
 }
 
 impl Default for AppSettingsDto {
@@ -257,6 +264,7 @@ impl Default for AppSettingsDto {
         Self {
             context_messages: 5,
             theme: "dark".into(),
+            auto_approve_default: "off".into(),
         }
     }
 }
@@ -279,6 +287,9 @@ impl AppSettingsDto {
         }
         if !is_valid_theme(&self.theme) {
             return Err(CmdError::new(50001, "未知主题"));
+        }
+        if !is_valid_auto_approve(&self.auto_approve_default) {
+            return Err(CmdError::new(50001, "未知的自动同意档"));
         }
         Ok(())
     }
@@ -3111,6 +3122,7 @@ mod settings_tests {
         let settings = AppSettingsDto {
             context_messages: 99,
             theme: "dark".into(),
+            auto_approve_default: "off".into(),
         };
         let err = settings.validate().expect_err("99 必须被拒");
         assert_eq!(err.code, 50001);
@@ -3122,6 +3134,7 @@ mod settings_tests {
         let settings = AppSettingsDto {
             context_messages: 5,
             theme: "neon".into(),
+            auto_approve_default: "off".into(),
         };
         let err = settings.validate().expect_err("未知主题必须被拒");
         assert_eq!(err.code, 50001);

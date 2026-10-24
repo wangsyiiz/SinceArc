@@ -1,6 +1,6 @@
-import type { PermissionOption } from "@/types";
+import type { AutoApproveLevel, PermissionOption } from "@/types";
 
-export type AutoApproveLevel = "off" | "edits";
+export type { AutoApproveLevel };
 
 /** 规范：编辑类含 delete/move，不含 execute/read/search。 */
 export const EDIT_KINDS = ["edit", "delete", "move"] as const;

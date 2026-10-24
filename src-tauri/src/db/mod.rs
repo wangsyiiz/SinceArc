@@ -16,12 +16,15 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::acp::AgentCaps;
 use serde::{Deserialize, Serialize};
 
-use crate::commands::{is_valid_theme, AppSettingsDto, ProfileDto, CONTEXT_MESSAGES_MAX};
+use crate::commands::{
+    is_valid_auto_approve, is_valid_theme, AppSettingsDto, ProfileDto, CONTEXT_MESSAGES_MAX,
+};
 
 pub const SCHEMA: &str = include_str!("schema.sql");
 
 const SETTINGS_KEY_CONTEXT_MESSAGES: &str = "contextMessages";
 const SETTINGS_KEY_THEME: &str = "theme";
+const SETTINGS_KEY_AUTO_APPROVE: &str = "autoApproveDefault";
 
 /// 结构版本：与 schema.sql 不符时整表重建（自用工具，会话数据可再生）
 const SCHEMA_VERSION: i64 = 6;
@@ -617,6 +620,17 @@ impl Db {
                     tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
                     issues.push(note);
                 }
+                SETTINGS_KEY_AUTO_APPROVE if is_valid_auto_approve(&value) => {
+                    settings.auto_approve_default = value
+                }
+                SETTINGS_KEY_AUTO_APPROVE => {
+                    let note = format!(
+                        "设置项 {key} 的值 `{value}` 不认识（应为 off/edits），已用默认值 {}",
+                        settings.auto_approve_default
+                    );
+                    tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
+                    issues.push(note);
+                }
                 _ => {}
             }
         }
@@ -639,6 +653,11 @@ impl Db {
             "INSERT INTO settings(key, value) VALUES(?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![SETTINGS_KEY_THEME, settings.theme.as_str()],
+        )?;
+        tx.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![SETTINGS_KEY_AUTO_APPROVE, settings.auto_approve_default.as_str()],
         )?;
         tx.commit()
     }
@@ -1611,6 +1630,7 @@ mod tests {
         let settings = db.load_settings().expect("load settings");
         assert_eq!(settings.context_messages, 5);
         assert_eq!(settings.theme, "dark");
+        assert_eq!(settings.auto_approve_default, "off");
         std::fs::remove_file(&path).ok();
     }
 
@@ -1620,12 +1640,14 @@ mod tests {
         db.save_settings(&AppSettingsDto {
             context_messages: 17,
             theme: "system".into(),
+            auto_approve_default: "edits".into(),
         })
         .expect("save settings");
 
         let settings = db.load_settings().expect("load settings");
         assert_eq!(settings.context_messages, 17);
         assert_eq!(settings.theme, "system");
+        assert_eq!(settings.auto_approve_default, "edits");
         std::fs::remove_file(&path).ok();
     }
 
@@ -1698,6 +1720,7 @@ mod tests {
         db.save_settings(&AppSettingsDto {
             context_messages: 12,
             theme: "light".into(),
+            auto_approve_default: "off".into(),
         })
         .expect("save settings");
         let loaded = db.load_settings().expect("load settings");
@@ -1743,6 +1766,7 @@ mod tests {
         db.save_settings(&AppSettingsDto {
             context_messages: 7,
             theme: "light".into(),
+            auto_approve_default: "off".into(),
         })
         .expect("save settings");
         let (_, clean) = db.load_settings_report().expect("load report");

@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type {
   AgentProfile,
+  AutoApproveLevel,
   LaunchKind,
   SshAuth,
   ThemeMode,
@@ -78,6 +79,8 @@ interface SettingsViewProps {
   modesFor: (profileId: string) => ModesSnapshot | null;
   onChangeContext: (n: number) => void;
   onCycleTheme: (t: ThemeMode) => void;
+  /** 新会话默认自动同意档（客户端应答策略，不是 agent 的审批档） */
+  onChangeAutoApproveDefault: (level: AutoApproveLevel) => void;
   /** agent 发现（docs/discovery.md）：缓存结果、是否在扫、手动重扫 */
   discovery?: DiscoveryOutcome | null;
   discoveryScanning?: boolean;
@@ -107,6 +110,11 @@ const THEME_OPTIONS = THEMES.map((theme) => ({
   label: theme.label,
   icon: THEME_ICONS[theme.id],
 }));
+
+const AUTO_APPROVE_OPTIONS = [
+  { value: "off" as const, label: "关闭" },
+  { value: "edits" as const, label: "编辑类" },
+];
 
 const SSH_AUTH_OPTIONS: { value: SshAuth; label: string }[] = [
   { value: "key", label: "私钥" },
@@ -215,6 +223,7 @@ export function SettingsView({
   modesFor,
   onChangeContext,
   onCycleTheme,
+  onChangeAutoApproveDefault,
   discovery = null,
   discoveryScanning = false,
   discoveryError = null,
@@ -1176,6 +1185,21 @@ export function SettingsView({
                             <span>{CONTEXT_MESSAGES_MAX}</span>
                           </div>
                         </div>
+                      </div>
+                      <div className="flex items-center justify-between gap-6 py-4">
+                        <div className="min-w-0">
+                          <div className="text-ui text-ink-1">新会话默认自动同意</div>
+                          <p className="mt-1 text-caption text-ink-3">
+                            agent 发来审批请求时替你答的方式，只管编辑类（改文件 / 删除 / 移动）；
+                            命令与读取始终交给你。agent 自己的审批档已经不问的情况下，这一档不起作用。
+                          </p>
+                        </div>
+                        <Segmented
+                          ariaLabel="新会话默认自动同意"
+                          options={AUTO_APPROVE_OPTIONS}
+                          value={settings.autoApproveDefault}
+                          onChange={onChangeAutoApproveDefault}
+                        />
                       </div>
                       {heavy && (
                         <p className="flex items-start gap-1.5 border-l-2 border-warn-1 py-3 pl-3 text-caption text-warn-1">

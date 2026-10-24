@@ -256,10 +256,15 @@ export interface SessionState {
 }
 
 /* ---------- 设置 ---------- */
+/** 自动同意档：off = agent 提问时始终交给人；edits = 编辑类（edit/delete/move）替你答。 */
+export type AutoApproveLevel = "off" | "edits";
+
 export interface ThreadSettings {
   /** @ 玩家时附带最近 N 条群聊记录，默认 5 */
   contextMessages: number;
   theme: ThemeMode;
+  /** 新会话默认自动同意档；`off` = 不替用户答，`edits` = 编辑类自动答 */
+  autoApproveDefault: AutoApproveLevel;
 }
 
 export const CONTEXT_MESSAGES_MAX = 20;
@@ -267,4 +272,5 @@ export const CONTEXT_MESSAGES_DEFAULT = 5;
 export const DEFAULT_THREAD_SETTINGS: ThreadSettings = {
   contextMessages: CONTEXT_MESSAGES_DEFAULT,
   theme: "dark",
+  autoApproveDefault: "off",
 };
