@@ -26,16 +26,20 @@ const buttonStyles = cva(
   },
 );
 
-export const Button: React.FC<
-  React.ButtonHTMLAttributes<HTMLButtonElement> & {
-    variant?: "primary" | "secondary" | "ghost" | "glass";
-    size?: "sm" | "md";
-    danger?: boolean;
-    loading?: boolean;
-    disabledReason?: string;
-    reasonText?: string;
-  }
-> = ({
+export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: "primary" | "secondary" | "ghost" | "glass";
+  size?: "sm" | "md";
+  danger?: boolean;
+  loading?: boolean;
+  disabledReason?: string;
+  reasonText?: string;
+  /** React 19 的函数组件可以直接收 ref：浮层要拿真实元素算位置（useAnchoredLayer）。
+      以前不转发的结果是调用处只能 `as unknown as ComponentType<…>` 硬转一层。 */
+  ref?: React.Ref<HTMLButtonElement>;
+};
+
+export const Button: React.FC<ButtonProps> = ({
+  ref,
   variant = "secondary",
   size = "md",
   danger = false,
@@ -51,6 +55,7 @@ export const Button: React.FC<
   const button = (
     <button
       {...props}
+      ref={ref}
       type={type ?? "button"}
       title={title ?? disabledReason}
       aria-busy={loading || undefined}

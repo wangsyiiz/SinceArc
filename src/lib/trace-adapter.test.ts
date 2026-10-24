@@ -88,7 +88,7 @@ test("工具卡片把 locations 逐行写入正文，摘要取第一个路径", 
   });
   const activity = toTraceView([dto]).activities[0];
   assert.equal(activity.body, "src/a.ts:10-12\nsrc/b.ts:3-5");
-  assert.equal(activity.detail, "src/a.ts");
+  assert.equal(activity.detail, "读取文件");
   assert.equal(activity.truncated, true);
 });
 
@@ -107,7 +107,104 @@ test("工具没有 locations 时正文保持 undefined", () => {
   });
   const activity = toTraceView([dto]).activities[0];
   assert.equal(activity.body, undefined);
-  assert.equal(activity.detail, undefined);
+  assert.equal(activity.detail, "terminal: date");
+});
+
+test("工具正文把 rawInput 对象逐行展开", () => {
+  const dto = turn({
+    items: [
+      {
+        seq: 1,
+        at: t0,
+        authorId: null,
+        kind: "tool_call",
+        payload: {
+          toolCallId: "c1",
+          title: "terminal: rg",
+          kind: "search",
+          rawInput: { command: "rg", args: ["foo", "src"], cwd: "/tmp" },
+        },
+        truncated: false,
+      },
+    ],
+  });
+  const activity = toTraceView([dto]).activities[0];
+  assert.equal(activity.body, 'command: rg\nargs: ["foo","src"]\ncwd: /tmp');
+  assert.equal(activity.detail, "terminal: rg");
+});
+
+test("工具 rawInput 超过 2 KB 时截断并提示", () => {
+  const long = "命令".repeat(900);
+  const dto = turn({
+    items: [
+      {
+        seq: 1,
+        at: t0,
+        authorId: null,
+        kind: "tool_call",
+        payload: {
+          toolCallId: "c1",
+          title: "执行长命令",
+          rawInput: { command: "echo", text: long },
+        },
+        truncated: false,
+      },
+    ],
+  });
+  const body = toTraceView([dto]).activities[0].body ?? "";
+  assert.ok(body.length > 0);
+  assert.ok(!body.includes(long), "超长 rawInput 不能整段进正文");
+  assert.ok(!body.includes("\uFFFD"), "截断不能切坏多字节字符");
+  assert.match(body, /…已截断 [1-9]\d* KB/);
+});
+
+test("工具正文展开 content 的文本与类型摘要", () => {
+  const dto = turn({
+    items: [
+      {
+        seq: 1,
+        at: t0,
+        authorId: null,
+        kind: "tool_call",
+        payload: {
+          toolCallId: "c1",
+          title: "读取结果",
+          content: [
+            { type: "text", text: "第一行" },
+            { type: "text", text: "第二行" },
+            { type: "resource_link", name: "报告", uri: "file:///tmp/report.md" },
+          ],
+        },
+        truncated: false,
+      },
+    ],
+  });
+  const activity = toTraceView([dto]).activities[0];
+  assert.equal(activity.body, "第一行\n第二行\nresource_link: 报告");
+});
+
+test("工具字段的 __truncated 标记会写成可见提示", () => {
+  const dto = turn({
+    items: [
+      {
+        seq: 1,
+        at: t0,
+        authorId: null,
+        kind: "tool_call",
+        payload: {
+          toolCallId: "c1",
+          title: "长输出",
+          rawInput: { __truncated: true, bytes: 4096, preview: "command: rg" },
+          content: { __truncated: true, bytes: 2048 },
+        },
+        truncated: true,
+      },
+    ],
+  });
+  const body = toTraceView([dto]).activities[0].body ?? "";
+  assert.match(body, /command: rg/);
+  assert.match(body, /已截断 4 KB/);
+  assert.match(body, /已截断 2 KB/);
 });
 
 test("权限卡片列出选项名，摘要用斜线连接", () => {
