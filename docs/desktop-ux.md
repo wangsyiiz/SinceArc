@@ -354,6 +354,34 @@ manifest 上不做自动断连：进程随应用退出。用户主动「断开�
 - 面板本体 `sc-glass` + 点外关闭 + Esc 关闭；成员被移出或会话切换时自动关闭；
 - 档位行读 `profile.caps`，与 §11 下面三态表同源，不另算一份。
 
+### 派活在消息流里必须有两半
+
+只有回应、没有开头时，用户看到一条成员发言会问「这回答从哪来的」。所以：
+
+- **发起行**：后端在 `delegate_task` 里与轮次一起写进 `messages`（`role = "user"`、`kind = "delegate"`、
+  `payload.delegate = { targetMemberId, targetName, context, reason }`，正文就是任务原文）。
+  前端渲染成用户气泡，并在气泡上方一行小字写「派活给 X · 只带任务描述（原因）」；
+- **回应行**：子任务回答照旧以目标成员署名出现在同一条时间线上；
+- 轨迹里那一步（`delegate` / `delegate_result`）是**事件**，消息流这两条是**对话记录**，两者不互相替代。
+
+### 面板的形态约束
+
+- 宽度**自适应**（min 240 / max 380，随内容伸缩）；超长值（ACP 会话 id）**换行显示完整**、等宽 + `break-all`，
+  不再截断 —— 「连 session id 都显示不全」比不显示更糟。
+- **每行带 13px 图标**（@ → `AtSign`、连接 → `Plug`、ACP 会话 → `Hash`、工作目录 → `FolderOpen`、档位 → `Layers`）。
+- **不显示「连接 id」**：那是一串给我们自己对账用的内部标识，对用户没有信息量。
+- 「连接」这一行带 **AgentLogo**（见下），底部动作是**图标 + 文字**（派活… / 只看 TA / 移出群），
+  高 28、图标 13、文字 `text-caption`。
+- 底部三个动作里「移出群」靠右（`ml-auto`），前两个靠左。
+
+### AgentLogo（连接的品牌标记）
+
+- 数据在 `src/lib/agent-brands.ts`：按 agent 名关键字匹配 → `{ label, color, icon }`；不认识的 agent 走中性色 + `Terminal` 图标。
+  **它是数据，不是设计令牌**（与 `player-colors.ts` 同一类），色值只活在这个模块里，
+  并按文件加进 `style-guard.allowlist.ts` 的豁免 —— 不许写成按目录/按关键字的宽判据。
+- 组件 `src/components/AgentLogo.tsx`：圆角方块，底色 `color-mix(in srgb, <color> 14%, transparent)`、图标同色，尺寸可传（默认 18）。
+- 用在三处：成员详情面板的「连接」行、设置页连接列表行、设置页连接详情的标题。
+
 **派活对话框**（面板底部「派活…」打开）：居中对话框。
 不做 `/delegate` 语法、不做工具栏按钮 —— 派活是「对某个人」的动作，入口就该长在那个人身上。
 
