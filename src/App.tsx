@@ -1123,8 +1123,10 @@ export default function App() {
                 }
               />
               <div className="flex min-h-0 flex-1">
+                {/* 竖栏是「谁在这个群里」：历史作者（已移出）不出现在这里，
+                    他们的消息与轨迹支线仍然保留身份。 */}
                 <ActivityRail
-                  players={players}
+                  players={players.filter((player) => !player.removed)}
                   activities={state.acts}
                   filter={playerFilter}
                   onOpenMember={(member, anchor) => setMemberPanel({ id: member.id, anchor })}

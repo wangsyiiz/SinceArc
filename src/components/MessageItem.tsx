@@ -84,8 +84,9 @@ export function MessageItem({ message, players }: { message: Message; players: P
           <div
             title={message.text}
             className={cn(
-              "text-ink-2",
-              delegateExpanded ? "whitespace-pre-wrap text-ui" : "truncate text-small",
+              // 展开只改「看不看得全」，不改字号 —— 点一下字变大，会像整块内容在跳。
+              "text-small text-ink-2",
+              delegateExpanded ? "whitespace-pre-wrap" : "truncate",
             )}
           >
             {renderText(message.text, players)}
