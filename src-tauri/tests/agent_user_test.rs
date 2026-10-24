@@ -17,6 +17,8 @@ fn hermes_profile() -> ProfileDto {
         args: vec!["acp".into()],
         cwd: "/home/jerry/source".into(),
         default_mode: None,
+        caps: None,
+        caps_at: None,
         distro: Some("fedora".into()),
         shell: Some("bash".into()),
         ssh_host: None,

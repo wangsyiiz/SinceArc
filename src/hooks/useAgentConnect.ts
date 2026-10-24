@@ -74,7 +74,8 @@ export function useAgentConnect({
       agentName: `${out.agentName} ${out.agentVersion}`,
       protocolVersion: out.protocolVersion,
       // 能力来自这次握手：换了 agent 或升级了版本，这里的值会跟着变
-      capabilities: out.capabilities,
+      caps: out.caps,
+      capsAt: Math.floor(Date.now() / 1000),
     });
     if (!out.sessionId && out.resume.kind !== "unavailable") {
       // 握上手但没会话：后端认为连上了，实际没法发消息，必须当失败处理。

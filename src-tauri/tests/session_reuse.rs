@@ -25,6 +25,8 @@ fn wsl_profile() -> ProfileDto {
         ssh_key_path: None,
         ssh_password: None,
         default_mode: None,
+        caps: None,
+        caps_at: None,
     }
 }
 

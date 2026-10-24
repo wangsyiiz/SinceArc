@@ -1,5 +1,6 @@
 // 手写 barrel：ts-rs 只生成单类型文件，这里汇总。新增类型时记得补一行。
 export type { AcpEvent } from "./AcpEvent";
+export type { AgentCaps } from "./AgentCaps";
 export type { AgentUserRow } from "./AgentUserRow";
 export type { AgentUserTestOutcome } from "./AgentUserTestOutcome";
 export type { BindingRow } from "./BindingRow";

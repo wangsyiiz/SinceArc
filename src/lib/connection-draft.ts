@@ -10,6 +10,8 @@ export function createEmptyConnection(id: string): AgentProfile {
     connected: false,
     agentName: null,
     protocolVersion: null,
+    caps: null,
+    capsAt: null,
     program: "hermes",
     args: ["acp"],
     cwd: "",

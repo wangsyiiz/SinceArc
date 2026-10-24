@@ -55,6 +55,8 @@ export function fromDto(d: ProfileDto): AgentProfile {
     connected: false,
     cwd: d.cwd,
     defaultMode: d.defaultMode ?? null,
+    caps: d.caps ?? null,
+    capsAt: d.capsAt ?? null,
     program: d.program,
     args: d.args,
     distro: d.distro ?? undefined,

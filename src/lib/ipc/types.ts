@@ -3,6 +3,7 @@
 
 export type {
   AcpEvent,
+  AgentCaps,
   WireEvent,
   AgentUserRow as AgentUser,
   AgentUserTestOutcome as AgentUserTestResult,

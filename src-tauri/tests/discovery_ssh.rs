@@ -32,6 +32,8 @@ async fn ssh_扫描能找到远端已装的_agent() {
         args: vec!["acp".into()],
         cwd: "/tmp".into(),
         default_mode: None,
+        caps: None,
+        caps_at: None,
         distro: None,
         shell: None,
         ssh_host: Some(env_or("SINCEARC_SSH_HOST", "localhost")),

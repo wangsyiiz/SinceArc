@@ -1,3 +1,5 @@
+import type { AgentCaps } from "@/lib/ipc/types.gen/AgentCaps";
+
 export type ThemeMode = "dark" | "light" | "system";
 
 /** 本机直连 / 经 wsl.exe / 经 ssh（本地与远程同一条路径，只差 host） */
@@ -34,10 +36,12 @@ export interface AgentProfile {
   program?: string;
   args?: string[];
   /**
-   * 握手报上来的协议能力键（loadSession / image / list / fork …）。
-   * 只有真连过一次才有值；它是「这个 agent 支持什么」的唯一可信来源。
+   * 上次握手报上来的协议能力。
+   * `null` = 还没连过；它是「这个 agent 支持什么」的唯一可信来源。
    */
-  capabilities?: string[];
+  caps: AgentCaps | null;
+  /** 上次握手能力落库的时间（秒）；从未握手为 null。 */
+  capsAt: number | null;
   /** WSL 场景 */
   distro?: string;
   shell?: string;

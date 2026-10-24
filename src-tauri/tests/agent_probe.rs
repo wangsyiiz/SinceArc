@@ -28,6 +28,8 @@ fn wsl_profile(program: &str, args: &[&str]) -> ProfileDto {
         ssh_key_path: None,
         ssh_password: None,
         default_mode: None,
+        caps: None,
+        caps_at: None,
     }
 }
 
@@ -51,13 +53,13 @@ async fn probe_reports_agent_identity() {
     assert!(!outcome.agent_version.is_empty(), "版本号不该为空");
     assert_eq!(outcome.protocol_version, 1, "当前 ACP 协议版本是 1");
     // 协议能力必须从握手里读出来，界面才有东西显示（以前这里只有一张 hermes CLI 硬编码表）
-    println!("capabilities = {:?}", outcome.capabilities);
+    println!("caps = {:?}", outcome.caps);
     assert!(
-        !outcome.capabilities.is_empty(),
+        outcome.caps != sincearc_lib::acp::AgentCaps::default(),
         "hermes 应当报上来至少一项协议能力"
     );
     assert!(
-        outcome.capabilities.iter().any(|c| c == "loadSession"),
+        outcome.caps.load_session,
         "hermes 支持 loadSession，应当出现在能力列表里"
     );
     proc.kill().await;

@@ -29,6 +29,7 @@ import {
 import {
   agentProbe,
   asCmdError,
+  type AgentCaps,
   type AgentUser,
   type DiscoveryCandidate,
   type DiscoveryHit,
@@ -47,7 +48,7 @@ import {
 import { ModeSelect } from "@/components/ModeSelect";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { AgentUserDetail, AgentUsersList } from "@/components/AgentUsers";
-import { CAPABILITY_LABEL } from "@/components/AgentCapabilities";
+import { capsRows } from "@/lib/caps-format";
 import { StatusDot } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { EmptyState } from "./ui/EmptyState";
@@ -384,10 +385,16 @@ export function SettingsView({
     }
   };
 
-  /** 能力键 → 人话。空数组时什么都不加，避免行尾挂一个空括号 */
-  const describeCaps = (caps: string[]): string => {
-    if (caps.length === 0) return "";
-    return ` · ${caps.map((key) => CAPABILITY_LABEL[key] ?? key).join(" / ")}`;
+  /** 只列支持的能力；最多 3 个，避免探测结果行变成一长串。 */
+  const describeCaps = (caps: AgentCaps): string => {
+    const labels = capsRows(caps)
+      .filter((row) => row.on)
+      .map((row) => row.label);
+    if (labels.length === 0) return "";
+    const head = labels.slice(0, 3).join(" / ");
+    return labels.length > 3
+      ? ` · ${head} 等 ${labels.length - 3} 项`
+      : ` · ${head}`;
   };
 
   /** 发现结果的预填值由 App 组装；这里只负责合并默认值。 */
@@ -879,9 +886,9 @@ export function SettingsView({
               </p>
               {probe.ok && (
                 <p className="mt-0.5 break-all text-caption text-ink-3">
-                  {probe.outcome.capabilities.length === 0
+                  {capsRows(probe.outcome.caps).every((row) => !row.on)
                     ? "这个 agent 没报任何可选能力"
-                    : describeCaps(probe.outcome.capabilities).replace(" · ", "")}
+                    : describeCaps(probe.outcome.caps).replace(" · ", "")}
                 </p>
               )}
             </>

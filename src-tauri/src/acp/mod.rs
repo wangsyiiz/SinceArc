@@ -13,10 +13,68 @@ pub mod transport;
 
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use launch::AgentProfile;
+
+/// `initialize` 的 `agentCapabilities` 归一化结果。
+///
+/// 只认协议里定义的字段；不认识的键忽略 —— 猜一个能力出来比不显示更糟。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct AgentCaps {
+    pub load_session: bool,
+    pub prompt_image: bool,
+    pub prompt_audio: bool,
+    pub prompt_embedded_context: bool,
+    pub session_list: bool,
+    pub session_delete: bool,
+    pub session_fork: bool,
+    pub session_resume: bool,
+    pub session_close: bool,
+    pub mcp_http: bool,
+    pub mcp_sse: bool,
+    pub mcp_acp: bool,
+}
+
+fn flag(value: Option<&Value>) -> bool {
+    value.and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// 会话族 / MCP 族的字段是 `Option<对象>`：`{}` 与 `true` 都表示「支持」，
+/// 只有 `null`、缺失或明确的 `false` 表示不支持。
+fn appears(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+        Some(_) => true,
+    }
+}
+
+/// 从 `agentCapabilities` 解析能力矩阵。
+///
+/// 布尔字段直读；会话族与 MCP 族的字段按「出现过」判断。
+pub fn parse_agent_caps(caps: Option<&Value>) -> AgentCaps {
+    let prompt = caps.and_then(|c| c.get("promptCapabilities"));
+    let session = caps.and_then(|c| c.get("sessionCapabilities"));
+    let mcp = caps.and_then(|c| c.get("mcpCapabilities"));
+
+    AgentCaps {
+        load_session: flag(caps.and_then(|c| c.get("loadSession"))),
+        prompt_image: flag(prompt.and_then(|p| p.get("image"))),
+        prompt_audio: flag(prompt.and_then(|p| p.get("audio"))),
+        prompt_embedded_context: flag(prompt.and_then(|p| p.get("embeddedContext"))),
+        session_list: appears(session.and_then(|s| s.get("list"))),
+        session_delete: appears(session.and_then(|s| s.get("delete"))),
+        session_fork: appears(session.and_then(|s| s.get("fork"))),
+        session_resume: appears(session.and_then(|s| s.get("resume"))),
+        session_close: appears(session.and_then(|s| s.get("close"))),
+        mcp_http: appears(mcp.and_then(|m| m.get("http"))),
+        mcp_sse: appears(mcp.and_then(|m| m.get("sse"))),
+        mcp_acp: appears(mcp.and_then(|m| m.get("acp"))),
+    }
+}
 
 /// `initialize` 的结果：只保留 UI 真正要用的那几项。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,11 +83,10 @@ pub struct InitializeOutcome {
     pub agent_name: String,
     pub agent_version: String,
     pub load_session: bool,
-    pub image_prompts: bool,
     pub auth_methods: Vec<String>,
-    /// 握手报上来的协议能力，归一成一组稳定的键（见 `capability_keys`）。
+    /// 握手报上来的协议能力。
     /// 界面上「这个 agent 能做什么」应该来自这里，而不是按 agent 名硬编码一张表。
-    pub capabilities: Vec<String>,
+    pub caps: AgentCaps,
 }
 
 impl InitializeOutcome {
@@ -66,62 +123,85 @@ impl InitializeOutcome {
                 .and_then(|c| c.get("loadSession"))
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
-            image_prompts: caps
-                .and_then(|c| c.get("promptCapabilities"))
-                .and_then(|p| p.get("image"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
             auth_methods: auth,
-            capabilities: capability_keys(caps),
+            caps: parse_agent_caps(caps),
         }
     }
 }
 
-/// 把 `agentCapabilities` 里「有就是 true」的字段摊平成键列表。
-///
-/// 只认协议里定义的字段；不认识的忽略 —— 猜一个能力出来比不显示更糟。
-fn capability_keys(caps: Option<&Value>) -> Vec<String> {
-    let Some(caps) = caps else { return Vec::new() };
-    let mut out = Vec::new();
-    let flag = |path: &[&str]| {
-        let mut cur = caps;
-        for key in path {
-            match cur.get(*key) {
-                Some(next) => cur = next,
-                None => return false,
+#[cfg(test)]
+mod tests {
+    use super::parse_agent_caps;
+    use serde_json::json;
+
+    /// 真机 hermes（2026-10-24）的 `agentCapabilities` 原文。
+    #[test]
+    fn parses_real_hermes_capabilities() {
+        let caps = json!({
+            "loadSession": true,
+            "promptCapabilities": { "image": true },
+            "sessionCapabilities": { "fork": {}, "list": {}, "resume": {} }
+        });
+        let c = parse_agent_caps(Some(&caps));
+        assert!(c.load_session);
+        assert!(c.prompt_image);
+        assert!(c.session_fork);
+        assert!(c.session_list);
+        assert!(c.session_resume);
+        assert!(!c.prompt_audio);
+        assert!(!c.prompt_embedded_context);
+        assert!(!c.session_delete);
+        assert!(!c.session_close);
+        assert!(!c.mcp_http);
+        assert!(!c.mcp_sse);
+        assert!(!c.mcp_acp);
+    }
+
+    /// 会话族的 `{}` 与 `true` 同义；`null` 与缺失同为不支持。
+    #[test]
+    fn session_capabilities_presence_is_enough() {
+        let caps = json!({
+            "sessionCapabilities": {
+                "fork": {},
+                "list": true,
+                "resume": {},
+                "delete": null
             }
-        }
-        cur.as_bool().unwrap_or(false)
-    };
-    if flag(&["loadSession"]) {
-        out.push("loadSession".to_string());
+        });
+        let c = parse_agent_caps(Some(&caps));
+        assert!(c.session_fork, "{{}} 表示支持");
+        assert!(c.session_list, "true 表示支持");
+        assert!(c.session_resume, "{{}} 表示支持");
+        assert!(!c.session_delete, "null 表示不支持");
+        assert!(!c.session_close, "缺失表示不支持");
     }
-    for (key, path) in [
-        ("image", &["promptCapabilities", "image"][..]),
-        ("audio", &["promptCapabilities", "audio"][..]),
-        (
-            "embeddedContext",
-            &["promptCapabilities", "embeddedContext"][..],
-        ),
-    ] {
-        if flag(path) {
-            out.push(key.to_string());
-        }
+
+    /// MCP 族的字段同样按「出现过」判断。
+    #[test]
+    fn parses_mcp_capabilities_and_ignores_unknown_keys() {
+        let caps = json!({
+            "mcpCapabilities": { "http": true, "acp": {}, "sse": null },
+            "notInProtocol": { "whatever": true }
+        });
+        let c = parse_agent_caps(Some(&caps));
+        assert!(c.mcp_http);
+        assert!(c.mcp_acp);
+        assert!(!c.mcp_sse);
     }
-    // 会话级能力：有的实现是 `{}`（存在即支持），有的是 true
-    if let Some(sessions) = caps.get("sessionCapabilities") {
-        for key in ["fork", "list", "resume", "delete"] {
-            if let Some(v) = sessions.get(key) {
-                if v.as_bool().unwrap_or(true) {
-                    out.push(key.to_string());
-                }
-            }
-        }
+
+    /// 没握手 / agentCapabilities 为 null 时全 false，不猜。
+    #[test]
+    fn missing_capabilities_are_all_false() {
+        assert_eq!(parse_agent_caps(None), super::AgentCaps::default());
+        assert_eq!(
+            parse_agent_caps(Some(&json!(null))),
+            super::AgentCaps::default()
+        );
+        assert_eq!(
+            parse_agent_caps(Some(&json!({}))),
+            super::AgentCaps::default()
+        );
     }
-    if caps.get("mcp").is_some() {
-        out.push("mcp".to_string());
-    }
-    out
 }
 
 /// agent 报上来的一个可选模式。只留 UI 要展示的字段。

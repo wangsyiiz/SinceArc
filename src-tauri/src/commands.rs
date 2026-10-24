@@ -185,6 +185,12 @@ pub struct ProfileDto {
     pub cwd: String,
     #[serde(default)]
     pub default_mode: Option<String>,
+    /// 上次握手报上来的能力快照；从未握手为 None。
+    #[serde(default)]
+    pub caps: Option<acp::AgentCaps>,
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub caps_at: Option<i64>,
     #[serde(default)]
     pub distro: Option<String>,
     #[serde(default)]
@@ -269,11 +275,10 @@ pub struct ConnectOutcome {
     #[ts(type = "number")]
     pub protocol_version: i64,
     pub load_session: bool,
-    pub image_prompts: bool,
     pub auth_methods: Vec<String>,
-    /// 握手报上来的协议能力键（loadSession / image / list / fork …）。
+    /// 握手报上来的协议能力。
     /// 通用客户端靠它显示「这个 agent 支持什么」，而不是按名字查表。
-    pub capabilities: Vec<String>,
+    pub caps: acp::AgentCaps,
     /// 本次连接落到的会话：复用了旧的就还是旧的，没有就新建。
     /// 前端直接用它，不必再发一次 session/new（那样每连一次就多一个空会话）。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -507,6 +512,22 @@ fn validate_launch_input(profile: &ProfileDto) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// 记住这次握手报上来的能力。
+///
+/// 失败只警告：记不住能力是显示层的问题，不能让一条本来已经连上的 agent 断开。
+fn remember_profile_caps(db: &db::Db, profile_id: &str, caps: &acp::AgentCaps) {
+    let json = match serde_json::to_string(caps) {
+        Ok(json) => json,
+        Err(e) => {
+            tracing::warn!(target: "sincearc::ipc", profile = %profile_id, error = %e, "序列化能力失败");
+            return;
+        }
+    };
+    if let Err(e) = db.save_profile_caps(profile_id, &json, db::now()) {
+        tracing::warn!(target: "sincearc::ipc", profile = %profile_id, error = %e, "记录能力失败");
+    }
+}
+
 /// 把「起不来」的原因连同**跑的是什么命令、在哪个目录**一起报出去。
 fn launch_error(profile: &ProfileDto, e: transport::TransportError) -> CmdError {
     let cmd = std::iter::once(profile.program.as_str())
@@ -536,9 +557,9 @@ pub struct ProbeOutcome {
     #[ts(type = "number")]
     pub protocol_version: i64,
     pub load_session: bool,
-    /// 握手报上来的能力键（拍平后）。探测的价值一半在这里：
+    /// 握手报上来的能力。探测的价值一半在这里：
     /// 用户能**在保存连接之前**知道这个 agent 支不支持恢复会话 / 图片 / fork。
-    pub capabilities: Vec<String>,
+    pub caps: acp::AgentCaps,
 }
 
 /* ---------- 群聊成员（docs/group-chat.md） ---------- */
@@ -987,6 +1008,9 @@ pub async fn agent_probe(profile: ProfileDto) -> Result<ProbeOutcome, CmdError> 
             launch_error(&profile, e)
         })?;
     let _ = proc.kill_tree("disconnect").await;
+    // 探测只回报结果，**不写库**：它测的可能是还没保存的草稿（或者改了一半的命令），
+    // 把这份能力记到已保存的 profile 上，面板就会显示一个这条连接从未有过的结论。
+    // 记能力只发生在真正连上的那一刻（agent_connect）。
     tracing::info!(
         target: "sincearc::ipc", profile = %profile.id,
         agent = %outcome.agent_name, version = %outcome.agent_version,
@@ -997,7 +1021,7 @@ pub async fn agent_probe(profile: ProfileDto) -> Result<ProbeOutcome, CmdError> 
         agent_version: outcome.agent_version,
         protocol_version: outcome.protocol_version,
         load_session: outcome.load_session,
-        capabilities: outcome.capabilities,
+        caps: outcome.caps,
     })
 }
 
@@ -1327,6 +1351,9 @@ pub async fn agent_connect(
             tracing::warn!(target: "sincearc::ipc", profile = %id, error = %e, "handshake failed");
             launch_error(&profile, e)
         })?;
+
+    // 能力跟着握手落库：重启或未连接时面板仍能说清「上次连上时它支持什么」。
+    remember_profile_caps(&state.db, &id, &outcome.caps);
 
     // 入站消息逐条推给界面。走全局总线：连接不再各自持有一条 Channel。
     let bus = state.bus.clone();
@@ -1692,9 +1719,8 @@ pub async fn agent_connect(
         agent_version: outcome.agent_version,
         protocol_version: outcome.protocol_version,
         load_session: outcome.load_session,
-        image_prompts: outcome.image_prompts,
         auth_methods: outcome.auth_methods,
-        capabilities: outcome.capabilities,
+        caps: outcome.caps,
         session_id,
         modes,
         resume,
@@ -2881,6 +2907,8 @@ mod launch_input_tests {
             args: vec!["acp".into()],
             cwd: cwd.into(),
             default_mode: None,
+            caps: None,
+            caps_at: None,
             distro: Some("fedora".into()),
             shell: Some("zsh".into()),
             ssh_host: None,

@@ -12,6 +12,8 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
+
+use crate::acp::AgentCaps;
 use serde::{Deserialize, Serialize};
 
 use crate::commands::{is_valid_theme, AppSettingsDto, ProfileDto, CONTEXT_MESSAGES_MAX};
@@ -26,6 +28,30 @@ const SCHEMA_VERSION: i64 = 6;
 
 pub struct Db {
     conn: Mutex<Connection>,
+}
+
+/// 写这一层能明确指认的错误。
+#[derive(Debug)]
+pub enum DbError {
+    Sql(rusqlite::Error),
+    ProfileNotFound(String),
+}
+
+impl std::fmt::Display for DbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql(e) => write!(f, "{e}"),
+            Self::ProfileNotFound(id) => write!(f, "profile 不存在：{id}"),
+        }
+    }
+}
+
+impl std::error::Error for DbError {}
+
+impl From<rusqlite::Error> for DbError {
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Sql(e)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
@@ -217,7 +243,7 @@ fn default_kind() -> String {
 }
 
 /// 秒。历史列（profiles/sessions/messages 的 created_at/updated_at）用它，改动代价大于收益。
-fn now() -> i64 {
+pub fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -299,6 +325,9 @@ impl Db {
 
         conn.execute_batch(SCHEMA)?;
         ensure_column(&conn, "profiles", "default_mode", "TEXT")?;
+        // E13.2：握手能力快照。老库补列，不清会话、不动 SCHEMA_VERSION。
+        ensure_column(&conn, "profiles", "caps_json", "TEXT")?;
+        ensure_column(&conn, "profiles", "caps_at", "INTEGER")?;
         ensure_column(&conn, "sessions", "mode_override", "TEXT")?;
         ensure_column(
             &conn,
@@ -336,19 +365,36 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT id, name, launch_kind, program, args_json, default_cwd,
                     distro, shell, ssh_host, ssh_port, ssh_user, ssh_auth, ssh_key_path,
-                    default_mode
+                    default_mode, caps_json, caps_at
              FROM profiles ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map([], |r| {
+            let id: String = r.get(0)?;
             let args_json: String = r.get(4)?;
+            let caps_json: Option<String> = r.get(14)?;
+            let caps = caps_json.and_then(|raw| match serde_json::from_str::<AgentCaps>(&raw) {
+                Ok(caps) => Some(caps),
+                Err(e) => {
+                    // 脏的旧数据只影响这一条显示，不能让整个配置列表读不出来。
+                    tracing::warn!(
+                        target: "sincearc::db",
+                        profile = %id,
+                        error = %e,
+                        "能力快照无法解析，按未握手处理"
+                    );
+                    None
+                }
+            });
             Ok(ProfileDto {
-                id: r.get(0)?,
+                id,
                 name: r.get(1)?,
                 launch: r.get(2)?,
                 program: r.get(3)?,
                 args: serde_json::from_str(&args_json).unwrap_or_default(),
                 cwd: r.get(5)?,
                 default_mode: r.get(13)?,
+                caps,
+                caps_at: r.get(15)?,
                 distro: r.get(6)?,
                 shell: r.get(7)?,
                 ssh_host: r.get(8)?,
@@ -363,6 +409,27 @@ impl Db {
         rows.collect()
     }
 
+    /// 把一次握手的能力快照写进 profile。
+    ///
+    /// 影响 0 行说明 profile 不在库里（例如设置页还没保存的新草稿），
+    /// 这时必须报错让调用方知道「这份能力没记住」，不能静默成功。
+    pub fn save_profile_caps(
+        &self,
+        profile_id: &str,
+        caps_json: &str,
+        at: i64,
+    ) -> Result<(), DbError> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let changed = conn.execute(
+            "UPDATE profiles SET caps_json = ?2, caps_at = ?3 WHERE id = ?1",
+            params![profile_id, caps_json, at],
+        )?;
+        if changed == 0 {
+            return Err(DbError::ProfileNotFound(profile_id.to_string()));
+        }
+        Ok(())
+    }
+
     /// 整表对齐：列表里的 upsert，不在列表里的删掉（会话随外键级联）。
     pub fn save_profiles(&self, list: &[ProfileDto]) -> rusqlite::Result<()> {
         let mut conn = self.conn.lock().expect("db poisoned");
@@ -371,6 +438,25 @@ impl Db {
 
         for p in list {
             let args = serde_json::to_string(&p.args).unwrap_or_else(|_| "[]".into());
+            // 决定「这个 agent 会报什么能力」的字段一旦变了，旧快照立刻作废 ——
+            // 否则把命令从 hermes 改成 codex，面板还在用 hermes 的握手结论描述 codex。
+            // 判据与「改了会话字段就退回未测试」同源：只认环境与命令，不认名字/颜色这类身份字段。
+            let stale: bool = tx
+                .query_row(
+                    "SELECT program, args_json, launch_kind, distro, shell, default_cwd
+                       FROM profiles WHERE id = ?1",
+                    params![p.id],
+                    |r| {
+                        Ok(r.get::<_, String>(0)? != p.program
+                            || r.get::<_, String>(1)? != args
+                            || r.get::<_, String>(2)? != p.launch
+                            || r.get::<_, Option<String>>(3)? != p.distro
+                            || r.get::<_, Option<String>>(4)? != p.shell
+                            || r.get::<_, String>(5)? != p.cwd)
+                    },
+                )
+                .optional()?
+                .unwrap_or(false);
             tx.execute(
                 "INSERT INTO profiles
                    (id, name, launch_kind, distro, shell, program, args_json, env_json,
@@ -385,6 +471,8 @@ impl Db {
                    ssh_host=excluded.ssh_host,
                    ssh_port=excluded.ssh_port, ssh_user=excluded.ssh_user,
                    ssh_auth=excluded.ssh_auth, ssh_key_path=excluded.ssh_key_path,
+                   caps_json=CASE WHEN ?16 THEN NULL ELSE profiles.caps_json END,
+                   caps_at=CASE WHEN ?16 THEN NULL ELSE profiles.caps_at END,
                    updated_at=excluded.updated_at",
                 params![
                     p.id,
@@ -401,7 +489,8 @@ impl Db {
                     p.ssh_user,
                     p.ssh_auth,
                     p.ssh_key_path,
-                    ts
+                    ts,
+                    stale
                 ],
             )?;
         }
@@ -1693,6 +1782,8 @@ mod tests {
             args: vec!["acp".into()],
             cwd: "/mnt/c/source/sincearc".into(),
             default_mode: None,
+            caps: None,
+            caps_at: None,
             distro: Some("fedora".into()),
             shell: Some("zsh".into()),
             ssh_host: None,
@@ -2481,6 +2572,72 @@ mod tests {
         assert_eq!(h.last_event_seq, None);
         db.touch_handle_seq("s-old", "acp-old", 5).expect("新列可写");
         assert_eq!(db.live_handle("s-old").unwrap().unwrap().last_event_seq, Some(5));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn save_profile_caps_round_trips() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("seed profile");
+
+        let caps = AgentCaps {
+            load_session: true,
+            prompt_image: true,
+            session_fork: true,
+            ..AgentCaps::default()
+        };
+        let json = serde_json::to_string(&caps).expect("serialize caps");
+
+        db.save_profile_caps("p1", &json, 1_700_000_000)
+            .expect("save caps");
+
+        let rows = db.load_profiles().expect("load profiles");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].caps.as_ref(), Some(&caps));
+        assert_eq!(rows[0].caps_at, Some(1_700_000_000));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn 命令或环境变了就作废旧的能力快照() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("seed profile");
+        let caps = AgentCaps {
+            load_session: true,
+            ..AgentCaps::default()
+        };
+        let json = serde_json::to_string(&caps).expect("serialize");
+        db.save_profile_caps("p1", &json, 100).expect("save caps");
+
+        // 只改名字（身份字段）：握手结论必须留着，否则用户改个名字就得重连一次
+        let mut renamed = sample();
+        renamed.name = "改个名字".into();
+        db.save_profiles(&[renamed]).expect("save renamed");
+        assert!(
+            db.load_profiles().expect("load")[0].caps.is_some(),
+            "改名字不该作废能力快照"
+        );
+
+        // 换命令（会话字段）：旧快照立刻作废，面板不许再拿它描述这条新命令
+        let mut changed = sample();
+        changed.program = "codex".into();
+        db.save_profiles(&[changed]).expect("save changed");
+        let row = db.load_profiles().expect("load");
+        assert!(row[0].caps.is_none(), "换了命令，旧握手结论必须作废");
+        assert!(row[0].caps_at.is_none(), "作废时时间戳一起清");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn save_profile_caps_rejects_unknown_profile() {
+        let (db, path) = temp_db();
+        let err = db
+            .save_profile_caps("missing", "{}", 1)
+            .expect_err("不存在的 profile 不能静默成功");
+        assert!(matches!(err, DbError::ProfileNotFound(id) if id == "missing"));
 
         std::fs::remove_file(&path).ok();
     }

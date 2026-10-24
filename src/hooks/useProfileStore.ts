@@ -26,6 +26,8 @@ export function useProfileStore() {
         connected: false,
         agentName: null,
         protocolVersion: null,
+        caps: null,
+        capsAt: null,
         program: "hermes",
         args: ["acp"],
         cwd: "",
