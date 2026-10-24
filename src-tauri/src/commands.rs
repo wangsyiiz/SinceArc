@@ -2544,11 +2544,8 @@ async fn finish_delegate(
     };
 
     if let Some((turn_id, _)) = parent_turn {
-        let author_id = db
-            .turn_context(turn_id)
-            .ok()
-            .flatten()
-            .and_then(|(_, author)| author);
+        // 与 delegate 事件同一个作者：终态落在同一条支线上。
+        let author_id = Some(entry.target_member_id.clone());
         let payload = serde_json::json!({
             "handleId": handle_id,
             "status": status.as_str(),
@@ -2684,12 +2681,9 @@ pub async fn delegate_task(
     if let Some(turn_id) = parent_turn_id.as_deref() {
         // 子会话的轨迹挂到父轮次下，author_id 由 routes 填成目标成员，形成可见支线。
         state.turns.start(&child_acp_session_id, turn_id).await;
-        let author_id = state
-            .db
-            .turn_context(turn_id)
-            .ok()
-            .flatten()
-            .and_then(|(_, author)| author);
+        // 事件的作者必须是**被派活的成员**：轨迹按 author_id 分泳道，写成 NULL 会让这一步
+        // 落到主 agent 名下，用户看到的就不再是「FakeMate 被派了活」那条支线。
+        let author_id = Some(member.id.clone());
         let payload = serde_json::json!({
             "handleId": handle_id,
             "target": member.id,

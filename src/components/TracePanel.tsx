@@ -481,6 +481,7 @@ function GraphLabelRow({
             {r.meta && (
               <span className="min-w-0 truncate font-mono text-micro text-ink-3">{r.meta}</span>
             )}
+            <RemovedBadge player={r} />
             {r.status === "running" && (
               <span
                 className="ml-auto size-1 shrink-0 animate-pulse rounded-full"
