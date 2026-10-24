@@ -134,6 +134,43 @@ ACP 发来的 `rawInput`（命令、参数、目标）与 `content`（输出、�
 理由写在所有者那句话里：「避免通信越来越复杂」。每加入一个自造字段，就要有人维护它对不对、
 和 agent 的实现对不对得上，而这层复杂度不会随 agent 生态的演进而减少，只会越缠越死。
 
+### 逃逸口的第一条通道：`availableCommands`（2026-10-25 实测 + 定案）
+
+`/+` 命令列表**不自己维护**，来自 agent 主动推送的会话通知：
+
+```
+session/update
+  update.availableCommands = [
+    { name: "help",  description: "List available commands" },
+    { name: "model", description: "Show current model and provider, or switch models",
+      input: { hint: "model name to switch to" } },
+    …
+  ]
+```
+
+- **时机**：`session/new` 之后 agent 自己推（实测 hermes 在 8 秒内就发），可能多次推 —— 后到的覆盖前到的；
+- **不主动探测**：不许发一条 prompt 让它「列出命令」，那是往会话里灌内容，也是猜；
+- **没有这条通知 = 这个 agent 不提供**，列表不出现（不置灰、不占位）；
+- 只认 `name` / `description` / `input.hint` 三个字段，其余忽略；形状不对就整条不显示，不半渲染；
+- 目前**只读展示**：点击不执行、不发送。接到输入框是下一步，不是本批。
+
+### 归档：CLI 子命令的运行期探测（2026-10-25 定，暂不做）
+
+逃逸口的第二条通道（agent 自己的 CLI 子命令）**本轮不做**，先记录设计，避免下次从零讨论：
+
+```
+发现   agent 首次出现 / 版本变化时跑 <binary> --help，只抓顶层子命令名（保守解析，
+       认不出就当没有候选）
+确认   候选进「待确认」，由人点一次添加/忽略，结果存本地库（不写进代码）
+运行   之后每次启动只做存在性校验：<binary> <sub> --help 的退出码 == 0 即存在，
+       不存在就隐藏（不显示「已失效」）；版本变了老条目重验 + 新候选再来一次
+```
+
+不解析 `--help` 正文（argparse / clap / 各家长得不一样，宽度和本地化都会变），只信退出码。
+`只读 / 会改数据` 的归类**必须人工确认**：`sessions prune` 从名字和 help 文本都看不出它会真删数据，
+自动判定迟早把 `delete` / `apply` 放进「安全」那一栏。
+
+
 ## 能力矩阵：能力只从握手来，不按 agent 名猜（2026-10-24 定）
 
 `initialize` 的 `agentCapabilities` 是唯一来源。字段（schema 1.12.0）：
