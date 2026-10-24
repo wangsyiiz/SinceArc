@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
-import { Check, Plus, UserMinus, Users } from "lucide-react";
+import { Plus, UserMinus, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   agentUsersList,
@@ -182,12 +182,6 @@ export function MembersMenu({
               );
             })}
           </div>
-
-          {members.length > 0 && (
-            <p className="mt-1 flex items-center gap-1 border-t border-line-1/40 px-1 pt-1 text-micro text-ink-3">
-              <Check size={10} /> 点一下即加入 / 移出，立即生效
-            </p>
-          )}
 
           {error && (
             <p className="mt-1 break-all rounded-mark bg-danger-1/10 px-1.5 py-1 font-mono text-micro text-danger-1">

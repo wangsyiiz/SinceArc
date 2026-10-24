@@ -172,9 +172,12 @@ export function MemberDetailPanel({
         visibility: pos ? "visible" : "hidden",
       }}
     >
-      <div className="mb-2 min-w-0 truncate text-ui text-ink-1" title={member.name}>
+      <div className="min-w-0 truncate pr-1 text-ui text-ink-1" title={member.name}>
         {member.name}
       </div>
+
+      {/* 分割线用 1px 色块，不用 border：浮层里手写边框会多套一圈（见 design-language） */}
+      <div className="my-2 h-px bg-line-1/60" />
 
       <div className="space-y-1.5">
         <DetailRow icon={<AtSign size={13} />} label="@短名" value={`@${member.handle}`} />
@@ -193,7 +196,9 @@ export function MemberDetailPanel({
         />
       </div>
 
-      <div className="mt-2.5 flex items-center gap-1">
+      <div className="mt-2.5 h-px bg-line-1/60" />
+
+      <div className="mt-2 flex items-center gap-1">
         <button
           type="button"
           title="派活…"
