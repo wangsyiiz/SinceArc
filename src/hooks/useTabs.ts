@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionSummary, Tab } from "@/types";
+import { nextActiveTabId, pruneSessionTabs } from "@/lib/tabs-prune";
 
 export function useTabs(sessions: SessionSummary[]) {
   const [tabs, setTabs] = useState<Tab[]>([]);
@@ -38,6 +39,26 @@ export function useTabs(sessions: SessionSummary[]) {
     setLastSessionId(first.id);
   }, [sessions, tabs.length]);
 
+  /**
+   * 列表里没了 = 会话被删了，对应标签必须跟着关。
+   *
+   * 删除流程自己也会关一次标签，但那是「删除按钮这条路径」的保证；这里按列表兜底，
+   * 免得别的路径（列表刷新、别处删掉）留下一具空标签 —— 界面上看起来就是「删了会话，
+   * 右边那个标签还在」。
+   */
+  const seenIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const alive = new Set(sessions.map((s) => s.id));
+    const seen = seenIdsRef.current;
+    setTabs((prev) => {
+      const kept = pruneSessionTabs(prev, alive, seen);
+      if (kept === prev) return prev;
+      setActiveTabId((current) => nextActiveTabId(kept, current, prev));
+      return kept;
+    });
+    for (const id of alive) seen.add(id);
+  }, [sessions]);
+
   const openTab = useCallback((tab: Omit<Tab, "id" | "title"> & { title?: string }) => {
     const key =
       tab.kind === "session"
@@ -61,6 +82,19 @@ export function useTabs(sessions: SessionSummary[]) {
     if (tab.kind === "session" && tab.sessionId) setLastSessionId(tab.sessionId);
   }, []);
 
+  /** 按会话 id 关标签：删除会话时用，不依赖调用方手里的 tabs 快照。 */
+  const closeSessionTabs = useCallback((sessionId: string) => {
+    setTabs((prev) => {
+      const next = prev.filter((t) => !(t.kind === "session" && t.sessionId === sessionId));
+      if (next.length === prev.length) return prev;
+      setActiveTabId((current) => {
+        if (current && next.some((t) => t.id === current)) return current;
+        return next[0]?.id ?? null;
+      });
+      return next;
+    });
+  }, []);
+
   const closeTab = useCallback((id: string) => {
     setTabs((prev) => {
       const idx = prev.findIndex((t) => t.id === id);
@@ -82,5 +116,5 @@ export function useTabs(sessions: SessionSummary[]) {
     [tabs],
   );
 
-  return { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab };
+  return { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab };
 }

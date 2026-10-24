@@ -184,7 +184,7 @@ export default function App() {
   }, [activeProfile]);
 
   const { sessions, setSessions, reload: reloadSessions } = useSessionList();
-  const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
+  const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab } = useTabs(sessions);
   const { state, patchSession, initSession, sessionState, hasMore, loadOlder, loadingOlder, opening } =
     useSessionState(lastSessionId);
 
@@ -842,8 +842,8 @@ export default function App() {
     try {
       await sessionDelete(target.id);
       setSessions((list) => list.filter((x) => x.id !== target.id));
-      const tab = tabs.find((t) => t.kind === "session" && t.sessionId === target.id);
-      if (tab) closeTab(tab.id);
+      // 按会话 id 关，不查 tabs 快照：对话框是异步的，快照可能已经不新鲜。
+      closeSessionTabs(target.id);
       clearAutoApprove(target.id);
       setPendingDelete(null);
     } catch (e) {

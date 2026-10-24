@@ -201,13 +201,13 @@ export function MemberDetailPanel({
       <div className="mt-2 flex items-center gap-1">
         <button
           type="button"
-          title="派活…"
-          aria-label="派活…"
+          title="派活"
+          aria-label="派活"
           onClick={onDelegate}
           className={cn(ACTION_CLASS, "text-ink-3 hover:bg-surface-3/55 hover:text-ink-1")}
         >
           <SendHorizontal size={13} />
-          <span>派活…</span>
+          <span>派活</span>
         </button>
         <button
           type="button"
