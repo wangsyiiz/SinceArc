@@ -238,12 +238,30 @@ export default function App() {
   );
   const permissions = usePermissions({ onHead: onPermHead });
   const onPermission = useCallback(
-    (args: { uiSid: string; profileId: string; requestId: number; params: unknown }) => {
-      permissions.enqueue(args.uiSid, args.profileId, args.requestId, args.params);
+    (args: {
+      uiSid: string;
+      profileId: string;
+      requestId: number;
+      params: unknown;
+      authorId: string | null;
+    }) => {
+      permissions.enqueue(
+        args.uiSid,
+        args.profileId,
+        args.requestId,
+        args.params,
+        args.authorId,
+      );
     },
     [permissions.enqueue],
   );
-  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission });
+  const onPermissionsExpired = useCallback(
+    (args: { uiSid?: string; profileId: string; reason: string }) => {
+      permissions.expire(args);
+    },
+    [permissions.expire],
+  );
+  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired });
 
   /** 恢复判定只有一个出口：错误态、诊断与会话头标记都从它更新。 */
   const reportResume = useCallback(
@@ -642,11 +660,11 @@ export default function App() {
 
   const traceView = useMemo(() => toTraceView(traceTurns), [traceTurns]);
 
-  const decide = useCallback(async (optionId: string | null) => {
+  const decide = useCallback(async (optionId: string | null, note: string | null = null) => {
     const uiSid = lastSessionId;
     try {
       // null 表示用户取消/Esc：由队列按 kind 找拒绝项，不能硬编码 optionId。
-      await permissions.decide(uiSid, optionId);
+      await permissions.decide(uiSid, optionId, note);
       // 成功**不**往消息流里写「权限决定：允许」。
       //
       // 那条通知以前只存在于内存（没有落库），于是同一个气泡有两种位置：
@@ -1193,8 +1211,8 @@ export default function App() {
           request={state.pendingPerm}
           player={players.find((x) => x.id === state.pendingPerm?.playerId)}
           open={permOpen}
-          onDecide={(optionId) => void decide(optionId)}
-          onCancel={() => void decide(null)}
+          onDecide={(optionId, note) => void decide(optionId, note)}
+          onCancel={(note) => void decide(null, note)}
           queued={permQueued}
         />
       )}

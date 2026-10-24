@@ -217,3 +217,72 @@ pid 文件 40369 = zsh（relay）        pstree: zsh(40369)---hermes(40400)
 | --- | --- | --- |
 | 拼进命令行 | 40369 = zsh（relay） | agent 残留 |
 | base64 → 文件 | 42560 = hermes（新会话首进程） | `SINCEARC_KILLED`，进程组 GONE |
+
+## 审批两闸：agent 档 / 客户端自动同意
+
+审批这件事有两道闸，方向相反，作用面重叠 —— 用户看到的都是「我被打断几次」。
+
+```
+ModeSelect（上行）  session/set_mode 把 agent 的审批档推过去，agent 决定要不要发请求
+                    可选档来自 agent 上报（availableModes）：hermes 是 default / accept_edits / dont_ask
+                    覆盖范围由 agent 实现定义 —— 我们不替它承诺「accept_edits 管哪些工具」
+自动同意（下行）    agent 已经发了 session/request_permission，客户端决定替不替用户答
+                    设置全在我们这边，与 agent 是否上报档位无关
+```
+
+两者不重复：agent 档决定「问不问」，自动同意决定「问了以后答不答」。但自动同意只在 agent 仍然发问时
+才有意义 —— 所以界面上必须能看出它当前有没有效（三态，见 desktop-ux）。
+
+### 自动同意的四条边界
+
+```
+对象    toolCall.kind ∈ { edit, delete, move }（编辑类）
+        不含 execute（命令）、read / search、think / fetch / other
+        把 delete / move 算进来：它们是「改文件」的同一类后果，与 Claude Code acceptEdits 的
+        「编辑 + mv/cp/mkdir/touch」同口径；排除 delete 会造成「改内容不问、删文件要问」的割裂
+空间    当前 uiSession。同 profile 下的其它会话不受影响（每个请求都带 sessionId，按会话匹配）
+时间    开启 → 手动切回关闭 / conn.exited / 应用退出。不跨会话、不落库
+        设置页里的是「新会话默认档」，那是另一件事
+成员    会话内所有成员的动作都适用（屋子级策略）；轨迹记「谁的动作 + 由自动同意放行」
+```
+
+### 两条兜底（枚举之外一律走默认动作）
+
+1. **未知 kind 不自动同意**：拿不准就不做决定，弹给用户。宁可多问一次，不可多放一次。
+2. **options 里没有 allow_* 项时不自动同意**：应答只能回请求自己提供的 optionId，不许凭空造。
+   这时弹窗照常出现，并标一句「这条没法自动同意」—— 不许静默失败（否则用户以为开关没生效）。
+
+### 与 agent 档的组合
+
+```
+agent 档 \ 自动同意     关                编辑类
+default                  每次编辑都问       编辑不问          ← 自动同意唯一真正生效的场合
+accept_edits             编辑不问           编辑不问          ← 自动同意无活可干（界面显示被覆盖）
+dont_ask                 什么都不问         什么都不问        ← 请求根本不发（chip 置灰）
+```
+
+### 过期：请求失效后不许还能点
+
+请求会因三种原因失效：轮已终态（agent 自拒/被取消）、连接断开、已被别处答过。
+前端按轮终态（promptResult）与 conn.exited 清队列并置「已过期」，按钮禁用、写明原因；
+点击时的 50500（已失效）、50501（连接断开）保留为兜底 —— agent 自己超时自拒不给前端信号，只能靠它。
+
+> 精确的失效事件（`conn.request_expired`）推迟到 E15.7 与 `conn.stage` 一起做，避免两次改事件契约。
+
+### 决策入轨迹
+
+每次应答（人工或自动）写一条 `permission_decision` 事件：`optionId` / `optionLabel` /
+`verdict`（`allow` | `reject`，由用户实际点的那个选项决定；缺省按 reject 记，不许猜成放行过）/
+`actorMemberId`（**动作发起成员**：这条请求是谁的动作；不是"按下去的人"—— 按下去的人永远是本机用户）/
+`via`（`user` | `auto:edits`，表示这次决定是谁做的）/ `note`（拒绝时可填，只进本地轨迹，不进协议）/
+`turnId` / 落库时间。
+`session_events.kind` 是自由字符串，不需要迁移；轨迹面板要给它一行文案。
+
+### 实测边界（当前掌握的证据）
+
+```
+已观测     hermes 的 toolCall.kind 真实取值：execute（execute_code / terminal）、read（read_file）
+未观测     edit / delete / move —— 本地库里没有任何 permission 行（会话期间 hermes 一次都没问）
+未确认     hermes 是否提供 allow_always 选项、accept_edits 是否覆盖 delete/move
+验证方式   假 agent 脚本（可控 kind 与 options）+ 换一个会提问的 agent 做真机交叉验证
+```

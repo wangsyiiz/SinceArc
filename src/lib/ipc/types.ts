@@ -40,6 +40,18 @@ export type RespondOutcome =
   | { outcome: "selected"; optionId: string }
   | { outcome: "cancelled" };
 
+/** 权限应答的本地轨迹元数据；不进入 ACP 协议。 */
+export interface PermissionDecision {
+  /** 裁定：allow = 放行（含 always），reject = 拒绝/取消。写进轨迹，界面不再靠猜。 */
+  verdict: "allow" | "reject";
+  optionId: string | null;
+  optionLabel: string | null;
+  actorMemberId: string | null;
+  note: string | null;
+  /** E13.6b 会使用 auto:edits；本项只有 user。 */
+  via: "user" | "auto:edits";
+}
+
 // 候选/命中/扫描结果的 Rust 名与前端旧名不同，这里做映射。
 export type { Candidate as DiscoveryCandidate, Found as DiscoveryHit, DiscoverOutcome as DiscoveryOutcome } from "./types.gen";
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlignLeft, FileText, PencilLine, Play, Search, Sparkles, ShieldAlert, Waypoints, X } from "lucide-react";
+import { AlignLeft, FileText, PencilLine, Play, Search, Sparkles, ShieldAlert, ShieldCheck, ShieldX, Waypoints, X } from "lucide-react";
 import type { Activity, ActivityKind, Player, TraceTurn } from "@/types";
 import { cn } from "@/lib/utils";
 import { useHoverCard } from "./ui/HoverCard";
@@ -158,6 +158,12 @@ const KIND_ICON: Record<ActivityKind, typeof FileText> = {
   permission: ShieldAlert,
 };
 
+function activityIcon(activity?: Activity): typeof FileText {
+  if (activity?.kind === "permission" && activity.decision === "allow") return ShieldCheck;
+  if (activity?.kind === "permission" && activity.decision === "reject") return ShieldX;
+  return activity ? KIND_ICON[activity.kind] : Waypoints;
+}
+
 function statusDotClass(status: TraceRow["status"]): string | undefined {
   if (status === "ok") return "bg-ok-1/70";
   if (status === "running") return "animate-pulse bg-accent-1";
@@ -198,7 +204,7 @@ function turnStatusTextClass(status: TraceRow["status"]): string {
 
 function HoverContent({ row }: { row: TraceRow }) {
   const activity = row.activity;
-  const Icon = activity ? KIND_ICON[activity.kind] : Waypoints;
+  const Icon = activityIcon(activity);
 
   /* 抬头是「这是什么」，正文是「内容」—— 两者别混。
      思考条目的 title 在列表里被切成 42 字（列表宽度决定），如果照搬到卡片抬头，
@@ -255,7 +261,7 @@ function HoverContent({ row }: { row: TraceRow }) {
 function ActivityListRow({ activity, player }: { activity: Activity; player?: Player }) {
   const [el, setEl] = useState<HTMLDivElement | null>(null);
   const hover = useHoverCard();
-  const Icon = KIND_ICON[activity.kind];
+  const Icon = activityIcon(activity);
   const row: TraceRow = {
     id: activity.id,
     x: 0,

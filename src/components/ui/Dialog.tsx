@@ -4,13 +4,25 @@ export function Dialog(props: {
   open: boolean;
   onClose: () => void;
   title: string;
+  /** 标题旁的小标记（例如权限分类 Badge）；不参与 aria-labelledby。 */
+  titleAdornment?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
   icon?: ReactNode;
   danger?: boolean;
   width?: "sm" | "md";
 }) {
-  const { open, onClose, title, children, footer, icon, danger = false, width = "sm" } = props;
+  const {
+    open,
+    onClose,
+    title,
+    titleAdornment,
+    children,
+    footer,
+    icon,
+    danger = false,
+    width = "sm",
+  } = props;
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
 
@@ -50,9 +62,14 @@ export function Dialog(props: {
               {icon}
             </div>
           )}
-          <h2 id={titleId} className="min-w-0 flex-1 text-title font-medium text-ink-1">
-            {title}
-          </h2>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 id={titleId} className="min-w-0 text-title font-medium text-ink-1">
+                {title}
+              </h2>
+              {titleAdornment}
+            </div>
+          </div>
         </div>
         <div className="mt-3 text-body text-ink-2">{children}</div>
         {footer && <div className="mt-4 flex justify-end gap-2">{footer}</div>}

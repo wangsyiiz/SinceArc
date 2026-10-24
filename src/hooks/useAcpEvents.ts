@@ -116,6 +116,7 @@ export function useAcpEvents({
   onSessionBound,
   onAgentSwitch,
   onPermission,
+  onPermissionsExpired,
 }: {
   patchSession: PatchSession;
   /** 会话绑定 ACP session 后要回写列表（acpSessionId / profileId） */
@@ -135,6 +136,13 @@ export function useAcpEvents({
     profileId: string;
     requestId: number;
     params: unknown;
+    authorId: string | null;
+  }) => void;
+  /** 轮终态/连接断开：队列里该会话的权限请求必须立刻标成过期 */
+  onPermissionsExpired?: (args: {
+    uiSid?: string;
+    profileId: string;
+    reason: string;
   }) => void;
 }) {
   const [sessionsByProfile, setSessionsByProfile] = useState<Record<string, string>>({});
@@ -224,6 +232,10 @@ export function useAcpEvents({
       // 进程没了 = 这个 profile 下次必须重新连接。停止/断开都会走到这里；
       // 不清映射的话，下一轮会复用已经死掉的 AgentProcess。
       if (topic === "conn.exited") {
+        onPermissionsExpired?.({
+          profileId,
+          reason: "连接已断开",
+        });
         setSessionsByProfile((m) => {
           if (!(profileId in m)) return m;
           const next = { ...m };
@@ -335,7 +347,13 @@ export function useAcpEvents({
           // 丢弃不等于可以不管：没人回答，agent 会一直等。按拒绝收尾最保守。
           denyPermission(profileId, event.id, parsePermissionOptions(event.params));
         } else {
-          onPermission?.({ uiSid, profileId, requestId: event.id, params: event.params });
+          onPermission?.({
+            uiSid,
+            profileId,
+            requestId: event.id,
+            params: event.params,
+            authorId,
+          });
         }
         return;
       }
@@ -419,6 +437,12 @@ export function useAcpEvents({
           }
           return;
         }
+        // 轮已到终态：还没回答的权限请求不可能再生效。先置过期，再处理正文/状态。
+        onPermissionsExpired?.({
+          uiSid,
+          profileId,
+          reason: event.kind === "promptResult" ? "这一轮已结束" : "这一轮已失败",
+        });
         const st = acpSid ? streams.current[acpSid] : undefined;
         const actId = `act-stream-${acpSid ?? "x"}`;
         const turnId = acpSid ? acpToTurn.current[acpSid] : undefined;
@@ -516,7 +540,15 @@ export function useAcpEvents({
 
       console.debug("[acp]", profileId, event);
     },
-    [diag, flushStream, onAgentSwitch, onPermission, patchSession, scheduleFlush],
+    [
+      diag,
+      flushStream,
+      onAgentSwitch,
+      onPermission,
+      onPermissionsExpired,
+      patchSession,
+      scheduleFlush,
+    ],
   );
 
   const onSession = useCallback(

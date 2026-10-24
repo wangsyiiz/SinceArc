@@ -26,6 +26,32 @@ use crate::wire::{Meta, WireEvent};
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// 权限应答的本地轨迹元数据（不进 ACP 协议）。
+///
+/// 收成一个结构体而不是继续往命令上加参数：参数已经到 10 个，clippy 的 too_many_arguments 是
+/// 真信号 —— 这些字段本来就是一件事（这次决定是什么、谁做的、写了什么备注）。
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PermissionDecisionMeta {
+    /// allow / reject；缺省按 reject 记（不许猜成放行过）
+    pub verdict: Option<String>,
+    pub option_id: Option<String>,
+    pub option_label: Option<String>,
+    /// 动作发起成员（不是按下去的人）
+    pub actor_member_id: Option<String>,
+    pub note: Option<String>,
+    /// user / auto:edits
+    pub via: Option<String>,
+}
+
+/// 命令参数里的空串/纯空白按缺失处理：轨迹里要写 null，不写 ""。
+fn normalize_optional(value: Option<String>) -> Option<String> {
+    value.and_then(|raw| {
+        let trimmed = raw.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
 /// 推给界面的事件。UI 只认这个枚举，不直接看 ACP 的 JSON ——
 /// 协议类型收敛在 acp 模块里（见 acp/mod.rs 的约束 1）。
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
@@ -1601,9 +1627,21 @@ pub async fn agent_connect(
                     }
                     // 只有登记过的 id 才允许被回答（见 agent_respond_request）
                     pending
-                        .mark_with_turn(&profile_for_task, id, waiting_turn)
+                        .mark_with_turn(&profile_for_task, id, waiting_turn.clone())
                         .await;
-                    let (session_id, ui_session_id, author_id) = route(&routes, &params).await;
+                    let (session_id, ui_session_id, mut author_id) =
+                        route(&routes, &params).await;
+                    // 归属表通常已带作者；万一没有，再用这一轮的 author_id 补。
+                    // 仍然拿不到就保持 None —— 不许拿会话成员列表里的第一个人顶替。
+                    if author_id.is_none() {
+                        if let Some(turn_id) = waiting_turn.as_deref() {
+                            author_id = db_for_trace
+                                .turn_context(turn_id)
+                                .ok()
+                                .flatten()
+                                .and_then(|(_, author)| author);
+                        }
+                    }
                     AcpEvent::Request {
                         id,
                         method,
@@ -2457,6 +2495,7 @@ pub async fn agent_respond_request(
     profile_id: String,
     id: u64,
     outcome: serde_json::Value,
+    decision: Option<PermissionDecisionMeta>,
 ) -> Result<(), CmdError> {
     // 先摘登记再写回：同一个请求被点两次（双击、两个窗口）时，第二次必须被挡住，
     // 否则我们会往一个 agent 已经处理完的 id 上再写一条响应。
@@ -2468,6 +2507,26 @@ pub async fn agent_respond_request(
         .get(&profile_id)
         .await
         .ok_or_else(|| CmdError::new(50501, "连接已断开，无法回答这个请求"))?;
+    let decision = decision.unwrap_or_default();
+    let option_id = normalize_optional(decision.option_id).or_else(|| {
+        outcome
+            .get("optionId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    });
+    let option_label = normalize_optional(decision.option_label);
+    let actor_member_id = normalize_optional(decision.actor_member_id);
+    let note = normalize_optional(decision.note);
+    let via = match decision.via.as_deref() {
+        Some("auto:edits") => "auto:edits",
+        _ => "user",
+    };
+    // 裁定由前端按用户实际点的那个选项给出（allow_* / reject_*）。缺省按拒绝 —— 轨迹里
+    // 宁可记成"没放行"，也不能凭缺失字段猜成放行过。
+    let verdict = match decision.verdict.as_deref() {
+        Some("allow") => "allow",
+        _ => "reject",
+    };
     match handle
         .proc
         .respond(id, Ok(serde_json::json!({ "outcome": outcome })))
@@ -2483,6 +2542,47 @@ pub async fn agent_respond_request(
                         "权限答完后恢复轮次状态失败"
                     );
                 }
+                match state.db.turn_context(turn_id) {
+                    Ok(Some((ui_sid, turn_author))) => {
+                        let payload = serde_json::json!({
+                            "requestId": id,
+                            "verdict": verdict,
+                            "optionId": option_id,
+                            "optionLabel": option_label,
+                            "actorMemberId": actor_member_id.or_else(|| turn_author.clone()),
+                            "via": via,
+                            "note": note,
+                            "turnId": turn_id,
+                        });
+                        let input = db::EventInput {
+                            turn_id: turn_id.to_string(),
+                            author_id: turn_author,
+                            kind: "permission_decision".to_string(),
+                            payload_json: payload.to_string(),
+                            source: "live".to_string(),
+                            truncated: false,
+                        };
+                        if let Err(e) = state.db.append_events(&ui_sid, &[input]) {
+                            tracing::warn!(
+                                target: "sincearc::trace", error = %e, turn = %turn_id,
+                                "权限决定落库失败"
+                            );
+                        }
+                    }
+                    Ok(None) => tracing::warn!(
+                        target: "sincearc::trace", turn = %turn_id,
+                        "权限决定找不到轮次，跳过轨迹"
+                    ),
+                    Err(e) => tracing::warn!(
+                        target: "sincearc::trace", error = %e, turn = %turn_id,
+                        "读取轮次作者失败，权限决定未落库"
+                    ),
+                }
+            } else {
+                tracing::warn!(
+                    target: "sincearc::trace", profile = %profile_id, id,
+                    "权限决定没有关联轮次，跳过轨迹"
+                );
             }
             tracing::info!(
                 target: "sincearc::ipc", profile = %profile_id, id,

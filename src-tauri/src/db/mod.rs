@@ -275,6 +275,57 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, decl: &str) -> ru
     Ok(())
 }
 
+/// 早期 `session_events.kind` 带 CHECK 枚举，新增 `permission_decision` 会被数据库拒绝。
+/// 轨迹是本地可再生产数据，但没必要清空：按原列顺序重建表，内容原样保留。
+fn ensure_event_kind_is_free(conn: &Connection) -> rusqlite::Result<()> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'session_events'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(sql) = sql else { return Ok(()) };
+    if !sql.contains("CHECK (kind IN") {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "BEGIN;
+         CREATE TABLE session_events_new (
+           id           TEXT PRIMARY KEY,
+           session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+           turn_id      TEXT NOT NULL,
+           seq          INTEGER NOT NULL,
+           at           INTEGER NOT NULL,
+           author_id    TEXT,
+           kind         TEXT NOT NULL,
+           payload_json TEXT NOT NULL,
+           source       TEXT NOT NULL DEFAULT 'live' CHECK (source IN ('live', 'replay')),
+           truncated    INTEGER NOT NULL DEFAULT 0
+         );
+         INSERT INTO session_events_new
+           (id, session_id, turn_id, seq, at, author_id, kind, payload_json, source, truncated)
+           SELECT id, session_id, turn_id, seq, at, author_id, kind, payload_json, source, truncated
+             FROM session_events;
+         DROP TABLE session_events;
+         ALTER TABLE session_events_new RENAME TO session_events;
+         CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id, seq);
+         COMMIT;",
+    )?;
+    Ok(())
+}
+
+/// 轨迹种类清单。schema 不再用 CHECK 约束（新增种类要重建表），改由这里 + `debug_assert` 兜。
+pub const KNOWN_EVENT_KINDS: &[&str] = &[
+    "thought",
+    "tool_call",
+    "tool_call_update",
+    "permission",
+    "permission_decision",
+    "usage",
+    "mode",
+];
+
 /// 事件写入与显式 touch 共用的一条 SQL：只升不降，因此丢失/乱序的 touch 不会让水位倒退。
 fn touch_handle_seq_on(
     conn: &Connection,
@@ -324,6 +375,7 @@ impl Db {
         }
 
         conn.execute_batch(SCHEMA)?;
+        ensure_event_kind_is_free(&conn)?;
         ensure_column(&conn, "profiles", "default_mode", "TEXT")?;
         // E13.2：握手能力快照。老库补列，不清会话、不动 SCHEMA_VERSION。
         ensure_column(&conn, "profiles", "caps_json", "TEXT")?;
@@ -1046,6 +1098,20 @@ impl Db {
         )
     }
 
+    /// 按轮次 id 取它所属的界面会话与作者。权限决定的轨迹挂在同一会话、同一支线下。
+    pub fn turn_context(
+        &self,
+        turn_id: &str,
+    ) -> rusqlite::Result<Option<(String, Option<String>)>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.query_row(
+            "SELECT session_id, author_id FROM turns WHERE id = ?1",
+            params![turn_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+    }
+
     /// 最近几轮（含正文与耗时），倒序。
     pub fn load_turns(&self, session_id: &str, limit: i64) -> rusqlite::Result<Vec<TurnRow>> {
         let conn = self.conn.lock().expect("db poisoned");
@@ -1085,6 +1151,13 @@ impl Db {
         if events.is_empty() {
             return Ok(0);
         }
+        // `session_events.kind` 是自由字符串（早期带 CHECK 枚举，新增种类要重建表，故去掉）。
+        // 代价是写错一个字母不会报错、只会变成轨迹面板上一条空白行 —— 开发期直接断言兜住。
+        debug_assert!(
+            events.iter().all(|e| KNOWN_EVENT_KINDS.contains(&e.kind.as_str())),
+            "未知轨迹种类：{:?}",
+            events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>()
+        );
         let mut conn = self.conn.lock().expect("db poisoned");
         let tx = conn.transaction()?;
         let mut seq: i64 = tx.query_row(
@@ -2452,6 +2525,37 @@ mod tests {
                 params![id],
             )
             .expect("seed session");
+    }
+
+    #[test]
+    fn permission_decision_lands_in_the_turn_and_reads_back_its_author() {
+        let (db, _path) = temp_db();
+        seed_session(&db, "s-1");
+        db.start_turn("s-1", "t-1", "改个文件", Some("m-7"))
+            .expect("start turn");
+
+        // 轮次上下文：决定要挂在同一会话、同一支线下，作者用来显示「谁的动作」
+        let (ui_sid, author) = db
+            .turn_context("t-1")
+            .expect("turn context")
+            .expect("turn exists");
+        assert_eq!(ui_sid, "s-1");
+        assert_eq!(author.as_deref(), Some("m-7"));
+        assert!(db.turn_context("t-missing").expect("missing").is_none());
+
+        // session_events.kind 已不再是 CHECK 枚举；permission_decision 必须写得进去
+        db.append_events(
+            "s-1",
+            &[EventInput {
+                turn_id: "t-1".to_string(),
+                author_id: Some("m-7".to_string()),
+                kind: "permission_decision".to_string(),
+                payload_json: r#"{"verdict":"allow","optionId":"allow_once"}"#.to_string(),
+                source: "live".to_string(),
+                truncated: false,
+            }],
+        )
+        .expect("append decision");
     }
 
     #[test]

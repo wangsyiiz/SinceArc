@@ -279,3 +279,82 @@ test("多轮按时间正序，最新一轮在最后", () => {
   const view = toTraceView([b, a]);
   assert.deepEqual(view.turns.map((t) => t.id), ["turn-a", "turn-b"]);
 });
+
+test("权限决定按请求里的 tool kind 显示批准分类", () => {
+  const dto = turn({
+    items: [
+      {
+        seq: 1,
+        at: t0,
+        authorId: null,
+        kind: "permission",
+        payload: {
+          toolCall: { title: "改文件", kind: "edit" },
+          options: [
+            { kind: "allow_once", optionId: "allow_once", name: "允许一次" },
+            { kind: "reject_once", optionId: "reject_once", name: "拒绝" },
+          ],
+        },
+        truncated: false,
+      },
+      {
+        seq: 2,
+        at: t0 + 1,
+        authorId: null,
+        kind: "permission_decision",
+        payload: {
+          requestId: 7,
+          optionId: "allow_once",
+          optionLabel: "允许一次",
+          actorMemberId: null,
+          via: "user",
+          note: null,
+          turnId: "turn-1",
+        },
+        truncated: false,
+      },
+    ],
+  });
+  const decision = toTraceView([dto]).activities[1];
+  assert.equal(decision.kind, "permission");
+  assert.equal(decision.title, "批准 · 编辑文件");
+  assert.equal(decision.decision, "allow");
+});
+
+test("拒绝备注只进轨迹正文，不混进协议字段", () => {
+  const dto = turn({
+    items: [
+      {
+        seq: 1,
+        at: t0,
+        authorId: null,
+        kind: "permission",
+        payload: {
+          toolCall: { title: "删除文件", kind: "delete" },
+          options: [{ kind: "reject_once", optionId: "reject_once", name: "拒绝" }],
+        },
+        truncated: false,
+      },
+      {
+        seq: 2,
+        at: t0 + 1,
+        authorId: null,
+        kind: "permission_decision",
+        payload: {
+          requestId: 8,
+          optionId: "reject_once",
+          optionLabel: "拒绝",
+          actorMemberId: null,
+          via: "user",
+          note: "先别删",
+          turnId: "turn-1",
+        },
+        truncated: false,
+      },
+    ],
+  });
+  const decision = toTraceView([dto]).activities[1];
+  assert.equal(decision.title, "拒绝（备注）");
+  assert.equal(decision.decision, "reject");
+  assert.match(decision.body ?? "", /备注：先别删/);
+});

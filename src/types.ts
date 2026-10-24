@@ -112,6 +112,8 @@ export interface Activity {
   body?: string;
   /** 后端是否截断过这条 payload（思考的 8KB 上限）。 */
   truncated?: boolean;
+  /** permission_decision 的结论；普通权限请求没有 */
+  decision?: "allow" | "reject";
   meta?: string;
   status: ActivityStatus;
   at: string;
@@ -194,10 +196,17 @@ export interface PermissionOption {
 export interface PermissionRequest {
   id: string;
   playerId: string;
+  /** ACP 原始 toolCall.kind；保留原值，未知/缺失为 null */
+  kind: string | null;
   title: string;
   detail: string;
   meta?: string;
   options: PermissionOption[];
+  /**
+   * 请求已失效的原因。存在即表示 expired（没有单独的时间戳字段）：
+   * 轮次终态或连接断开后，选项不能再作答。
+   */
+  expiredReason?: string;
 }
 
 /* ---------- 右侧工作区标签 ---------- */

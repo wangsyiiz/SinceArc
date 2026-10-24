@@ -123,8 +123,8 @@ CREATE TABLE IF NOT EXISTS session_events (
   at           INTEGER NOT NULL,
   -- 谁做的：群成员 id；主 agent 为 NULL
   author_id    TEXT,
-  kind         TEXT NOT NULL CHECK (kind IN (
-                 'thought', 'tool_call', 'tool_call_update', 'permission', 'usage', 'mode')),
+  -- 自由字符串：新增轨迹种类（如 permission_decision）不需要迁移枚举
+  kind         TEXT NOT NULL,
   -- 结构化摘要 + 原始字段；单行上限 64KB，思考正文只留前 8KB（truncated=1 时界面要标注）
   payload_json TEXT NOT NULL,
   -- live = 实时采集；replay = 事后用 session/load 补录（不作实时数据源）

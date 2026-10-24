@@ -19,13 +19,21 @@ export function denyPermission(
   profileId: string,
   requestId: number,
   options: PermissionOption[],
+  actorMemberId: string | null = null,
 ): void {
   const reject = options.find((option) => option.tone === "reject");
   const outcome: RespondOutcome = reject
     ? { outcome: "selected", optionId: reject.id }
     : { outcome: "cancelled" };
   // 失败不能吞：这条路径没有人盯着结果，至少要在日志里留下「哪条请求没答上」
-  void agentRespondRequest(profileId, requestId, outcome).catch((e) => {
+  void agentRespondRequest(profileId, requestId, outcome, {
+    verdict: "reject",
+    optionId: reject?.id ?? null,
+    optionLabel: reject?.label ?? null,
+    actorMemberId,
+    note: null,
+    via: "user",
+  }).catch((e) => {
     clog("PERM-DENY-ERR", `profile=${profileId} id=${requestId} ${String(e)}`);
   });
 }
@@ -39,6 +47,11 @@ function asRecord(v: unknown): Record<string, unknown> | null {
 
 function nonEmptyString(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
+function normalizeNote(note: string | null | undefined): string | null {
+  const text = note?.trim() ?? "";
+  return text.length > 0 ? text : null;
 }
 
 function toneOf(kind: string | undefined): PermissionOption["tone"] {
@@ -76,7 +89,11 @@ export function parsePermissionOptions(params: unknown): PermissionOption[] {
   return options;
 }
 
-function parsePermissionRequest(requestId: number, params: unknown): PermissionRequest {
+function parsePermissionRequest(
+  requestId: number,
+  params: unknown,
+  playerId: string | null,
+): PermissionRequest {
   const root = asRecord(params) ?? {};
   const toolCall = asRecord(root.toolCall) ?? {};
   const rawInput = asRecord(toolCall.rawInput);
@@ -101,8 +118,9 @@ function parsePermissionRequest(requestId: number, params: unknown): PermissionR
 
   return {
     id: String(requestId),
-    // App 按 playerId 找玩家；找不到就不显示头像，不能拿第一个玩家顶替。
-    playerId: "",
+    // App 按 playerId 找玩家；拿不到就如实留空，不能拿第一个玩家顶替。
+    playerId: playerId ?? "",
+    kind: kind ?? null,
     title: nonEmptyString(toolCall.title) ?? "请求权限",
     detail,
     meta: tool,
@@ -138,9 +156,18 @@ export function usePermissions({
   }, []);
 
   const enqueue = useCallback(
-    (uiSid: string, profileId: string, requestId: number, params: unknown) => {
+    (
+      uiSid: string,
+      profileId: string,
+      requestId: number,
+      params: unknown,
+      playerId: string | null = null,
+    ) => {
       const prev = queuesRef.current;
-      const queue = prev[uiSid] ?? [];
+      // 已过期的条目不再占队头：它们不能再被作答，留着只会挡住这一轮真正要问的那条。
+      const queue = (prev[uiSid] ?? []).filter(
+        (item) => item.request.expiredReason === undefined,
+      );
       // 事件通道重复投递同一条请求时不能排两次，否则会被后端当成第二次应答拒收。
       if (queue.some((item) => item.profileId === profileId && item.requestId === requestId)) {
         return;
@@ -148,7 +175,7 @@ export function usePermissions({
       const item: QueueItem = {
         profileId,
         requestId,
-        request: parsePermissionRequest(requestId, params),
+        request: parsePermissionRequest(requestId, params, playerId),
       };
       commit({ ...prev, [uiSid]: [...queue, item] }, [uiSid]);
     },
@@ -162,11 +189,42 @@ export function usePermissions({
 
   const count = useCallback((uiSid: string): number => queues[uiSid]?.length ?? 0, [queues]);
 
+  const removeHead = useCallback(
+    (uiSid: string, profileId: string, requestId: number) => {
+      const latest = queuesRef.current;
+      const queue = latest[uiSid] ?? [];
+      const stillHead = queue[0];
+      if (
+        stillHead &&
+        stillHead.profileId === profileId &&
+        stillHead.requestId === requestId
+      ) {
+        const rest = queue.slice(1);
+        const next = { ...latest };
+        if (rest.length > 0) next[uiSid] = rest;
+        else delete next[uiSid];
+        commit(next, [uiSid]);
+      }
+    },
+    [commit],
+  );
+
   /** 返回实际发出的选项；null 表示只有 cancelled 可选（没有 reject 项）。 */
   const decide = useCallback(
-    async (uiSid: string, optionId: string | null): Promise<PermissionOption | null> => {
+    async (
+      uiSid: string,
+      optionId: string | null,
+      note: string | null = null,
+    ): Promise<PermissionOption | null> => {
       const head = queuesRef.current[uiSid]?.[0];
       if (!head) throw new Error("没有待回答的权限请求");
+
+      // 过期请求不再写回 agent。Esc/关闭只在本机出队，别拿一个已经失效的 id 去试。
+      if (head.request.expiredReason !== undefined) {
+        if (optionId !== null) throw new Error("这个请求已过期，不能再作答");
+        removeHead(uiSid, head.profileId, head.requestId);
+        return null;
+      }
 
       const flightKey = `${head.profileId}:${head.requestId}`;
       if (inFlight.current[uiSid] === flightKey) {
@@ -188,30 +246,56 @@ export function usePermissions({
         outcome = { outcome: "selected", optionId };
       }
 
+      const rejected = selected ? selected.tone === "reject" : true;
+
       inFlight.current[uiSid] = flightKey;
       try {
-        await agentRespondRequest(head.profileId, head.requestId, outcome);
+        await agentRespondRequest(head.profileId, head.requestId, outcome, {
+          verdict: selected && selected.tone !== "reject" ? "allow" : "reject",
+          optionId: selected?.id ?? null,
+          optionLabel: selected?.label ?? null,
+          actorMemberId: head.request.playerId || null,
+          note: rejected ? normalizeNote(note) : null,
+          via: "user",
+        });
 
         // 成功后才出队。等待期间会话可能被关闭或队列被清理，
         // 所以只有队头仍是刚回答的这条时才移除，避免误删新请求。
-        const latest = queuesRef.current;
-        const queue = latest[uiSid] ?? [];
-        const stillHead = queue[0];
-        if (
-          stillHead &&
-          stillHead.profileId === head.profileId &&
-          stillHead.requestId === head.requestId
-        ) {
-          const rest = queue.slice(1);
-          const next = { ...latest };
-          if (rest.length > 0) next[uiSid] = rest;
-          else delete next[uiSid];
-          commit(next, [uiSid]);
-        }
+        removeHead(uiSid, head.profileId, head.requestId);
         return selected;
       } finally {
         delete inFlight.current[uiSid];
       }
+    },
+    [removeHead],
+  );
+
+  /**
+   * 请求失效的前置标记：轮次终态或连接断开后，队列里的请求仍然展示，
+   * 但必须写明「已过期」并禁用选项 —— 不能等用户点了才从 50500/50501 发现。
+   */
+  const expire = useCallback(
+    (args: { uiSid?: string; profileId: string; reason: string }) => {
+      const prev = queuesRef.current;
+      const next = { ...prev };
+      const changed: string[] = [];
+      for (const [uiSid, queue] of Object.entries(prev)) {
+        if (args.uiSid !== undefined && uiSid !== args.uiSid) continue;
+        let touched = false;
+        const updated = queue.map((item) => {
+          if (item.profileId !== args.profileId) return item;
+          if (item.request.expiredReason !== undefined) return item;
+          touched = true;
+          return {
+            ...item,
+            request: { ...item.request, expiredReason: args.reason },
+          };
+        });
+        if (!touched) continue;
+        next[uiSid] = updated;
+        changed.push(uiSid);
+      }
+      if (changed.length > 0) commit(next, changed);
     },
     [commit],
   );
@@ -223,7 +307,13 @@ export function usePermissions({
       if (!queue) return;
       // 标签关掉 = 这些请求再也没人能看见，先按拒绝收尾再丢弃
       for (const item of queue) {
-        denyPermission(item.profileId, item.requestId, item.request.options);
+        if (item.request.expiredReason !== undefined) continue;
+        denyPermission(
+          item.profileId,
+          item.requestId,
+          item.request.options,
+          item.request.playerId || null,
+        );
       }
       const next = { ...prev };
       delete next[uiSid];
@@ -240,8 +330,13 @@ export function usePermissions({
       for (const [uiSid, queue] of Object.entries(prev)) {
         if (!queue.some((item) => item.profileId === profileId)) continue;
         for (const item of queue) {
-          if (item.profileId === profileId) {
-            denyPermission(item.profileId, item.requestId, item.request.options);
+          if (item.profileId === profileId && item.request.expiredReason === undefined) {
+            denyPermission(
+              item.profileId,
+              item.requestId,
+              item.request.options,
+              item.request.playerId || null,
+            );
           }
         }
         const rest = queue.filter((item) => item.profileId !== profileId);
@@ -254,5 +349,5 @@ export function usePermissions({
     [commit],
   );
 
-  return { enqueue, current, count, decide, dropSession, dropProfile };
+  return { enqueue, current, count, decide, expire, dropSession, dropProfile };
 }

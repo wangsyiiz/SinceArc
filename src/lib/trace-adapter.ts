@@ -6,12 +6,14 @@
  */
 import type { TraceTurnDto } from "./ipc/types";
 import { MAIN_AGENT_ID } from "./main-agent.ts";
+import { permissionKindLabel } from "./permission-kind.ts";
 import type { Activity, ActivityKind, TraceTurn } from "@/types";
 
 /** agent 的工具调用类型 → 面板的图标类别。 */
 function activityKindOf(item: TraceTurnDto["items"][number]): ActivityKind | null {
   if (item.kind === "thought") return "thinking";
   if (item.kind === "permission") return "permission";
+  if (item.kind === "permission_decision") return "permission";
   if (item.kind === "tool_call") {
     const raw = String(item.payload.kind ?? "");
     if (raw === "edit" || raw === "execute" || raw === "read" || raw === "search") return raw;
@@ -71,6 +73,77 @@ function permissionNames(payload: Record<string, unknown>): string[] {
   return options
     .map((option) => stringOf(recordOf(option)?.name))
     .filter((name): name is string => Boolean(name));
+}
+
+interface PermissionOptionMeta {
+  optionKind?: string;
+  toolKind?: string;
+}
+
+interface DecisionText {
+  title: string;
+  body?: string;
+  detail?: string;
+  verdict: "allow" | "reject";
+}
+
+function permissionOptionKey(id: string, label: string | undefined): string {
+  return `${id}\u0000${label ?? ""}`;
+}
+
+/** 决策 payload 只有 optionId/label；回查此前出现的权限请求，才能显示「编辑文件」这类分类。 */
+function rememberPermissionOptions(
+  payload: Record<string, unknown>,
+  result: Map<string, PermissionOptionMeta>,
+): void {
+  const toolKind = stringOf(recordOf(payload.toolCall)?.kind);
+  const options = Array.isArray(payload.options) ? payload.options : [];
+  for (const raw of options) {
+    const option = recordOf(raw);
+    const id = stringOf(option?.optionId);
+    if (!id) continue;
+    result.set(permissionOptionKey(id, stringOf(option?.name)), {
+      optionKind: stringOf(option?.kind),
+      toolKind,
+    });
+  }
+}
+
+function decisionTextOf(
+  payload: Record<string, unknown>,
+  options: Map<string, PermissionOptionMeta>,
+): DecisionText {
+  const optionId = stringOf(payload.optionId);
+  const optionLabel = stringOf(payload.optionLabel);
+  const note = stringOf(payload.note);
+  const via = stringOf(payload.via);
+  const meta = optionId
+    ? options.get(permissionOptionKey(optionId, optionLabel))
+    : undefined;
+  // 新增记录带 verdict（前端按用户点的选项给），老记录没有字段时才走下面的推断
+  const verdict = stringOf(payload.verdict);
+  const reject =
+    verdict === "reject" ||
+    (verdict !== "allow" &&
+      (optionId === undefined ||
+        meta?.optionKind?.startsWith("reject") === true ||
+        /reject|deny/i.test(`${optionId ?? ""} ${optionLabel ?? ""}`)));
+  const category = meta?.toolKind ? permissionKindLabel(meta.toolKind) : null;
+  const action = reject ? "拒绝" : via === "auto:edits" ? "自动批准" : "批准";
+  const title = note
+    ? `${action}（备注）`
+    : category
+      ? `${action} · ${category}`
+      : action;
+  const body = [
+    optionLabel ? `选项：${optionLabel}` : undefined,
+    note ? `备注：${note}` : undefined,
+    via === "auto:edits" ? "方式：自动同意（编辑）" : "方式：用户",
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+  const detail = (note ?? optionLabel ?? category ?? title).replace(/\s+/g, " ").trim().slice(0, 80);
+  return { title, body, detail: detail || undefined, verdict: reject ? "reject" : "allow" };
 }
 
 const BODY_SIDE_MAX_BYTES = 2 * 1024;
@@ -201,7 +274,10 @@ function contentSide(value: unknown): string | undefined {
  * tool_call 的 `rawInput` / `content` 由后端 `trace.rs` 从 ACP 事件捕获，
  * 正文按 locations → rawInput → content 展开，摘要优先用 title。
  */
-function summaryOf(item: TraceTurnDto["items"][number]): { body?: string; detail?: string } {
+function summaryOf(
+  item: TraceTurnDto["items"][number],
+  decision?: DecisionText,
+): { body?: string; detail?: string } {
   const payload = (item.payload ?? {}) as Record<string, unknown>;
 
   if (item.kind === "thought") {
@@ -231,10 +307,14 @@ function summaryOf(item: TraceTurnDto["items"][number]): { body?: string; detail
     };
   }
 
+  if (item.kind === "permission_decision" && decision) {
+    return { body: decision.body, detail: decision.detail };
+  }
+
   return {};
 }
 
-function titleOf(item: TraceTurnDto["items"][number]): string {
+function titleOf(item: TraceTurnDto["items"][number], decision?: DecisionText): string {
   const p = item.payload as Record<string, unknown>;
   if (item.kind === "permission") {
     const tool = (p.toolCall ?? {}) as Record<string, unknown>;
@@ -244,6 +324,7 @@ function titleOf(item: TraceTurnDto["items"][number]): string {
     const text = String(p.text ?? "").replace(/\s+/g, " ").trim();
     return text.length > 0 ? text.slice(0, 42) : "思考";
   }
+  if (item.kind === "permission_decision" && decision) return decision.title;
   return String(p.title ?? "工具调用");
 }
 
@@ -272,13 +353,22 @@ export function toTraceView(dtos: TraceTurnDto[]): TraceView {
 
   for (const t of ordered) {
     const lanes = new Map<string, string[]>();
+    const permissionOptions = new Map<string, PermissionOptionMeta>();
     // waiting_approval 只是「等用户批准」，这一轮还没结束：支线仍保持开放。
     const open = t.status === "running" || t.status === "waiting_approval";
 
     for (const item of t.items) {
       const kind = activityKindOf(item);
       if (!kind) continue;
-      const summary = summaryOf(item);
+      if (item.kind === "permission") {
+        const payload = recordOf(item.payload);
+        if (payload) rememberPermissionOptions(payload, permissionOptions);
+      }
+      const decision =
+        item.kind === "permission_decision"
+          ? decisionTextOf(recordOf(item.payload) ?? {}, permissionOptions)
+          : undefined;
+      const summary = summaryOf(item, decision);
       // 主 agent 没有 authorId（它就是「这个会话本身」），与聊天里的玩家表用同一个 id
       const playerId = item.authorId ?? MAIN_AGENT_ID;
       const id = `${t.id}-${item.seq}`;
@@ -286,9 +376,10 @@ export function toTraceView(dtos: TraceTurnDto[]): TraceView {
         id,
         playerId,
         kind,
-        title: titleOf(item),
+        title: titleOf(item, decision),
         detail: summary.detail,
         body: summary.body,
+        decision: decision?.verdict,
         truncated: item.truncated,
         at: clock(item.at),
         status:

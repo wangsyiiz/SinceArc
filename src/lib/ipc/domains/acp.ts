@@ -1,6 +1,6 @@
 //! ACP 域：连接、会话、模式、权限、探测。
 
-import type { AcpEvent, ConnectOutcome, DiscoveryOutcome, ModeChoice, ProbeOutcome, RespondOutcome, SessionInfo, SessionLoadOutcome, SessionUpdate } from "../types";
+import type { AcpEvent, ConnectOutcome, DiscoveryOutcome, ModeChoice, PermissionDecision, ProbeOutcome, RespondOutcome, SessionInfo, SessionLoadOutcome, SessionUpdate } from "../types";
 import type { AgentProfile } from "@/types";
 import { invokeCmd } from "../client";
 import { toDto } from "./session";
@@ -77,8 +77,15 @@ export function agentRespondRequest(
   profileId: string,
   id: number,
   outcome: RespondOutcome,
+  decision?: PermissionDecision,
 ): Promise<void> {
-  return invokeCmd<void>("agent_respond_request", { profileId, id, outcome });
+  // 决策元数据整包传（`PermissionDecisionMeta`，camelCase）；缺省 null = 老客户端只回 outcome
+  return invokeCmd<void>("agent_respond_request", {
+    profileId,
+    id,
+    outcome,
+    decision: decision ?? null,
+  });
 }
 
 /** 读回本机存的连接配置 */
