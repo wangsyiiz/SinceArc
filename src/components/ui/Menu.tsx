@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Check } from "lucide-react";
 import { computeLayerPosition, type Placement } from "@/lib/anchored";
 import { cn } from "@/lib/utils";
@@ -245,8 +246,12 @@ export function Menu({
         {trigger}
       </button>
 
-      {open && (
-        <div
+      {/* 面板必须挂到 body：触发器可能长在 backdrop-filter 祖先里（例如输入框外壳 sc-glass），
+          那会把 position:fixed 的定位基准改成那个祖先，面板随即偏移、还会被 overflow 裁掉。
+          浮层一律走 portal，不靠调用点自觉（design-language.md §3.4）。 */}
+      {open &&
+        createPortal(
+          <div
           ref={panelRef}
           role="menu"
           aria-label={ariaLabel}
@@ -308,8 +313,9 @@ export function Menu({
               </span>
             </button>
           ))}
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </>
   );
 }

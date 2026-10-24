@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Square, Paperclip } from "lucide-react";
+import { ArrowUp, Square, Paperclip, ChevronDown } from "lucide-react";
 import type { Player } from "@/types";
 import type { AutoApproveLevel } from "@/lib/auto-approve";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/Button";
-import { Segmented } from "./ui/Segmented";
+import { Menu, type MenuItem } from "./ui/Menu";
 
 interface ComposerProps {
   busy: boolean;
@@ -98,14 +98,28 @@ export function Composer({
   const canSend = value.trim().length > 0 && !busy;
 
   /**
-   * 档位是「集合里的一个」而不是「一个开关的两种状态」，所以用分段控件：
-   * 将来加第三档（例如执行命令）时不用换控件，也不会变成「点一下循环到下一档」
-   * 那种用户猜不到下一次是哪档的三态开关（docs/desktop-ux.md §10）。
+   * 档位选择器（docs/desktop-ux.md §10）：
+   * - 收起态只显示「当前是哪一档」——它是个很少动的安全设置，不该在工具条里占一排按钮；
+   * - 展开后每档带一行说明，这是唯一能讲清「这一档替你放行什么」的地方；
+   * - 将来加「执行命令」档只加一行菜单项，不用换控件。
    */
-  const autoApproveOptions: { value: AutoApproveLevel; label: string; title: string }[] = [
-    { value: "off", label: "关", title: "agent 每次提问都交给你决定" },
-    { value: "edits", label: "编辑", title: "编辑类（改文件 / 删除 / 移动）替你答；命令与读取仍交给你" },
+  const autoApproveItems: MenuItem[] = [
+    {
+      id: "off",
+      label: "关",
+      checked: autoApprove === "off",
+      description: "agent 每次提问都交给你决定",
+      onSelect: () => onAutoApproveChange?.("off"),
+    },
+    {
+      id: "edits",
+      label: "编辑类",
+      checked: autoApprove === "edits",
+      description: "改文件 / 删除 / 移动替你答；命令与读取仍交给你",
+      onSelect: () => onAutoApproveChange?.("edits"),
+    },
   ];
+  const autoApproveText = autoApprove === "edits" ? "编辑类" : "关";
 
   const submit = () => {
     if (!canSend) return;
@@ -217,17 +231,24 @@ export function Composer({
         </span>
 
         <div className="ml-auto flex items-center gap-1">
-          {/* 置灰必须有原因：只说「不可点」等于让用户猜（§10） */}
-          <span className="hidden shrink-0 text-micro text-ink-3 sm:inline">
-            {autoApproveCovered ? "自动同意 · agent 档已覆盖" : "自动同意"}
-          </span>
-          <Segmented
-            ariaLabel="自动同意：agent 发来的权限请求要不要替用户答"
+          <Menu
+            ariaLabel="自动同意：agent 发来的权限请求要不要替你答"
+            align="end"
             compact
             disabled={autoApproveCovered}
-            value={autoApprove}
-            onChange={(next) => onAutoApproveChange?.(next)}
-            options={autoApproveOptions}
+            disabledReason={
+              autoApproveCovered
+                ? "agent 档已是 accept_edits / dont_ask，本来就少问；这道闸当前不起作用"
+                : undefined
+            }
+            trigger={
+              <>
+                <span className="text-micro text-ink-3">自动同意</span>
+                <span className="text-caption">{autoApproveText}</span>
+                <ChevronDown className="size-3.5 text-ink-3" aria-hidden="true" />
+              </>
+            }
+            items={autoApproveItems}
           />
           {busy ? (
             <Button
