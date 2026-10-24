@@ -1,8 +1,8 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export function Segmented<T extends string>(props: {
-  options: { value: T; label: string; disabled?: boolean; title?: string }[];
+  options: { value: T; label: string; icon?: ReactNode; disabled?: boolean; title?: string }[];
   value: T;
   onChange: (v: T) => void;
   disabled?: boolean;
@@ -107,6 +107,11 @@ export function Segmented<T extends string>(props: {
             option.disabled && "cursor-not-allowed opacity-50",
           )}
         >
+          {option.icon && (
+            <span className="sc-switch__icon" aria-hidden="true">
+              {option.icon}
+            </span>
+          )}
           {option.label}
         </button>
       ))}

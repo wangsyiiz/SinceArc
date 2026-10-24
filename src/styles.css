@@ -466,6 +466,16 @@ dialog.sc-dialog[open] {
   color: var(--i1);
 }
 
+/* 选项图标：14px，颜色跟着选项走（未选中 i3、选中 i1），不单独配色 */
+.sc-switch__icon {
+  display: inline-flex;
+  flex: none;
+}
+.sc-switch__icon > svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* 全局控件补间：交互元素统一 160ms ease-out（hover / active / focus 都不瞬跳） */
 @layer base {
   /* 兜底到所有元素：列表行里的文字色常由 group-hover 修改，

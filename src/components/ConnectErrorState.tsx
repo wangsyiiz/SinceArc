@@ -26,11 +26,12 @@ export function ConnectErrorState({
 }: ConnectErrorStateProps) {
   const detail = [code, message].filter(Boolean).join(" ");
 
+  // 不要 title：这块占满消息区，鼠标一挪进来就弹原生 tip，又大又没必要。
+  // 说明也不截断，改成限高可滚 —— 省得「看不全只能靠 tip」。
   return (
     <div
       role="alert"
-      title={detail}
-      className="flex flex-1 flex-col justify-center py-12 [&_p]:line-clamp-2 [&_p]:break-words [&_p]:font-mono"
+      className="flex flex-1 flex-col justify-center py-12 [&_p]:max-h-24 [&_p]:overflow-y-auto [&_p]:break-words [&_p]:font-mono"
     >
       <EmptyState
         title="连不上这个会话"

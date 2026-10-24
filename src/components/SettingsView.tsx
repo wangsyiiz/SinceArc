@@ -5,8 +5,11 @@ import {
   ChevronDown,
   ChevronRight,
   MessageSquare,
+  Monitor,
+  Moon,
   Palette,
   Plug,
+  Sun,
   Plus,
   Trash2,
   Users,
@@ -87,13 +90,23 @@ interface SettingsViewProps {
   ) => Partial<AgentProfile> | undefined;
 }
 
+const THEME_ICONS = {
+  dark: <Moon />,
+  light: <Sun />,
+  system: <Monitor />,
+} as const;
+
 const THEMES: { id: ThemeMode; label: string }[] = [
   { id: "dark", label: "深色" },
   { id: "light", label: "浅色" },
   { id: "system", label: "跟随系统" },
 ];
 
-const THEME_OPTIONS = THEMES.map((theme) => ({ value: theme.id, label: theme.label }));
+const THEME_OPTIONS = THEMES.map((theme) => ({
+  value: theme.id,
+  label: theme.label,
+  icon: THEME_ICONS[theme.id],
+}));
 
 const SSH_AUTH_OPTIONS: { value: SshAuth; label: string }[] = [
   { value: "key", label: "私钥" },
