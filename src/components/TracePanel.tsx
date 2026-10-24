@@ -243,7 +243,10 @@ function HoverContent({ row }: { row: TraceRow }) {
         <div className="mt-2 break-words text-micro text-ink-3">{row.statusTitle}</div>
       )}
       {activity?.truncated && (
-        <div className="mt-2 text-micro text-ink-3">已截断，仅保留最早 8KB</div>
+        <div className="mt-2 text-micro text-ink-3">
+          {/* 两种上限不一样：思考正文 8KB，工具调用的 rawInput / content 各 16KB（docs/acp-notes.md） */}
+          {activity.kind === "thinking" ? "已截断，仅保留最早 8KB" : "已截断，仅保留前 16KB"}
+        </div>
       )}
     </div>
   );
