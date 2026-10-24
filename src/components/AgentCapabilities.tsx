@@ -123,7 +123,7 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
             {hasCommands && (
               <>
                 <div className="w-px shrink-0 bg-line-1/60" />
-                <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain px-1 pb-1">
+                <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain pb-1 pl-2 pr-1">
                   <div className="px-1.5 py-1 text-micro tracking-wide text-ink-3">命令</div>
                   {acpCommands.map((command) => (
                     <div key={command.name} className="px-1.5 py-1">
