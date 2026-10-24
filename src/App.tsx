@@ -22,7 +22,6 @@ import { profileLabel } from "@/lib/format";
 import { pushSystemNotice } from "@/lib/notices";
 import { mergeMessages } from "@/lib/messages-merge";
 import { buildPlayers } from "@/lib/players";
-import { commandLineOf, commandsFor } from "@/extensions/registry";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
 import { StatusBar } from "@/components/StatusBar";
@@ -1119,11 +1118,6 @@ export default function App() {
                   <AgentCapabilities
                     profile={sessionProfile}
                     acpCommands={acpCommands}
-                    commands={commandsFor(
-                      sessionProfile?.agentName,
-                      // 只用于按命令行识别 agent，不用于展示；展示由后端 command_preview 生成。
-                      commandLineOf(sessionProfile),
-                    )}
                   />
                 }
               />

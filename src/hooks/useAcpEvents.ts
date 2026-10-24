@@ -1,4 +1,12 @@
-import { useCallback, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import {
   asSessionUpdate,
   messagesAppend,
@@ -11,6 +19,12 @@ import { now } from "@/lib/format";
 import { clog } from "@/lib/log";
 import { applyLock } from "@/lib/locks";
 import { newId } from "@/lib/ids";
+import {
+  LATE_SETTLE_QUIET_MS,
+  LATE_WINDOW_MS,
+  shouldAcceptChunk,
+  shouldSettleLate,
+} from "@/lib/late-window";
 import { pushSystemNotice } from "@/lib/notices";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import type { UsageDto } from "@/lib/ipc/types.gen/UsageDto";
@@ -35,6 +49,8 @@ interface StreamState {
   text: string;
   /** 还没 flush 的片段 */
   buf: string;
+  /** promptResult 之后迟到窗口里新建的流：需要自己 settle 落库 */
+  late?: boolean;
 }
 
 function stopReasonOf(result: unknown): string | null {
@@ -202,8 +218,20 @@ export function useAcpEvents({
    * 现在只有 promptStarted 之后的 chunk 才算真回答，重放记 DROP-REPLAY。
    */
   const awaiting = useRef<Record<string, boolean>>({});
+  /** ACP 会话 -> 迟到窗口截止时间（毫秒）。窗口内正文可能属于刚结束的一轮。 */
+  const lateUntil = useRef<Record<string, number>>({});
+  /** ACP 会话 -> 迟到流 settle 定时器。 */
+  const lateTimers = useRef<Record<string, number>>({});
+  /** ACP 会话 -> 最近一段迟到正文到达时间。 */
+  const lateLastChunkAt = useRef<Record<string, number>>({});
   const acpToTurn = useRef<Record<string, string>>({});
   const flushDiag = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of Object.values(lateTimers.current)) window.clearTimeout(timer);
+    };
+  }, []);
 
   /** 40ms 合批：chunk 是逐字来的，逐条 setState 会让 React 每字重渲染一次 */
   const flushStream = useCallback(() => {
@@ -260,6 +288,84 @@ export function useAcpEvents({
   const scheduleFlush = useCallback(() => {
     flushStream();
   }, [flushStream]);
+
+  const clearLateTimer = useCallback((acpSid: string) => {
+    const timer = lateTimers.current[acpSid];
+    if (timer !== undefined) window.clearTimeout(timer);
+    delete lateTimers.current[acpSid];
+    delete lateLastChunkAt.current[acpSid];
+  }, []);
+
+  /** 把迟到流按 promptResult 的落库形状收尾；正常轮次不经过这里。 */
+  const settleLateStream = useCallback(
+    (acpSid: string, reason: "quiet" | "next-prompt") => {
+      clearLateTimer(acpSid);
+      const st = streams.current[acpSid];
+      if (!st?.late) {
+        if (reason === "next-prompt") delete lateUntil.current[acpSid];
+        return;
+      }
+      flushStream();
+      const full = st.text;
+      delete streams.current[acpSid];
+      if (reason === "next-prompt") delete lateUntil.current[acpSid];
+      if (!full) return;
+
+      patchSession(st.uiSid, (s) => ({
+        ...s,
+        msgs: s.msgs.map((m) =>
+          m.id === st.msgId && m.role === "player" ? { ...m, streaming: false } : m,
+        ),
+      }));
+      messagesAppend(st.uiSid, [
+        {
+          id: st.msgId,
+          role: "player",
+          kind: "text",
+          payload: {
+            id: st.msgId,
+            role: "player",
+            playerId: st.authorId ?? MAIN_AGENT_ID,
+            text: full,
+            at: now(),
+            streaming: false,
+          },
+        },
+      ])
+        .then(() =>
+          clog("LATE-DB", `ui=${st.uiSid} id=${st.msgId} len=${full.length} reason=${reason}`),
+        )
+        .catch((e) => {
+          console.warn("[db] append late reply failed", e);
+          clog("DB-ERR", `late ui=${st.uiSid} id=${st.msgId} ${String(e)}`);
+          pushSystemNotice(patchSession, st.uiSid, `这条回答没能写入历史：${String(e)}`);
+        });
+    },
+    [clearLateTimer, flushStream, patchSession],
+  );
+
+  const scheduleLateSettle = useCallback(
+    (acpSid: string) => {
+      const previous = lateTimers.current[acpSid];
+      if (previous !== undefined) window.clearTimeout(previous);
+      lateLastChunkAt.current[acpSid] = Date.now();
+
+      const arm = (delay: number) => {
+        lateTimers.current[acpSid] = window.setTimeout(() => {
+          delete lateTimers.current[acpSid];
+          const lastChunkAt = lateLastChunkAt.current[acpSid] ?? 0;
+          const current = Date.now();
+          if (!shouldSettleLate(lastChunkAt, current)) {
+            arm(Math.max(0, LATE_SETTLE_QUIET_MS - (current - lastChunkAt)));
+            return;
+          }
+          settleLateStream(acpSid, "quiet");
+        }, delay);
+      };
+      arm(LATE_SETTLE_QUIET_MS);
+    },
+    [settleLateStream],
+  );
 
   const onAgentEvent = useCallback(
     (profileId: string, event: AcpEvent, topic: string) => {
@@ -430,17 +536,22 @@ export function useAcpEvents({
           clog("DROP-NOMAP", `acp=${acpSid ?? "-"} ui=- len=${text.length}`);
           return;
         }
-        if (!awaiting.current[acpSid]) {
-          // 没有我们发起的一轮：这是 session/load 之后的重放，数据库里已经有这条了
+        const inFlight = awaiting.current[acpSid] ?? false;
+        const until = lateUntil.current[acpSid] ?? 0;
+        if (!shouldAcceptChunk(inFlight, until, Date.now())) {
+          // 既不在飞、也不在迟到窗口内：这是 session/load 之后的重放，数据库里已经有这条了
           clog("DROP-REPLAY", `acp=${acpSid} ui=${uiSid} len=${text.length}`);
           return;
         }
+        const late = !inFlight;
+        const hadLateStream = streams.current[acpSid]?.late === true;
         const st = (streams.current[acpSid] ??= {
           uiSid,
           authorId,
           msgId: `stream-${acpSid}-${Date.now()}`,
           text: "",
           buf: "",
+          late,
         });
         // 同一条 ACP 会话被另一个界面会话接手时，以最新一次投递为准
         if (st.uiSid !== uiSid) {
@@ -449,11 +560,20 @@ export function useAcpEvents({
         }
         st.buf += text;
         scheduleFlush();
+        if (late) {
+          if (!hadLateStream) {
+            clog("LATE-ACCEPT", `acp=${acpSid} ui=${uiSid} len=${text.length}`);
+          }
+          scheduleLateSettle(acpSid);
+        }
         return;
       }
 
       if (event.kind === "promptStarted") {
         if (!acpSid) return;
+        // 新的一轮开始：把上一轮迟到窗口里还没收尾的正文先落库。
+        settleLateStream(acpSid, "next-prompt");
+        delete lateUntil.current[acpSid];
         awaiting.current[acpSid] = true;
         // 上一轮如果没收到 promptResult（进程崩了、连接断了），文本会留在这里。
         // 新一轮开始时先把它落库，别悄悄丢掉已经显示给用户的内容。
@@ -485,6 +605,7 @@ export function useAcpEvents({
 
       if (event.kind === "promptResult" || event.kind === "promptFailed") {
         flushStream();
+        if (acpSid) lateUntil.current[acpSid] = Date.now() + LATE_WINDOW_MS;
         if (!uiSid) {
           clog("RESULT-NOUI", `acp=${acpSid ?? "-"} kind=${event.kind}`);
           diag(`promptResult 无归属会话（acp=${acpSid ?? "-"}）`);
@@ -607,6 +728,8 @@ export function useAcpEvents({
       onTraceChanged,
       patchSession,
       scheduleFlush,
+      scheduleLateSettle,
+      settleLateStream,
     ],
   );
 
