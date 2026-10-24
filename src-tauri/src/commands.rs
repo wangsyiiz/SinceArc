@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,7 +21,10 @@ use crate::acp::launch::{render_command_line, AgentProfile, Launch, SshAuth, Ssh
 use crate::acp::{self, transport};
 use crate::db;
 use crate::lock::SessionLockDto;
-use crate::state::{AgentHandle, AppState, SessionRecord};
+use crate::state::{
+    AgentHandle, AppState, ContextMode, ContextReason, DelegateEntry, DelegateStatus, Delegates,
+    SessionRecord,
+};
 use crate::wire::{Meta, WireEvent};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -1402,6 +1406,8 @@ pub async fn agent_connect(
     let profile_for_task = id.clone();
     // 归属表：事件该投给哪个界面会话，完全由后端记录决定（前端不再猜「当前会话」）
     let routes = state.routes.clone();
+    // delegate 正文缓冲：子会话的 chunk 要在落轨迹之前进入 registry，终态才能取摘要。
+    let delegates = state.delegates.clone();
     // 轨迹采集：事件落地需要库和「这一轮是谁」——两者都在 task 外面，clone 进去
     let db_for_trace = state.db.clone();
     let turns_for_trace = state.turns.clone();
@@ -1458,6 +1464,27 @@ pub async fn agent_connect(
             );
             if !is_text {
                 emit_text(text.flush(), &bus, &profile_for_task);
+            }
+
+            // 先冲正文缓冲、再落轨迹、再 emit。这里只记录 delegate 子会话的正文；
+            // 父会话自己的正文仍走原来的合批路径。
+            if is_text {
+                if let transport::Incoming::Notification { params, .. } = &msg {
+                    if let (Some(child_sid), Some(chunk)) = (
+                        params
+                            .get("sessionId")
+                            .and_then(serde_json::Value::as_str),
+                        params
+                            .get("update")
+                            .and_then(|update| update.get("content"))
+                            .and_then(|content| content.get("text"))
+                            .and_then(serde_json::Value::as_str),
+                    ) {
+                        if let Some(handle_id) = delegates.by_child_acp(child_sid).await {
+                            delegates.append_text(&handle_id, chunk).await;
+                        }
+                    }
+                }
             }
 
             let payload = match msg {
@@ -2191,6 +2218,540 @@ pub async fn session_rebind(
         .await;
 
     Ok(SessionInfo { session_id })
+}
+
+/* ---------- delegate / wait（docs/orchestration.md） ---------- */
+
+const DELEGATE_TASK_MAX_BYTES: usize = 8 * 1024;
+const DELEGATE_MAX_RUNNING: usize = 3;
+const DELEGATE_SUMMARY_CHARS: usize = 200;
+
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct DelegateHandleDto {
+    pub handle_id: String,
+    pub child_acp_session_id: String,
+    pub target_member_id: String,
+    pub target_name: String,
+    pub context: ContextMode,
+    pub reason: ContextReason,
+}
+
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct DelegateOutcomeDto {
+    pub status: String,
+    #[ts(optional = nullable)]
+    pub summary: Option<String>,
+    #[ts(type = "number")]
+    pub elapsed_ms: i64,
+    #[ts(optional = nullable)]
+    pub stop_reason: Option<String>,
+}
+
+fn next_delegate_handle_id() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+    format!("dlg-{}-{seq}", db::now_ms())
+}
+
+fn validate_delegate_task_text(task: &str) -> Result<(), CmdError> {
+    if task.trim().is_empty() {
+        return Err(CmdError::new(50701, "任务正文为空"));
+    }
+    if task.len() > DELEGATE_TASK_MAX_BYTES {
+        return Err(CmdError::new(50701, "任务正文超过 8KB"));
+    }
+    Ok(())
+}
+
+/// 深度按 **ACP 会话**判定：子任务再派活时，它的父会话本身就是某个 handle 的子会话。
+/// （原来拿界面会话 id 去比 `child_acp_session_id`，永远为假 —— 那条判据是死的。）
+async fn guard_delegate_depth(delegates: &Delegates, parent_acp_session: Option<&str>) -> Result<(), CmdError> {
+    if let Some(parent) = parent_acp_session {
+        if delegates.is_child(parent).await {
+            return Err(CmdError::new(50702, "子任务不能再派活（深度上限 1）"));
+        }
+    }
+    Ok(())
+}
+
+async fn guard_delegate_concurrency(
+    delegates: &Delegates,
+    parent_ui_session_id: &str,
+) -> Result<(), CmdError> {
+    if delegates
+        .count_running_for(parent_ui_session_id)
+        .await
+        >= DELEGATE_MAX_RUNNING
+    {
+        return Err(CmdError::new(50703, "同一会话最多同时派 3 个任务"));
+    }
+    Ok(())
+}
+
+/// 纯档位判定：caps 缺失不等于支持；fork 失败与能力缺失必须分开。
+fn plan_child(context: Option<bool>, fork_error: bool) -> (ContextMode, ContextReason) {
+    match context {
+        Some(true) if !fork_error => (ContextMode::Inherited, ContextReason::Fork),
+        Some(true) => (ContextMode::TaskOnly, ContextReason::ForkFailed),
+        Some(false) => (ContextMode::TaskOnly, ContextReason::ForkUnsupported),
+        None => (ContextMode::TaskOnly, ContextReason::CapsUnknown),
+    }
+}
+
+fn delegate_elapsed_ms(started_at: i64) -> i64 {
+    db::now_ms()
+        .saturating_sub(started_at.saturating_mul(1000))
+        .max(0)
+}
+
+fn outcome_from_entry(entry: &DelegateEntry) -> DelegateOutcomeDto {
+    DelegateOutcomeDto {
+        status: entry.status.as_str().to_string(),
+        summary: entry.summary.clone(),
+        elapsed_ms: delegate_elapsed_ms(entry.started_at),
+        stop_reason: entry.stop_reason.clone(),
+    }
+}
+
+async fn wait_for_delegate(
+    delegates: &Delegates,
+    handle_id: &str,
+    timeout_ms: u64,
+) -> Result<DelegateOutcomeDto, CmdError> {
+    let entry = delegates
+        .get(handle_id)
+        .await
+        .ok_or_else(|| CmdError::new(50704, "delegate 句柄不存在"))?;
+    if entry.status != DelegateStatus::Running {
+        return Ok(outcome_from_entry(&entry));
+    }
+
+    // 先注册 waiter 再复查一次状态，避免 finish 恰好发生在 get 与 notified() 之间。
+    let notified = entry.done.notified();
+    tokio::pin!(notified);
+    notified.as_mut().enable();
+    if let Some(current) = delegates.get(handle_id).await {
+        if current.status != DelegateStatus::Running {
+            return Ok(outcome_from_entry(&current));
+        }
+    }
+
+    match tokio::time::timeout(Duration::from_millis(timeout_ms), notified).await {
+        Ok(()) => {
+            let current = delegates
+                .get(handle_id)
+                .await
+                .ok_or_else(|| CmdError::new(50704, "delegate 句柄不存在"))?;
+            Ok(outcome_from_entry(&current))
+        }
+        // 超时只说明「还在跑」，不取消、不打扰目标 agent。
+        Err(_) => Ok(DelegateOutcomeDto {
+            status: "timed_out".to_string(),
+            summary: None,
+            elapsed_ms: delegate_elapsed_ms(entry.started_at),
+            stop_reason: None,
+        }),
+    }
+}
+
+async fn new_child_session(handle: &AgentHandle, cwd: &str) -> Result<String, CmdError> {
+    let result = handle
+        .proc
+        .request(
+            "session/new",
+            serde_json::json!({ "cwd": cwd, "mcpServers": [] }),
+            REQUEST_TIMEOUT,
+        )
+        .await?;
+    result
+        .get("sessionId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            CmdError::new(
+                50200,
+                format!("session/new 没有返回 sessionId，实际返回：{result}"),
+            )
+        })
+}
+
+async fn create_delegate_child(
+    handle: &AgentHandle,
+    cwd: &str,
+    caps_fork: Option<bool>,
+    parent_acp_session: Option<&str>,
+) -> Result<(String, ContextMode, ContextReason), CmdError> {
+    let mut fork_failed = false;
+    if plan_child(caps_fork, false).0 == ContextMode::Inherited {
+        match parent_acp_session {
+            Some(parent) => {
+                let params = serde_json::json!({
+                    "sessionId": parent,
+                    "cwd": cwd,
+                    "mcpServers": [],
+                });
+                match handle
+                    .proc
+                    .request("session/fork", params, REQUEST_TIMEOUT)
+                    .await
+                {
+                    Ok(result) => {
+                        let child = result
+                            .get("sessionId")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                            .ok_or_else(|| {
+                                CmdError::new(
+                                    50200,
+                                    format!("session/fork 没有返回 sessionId，实际返回：{result}"),
+                                )
+                            })?;
+                        return Ok((child, ContextMode::Inherited, ContextReason::Fork));
+                    }
+                    Err(transport::TransportError::Agent(e)) => {
+                        // 只有 agent 明确拒绝才降级；传输层故障不能伪装成「不支持 fork」。
+                        tracing::warn!(
+                            target: "sincearc::ipc", error = %e,
+                            "session/fork failed; falling back to session/new"
+                        );
+                        fork_failed = true;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            None => {
+                // 父会话没有可 fork 的 ACP 会话（没连上 / 反查不到）：fork 压根没发出，
+                // 不能报成 fork_failed —— 那会让用户以为 agent 拒绝过。
+                let child = new_child_session(handle, cwd).await?;
+                return Ok((child, ContextMode::TaskOnly, ContextReason::ParentMissing));
+            }
+        }
+    }
+
+    let child = new_child_session(handle, cwd).await?;
+    let (context, reason) = plan_child(caps_fork, fork_failed);
+    Ok((child, context, reason))
+}
+
+fn delegate_error_stop_reason(e: &transport::TransportError) -> Option<String> {
+    let transport::TransportError::Agent(value) = e else {
+        return None;
+    };
+    value
+        .get("stopReason")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            value
+                .get("data")
+                .and_then(|data| data.get("stopReason"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(str::to_string)
+        .or_else(|| value.get("code").map(|code| code.to_string()))
+}
+
+fn append_delegate_event(
+    db: &db::Db,
+    parent_ui_session_id: &str,
+    turn_id: &str,
+    author_id: Option<String>,
+    kind: &str,
+    payload: &serde_json::Value,
+    truncated: bool,
+) {
+    let input = db::EventInput {
+        turn_id: turn_id.to_string(),
+        author_id,
+        kind: kind.to_string(),
+        payload_json: payload.to_string(),
+        source: "live".to_string(),
+        truncated,
+    };
+    if let Err(e) = db.append_events(parent_ui_session_id, &[input]) {
+        tracing::warn!(target: "sincearc::trace", error = %e, kind, "delegate 轨迹落库失败");
+    }
+}
+
+async fn finish_delegate(
+    db: &Arc<db::Db>,
+    delegates: &Arc<Delegates>,
+    parent_ui_session_id: &str,
+    handle_id: &str,
+    // 父会话承载这次派活的轮次 + 这一轮是不是派活时自己开的（是就由我们收轮，别人的轮不许我们关）
+    parent_turn: Option<(&str, bool)>,
+    status: DelegateStatus,
+    stop_reason: Option<String>,
+) {
+    let Some(entry) = delegates.get(handle_id).await else {
+        return;
+    };
+    let summary = (!entry.buffer.is_empty())
+        .then(|| truncate_chars(&entry.buffer, DELEGATE_SUMMARY_CHARS));
+    let Some(finished) = delegates
+        .finish(
+            handle_id,
+            status,
+            summary.clone(),
+            stop_reason.clone(),
+        )
+        .await
+    else {
+        return;
+    };
+
+    if let Some((turn_id, _)) = parent_turn {
+        let author_id = db
+            .turn_context(turn_id)
+            .ok()
+            .flatten()
+            .and_then(|(_, author)| author);
+        let payload = serde_json::json!({
+            "handleId": handle_id,
+            "status": status.as_str(),
+            "summary": summary,
+            "elapsedMs": delegate_elapsed_ms(finished.started_at),
+            "stopReason": stop_reason,
+        });
+        append_delegate_event(
+            db,
+            parent_ui_session_id,
+            turn_id,
+            author_id,
+            "delegate_result",
+            &payload,
+            entry.buffer.chars().count() > DELEGATE_SUMMARY_CHARS,
+        );
+    }
+
+    if let Some((turn_id, own_turn)) = parent_turn {
+        if own_turn {
+            let turn_status = match status {
+                DelegateStatus::Failed => "failed",
+                _ => "finished",
+            };
+            if let Err(e) = db.end_turn(turn_id, turn_status, stop_reason.as_deref()) {
+                tracing::warn!(target: "sincearc::trace", error = %e, "delegate 收轮失败");
+            }
+        }
+    }
+
+    // 结果事件先落库，再叫醒 wait；顺序反了会让前端在事件到达前看到终态。
+    finished.done.notify_waiters();
+}
+
+#[tauri::command]
+pub async fn delegate_task(
+    state: State<'_, AppState>,
+    parent_ui_session_id: String,
+    target_member_id: String,
+    task: String,
+) -> Result<DelegateHandleDto, CmdError> {
+    validate_delegate_task_text(&task)?;
+    guard_delegate_concurrency(&state.delegates, &parent_ui_session_id).await?;
+
+    let member = state
+        .db
+        .list_agent_users()
+        .map_err(|e| CmdError::new(50000, format!("读 agent user 失败：{e}")))?
+        .into_iter()
+        .find(|user| user.id == target_member_id)
+        .ok_or_else(|| CmdError::new(50700, "目标成员不存在或不在本群"))?;
+
+    let agent = state.get(&member.profile_id).await.ok_or_else(|| {
+        CmdError::new(
+            50300,
+            format!("目标连接未连上：{}", member.profile_id),
+        )
+    })?;
+
+    // caps 以 agent_connect 写进 profile 的握手快照为准；缺失按「未知」处理。
+    let profile = state
+        .db
+        .load_profiles()
+        .map_err(|e| CmdError::new(50000, format!("读取配置失败：{e}")))?
+        .into_iter()
+        .find(|profile| profile.id == member.profile_id);
+    let caps_fork = profile
+        .as_ref()
+        .and_then(|profile| profile.caps.as_ref())
+        .map(|caps| caps.session_fork);
+    let cwd = profile
+        .as_ref()
+        .map(|profile| profile.cwd.clone())
+        .filter(|cwd| !cwd.trim().is_empty())
+        .unwrap_or_else(|| agent.profile.default_cwd.to_string_lossy().into_owned());
+
+    // 只认当前仍在 `sessions` 里的主会话；成员支线也有相同 ui_session_id，不能拿来 fork。
+    let parent_acp_session = match state.routes.by_ui_session(&parent_ui_session_id).await {
+        Some((acp_session_id, _)) if state.session(&acp_session_id).await.is_some() => {
+            Some(acp_session_id)
+        }
+        _ => None,
+    };
+
+    guard_delegate_depth(&state.delegates, parent_acp_session.as_deref()).await?;
+
+    let (child_acp_session_id, context, reason) =
+        create_delegate_child(&agent, &cwd, caps_fork, parent_acp_session.as_deref()).await?;
+
+    state
+        .routes
+        .bind(
+            &child_acp_session_id,
+            SessionRecord {
+                profile_id: member.profile_id.clone(),
+                cwd: cwd.clone(),
+                ui_session_id: Some(parent_ui_session_id.clone()),
+                author_id: Some(member.id.clone()),
+            },
+        )
+        .await;
+
+    let handle_id = next_delegate_handle_id();
+    let started_at = db::now();
+    // 父会话里必须有一轮来承载「谁派的活」：有活动轮就挂上去，没有就为这次派活开一轮 ——
+    // 派活是用户动作，与发一条消息同性质。不挂轮的后果是轨迹面板里根本看不到这次派活，
+    // 而「能看到谁派的」正是这张卡的验收项。
+    let (parent_turn_id, own_turn) = match parent_acp_session.as_deref() {
+        Some(parent) => match state.turns.current(parent).await {
+            Some(turn) => (Some(turn), false),
+            None => {
+                let turn = format!("turn-{}", crate::trace::now_ms());
+                let prompt = format!(
+                    "→ {}：{}",
+                    member.name,
+                    truncate_chars(&task, DELEGATE_SUMMARY_CHARS)
+                );
+                if let Err(e) = state
+                    .db
+                    .start_turn(&parent_ui_session_id, &turn, &prompt, None)
+                {
+                    tracing::warn!(target: "sincearc::trace", error = %e, "delegate 轮次落库失败");
+                }
+                state.turns.start(parent, &turn).await;
+                (Some(turn), true)
+            }
+        },
+        None => (None, false),
+    };
+    if let Some(turn_id) = parent_turn_id.as_deref() {
+        // 子会话的轨迹挂到父轮次下，author_id 由 routes 填成目标成员，形成可见支线。
+        state.turns.start(&child_acp_session_id, turn_id).await;
+        let author_id = state
+            .db
+            .turn_context(turn_id)
+            .ok()
+            .flatten()
+            .and_then(|(_, author)| author);
+        let payload = serde_json::json!({
+            "handleId": handle_id,
+            "target": member.id,
+            "targetName": member.name,
+            "task": truncate_chars(&task, DELEGATE_SUMMARY_CHARS),
+            "context": context,
+            "reason": reason,
+            "parentAcpSession": parent_acp_session,
+        });
+        append_delegate_event(
+            &state.db,
+            &parent_ui_session_id,
+            turn_id,
+            author_id,
+            "delegate",
+            &payload,
+            task.chars().count() > DELEGATE_SUMMARY_CHARS,
+        );
+    }
+
+    state
+        .delegates
+        .insert(DelegateEntry {
+            handle_id: handle_id.clone(),
+            parent_ui_session_id: parent_ui_session_id.clone(),
+            child_acp_session_id: child_acp_session_id.clone(),
+            target_member_id: member.id.clone(),
+            target_name: member.name.clone(),
+            profile_id: member.profile_id.clone(),
+            context,
+            reason,
+            buffer: String::new(),
+            status: DelegateStatus::Running,
+            summary: None,
+            stop_reason: None,
+            started_at,
+            done: Arc::new(tokio::sync::Notify::new()),
+        })
+        .await;
+
+    let prompt_params = serde_json::json!({
+        "sessionId": child_acp_session_id,
+        "prompt": [{ "type": "text", "text": task }],
+    });
+    let proc = agent.proc.clone();
+    let delegates = state.delegates.clone();
+    let db_for_task = state.db.clone();
+    let turns_for_task = state.turns.clone();
+    let handle_for_task = handle_id.clone();
+    let child_for_task = child_acp_session_id.clone();
+    let parent_ui_for_task = parent_ui_session_id.clone();
+    let parent_turn_for_task = parent_turn_id.clone();
+    let own_turn_for_task = own_turn;
+    // ACP 的 session/prompt 终态是这一次 request 的响应，不经过 agent_connect 的入站循环；
+    // 因此终态在这里收，正文 chunk 仍由转发 task 先追加进 buffer。
+    tokio::spawn(async move {
+        let result = proc
+            .request("session/prompt", prompt_params, PROMPT_TIMEOUT)
+            .await;
+        turns_for_task.end(&child_for_task).await;
+        let (status, stop_reason) = match result {
+            Ok(value) => (
+                DelegateStatus::Finished,
+                value
+                    .get("stopReason")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+            ),
+            Err(e) => {
+                tracing::warn!(
+                    target: "sincearc::ipc", session = %child_for_task, error = %e,
+                    "delegated prompt failed"
+                );
+                (DelegateStatus::Failed, delegate_error_stop_reason(&e))
+            }
+        };
+        finish_delegate(
+            &db_for_task,
+            &delegates,
+            &parent_ui_for_task,
+            &handle_for_task,
+            parent_turn_for_task.as_deref().map(|turn| (turn, own_turn_for_task)),
+            status,
+            stop_reason,
+        )
+        .await;
+    });
+
+    Ok(DelegateHandleDto {
+        handle_id,
+        child_acp_session_id,
+        target_member_id: member.id,
+        target_name: member.name,
+        context,
+        reason,
+    })
+}
+
+#[tauri::command]
+pub async fn delegate_wait(
+    state: State<'_, AppState>,
+    handle_id: String,
+    timeout_ms: u64,
+) -> Result<DelegateOutcomeDto, CmdError> {
+    wait_for_delegate(&state.delegates, &handle_id, timeout_ms).await
 }
 
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(600);
@@ -3099,6 +3660,128 @@ mod turn_state_tests {
             prompt_failure_outcome(false, &TransportError::Timeout(120));
         assert_eq!(status, "failed");
         assert!(reason.as_deref().is_some_and(|s| !s.is_empty()));
+    }
+}
+
+#[cfg(test)]
+mod delegate_tests {
+    use std::sync::Arc;
+
+    use tokio::sync::Notify;
+
+    use super::{guard_delegate_concurrency, guard_delegate_depth, plan_child, wait_for_delegate};
+    use crate::state::{ContextMode, ContextReason, DelegateEntry, DelegateStatus, Delegates};
+
+    fn entry(handle: &str, parent: &str, child: &str) -> DelegateEntry {
+        DelegateEntry {
+            handle_id: handle.into(),
+            parent_ui_session_id: parent.into(),
+            child_acp_session_id: child.into(),
+            target_member_id: "member-1".into(),
+            target_name: "member".into(),
+            profile_id: "profile-1".into(),
+            context: ContextMode::TaskOnly,
+            reason: ContextReason::CapsUnknown,
+            buffer: String::new(),
+            status: DelegateStatus::Running,
+            summary: None,
+            stop_reason: None,
+            started_at: crate::db::now(),
+            done: Arc::new(Notify::new()),
+        }
+    }
+
+    #[test]
+    fn context_plan_keeps_fork_failure_distinct_from_missing_or_unsupported_caps() {
+        assert_eq!(
+            plan_child(Some(true), false),
+            (ContextMode::Inherited, ContextReason::Fork)
+        );
+        assert_eq!(
+            plan_child(Some(true), true),
+            (ContextMode::TaskOnly, ContextReason::ForkFailed)
+        );
+        assert_eq!(
+            plan_child(None, false),
+            (ContextMode::TaskOnly, ContextReason::CapsUnknown)
+        );
+        assert_eq!(
+            plan_child(Some(false), false),
+            (ContextMode::TaskOnly, ContextReason::ForkUnsupported)
+        );
+    }
+
+    #[tokio::test]
+    async fn child_depth_and_fourth_running_are_rejected_with_contract_codes() {
+        let delegates = Delegates::default();
+        for index in 0..3 {
+            delegates
+                .insert(entry(
+                    &format!("h-{index}"),
+                    "ui-parent",
+                    &format!("child-{index}"),
+                ))
+                .await;
+        }
+
+        let busy = guard_delegate_concurrency(&delegates, "ui-parent")
+            .await
+            .expect_err("第 4 个在飞任务必须被拒");
+        assert_eq!(busy.code, 50703);
+
+        // 深度按 ACP 会话判：child-0 是别人派出去的子会话，它再派活就是第 2 层
+        let nested = guard_delegate_depth(&delegates, Some("child-0"))
+            .await
+            .expect_err("子会话不能再派活");
+        assert_eq!(nested.code, 50702);
+        assert!(
+            guard_delegate_depth(&delegates, Some("ui-parent")).await.is_ok(),
+            "普通会话可以派活"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_timeout_returns_timed_out_without_a_transport_or_cancel() {
+        let delegates = Delegates::default();
+        delegates
+            .insert(entry("h-1", "ui-parent", "child-1"))
+            .await;
+
+        // wait_for_delegate 只持有 Delegates：这个测试路径里根本没有 transport/cancel 句柄。
+        let outcome = wait_for_delegate(&delegates, "h-1", 5)
+            .await
+            .expect("running handle times out, not errors");
+        assert_eq!(outcome.status, "timed_out");
+        assert!(outcome.summary.is_none());
+        assert_eq!(
+            delegates.get("h-1").await.expect("still registered").status,
+            DelegateStatus::Running,
+            "超时不能结束或取消子任务"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_returns_terminal_summary_without_waiting_for_timeout() {
+        let delegates = Delegates::default();
+        delegates
+            .insert(entry("h-1", "ui-parent", "child-1"))
+            .await;
+        delegates
+            .finish(
+                "h-1",
+                DelegateStatus::Finished,
+                Some("summary".into()),
+                Some("end_turn".into()),
+            )
+            .await
+            .expect("finish running handle");
+
+        let outcome = wait_for_delegate(&delegates, "h-1", 0)
+            .await
+            .expect("terminal handle");
+        assert_eq!(outcome.status, "finished");
+        assert_eq!(outcome.summary.as_deref(), Some("summary"));
+        assert_eq!(outcome.stop_reason.as_deref(), Some("end_turn"));
     }
 }
 

@@ -49,6 +49,8 @@ struct DelegateHandle {
 - 不报 `fork` → `session/new` + 只发任务描述：`context = task_only`，`reason = fork_unsupported`。
 - 报了 `fork` 但这次失败（JSON-RPC 错误）→ 回落 `session/new`：`context = task_only`，`reason = fork_failed`。
 - 从没握过手（caps 快照缺失或已作废）→ **不算支持**：`task_only`，`reason = caps_unknown`。
+- caps 说支持、但父会话没有可 fork 的 ACP 会话（没连上 / 反查不到）→ `task_only`，`reason = parent_missing`。
+  这一档必须与 `fork_failed` 分开：fork 压根没发出去，说成「失败」会让用户以为 agent 拒过一次。
 
 判据写死三条：
 
@@ -96,6 +98,16 @@ author_id       = 目标成员 agent_users.id  ← 轨迹里是那个人的支�
 // delegate_result：结束（完成/失败/超时各一条）
 {"handleId":"dlg-…","status":"finished","summary":"<首 200 字>","elapsedMs":8123,"stopReason":"end_turn"}
 ```
+
+派活时父会话没有活动轮次（常态：用户点「派活给…」时父会话是闲的）就**为这次派活开一轮**：
+`turn.prompt = "→ <目标>：<任务前 200 字>"`，`author_id = None`（用户发起）。这一轮由派活方收
+（子任务终态时 `end_turn`）；父会话已有活动轮次时挂上去，且**不替别人收轮**。不开轮就没有轨迹，
+而「能看到谁派的」正是这张卡的验收项。
+
+派活时父会话没有活动轮次（常态：用户点「派活给…」时父会话是闲的）就**为这次派活开一轮**：
+`turn.prompt = "→ <目标>：<任务前 200 字>"`，`author_id = None`（用户发起）。这一轮由派活方收
+（子任务终态时 `end_turn`）；父会话已有活动轮次时挂上去，且**不替别人收轮**。不开轮就没有轨迹，
+而「能看到谁派的」正是这张卡的验收项。
 
 两条都挂父会话那一轮的 `turn_id`；`author_id` 写**派活的人**（父会话这一轮是谁发起的），
 因为它记录的是「谁派的活」，不是「谁干的活」——后者看返回结果那条消息的署名。

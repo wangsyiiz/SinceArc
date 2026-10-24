@@ -327,6 +327,8 @@ pub const KNOWN_EVENT_KINDS: &[&str] = &[
     "permission_decision",
     "usage",
     "mode",
+    "delegate",
+    "delegate_result",
 ];
 
 /// 事件写入与显式 touch 共用的一条 SQL：只升不降，因此丢失/乱序的 touch 不会让水位倒退。
