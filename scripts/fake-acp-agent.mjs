@@ -5,6 +5,34 @@ import path from "node:path";
 import readline from "node:readline";
 
 const REQUEST_TIMEOUT_MS = 5000;
+/**
+ * 权限自测开关，两种给法（文件优先，改完不用重启客户端）：
+ *   - 环境变量 FAKE_PERMISSION_KIND / FAKE_PERMISSION_OPTIONS；
+ *   - 会话 cwd 下的 `fake-permission.json`：{"kind":"edit","options":"allow_reject"}。
+ * kind 设成 edit / delete / move / execute / unknown 就发一条权限请求；不设则不发（兼容原来的 fs 验证）。
+ * options=reject_only 时只给拒绝项，用来看「这条没法自动同意」的兜底。
+ */
+function permissionConfig() {
+  let kind = process.env.FAKE_PERMISSION_KIND ?? "";
+  let options = process.env.FAKE_PERMISSION_OPTIONS ?? "allow_reject";
+  // 等人点「允许/拒绝」时把等待放长，免得还没看清就超时
+  let timeoutMs = Number(process.env.FAKE_PERMISSION_TIMEOUT_MS ?? REQUEST_TIMEOUT_MS);
+  try {
+    const file = path.join(process.cwd(), "fake-permission.json");
+    if (fs.existsSync(file)) {
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (typeof parsed.kind === "string") kind = parsed.kind;
+      if (typeof parsed.options === "string") options = parsed.options;
+      if (typeof parsed.timeoutMs === "number") timeoutMs = parsed.timeoutMs;
+      log(`permission config from ${file}: kind=${kind} options=${options}`);
+    }
+  } catch (error) {
+    log(`ignore bad fake-permission.json: ${error.message}`);
+  }
+  return { kind, options, timeoutMs };
+}
+
+
 const SESSION_ID = "fake-session-1";
 const REPORT_FILE = "fake-agent-report.json";
 
@@ -42,13 +70,13 @@ function adoptSessionCwd(params) {
   }
 }
 
-function requestClient(id) {
+function requestClient(id, timeoutMs = REQUEST_TIMEOUT_MS) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       pending.delete(String(id));
-      log(`request ${id} timed out after ${REQUEST_TIMEOUT_MS}ms`);
+      log(`request ${id} timed out after ${timeoutMs}ms`);
       resolve({ timeout: true });
-    }, REQUEST_TIMEOUT_MS);
+    }, timeoutMs);
     pending.set(String(id), { resolve, timer });
   });
 }
@@ -92,6 +120,45 @@ function checkFromResponse(id, requestedPath, response) {
   };
 }
 
+async function askPermission() {
+  // 每次提问前现读配置：这样改 fake-permission.json 不用重启客户端，也不依赖 agent 的启动目录
+  const { kind: permissionKind, options: permissionOptions, timeoutMs } = permissionConfig();
+  const allowOptions =
+    permissionOptions === "reject_only"
+      ? []
+      : [
+          { optionId: "allow_once", name: "允许一次", kind: "allow_once" },
+          { optionId: "allow_always", name: "总是允许", kind: "allow_always" },
+        ];
+  const options = [
+    ...allowOptions,
+    { optionId: "reject_once", name: "拒绝", kind: "reject_once" },
+  ];
+  const id = 200;
+  const startedAt = Date.now();
+  send({
+    jsonrpc: "2.0",
+    id,
+    method: "session/request_permission",
+    params: {
+      sessionId: SESSION_ID,
+      toolCall: {
+        toolCallId: "fake-tool-1",
+        title: "fake: modify fake.txt",
+        kind: permissionKind === "unknown" ? undefined : permissionKind,
+        status: "pending",
+        rawInput: { tool: "write" },
+      },
+      options,
+    },
+  });
+  const response = await requestClient(id, timeoutMs);
+  const outcome = response.timeout
+    ? { timeout: true }
+    : (response.result?.outcome ?? response.error ?? null);
+  return { kind: permissionKind, options: options.map((o) => o.optionId), outcome, elapsedMs: Date.now() - startedAt };
+}
+
 async function runPrompt(promptId) {
   const requests = [
     { id: 100, path: "inside.txt" },
@@ -117,7 +184,15 @@ async function runPrompt(promptId) {
     }),
   );
 
-  const report = { cwd: process.cwd(), checks };
+  let permission = null;
+  const wantsPermission = permissionConfig().kind;
+  if (wantsPermission) {
+    log(`requesting permission (kind=${wantsPermission})`);
+    permission = await askPermission();
+    log(`permission answered: ${JSON.stringify(permission.outcome)} in ${permission.elapsedMs}ms`);
+  }
+
+  const report = { cwd: process.cwd(), checks, permission };
   fs.writeFileSync(
     path.join(process.cwd(), REPORT_FILE),
     `${JSON.stringify(report, null, 2)}\n`,

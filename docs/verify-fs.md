@@ -103,3 +103,31 @@
 - `inside.txt` 也失败：先看报告里的 `code` / `message`，常见是 cwd 配置成了相对路径、
   目录不可读，或连错了 profile。
 - 两条越界请求返回 `ok: true`：这是安全回归，停止使用并保留报告与日志。
+
+## 权限请求自测（自动同意 E13.6b）
+
+同一个假 agent 也能发 `session/request_permission`。开关是**会话 cwd 下的
+`fake-permission.json`**，每次提问前现读，所以改完不用重启客户端，只要再发一条消息：
+
+```json
+{"kind": "edit", "options": "allow_reject", "timeoutMs": 20000}
+```
+
+- `kind`：`edit` / `delete` / `move` / `execute` / `read` / `unknown`（`unknown` = 不带 kind）。
+- `options`：`allow_reject`（默认，给"允许一次/总是允许/拒绝"）或 `reject_only`（只给拒绝）。
+- `timeoutMs`：假 agent 等应答的上限，默认 5000；要手点时放长到 20000。
+
+四种场景的期望（输入区 chip 记得先切到「自动同意 · 编辑」）：
+
+| 场景 | kind | options | 期望 |
+| --- | --- | --- | --- |
+| 自动放行 | `edit` | `allow_reject` | 不弹窗；轨迹里 1 轮 2 动作，最后一条「自动批准 · 编辑文件 / 允许一次」 |
+| 类型不覆盖 | `execute` | `allow_reject` | 弹窗，chip「执行命令」，带「这条没法自动同意」 |
+| 没有可放行选项 | `edit` | `reject_only` | 弹窗，只有「拒绝」，带「这条没法自动同意」 |
+| 未分类 | `unknown` | `allow_reject` | 弹窗，chip「未分类」，带「未分类，需要你决定」 |
+
+核对落库（客户端关掉后读，或对副本读）：`session_events` 里同一 `turn_id` 下应有
+`permission` + `permission_decision` 两条，后者 payload 形如
+`{"verdict":"allow","optionId":"allow_once","via":"auto:edits",...}`；
+手动点的则是 `"via":"user"`。假 agent 侧的真实应答记在 `fake-agent-report.json` 的
+`permission.outcome`（`{"outcome":"selected","optionId":"allow_once"}`，自动放行约 20ms）。

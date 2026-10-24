@@ -65,8 +65,10 @@ export function useAgentConnect({
   /** 显式连接（设置页按钮）。失败抛 CmdError，由调用方决定怎么显示。 */
   const connect = useCallback(async (p: AgentProfile, uiSid?: string): Promise<ConnectResult> => {
     const s = stateRef.current;
-    // 先登记处理器、再连接：单通道按 profileId 分发，事件不会因为「还没订阅」而丢
-    await onAgentEvent_(p.id, (e, topic) => s.onAgentEvent(p.id, e, topic));
+    // 先登记处理器、再连接：单通道按 profileId 分发，事件不会因为「还没订阅」而丢。
+    // 回调必须走 stateRef 取最新的：这个处理器在连接生命周期内只会注册这一次，
+    // 直接捕获 onAgentEvent 会把那一刻的状态（例如自动同意档位）冻死在闭包里。
+    await onAgentEvent_(p.id, (e, topic) => stateRef.current.onAgentEvent(p.id, e, topic));
     const out = await connectAgent(p, uiSid);
     s.onUpdateProfile({
       ...p,

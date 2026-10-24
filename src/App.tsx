@@ -15,6 +15,7 @@ import { AgentCapabilities } from "@/components/AgentCapabilities";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { MAIN_AGENT_ID } from "@/hooks/usePrompt";
 import { autoApproveCovered, type AutoApproveLevel } from "@/lib/auto-approve";
+import { settingsKey } from "@/lib/settings-key";
 import { profileLabel } from "@/lib/format";
 import { pushSystemNotice } from "@/lib/notices";
 import { commandLineOf, commandsFor } from "@/extensions/registry";
@@ -83,12 +84,11 @@ export default function App() {
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const settingsSaveSeq = useRef(0);
   const settingsPendingKey = useRef<string | null>(null);
-  const savedSettings = useRef(
-    JSON.stringify([
-      DEFAULT_THREAD_SETTINGS.contextMessages,
-      DEFAULT_THREAD_SETTINGS.theme,
-    ]),
-  );
+  /**
+   * 只靠"值没变就不写"避免回环。键必须覆盖**所有**会落库的字段 ——
+   * 漏一个的后果是它改了也不保存（写请求根本不发），而且只在重开后才露出来。
+   */
+  const savedSettings = useRef(settingsKey(DEFAULT_THREAD_SETTINGS));
   useTheme(settings.theme);
   useScrollFade();
   const [mode, setMode] = useState<SidebarMode>("sessions");
@@ -124,7 +124,7 @@ export default function App() {
 
   useEffect(() => {
     if (!settingsLoaded) return;
-    const key = JSON.stringify([settings.contextMessages, settings.theme]);
+    const key = settingsKey(settings);
     if (key === savedSettings.current && settingsPendingKey.current === null) return;
     const seq = ++settingsSaveSeq.current;
     settingsPendingKey.current = key;
