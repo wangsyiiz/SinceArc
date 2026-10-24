@@ -37,7 +37,7 @@ export function TabStrip({ tabs, activeId, badgeOf, onSelect, onClose }: TabStri
                 ? "sc-row-active text-ink-1"
                 : "text-ink-3 hover:bg-surface-3 hover:text-ink-1",
             )}
-            title={t.subtitle ?? t.title}
+            title={t.subtitle}
           >
             <Icon className={cn("size-3 shrink-0", active ? "text-ink-2" : "text-ink-3")} />
             <span className="truncate">{t.title}</span>

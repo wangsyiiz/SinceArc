@@ -201,7 +201,6 @@ export function MemberDetailPanel({
       <div className="mt-2 flex items-center gap-1">
         <button
           type="button"
-          title="派活"
           aria-label="派活"
           onClick={onDelegate}
           className={cn(ACTION_CLASS, "text-ink-3 hover:bg-surface-3/55 hover:text-ink-1")}
@@ -211,7 +210,6 @@ export function MemberDetailPanel({
         </button>
         <button
           type="button"
-          title="只看 TA"
           aria-label="只看 TA"
           aria-pressed={filtered}
           onClick={onFilter}
@@ -227,7 +225,6 @@ export function MemberDetailPanel({
         </button>
         <button
           type="button"
-          title="移出群"
           aria-label="移出群"
           disabled={removing}
           onClick={() => void remove()}
