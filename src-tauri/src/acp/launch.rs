@@ -219,9 +219,12 @@ impl AgentProfile {
                 // 之后 `kill -TERM -<pid>` 才能带走整棵树。
                 let pid = pid_file.as_deref().expect("wsl always records pid");
                 let marker = marker_file.as_deref().expect("wsl always records marker");
-                argv.push(format!(
-                    "export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; {}",
-                    guarded_exec(&self.program, &self.args, pid, marker)
+                argv.push(transport_script(
+                    &format!(
+                        "export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; {}",
+                        guarded_exec(&self.program, &self.args, pid, marker)
+                    ),
+                    &agent_id,
                 ));
 
                 let kill_script = remote_kill_script(&agent_id, pid, marker)?;
@@ -234,7 +237,7 @@ impl AgentProfile {
                         "--".to_string(),
                         "bash".to_string(),
                         "-lc".to_string(),
-                        kill_script,
+                        transport_script(&kill_script, &format!("{agent_id}-kill")),
                     ],
                     env: BTreeMap::from([("WSL_UTF8".to_string(), "1".to_string())]),
                     id: agent_id.clone(),
@@ -247,9 +250,15 @@ impl AgentProfile {
                 let mut kill_args = argv.clone();
                 let pid = pid_file.as_deref().expect("ssh always records pid");
                 let marker = marker_file.as_deref().expect("ssh always records marker");
-                argv.push(remote_command(&self.program, &self.args, cwd, pid, marker));
+                argv.push(transport_script(
+                    &remote_command(&self.program, &self.args, cwd, pid, marker),
+                    &agent_id,
+                ));
 
-                kill_args.push(remote_kill_script(&agent_id, pid, marker)?);
+                kill_args.push(transport_script(
+                    &remote_kill_script(&agent_id, pid, marker)?,
+                    &format!("{agent_id}-kill"),
+                ));
                 let kill = KillTarget::Remote {
                     kind: "ssh",
                     program: system_tool("ssh.exe"),
@@ -349,6 +358,37 @@ fn remote_command(
         cmd.push_str("; }");
     }
     cmd
+}
+
+/// 远端脚本的传输：base64 → 落地成临时文件 → `exec bash <file>`。
+///
+/// 为什么不把脚本直接拼进命令行：`wsl.exe` / `ssh.exe` 只把参数用空格拼成一条命令行，
+/// **单引号过这一层会被吃掉**（实测 `wsl.exe -d fedora -- bash -lc "echo '$HOME'"`
+/// 输出 `/home/jerry`），脚本随即被 relay 的 shell 重新解析一遍：
+/// `$$` 变成 relay 自己的 pid、`"$old_umask"` 提前展开。
+/// 后果不是报错而是**错得刚刚好**：pid 文件里记的是 relay，`kill -TERM -<pid>`
+/// 只杀 relay，agent 换个会话留在机器上。base64 字母表里没有空格和引号，
+/// 原样穿过这一层；脚本落地后由 bash 从文件读，stdin 仍然留给 ACP 的 JSON-RPC 流。
+pub(crate) fn transport_script(script: &str, id: &str) -> String {
+    let file = format!("/tmp/sincearc-{id}.sh");
+    format!(
+        "echo {} | base64 -d > {file}; test -s {file} || {{ echo sincearc-decode-failed >&2; exit 97; }}; exec bash {file}",
+        base64_of(script)
+    )
+}
+
+fn base64_of(text: &str) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(text.len().div_ceil(3) * 4);
+    for chunk in text.as_bytes().chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { TABLE[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TABLE[n as usize & 63] as char } else { '=' });
+    }
+    out
 }
 
 /// 在远端把 agent 放进新会话，并在 exec 前把 `$$` 写进 pid 文件。
@@ -507,9 +547,11 @@ mod tests {
         assert!(spec.args.contains(&"--cd".to_string()));
         assert!(spec.args.contains(&"/home/jerry/src".to_string()));
 
-        let script = spec.args.last().expect("script is last arg");
+        let arg = spec.args.last().expect("script is last arg");
+        assert_transport_safe(arg);
+        let script = decode_transport(arg);
         // login shell 的 PATH 不含 ~/.local/bin，必须显式补
-        assert!(script.contains("$HOME/.local/bin"));
+        assert!(script.contains("$HOME/.local/bin"), "got: {script}");
         // setsid 让 pid == pgid；pid 文件是后续整组回收的依据
         assert!(script.contains("command -v setsid"), "got: {script}");
         // 有意不写 exec：exec 会让 relay 先退出，wsl.exe 收掉管道（agent closed stdout）
@@ -542,7 +584,9 @@ mod tests {
         assert!(spec.args.contains(&"IdentitiesOnly=yes".to_string()));
 
         assert_eq!(spec.args[spec.args.len() - 2], "root@example.com");
-        let remote = spec.args.last().unwrap();
+        let arg = spec.args.last().unwrap();
+        assert_transport_safe(arg);
+        let remote = decode_transport(arg);
         // cd、setsid、pid 记账、exec 都在；kill 时同一条 ssh 参数还能复用
         assert!(
             remote.starts_with("cd '/srv/app' && { export PATH="),
@@ -599,6 +643,60 @@ mod tests {
         assert!(!cmd.contains("exec setsid"), "exec setsid 会把 relay 顶掉");
         assert!(cmd.contains("exec hermes"));
         assert!(cmd.contains("acp"));
+    }
+
+    /// 命令行过 `wsl.exe` / `ssh.exe` 这一层时引号会被吃掉（实测：`bash -lc "echo '$HOME'"`
+    /// 输出 `/home/jerry`），脚本会被 relay 的 shell 重新解析。所以传输的脚本只能是
+    /// base64 + 不含引号/`$` 的固定包装 —— 这条断言就是那道闸。
+    fn assert_transport_safe(arg: &str) {
+        assert!(
+            arg.starts_with("echo ") && arg.contains(" | base64 -d > /tmp/sincearc-"),
+            "got: {arg}"
+        );
+        for bad in ['\'', '"', '$'] {
+            assert!(!arg.contains(bad), "传输命令行里不允许出现 {bad:?}：{arg}");
+        }
+    }
+
+    fn decode_transport(arg: &str) -> String {
+        const TABLE: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let b64 = arg.split_whitespace().nth(1).expect("base64 跟在 echo 后面");
+        let mut bits = 0u32;
+        let mut nbits = 0;
+        let mut out = Vec::new();
+        for ch in b64.bytes() {
+            if ch == b'=' {
+                break;
+            }
+            let v = TABLE.find(ch as char).expect("base64 字符") as u32;
+            bits = (bits << 6) | v;
+            nbits += 6;
+            if nbits >= 8 {
+                nbits -= 8;
+                out.push((bits >> nbits) as u8);
+                bits &= (1 << nbits) - 1;
+            }
+        }
+        String::from_utf8(out).expect("utf-8")
+    }
+
+    #[test]
+    fn base64_matches_reference_vectors() {
+        assert_eq!(base64_of(""), "");
+        assert_eq!(base64_of("a"), "YQ==");
+        assert_eq!(base64_of("ab"), "YWI=");
+        assert_eq!(base64_of("hello"), "aGVsbG8=");
+        assert_eq!(base64_of("中文"), "5Lit5paH");
+    }
+
+    #[test]
+    fn transport_wrapper_keeps_script_out_of_the_command_line() {
+        let script = "echo 'x' && echo \"$HOME\"; echo $$";
+        let cmd = transport_script(script, "abc-1");
+        assert_transport_safe(&cmd);
+        assert!(cmd.contains("/tmp/sincearc-abc-1.sh"), "got: {cmd}");
+        assert!(cmd.ends_with("exec bash /tmp/sincearc-abc-1.sh"), "got: {cmd}");
+        assert_eq!(decode_transport(&cmd), script);
     }
 
     fn bare_spec(program: &str, args: &[&str]) -> SpawnSpec {

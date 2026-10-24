@@ -162,3 +162,58 @@ ACP 发来的 `rawInput`（命令、参数、目标）与 `content`（输出、�
 
 
 
+
+## 远端命令行：两条红线（2026-10-24 实测）
+
+WSL / SSH 的 agent 启动要经过 `wsl.exe` / `ssh.exe` 这一层 relay。它只做一件事：**把参数用空格拼成
+一条命令行，交给远端登录 shell**。这两件事因此都不成立，踩了不会报错，只会「错得刚刚好」。
+
+### 一、relay 进程不能被 `setsid` 顶掉
+
+`exec setsid sh -c …` 会让 relay 被替换后立刻退出；而 `setsid` 在调用者是进程组长时会 fork、父进程返回。
+relay 一退，`wsl.exe` 就认为会话结束、收掉管道 —— 我们这边看到的是
+`handshake failed: agent closed stdout`（界面 50200），agent 其实起来了，只是 stdout 没人接。
+
+**还有一个更隐蔽的入口**：`if …; then setsid …; fi` 如果就是命令行的最后一句，sh/zsh 会把它优化成
+`exec`，同样顶掉 relay。实测四种写法的结果：
+
+| 写法 | 结果 |
+| --- | --- |
+| `setsid echo hi` | 无输出 |
+| `if …; then setsid sh -c 'echo hi'; fi` | 无输出 |
+| `… fi; exit $?` | `hi` |
+| `… fi; wait` | `hi` |
+
+规矩：**setsid 前不写 `exec`，整条命令末尾补 `; exit $?`**。
+
+### 二、脚本不能拼进命令行（引号会被吃掉）
+
+`wsl.exe` 不做重新引用，参数里的引号过这一层就没了：
+
+```
+wsl.exe -d fedora -- bash -lc "echo '$HOME'"        →  /home/jerry
+wsl.exe -d fedora -- bash -lc "sh -c 'echo $$'"     →  41556（relay 自己的 pid）
+```
+
+也就是说脚本是被 **relay 的 shell 重新解析**的：`$$`、`"$old_umask"`、`$(umask)` 全部提前展开。
+后果不是启动失败，而是 pid 文件里记的是 relay：
+
+```
+pid 文件 40369 = zsh（relay）        pstree: zsh(40369)---hermes(40400)
+```
+
+`kill -TERM -40369` 只杀 relay，agent 换个会话留在机器上 —— 正是 E13.8 要根治的那类残留。
+
+规矩：**远端脚本一律整段传输，拼进命令行的只能是 base64 或 stdin**。
+
+- 启动脚本用 **base64 → 临时文件 → `exec bash <file>`**：base64 字母表里没有空格和引号，原样穿过这一层；
+  脚本落地后由 bash 从文件读，stdin 仍然留给 ACP 的 JSON-RPC 流（不能占）
+- 一次性脚本（扫描 / 回收）用 **stdin 喂 `sh -s`**，`discover.rs` 一直是这么做的
+- 传输用的命令行里**不许出现** `'` `"` `$`，这是能被断言住的闸（`assert_transport_safe`）
+
+实测对比（同一个 agent，同一台机器）：
+
+| 传输方式 | pid 文件 | 整组 TERM 之后 |
+| --- | --- | --- |
+| 拼进命令行 | 40369 = zsh（relay） | agent 残留 |
+| base64 → 文件 | 42560 = hermes（新会话首进程） | `SINCEARC_KILLED`，进程组 GONE |
