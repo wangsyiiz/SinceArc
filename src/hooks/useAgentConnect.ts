@@ -96,8 +96,21 @@ export function useAgentConnect({
    * 没有就连接（无感启动）。永不抛异常：失败以 `error` 返回，调用方写进会话消息流，
    * 因为这条路径是用户点开会话顺手触发的，用模态框打断他不对。
    */
+  const disconnect = useCallback(async (profileId: string): Promise<void> => {
+    await disconnectAgent(profileId);
+    const s = stateRef.current;
+    const profile = s.profiles.find((p) => p.id === profileId);
+    if (profile) {
+      s.onUpdateProfile({ ...profile, connected: false, agentName: null, protocolVersion: null });
+    }
+  }, []);
+
   const ensureConnected = useCallback(
-    (profileId: string | null | undefined, uiSid?: string): Promise<EnsureResult> => {
+    async (
+      profileId: string | null | undefined,
+      uiSid?: string,
+      opts?: { force?: boolean },
+    ): Promise<EnsureResult> => {
       if (!profileId) {
         return Promise.resolve({
           acpSid: null,
@@ -107,9 +120,18 @@ export function useAgentConnect({
         });
       }
 
-      // 已经有 ACP 会话：直接复用，不重连
+      // 已经有 ACP 会话：直接复用，不重连。
+      // force = 用户点「重试」：必须真的重来一次（断开 → 重连），否则复用会让重试看起来毫无反应 ——
+      // 尤其是「续不上」那种：握手是通的，复用就直接返回，判定根本不会重跑。
       const existing = stateRef.current.sessionsByProfile[profileId];
-      if (existing) {
+      if (existing && opts?.force) {
+        await disconnect(profileId);
+        // 等映射真的被清掉（conn.exited 是事件，不是 disconnect 的返回值）：
+        // 不等就 reconnect，后端会回「已连接」，界面反而显示一条假的失败
+        for (let i = 0; i < 30 && stateRef.current.sessionsByProfile[profileId]; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      } else if (existing) {
         return Promise.resolve({
           acpSid: existing,
           error: null,
@@ -151,17 +173,8 @@ export function useAgentConnect({
       inflight.current.set(profileId, task);
       return task;
     },
-    [connect],
+    [connect, disconnect],
   );
-
-  const disconnect = useCallback(async (profileId: string): Promise<void> => {
-    await disconnectAgent(profileId);
-    const s = stateRef.current;
-    const profile = s.profiles.find((p) => p.id === profileId);
-    if (profile) {
-      s.onUpdateProfile({ ...profile, connected: false, agentName: null, protocolVersion: null });
-    }
-  }, []);
 
   return { connect, ensureConnected, disconnect };
 }

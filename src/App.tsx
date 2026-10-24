@@ -552,13 +552,30 @@ export default function App() {
   const retryConnection = useCallback(() => {
     const sid = lastSessionId;
     const pid = sessionProfile?.id;
-    if (!sid || !pid) return;
+    // 不许静默返回：没有可用的连接配置也是一种结果，要写进错误态（以前这里直接 return，
+    // 点了没反应 —— 所有者报的「切换 session 后重试没反应」有一半就死在这条路上）
+    if (!sid || !pid) {
+      if (sid) {
+        patchSession(sid, (s) => ({
+          ...s,
+          connectError: { code: "50100", message: "这个会话没有可用的连接配置" },
+        }));
+      }
+      return;
+    }
     // 绕过自动连接的「一次就够」记录：手动重试必须真的再连一次
     autoTried.current.set(sid, `${pid}:${sessionsByProfile[pid] ?? "-"}`);
     setRetryBusy(true);
     markConnecting(sid, true);
-    void ensureConnected(pid, sid)
-      .then((r) => handleConnectResult(sid, r))
+    diag(`RETRY ui=${sid} pid=${pid} force=1`);
+    // 复用已有连接时上一次是秒回，界面等于什么都没发生；给一个最短可见时长（250ms），
+    // 让「我点了」这件事一定看得见
+    const flash = new Promise((resolve) => setTimeout(resolve, 250));
+    void Promise.all([ensureConnected(pid, sid, { force: true }), flash])
+      .then(([r]) => {
+        diag(`RETRY done ui=${sid} error=${r.error ? `${r.error.code} ${r.error.msg}` : "none"}`);
+        handleConnectResult(sid, r);
+      })
       .finally(() => {
         setRetryBusy(false);
         markConnecting(sid, false);
@@ -570,6 +587,8 @@ export default function App() {
     sessionProfile?.id,
     sessionsByProfile,
     markConnecting,
+    patchSession,
+    diag,
   ]);
 
   /**
