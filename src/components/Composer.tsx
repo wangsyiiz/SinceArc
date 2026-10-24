@@ -4,6 +4,7 @@ import type { Player } from "@/types";
 import type { AutoApproveLevel } from "@/lib/auto-approve";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/Button";
+import { Segmented } from "./ui/Segmented";
 
 interface ComposerProps {
   busy: boolean;
@@ -14,7 +15,7 @@ interface ComposerProps {
   autoApprove?: AutoApproveLevel;
   /** agent 档为 accept_edits / dont_ask：客户端这道闸被覆盖 */
   autoApproveCovered?: boolean;
-  onToggleAutoApprove?: () => void;
+  onAutoApproveChange?: (level: AutoApproveLevel) => void;
 }
 
 export function Composer({
@@ -25,7 +26,7 @@ export function Composer({
   players = [],
   autoApprove = "off",
   autoApproveCovered = false,
-  onToggleAutoApprove,
+  onAutoApproveChange,
 }: ComposerProps) {
   const [value, setValue] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -96,16 +97,15 @@ export function Composer({
 
   const canSend = value.trim().length > 0 && !busy;
 
-  const autoApproveText = autoApproveCovered
-    ? "已被 agent 档覆盖"
-    : autoApprove === "edits"
-      ? "自动同意 · 编辑"
-      : "自动同意：关";
-  const autoApproveLabel = autoApproveCovered
-    ? "自动同意已被 agent 审批档覆盖，当前不可切换"
-    : autoApprove === "edits"
-      ? "自动同意仅编辑类，已开启；点击关闭"
-      : "自动同意已关闭；点击开启编辑类自动同意";
+  /**
+   * 档位是「集合里的一个」而不是「一个开关的两种状态」，所以用分段控件：
+   * 将来加第三档（例如执行命令）时不用换控件，也不会变成「点一下循环到下一档」
+   * 那种用户猜不到下一次是哪档的三态开关（docs/desktop-ux.md §10）。
+   */
+  const autoApproveOptions: { value: AutoApproveLevel; label: string; title: string }[] = [
+    { value: "off", label: "关", title: "agent 每次提问都交给你决定" },
+    { value: "edits", label: "编辑", title: "编辑类（改文件 / 删除 / 移动）替你答；命令与读取仍交给你" },
+  ];
 
   const submit = () => {
     if (!canSend) return;
@@ -217,23 +217,18 @@ export function Composer({
         </span>
 
         <div className="ml-auto flex items-center gap-1">
-          <button
-            type="button"
+          {/* 置灰必须有原因：只说「不可点」等于让用户猜（§10） */}
+          <span className="hidden shrink-0 text-micro text-ink-3 sm:inline">
+            {autoApproveCovered ? "自动同意 · agent 档已覆盖" : "自动同意"}
+          </span>
+          <Segmented
+            ariaLabel="自动同意：agent 发来的权限请求要不要替用户答"
+            compact
             disabled={autoApproveCovered}
-            aria-label={autoApproveLabel}
-            aria-pressed={!autoApproveCovered && autoApprove === "edits"}
-            onClick={onToggleAutoApprove}
-            className={cn(
-              "inline-flex h-7 shrink-0 items-center rounded-control border px-2 text-caption transition-colors",
-              autoApproveCovered
-                ? "cursor-not-allowed border-line-1 text-ink-3 opacity-45"
-                : autoApprove === "edits"
-                  ? "border-accent-1/50 bg-accent-1/10 text-accent-1 hover:bg-accent-1/15"
-                  : "border-line-1 text-ink-2 hover:bg-surface-3/50",
-            )}
-          >
-            {autoApproveText}
-          </button>
+            value={autoApprove}
+            onChange={(next) => onAutoApproveChange?.(next)}
+            options={autoApproveOptions}
+          />
           {busy ? (
             <Button
               variant="secondary"

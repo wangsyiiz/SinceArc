@@ -460,13 +460,16 @@ export default function App() {
     ? (autoApprove[lastSessionId] ?? settings.autoApproveDefault)
     : settings.autoApproveDefault;
   const autoApproveCoveredByAgent = autoApproveCovered(activeModeView?.current ?? null);
-  const toggleAutoApprove = useCallback(() => {
-    if (!lastSessionId) return;
-    setAutoApprove((prev) => ({
-      ...prev,
-      [lastSessionId]: (prev[lastSessionId] ?? "off") === "off" ? "edits" : "off",
-    }));
-  }, [lastSessionId]);
+  /** 分段控件给的是「选中的档」，不是「切一下」：值没变就不动状态，免得白跑一次渲染 */
+  const setAutoApproveLevel = useCallback(
+    (level: AutoApproveLevel) => {
+      if (!lastSessionId) return;
+      setAutoApprove((prev) =>
+        prev[lastSessionId] === level ? prev : { ...prev, [lastSessionId]: level },
+      );
+    },
+    [lastSessionId],
+  );
   const clearAutoApprove = useCallback((uiSid: string) => {
     setAutoApprove((prev) => {
       if (!(uiSid in prev)) return prev;
@@ -1217,7 +1220,7 @@ export default function App() {
                           players={players}
                           autoApprove={activeAutoApprove}
                           autoApproveCovered={autoApproveCoveredByAgent}
-                          onToggleAutoApprove={toggleAutoApprove}
+                          onAutoApproveChange={setAutoApproveLevel}
                         />
                       </div>
                     </div>

@@ -127,8 +127,10 @@ export function usePrompt({
         }
         if (r.resume) onResume(sid, r.resume, r.lastEventSeq);
         if (r.resume?.kind === "unavailable") {
+          // 「续不上」只由会话的连接态表达（docs/desktop-ux.md §8）：上面 onResume 已经把它交给
+          // connectProblem，那块居中错误态正在渲染。再往消息流里塞一枚药丸，就是同一件事的两个面孔 ——
+          // 而且那条会落库，重开会话后还留在历史里，看起来像一条假消息。
           setBusy(sid, false);
-          pushSystemNotice(patchSession, sid, `续不上：${r.resume.reason}`);
           return;
         }
         acpSid = target ? target.acpSessionId : (r.acpSid ?? undefined);
@@ -144,7 +146,12 @@ export function usePrompt({
           onResume(sid, loaded.resume, loaded.lastEventSeq ?? null);
           if (loaded.resume.kind === "unavailable") {
             setBusy(sid, false);
-            pushSystemNotice(patchSession, sid, `续不上：${loaded.resume.reason}`);
+            // 成员会话不属于「这个会话打不开」，主会话是好着的 —— 它是一次真实的发送失败，落库是对的。
+            pushSystemNotice(
+              patchSession,
+              sid,
+              `@ 的成员会话恢复不了，这一条没有发出去：${loaded.resume.reason}`,
+            );
             return;
           }
         } catch (e) {
