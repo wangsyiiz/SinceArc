@@ -88,3 +88,35 @@ v1 用 UNC（`\\wsl.localhost\<distro>\...`，实测读文件 22 ms）访问 WSL
 
 `modes` 就是权限档的来源（`default` / `accept_edits` / `dont_ask`），
 `models` 是模型切换的来源 —— 这两个都是 UI 要用的，别硬编码。
+
+## 轨迹 payload：工具调用留下什么
+
+2026-10-24 定。此前 `tool_call` 的 payload 只有 `toolCallId / title / kind / status / locations`，
+ACP 发来的 `rawInput`（命令、参数、目标）与 `content`（输出、结果）**全部丢弃** ——
+轨迹面板的悬停卡片因此只能显示"跑了什么工具、什么状态"，说不出"跑的什么命令、结果如何"，
+对工具调用基本没有信息增量。
+
+### 字段
+
+`rawInput` / `content` 原样透传（ACP 的 JSON，不改名、不扁平化）。两者都是可选的：
+`tool_call_update` 是增量，可能只带其中一个，合并语义沿用 `merge_tool_call`（null 不覆盖）。
+
+### 上限（三级）
+
+1. **单字段 16 KB**：序列化后超限的字段替换成固定形状
+   `{"__truncated": true, "bytes": N, "preview": "<前 16 KB 文本>"}`。
+   形状固定是刻意的 —— 前端只认 `__truncated` 这一个标记，不去猜别的写法。
+   截断点必须落在 UTF-8 字符边界上，不许把中文切成半个字节。
+2. **整条 payload 64 KB**（`PAYLOAD_MAX_BYTES`）：超了按序降级 ——
+   先丢 `content`，再丢 `rawInput`（都换成 `{"__truncated": true, "bytes": N}`），
+   **`toolCallId / title / kind / status` 永不丢**。以前的做法是把整条 payload 换成
+   `{truncated, bytes}`，那会让前端失去关联键，轨迹里出现无主条目。
+3. **会话总量**：沿用轨迹 5 万条 / 90 天上限，不做额外改动。
+
+### 不脱敏（所有者 2026-10-24）
+
+理由记在这里，免得后来人"顺手修掉"：轨迹详情是给**使用者本人**查阅的，
+对他自己隐藏自己刚才跑过的命令没有安全收益，只会制造"这行是不是被改过"的困惑。
+所以不打码、不抹路径、不替换疑似令牌串。真正的秘密不该出现在命令里 ——
+那属于使用者的判断，不是显示层替他做主。
+
