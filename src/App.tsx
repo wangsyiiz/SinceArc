@@ -530,12 +530,17 @@ export default function App() {
     void ensureConnected(pid, sid).then((r) => handleConnectResult(sid, r));
   }, [activeTab, ensureConnected, sessions, activeProfile, sessionsByProfile, handleConnectResult]);
 
+  const [retryBusy, setRetryBusy] = useState(false);
   const retryConnection = useCallback(() => {
     const sid = lastSessionId;
     const pid = sessionProfile?.id;
     if (!sid || !pid) return;
+    // 绕过自动连接的「一次就够」记录：手动重试必须真的再连一次
     autoTried.current.set(sid, `${pid}:${sessionsByProfile[pid] ?? "-"}`);
-    void ensureConnected(pid, sid).then((r) => handleConnectResult(sid, r));
+    setRetryBusy(true);
+    void ensureConnected(pid, sid)
+      .then((r) => handleConnectResult(sid, r))
+      .finally(() => setRetryBusy(false));
   }, [ensureConnected, handleConnectResult, lastSessionId, sessionProfile?.id, sessionsByProfile]);
 
   /**
@@ -548,6 +553,7 @@ export default function App() {
       message={connectProblem.message}
       resumeUnavailable={state.resume?.kind === "unavailable"}
       newSessionBusy={resumeBusy}
+      retrying={retryBusy}
       onRetry={retryConnection}
       onNewSession={startFreshSession}
       onOpenSettings={

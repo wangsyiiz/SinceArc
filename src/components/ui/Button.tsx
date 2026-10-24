@@ -31,6 +31,8 @@ export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
   size?: "sm" | "md";
   danger?: boolean;
   loading?: boolean;
+  /** loading 时替换的文字；不给就是「加载中…」 */
+  loadingText?: string;
   disabledReason?: string;
   reasonText?: string;
   /** React 19 的函数组件可以直接收 ref：浮层要拿真实元素算位置（useAnchoredLayer）。
@@ -44,6 +46,7 @@ export const Button: React.FC<ButtonProps> = ({
   size = "md",
   danger = false,
   loading = false,
+  loadingText = "加载中…",
   disabledReason,
   reasonText,
   className,
@@ -65,8 +68,12 @@ export const Button: React.FC<ButtonProps> = ({
         {children}
       </span>
       {loading && (
-        <span className="absolute inset-0 grid place-items-center" aria-live="polite">
-          加载中…
+        <span
+          className="absolute inset-0 inline-flex items-center justify-center gap-1.5"
+          aria-live="polite"
+        >
+          <span className="sc-spinner" aria-hidden="true" />
+          {loadingText}
         </span>
       )}
     </button>
