@@ -64,18 +64,26 @@ export const Button: React.FC<ButtonProps> = ({
       aria-busy={loading || undefined}
       className={cn(buttonStyles({ variant, size }), danger && "text-danger-1", className)}
     >
-      <span className={cn("inline-flex items-center gap-2", loading && "opacity-0")}>
-        {children}
-      </span>
-      {loading && (
+      {/* 两个状态叠在同一格：按钮宽度取两者较大的那个，loading 文字就不会被挤成两行 */}
+      <span className="inline-grid">
         <span
-          className="absolute inset-0 inline-flex items-center justify-center gap-1.5"
-          aria-live="polite"
+          className={cn(
+            "col-start-1 row-start-1 inline-flex items-center gap-2 whitespace-nowrap",
+            loading && "invisible",
+          )}
         >
-          <span className="sc-spinner" aria-hidden="true" />
-          {loadingText}
+          {children}
         </span>
-      )}
+        {loading && (
+          <span
+            className="col-start-1 row-start-1 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+            aria-live="polite"
+          >
+            <span className="sc-spinner" aria-hidden="true" />
+            {loadingText}
+          </span>
+        )}
+      </span>
     </button>
   );
 

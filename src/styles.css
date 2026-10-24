@@ -421,16 +421,26 @@ dialog.sc-dialog[open] {
   position: absolute;
   top: 2px;
   left: 2px;
-  /* 四边净空 2px（相对内边距框；外沿看是 3px = 2 + 1px 边框）*/
+  /* 默认按等分算（Sidebar 这类自写 --switch-* 的调用点走这条）；
+     ui/Segmented 会用内联 px 覆盖 —— 标签长短不一时等分必然错位 */
   width: calc((100% - var(--switch-count, 2) * 4px) / var(--switch-count, 2));
   height: calc(100% - 4px);
   /* 不留描边：只靠面阶与上缘高光读层次 */
   border: 0;
   border-radius: var(--radius);
-  background: var(--switch-thumb);
-  box-shadow: inset 0 1px 0 var(--switch-thumb-edge);
+  /* 玻璃滑块：半透明的实心面 + 背景模糊 + 上缘高光，浮在轨道上；
+     同色叠同色若不给模糊与投影，看起来只是一块更亮的面（实测差 2~3 个色阶）*/
+  background: color-mix(in srgb, var(--switch-thumb) 72%, transparent);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow:
+    inset 0 1px 0 var(--switch-thumb-edge),
+    0 1px 3px rgb(0 0 0 / 0.22);
   transform: translateX(calc((100% + 4px) * var(--switch-index, 0)));
-  transition: transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    transform var(--dur-slide) var(--ease-slide),
+    width var(--dur-slide) var(--ease-slide),
+    background-color var(--dur-base) var(--ease-out);
   pointer-events: none;
 }
 
