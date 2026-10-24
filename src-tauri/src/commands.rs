@@ -2476,16 +2476,56 @@ fn append_delegate_event(
     }
 }
 
+/// 收尾要用的那一把东西：参数过七个就会被 clippy 拦，捆成一个结构体。
+struct DelegateEnd<'a> {
+    parent_ui_session_id: &'a str,
+    handle_id: &'a str,
+    // 父会话承载这次派活的轮次 + 这一轮是不是派活时自己开的（是就由我们收轮，别人的轮不许我们关）
+    parent_turn: Option<(&'a str, bool)>,
+    status: DelegateStatus,
+    stop_reason: Option<String>,
+    /// 轨迹刷新只用这两项定位「哪个连接、哪个子会话」
+    target_profile_id: &'a str,
+    child_acp_session_id: &'a str,
+}
+
+/// 敲一下「这个会话的轨迹变了」。前端只在 busy / pendingPerm 变化时重读轨迹，
+/// 而派活的开始与结束都不改这两个 —— 不敲就看不到，或者要等下一轮才出现。
+fn emit_trace_tick(
+    bus: &Arc<crate::wire::EventBus>,
+    profile_id: &str,
+    child_acp_session_id: &str,
+    parent_ui_session_id: &str,
+) {
+    let meta = crate::wire::Meta::for_session(
+        profile_id.to_string(),
+        child_acp_session_id.to_string(),
+        Some(parent_ui_session_id.to_string()),
+        None,
+    );
+    bus.emit_json(
+        "session.trace",
+        false,
+        meta,
+        &serde_json::json!({ "uiSessionId": parent_ui_session_id }),
+    );
+}
+
 async fn finish_delegate(
     db: &Arc<db::Db>,
     delegates: &Arc<Delegates>,
-    parent_ui_session_id: &str,
-    handle_id: &str,
-    // 父会话承载这次派活的轮次 + 这一轮是不是派活时自己开的（是就由我们收轮，别人的轮不许我们关）
-    parent_turn: Option<(&str, bool)>,
-    status: DelegateStatus,
-    stop_reason: Option<String>,
+    bus: &Arc<crate::wire::EventBus>,
+    end: DelegateEnd<'_>,
 ) {
+    let DelegateEnd {
+        parent_ui_session_id,
+        handle_id,
+        parent_turn,
+        status,
+        stop_reason,
+        target_profile_id,
+        child_acp_session_id,
+    } = end;
     let Some(entry) = delegates.get(handle_id).await else {
         return;
     };
@@ -2538,6 +2578,9 @@ async fn finish_delegate(
             }
         }
     }
+
+    // 终态也要敲轨迹：那一步要从「进行中」转成「回来了 · 用时」。
+    emit_trace_tick(bus, target_profile_id, child_acp_session_id, parent_ui_session_id);
 
     // 结果事件先落库，再叫醒 wait；顺序反了会让前端在事件到达前看到终态。
     finished.done.notify_waiters();
@@ -2665,6 +2708,9 @@ pub async fn delegate_task(
             &payload,
             task.chars().count() > DELEGATE_SUMMARY_CHARS,
         );
+        // 派活不动父会话的 busy，而前端只在 busy/pendingPerm 变化时重读轨迹 ——
+        // 不敲这一下，「派活给 X」这一步要等下一轮才出现（验收要求是立刻可见）。
+        emit_trace_tick(&state.bus, &member.profile_id, &child_acp_session_id, &parent_ui_session_id);
     }
 
     state
@@ -2694,19 +2740,72 @@ pub async fn delegate_task(
     let proc = agent.proc.clone();
     let delegates = state.delegates.clone();
     let db_for_task = state.db.clone();
+    let bus_for_task = state.bus.clone();
+    let target_profile_for_task = member.profile_id.clone();
     let turns_for_task = state.turns.clone();
     let handle_for_task = handle_id.clone();
     let child_for_task = child_acp_session_id.clone();
     let parent_ui_for_task = parent_ui_session_id.clone();
     let parent_turn_for_task = parent_turn_id.clone();
     let own_turn_for_task = own_turn;
+    let author_for_task = Some(member.id.clone());
     // ACP 的 session/prompt 终态是这一次 request 的响应，不经过 agent_connect 的入站循环；
     // 因此终态在这里收，正文 chunk 仍由转发 task 先追加进 buffer。
     tokio::spawn(async move {
+        let meta = crate::wire::Meta::for_session(
+            target_profile_for_task.clone(),
+            child_for_task.clone(),
+            Some(parent_ui_for_task.clone()),
+            author_for_task.clone(),
+        );
+        // 子任务也得有自己的「这一轮开始了」。不发的话前端的重放守卫会把子会话的正文
+        // 全丢掉（只在 awaiting 里的会话才收 chunk），于是回答既不上屏、也不落库 ——
+        // 表现就是「派活成功了，但没人知道被派的人说了什么」。
+        bus_for_task.emit_json(
+            "acp.prompt.started",
+            true,
+            meta.clone(),
+            &AcpEvent::PromptStarted {
+                session_id: child_for_task.clone(),
+                ui_session_id: Some(parent_ui_for_task.clone()),
+                author_id: author_for_task.clone(),
+            },
+        );
         let result = proc
             .request("session/prompt", prompt_params, PROMPT_TIMEOUT)
             .await;
+        // 终态是 request 的响应，可能比最后一批正文 chunk 先到转发 task；
+        // 给一小段宽限再收 buffer，否则摘要会少掉结尾甚至整个为空。
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
         turns_for_task.end(&child_for_task).await;
+        match &result {
+            Ok(value) => {
+                bus_for_task.emit_json(
+                    "acp.prompt.result",
+                    true,
+                    meta.clone(),
+                    &AcpEvent::PromptResult {
+                        session_id: child_for_task.clone(),
+                        ui_session_id: Some(parent_ui_for_task.clone()),
+                        author_id: author_for_task.clone(),
+                        result: value.clone(),
+                    },
+                );
+            }
+            Err(e) => {
+                bus_for_task.emit_json(
+                    "acp.prompt.failed",
+                    true,
+                    meta.clone(),
+                    &AcpEvent::PromptFailed {
+                        session_id: child_for_task.clone(),
+                        ui_session_id: Some(parent_ui_for_task.clone()),
+                        author_id: author_for_task.clone(),
+                        msg: e.to_string(),
+                    },
+                );
+            }
+        }
         let (status, stop_reason) = match result {
             Ok(value) => (
                 DelegateStatus::Finished,
@@ -2726,11 +2825,16 @@ pub async fn delegate_task(
         finish_delegate(
             &db_for_task,
             &delegates,
-            &parent_ui_for_task,
-            &handle_for_task,
-            parent_turn_for_task.as_deref().map(|turn| (turn, own_turn_for_task)),
-            status,
-            stop_reason,
+            &bus_for_task,
+            DelegateEnd {
+                parent_ui_session_id: &parent_ui_for_task,
+                handle_id: &handle_for_task,
+                parent_turn: parent_turn_for_task.as_deref().map(|turn| (turn, own_turn_for_task)),
+                status,
+                stop_reason,
+                target_profile_id: &target_profile_for_task,
+                child_acp_session_id: &child_for_task,
+            },
         )
         .await;
     });

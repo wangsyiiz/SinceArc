@@ -117,6 +117,7 @@ export function useAcpEvents({
   onAgentSwitch,
   onPermission,
   onPermissionsExpired,
+  onTraceChanged,
 }: {
   patchSession: PatchSession;
   /** 会话绑定 ACP session 后要回写列表（acpSessionId / profileId） */
@@ -146,6 +147,8 @@ export function useAcpEvents({
     /** 失效的成因：界面按它决定要不要顺带清掉本会话的自动同意档（别去比对中文文案） */
     cause: "turn-end" | "disconnected";
   }) => void;
+  /** 轨迹变了（派活开始/结束这类不改 busy 的写入）：给 uiSessionId，未归属给 null */
+  onTraceChanged?: (uiSessionId: string | null) => void;
 }) {
   const [sessionsByProfile, setSessionsByProfile] = useState<Record<string, string>>({});
   const [eventCount, setEventCount] = useState(0);
@@ -297,6 +300,13 @@ export function useAcpEvents({
       }
 
       // 按 topic 判断，不再靠载荷形状猜
+      if (topic === "session.trace") {
+        // 派活开始/结束都不改 busy，靠这一下让轨迹面板重读（后端写完事件就敲）
+        const uiSid = (event as { uiSessionId?: unknown })?.uiSessionId;
+        onTraceChanged?.(typeof uiSid === "string" ? uiSid : null);
+        return;
+      }
+
       const sessionLock = topic === "session.lock" ? asSessionLock(event) : null;
       if (sessionLock) {
         setEventLog((prev) => [...prev, { at: Date.now(), text: "session.lock" }].slice(-80));
@@ -550,6 +560,7 @@ export function useAcpEvents({
       onAgentSwitch,
       onPermission,
       onPermissionsExpired,
+      onTraceChanged,
       patchSession,
       scheduleFlush,
     ],

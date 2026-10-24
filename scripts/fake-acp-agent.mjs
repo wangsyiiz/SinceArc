@@ -34,6 +34,13 @@ function permissionConfig() {
 
 
 const SESSION_ID = "fake-session-1";
+/**
+ * 每个 session/new 给一个自己的 id：真 agent 都这么干，而这个假 agent 原来恒定返回
+ * `fake-session-1`，于是「父会话」和「派活的子会话」是同一个 id —— 归属、正文缓冲、
+ * 事件路由全部撞在一起，测出来的现象没法归因。
+ */
+let sessionCounter = 0;
+let activeSessionId = SESSION_ID;
 const REPORT_FILE = "fake-agent-report.json";
 
 const pending = new Map();
@@ -141,7 +148,7 @@ async function askPermission() {
     id,
     method: "session/request_permission",
     params: {
-      sessionId: SESSION_ID,
+      sessionId: activeSessionId,
       toolCall: {
         toolCallId: "fake-tool-1",
         title: "fake: modify fake.txt",
@@ -173,7 +180,7 @@ async function runPrompt(promptId) {
         jsonrpc: "2.0",
         id: request.id,
         method: "fs/read_text_file",
-        params: { sessionId: SESSION_ID, path: request.path },
+        params: { sessionId: activeSessionId, path: request.path },
       });
       const response = await requestClient(request.id);
       const check = checkFromResponse(request.id, request.path, response);
@@ -199,6 +206,20 @@ async function runPrompt(promptId) {
     "utf8",
   );
   log(`report written to ${path.join(process.cwd(), REPORT_FILE)}`);
+
+  // 发一段正文，让「派活结果摘要」「成员回答落库」这两条路径也有东西可验
+  // （原来这个假 agent 一个字都不回，摘要永远是 null，看着像功能没做）。
+  send({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: activeSessionId,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `fake: done in ${process.cwd()}` },
+      },
+    },
+  });
 
   // 必须等三条 client 请求都有结果后再结束 prompt，否则界面会提前离开生成态。
   reply(promptId, { stopReason: "end_turn" });
@@ -243,7 +264,9 @@ async function handleLine(line) {
     case "session/new":
       log("session/new");
       adoptSessionCwd(message.params);
-      reply(message.id, { sessionId: SESSION_ID });
+      sessionCounter += 1;
+      activeSessionId = `fake-session-${sessionCounter}`;
+      reply(message.id, { sessionId: activeSessionId });
       return;
     case "session/prompt":
       if (promptInFlight) {
@@ -251,6 +274,9 @@ async function handleLine(line) {
         return;
       }
       promptInFlight = true;
+      if (typeof message.params?.sessionId === "string") {
+        activeSessionId = message.params.sessionId;
+      }
       try {
         await runPrompt(message.id);
       } catch (error) {

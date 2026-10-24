@@ -98,6 +98,8 @@ export default function App() {
    * 拉取时机：打开面板、切换会话、以及一轮结束时（此时才刚有收尾状态）。
    */
   const [traceTurns, setTraceTurns] = useState<TraceTurnDto[]>([]);
+  /** 派活这类「不改 busy 但改了轨迹」的写入靠它触发重读（后端写完事件敲 session.trace） */
+  const [traceTick, setTraceTick] = useState(0);
   const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
   const [playerFilter, setPlayerFilter] = useState<string | null>(null);
   const [permOpen, setPermOpen] = useState(false);
@@ -293,7 +295,7 @@ export default function App() {
     },
     [permissions.expire, sessions],
   );
-  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired });
+  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired, onTraceChanged: () => setTraceTick((t) => t + 1) });
 
   useEffect(() => {
     permissionDiagRef.current = diag;
@@ -714,7 +716,7 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [traceOpen, lastSessionId, state.busy, state.pendingPerm]);
+  }, [traceOpen, lastSessionId, state.busy, state.pendingPerm, traceTick]);
 
   const traceView = useMemo(() => toTraceView(traceTurns), [traceTurns]);
 
