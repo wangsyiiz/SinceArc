@@ -876,8 +876,9 @@ mod tests {
     }
 
     async fn wait_for_pids(path: &std::path::Path, want: usize) -> Vec<u32> {
-        // 10 秒：并行跑整套测试时，PowerShell 冷启动 3 秒很容易超（实测会偶发失败）
-        for _ in 0..500 {
+        // 30 秒：并行跑整套测试、或机器上同时有别的 agent 进程时，PowerShell 冷启动能拖到十几秒
+        // （实测：跑着 wsl.exe + hermes 探针的同一台机器上，10 秒预算会偶发超时）
+        for _ in 0..1500 {
             let pids = read_pids(path);
             if pids.len() >= want {
                 return pids;

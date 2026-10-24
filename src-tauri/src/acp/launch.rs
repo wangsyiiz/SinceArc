@@ -319,7 +319,16 @@ fn ssh_common_args(
     Ok(argv)
 }
 
-/// 远端要执行的整条命令：先 cd（失败就整条失败），再在 setsid 里 exec 顶替 shell。
+/// 远端要执行的整条命令：先 cd（失败就整条失败），再在 setsid 里 exec 顶替内层 shell。
+///
+/// **relay 进程绝不能变成 setsid 本身**（2026-10-24 实测，两个入口都要堵）：
+/// `exec setsid …` 会让 relay 被替换、立刻退出；而**末尾只有 if 也会** —— sh/zsh 会把命令行里
+/// 最后一个命令优化成 exec，于是 if 里的 setsid 同样顶掉 relay。setsid 在调用者是进程组长时
+/// 会 fork、父进程返回，relay 一退 `wsl.exe` 就认为会话结束、把管道收掉：我们这边看到
+/// `handshake failed: agent closed stdout`（界面 50200），agent 其实起来了，只是 stdout 没人接。
+/// 所以：① setsid 前不写 exec；② 末尾补 `; exit $?`。
+/// 新会话首进程仍是 pid 文件里的 `$$`，`kill -TERM -<pid>` 照样整组回收；
+/// agent 退出后 relay 的 wait 返回，`exit $?` 把退出码带回去。
 fn remote_command(
     program: &str,
     args: &[String],
@@ -358,8 +367,8 @@ pub(crate) fn guarded_exec(
         shell_quote(pid_file)
     );
     format!(
-        "if command -v setsid >/dev/null 2>&1; then exec setsid sh -c {}; \
-         else echo {} >&2; old_umask=$(umask); umask 077; echo $$ > {}; : > {}; umask \"$old_umask\"; exec {exec}; fi",
+        "if command -v setsid >/dev/null 2>&1; then setsid sh -c {}; \
+         else echo {} >&2; old_umask=$(umask); umask 077; echo $$ > {}; : > {}; umask \"$old_umask\"; exec {exec}; fi; exit $?",
         shell_quote(&inner),
         shell_quote("sincearc: setsid not found; process-tree cleanup degraded"),
         shell_quote(pid_file),
@@ -503,7 +512,9 @@ mod tests {
         assert!(script.contains("$HOME/.local/bin"));
         // setsid 让 pid == pgid；pid 文件是后续整组回收的依据
         assert!(script.contains("command -v setsid"), "got: {script}");
-        assert!(script.contains("exec setsid sh -c"), "got: {script}");
+        // 有意不写 exec：exec 会让 relay 先退出，wsl.exe 收掉管道（agent closed stdout）
+        assert!(script.contains("then setsid sh -c"), "got: {script}");
+        assert!(!script.contains("exec setsid"), "exec setsid 会把 relay 顶掉，别再写回去");
         assert!(script.contains("/tmp/sincearc-"), "got: {script}");
         assert!(script.contains("exec hermes"), "got: {script}");
         assert!(script.contains("acp"), "got: {script}");
@@ -537,7 +548,8 @@ mod tests {
             remote.starts_with("cd '/srv/app' && { export PATH="),
             "got: {remote:?}"
         );
-        assert!(remote.contains("exec setsid sh -c"), "got: {remote:?}");
+        // 不加 exec：exec 会让 relay 先退出，wsl.exe 收掉管道（agent closed stdout）
+        assert!(remote.contains("then setsid sh -c"), "got: {remote:?}");
         assert!(remote.contains("exec hermes"), "got: {remote:?}");
         assert!(remote.contains("acp"), "got: {remote:?}");
         assert!(matches!(spec.kill, KillTarget::Remote { kind: "ssh", .. }));
@@ -583,7 +595,8 @@ mod tests {
             "/tmp/sincearc-x.nosetsid",
         );
         assert!(cmd.starts_with("export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; "));
-        assert!(cmd.contains("exec setsid sh -c"));
+        assert!(cmd.contains("then setsid sh -c"));
+        assert!(!cmd.contains("exec setsid"), "exec setsid 会把 relay 顶掉");
         assert!(cmd.contains("exec hermes"));
         assert!(cmd.contains("acp"));
     }
