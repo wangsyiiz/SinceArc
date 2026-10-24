@@ -32,6 +32,8 @@ interface StatusBarProps {
   resume?: SessionResumeState | null;
   /** 最近一次连接尝试失败；用来区分“未连接”和“连接失败” */
   connectError?: { code: string; message: string } | null;
+  /** 正在为这个会话连（无感连接 / 手动重试）：让「打开到可用」这一段也有可见的过渡 */
+  connecting?: boolean;
 }
 
 export function StatusBar({
@@ -49,6 +51,7 @@ export function StatusBar({
   right,
   resume,
   connectError,
+  connecting = false,
 }: StatusBarProps) {
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line-1/60 px-3">
@@ -137,14 +140,32 @@ export function StatusBar({
                 ? `连接失败：${connectError.code} ${connectError.message}`
                 : profile.connected
                   ? `${profile.agentName ?? "agent"} · 协议 v${profile.protocolVersion ?? 1}`
-                  : "这个会话还没有连上 agent（打开会话会自动连）"
+                  : connecting
+                    ? "正在连接 agent…"
+                    : "这个会话还没有连上 agent（打开会话会自动连）"
             }
           >
             <span className="max-w-30 truncate text-caption text-ink-2">{profileLabel(profile)}</span>
             <Badge
               compact
-              status={connectError ? "error" : profile.connected ? "connected" : "untested"}
-              label={connectError ? "连接失败" : profile.connected ? "已连接" : "未连接"}
+              status={
+                connectError
+                  ? "error"
+                  : profile.connected
+                    ? "connected"
+                    : connecting
+                      ? "connecting"
+                      : "untested"
+              }
+              label={
+                connectError
+                  ? "连接失败"
+                  : profile.connected
+                    ? "已连接"
+                    : connecting
+                      ? "连接中…"
+                      : "未连接"
+              }
             />
           </span>
         )}

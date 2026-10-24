@@ -502,6 +502,12 @@ export default function App() {
   // 尝试记录记的是「会话 + 当时的连接状态」而不是单纯的会话 id：失败之后状态不变，
   // 所以不会每次重渲染都重试（否则错误态会被同一个结果反复刷新）；而断开一次状态就变了，
   // 用户再点回来就能重连 —— 断开是「现在别连」，不是「永久别连」（docs/desktop-ux.md §1.5）。
+  /** 无感连接 / 重试在飞：让「打开 → 可用」这一段有完整的过渡，而不是只等历史读回 */
+  const [connectPending, setConnectPending] = useState<Record<string, boolean>>({});
+  const markConnecting = useCallback((sid: string, pending: boolean) => {
+    setConnectPending((prev) => ({ ...prev, [sid]: pending }));
+  }, []);
+
   const handleConnectResult = useCallback(
     (sid: string, result: EnsureResult) => {
       if (result.resume) reportResume(sid, result.resume, result.lastEventSeq);
@@ -528,8 +534,19 @@ export default function App() {
     if (autoTried.current.get(sid) === attemptKey) return;
     autoTried.current.set(sid, attemptKey);
     // 带上当前会话：映射要靠它，不能靠「渲染时谁打开着」
-    void ensureConnected(pid, sid).then((r) => handleConnectResult(sid, r));
-  }, [activeTab, ensureConnected, sessions, activeProfile, sessionsByProfile, handleConnectResult]);
+    markConnecting(sid, true);
+    void ensureConnected(pid, sid)
+      .then((r) => handleConnectResult(sid, r))
+      .finally(() => markConnecting(sid, false));
+  }, [
+    activeTab,
+    ensureConnected,
+    sessions,
+    activeProfile,
+    sessionsByProfile,
+    handleConnectResult,
+    markConnecting,
+  ]);
 
   const [retryBusy, setRetryBusy] = useState(false);
   const retryConnection = useCallback(() => {
@@ -539,10 +556,21 @@ export default function App() {
     // 绕过自动连接的「一次就够」记录：手动重试必须真的再连一次
     autoTried.current.set(sid, `${pid}:${sessionsByProfile[pid] ?? "-"}`);
     setRetryBusy(true);
+    markConnecting(sid, true);
     void ensureConnected(pid, sid)
       .then((r) => handleConnectResult(sid, r))
-      .finally(() => setRetryBusy(false));
-  }, [ensureConnected, handleConnectResult, lastSessionId, sessionProfile?.id, sessionsByProfile]);
+      .finally(() => {
+        setRetryBusy(false);
+        markConnecting(sid, false);
+      });
+  }, [
+    ensureConnected,
+    handleConnectResult,
+    lastSessionId,
+    sessionProfile?.id,
+    sessionsByProfile,
+    markConnecting,
+  ]);
 
   /**
    * 会话打不开时的那块错误态：同一块，两种落点（docs/desktop-ux.md §8）。
@@ -910,6 +938,7 @@ export default function App() {
                 fallbackLabel={activeDefaultModeLabel}
                 resume={state.resume}
                 connectError={state.connectError}
+                connecting={!!connectPending[lastSessionId]}
                 onChooseMode={(modeId) => {
                   const acpSid = sessionProfile ? sessionsByProfile[sessionProfile.id] : undefined;
                   if (sessionProfile && acpSid) {
@@ -978,9 +1007,15 @@ export default function App() {
                       {state.msgs.length === 0 ? (
                         connectProblem ? (
                           errorState
-                        ) : opening ? (
-                          /* 历史还没回来：先顶骨架屏（原语自带 300ms 延迟，快的时候看不到）*/
-                          <LoadingState kind="loading" title="正在打开会话" />
+                        ) : opening || connectPending[lastSessionId] ? (
+                          /* 打开 → 可用这一段：骨架屏（原语自带 300ms 延迟，快的时候看不到）
+                             + 一行阶段说明 —— 冷启动时连接可能要几秒，光有条在跳说不出在等什么 */
+                          <div className="flex min-h-full flex-col items-center justify-center gap-2">
+                            <LoadingState kind="loading" title="正在打开会话" />
+                            <p className="text-caption text-ink-3">
+                              {opening ? "正在读取会话历史…" : "正在连接 agent…"}
+                            </p>
+                          </div>
                         ) : (
                           <div className="py-12">
                             <EmptyState
