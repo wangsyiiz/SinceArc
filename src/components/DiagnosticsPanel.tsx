@@ -1,17 +1,8 @@
-import {
-  useState,
-  type ComponentPropsWithoutRef,
-  type ComponentType,
-  type Ref,
-} from "react";
+import { useState } from "react";
 import { Activity, Check, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/Button";
 import { useAnchoredLayer } from "./ui/Menu";
-
-const TriggerButton = Button as unknown as ComponentType<
-  ComponentPropsWithoutRef<typeof Button> & { ref?: Ref<HTMLButtonElement> }
->;
 
 export function DiagnosticsPanel({
   eventLog,
@@ -51,7 +42,7 @@ export function DiagnosticsPanel({
 
   return (
     <>
-      <TriggerButton
+      <Button
         ref={triggerRef}
         variant="ghost"
         size="sm"
@@ -68,7 +59,7 @@ export function DiagnosticsPanel({
         )}
       >
         <Activity className="size-3.5" />
-      </TriggerButton>
+      </Button>
 
       {open && (
         <div
