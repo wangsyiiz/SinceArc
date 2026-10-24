@@ -4,6 +4,7 @@ import { ActivityRail } from "@/components/ActivityRail";
 import { Composer } from "@/components/Composer";
 import { ConnectErrorState } from "@/components/ConnectErrorState";
 import { EmptyState } from "@/components/EmptyState";
+import { EmptyState as LoadingState } from "@/components/ui/EmptyState";
 import { MessageItem } from "@/components/MessageItem";
 import { PermissionDialog } from "@/components/PermissionDialog";
 import { PrView } from "@/components/PrView";
@@ -194,7 +195,7 @@ export default function App() {
 
   const { sessions, setSessions, reload: reloadSessions } = useSessionList();
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
-  const { state, patchSession, initSession, sessionState, hasMore, loadOlder, loadingOlder } =
+  const { state, patchSession, initSession, sessionState, hasMore, loadOlder, loadingOlder, opening } =
     useSessionState(lastSessionId);
 
   /** 重新读当前群的成员：换群、加入、移出都走它 */
@@ -977,6 +978,9 @@ export default function App() {
                       {state.msgs.length === 0 ? (
                         connectProblem ? (
                           errorState
+                        ) : opening ? (
+                          /* 历史还没回来：先顶骨架屏（原语自带 300ms 延迟，快的时候看不到）*/
+                          <LoadingState kind="loading" title="正在打开会话" />
                         ) : (
                           <div className="py-12">
                             <EmptyState
