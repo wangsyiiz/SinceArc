@@ -285,11 +285,18 @@ export function useAcpEvents({
         diag(`flush -> ${st.uiSid} +${text.length} 字`);
         clog("FLUSH", `acp=${st.acpSid} key=${streamKey} ui=${st.uiSid} +${text.length}`);
       }
+      const turnId = acpToTurn.current[st.acpSid];
+      const persistTurnId = turnIdForPersist(turnId);
+      const messageTurnId = st.turnId ?? persistTurnId;
+      if (messageTurnId && !st.turnId) st.turnId = messageTurnId;
       patchSession(st.uiSid, (s) => {
         const last = s.msgs[s.msgs.length - 1];
         const msgs =
           last && last.id === st.msgId && last.role === "player"
-            ? [...s.msgs.slice(0, -1), { ...last, text: last.text + text }]
+            ? [
+                ...s.msgs.slice(0, -1),
+                { ...last, text: last.text + text, turnId: last.turnId ?? messageTurnId },
+              ]
             : [
                 ...s.msgs,
                 {
@@ -299,10 +306,10 @@ export function useAcpEvents({
                   text,
                   at: now(),
                   streaming: true,
+                  turnId: messageTurnId,
                 },
               ];
 
-        const turnId = acpToTurn.current[st.acpSid];
         const turns = turnId
           ? s.turns.map((t) =>
               t.id === turnId
@@ -374,6 +381,7 @@ export function useAcpEvents({
               text: full,
               at: now(),
               streaming: false,
+              ...(st.turnId ? { turnId: st.turnId } : {}),
             },
           },
         ])
@@ -722,6 +730,7 @@ export function useAcpEvents({
                 text: stale.text,
                 at: now(),
                 streaming: false,
+                ...(stale.turnId ? { turnId: stale.turnId } : {}),
               },
             },
           ])
@@ -759,6 +768,10 @@ export function useAcpEvents({
         const streamingIds = new Set(streamsForTurn.map(([, stream]) => stream.msgId));
         const actId = `act-stream-${acpSid ?? "x"}`;
         const turnId = acpSid ? acpToTurn.current[acpSid] : undefined;
+        const persistTurnId = turnIdForPersist(turnId);
+        for (const [, stream] of streamsForTurn) {
+          if (!stream.turnId && persistTurnId) stream.turnId = persistTurnId;
+        }
         const failed = event.kind === "promptFailed";
         const stopReason = event.kind === "promptResult" ? stopReasonOf(event.result) : null;
         const cancelled = stopReason === "cancelled";
@@ -787,7 +800,12 @@ export function useAcpEvents({
           msgs: [
             ...s.msgs.map((m) =>
               streamingIds.has(m.id) && m.role === "player"
-                ? { ...m, streaming: false, stopped: cancelled || m.stopped }
+                ? {
+                    ...m,
+                    streaming: false,
+                    stopped: cancelled || m.stopped,
+                    ...(persistTurnId && !m.turnId ? { turnId: persistTurnId } : {}),
+                  }
                 : m,
             ),
             ...(failed
@@ -797,6 +815,7 @@ export function useAcpEvents({
                     role: "system" as const,
                     text: `这一轮失败：${event.msg}`,
                     at: now(),
+                    turnId: null,
                   },
                 ]
               : []),
@@ -816,7 +835,13 @@ export function useAcpEvents({
               id,
               role: "system",
               kind: "text",
-              payload: { id, role: "system", text: `这一轮失败：${event.msg}`, at: now() },
+              payload: {
+                id,
+                role: "system",
+                text: `这一轮失败：${event.msg}`,
+                at: now(),
+                turnId: null,
+              },
               nonTurn: true,
             },
           ]).catch((e) => console.warn("[db] append failure notice failed", e));
@@ -839,6 +864,7 @@ export function useAcpEvents({
                     text: st.text,
                     at: now(),
                     streaming: false,
+                    ...(st.turnId ? { turnId: st.turnId } : {}),
                   },
                 },
               ]);
