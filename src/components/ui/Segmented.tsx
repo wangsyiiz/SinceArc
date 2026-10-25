@@ -22,6 +22,12 @@ export function Segmented<T extends string>(props: {
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
   /** 滑块按「当前选项的真实位置」画，不用等分推算 */
   const [thumb, setThumb] = useState<{ left: number; width: number } | null>(null);
+  /**
+   * 首次量到之前不许补间。滑块在量到前是 `width: 0`，而 `.sc-switch__thumb` 带
+   * `transition: width` —— 于是每次页面初始化都会看到「从零宽长到占满」的动画，
+   * 那是首帧占位到真实宽度的补间，不是状态变化。首帧画完再开补间。
+   */
+  const [settled, setSettled] = useState(false);
 
   /**
    * 选项宽度不等（「深色」「跟随系统」差一个字），所以滑块的位置与宽度必须量出来。
@@ -39,10 +45,14 @@ export function Segmented<T extends string>(props: {
       setThumb({ left: r.left - t.left + 2, width: Math.max(0, r.width - 4) });
     };
     measure();
+    const raf = requestAnimationFrame(() => setSettled(true));
     const observer = new ResizeObserver(measure);
     if (trackRef.current) observer.observe(trackRef.current);
     for (const item of itemRefs.current) if (item) observer.observe(item);
-    return () => observer.disconnect();
+    return () => {
+      cancelAnimationFrame(raf);
+      observer.disconnect();
+    };
   }, [active, count, options.length]);
 
   const move = (direction: -1 | 1) => {
@@ -85,8 +95,9 @@ export function Segmented<T extends string>(props: {
                 left: 0,
                 width: thumb.width,
                 transform: `translateX(${thumb.left}px)`,
+                transition: settled ? undefined : "none",
               }
-            : { width: 0, opacity: 0 }
+            : { width: 0, opacity: 0, transition: "none" }
         }
       />
       {options.map((option, index) => (

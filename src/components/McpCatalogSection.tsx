@@ -9,6 +9,7 @@ import {
   type McpKeyValueDto,
   type McpServerDto,
 } from "@/lib/ipc";
+import { Switch } from "@/components/ui/Switch";
 import {
   describeServer,
   entryKind,
@@ -119,42 +120,6 @@ function validateForm(form: FormState): string | null {
   if (form.kind === "stdio" && !form.command.trim()) return "还缺：command";
   if (form.kind !== "stdio" && !form.url.trim()) return "还缺：url";
   return null;
-}
-
-function ToggleSwitch({
-  checked,
-  label,
-  disabled = false,
-  onChange,
-}: {
-  checked: boolean;
-  label: string;
-  disabled?: boolean;
-  onChange: (next: boolean) => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={cn(
-        "sc-control relative h-4 w-8 shrink-0 rounded-control border transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-1",
-        checked ? "border-accent-1 bg-accent-1" : "border-control bg-surface-3",
-        disabled && "cursor-not-allowed opacity-45",
-      )}
-    >
-      <span
-        aria-hidden="true"
-        className={cn(
-          "absolute top-0.5 size-3 rounded-mark bg-surface-1 transition-transform",
-          checked ? "translate-x-4" : "translate-x-0.5",
-        )}
-      />
-    </button>
-  );
 }
 
 function PairEditor({
@@ -451,7 +416,7 @@ export function McpCatalogSection({
             只影响之后新建的连接；已有连接各自保留自己的选择。
           </p>
         </div>
-        <ToggleSwitch
+        <Switch
           checked={inheritDefault}
           label="新建连接默认继承这份目录"
           onChange={onInheritDefaultChange}
