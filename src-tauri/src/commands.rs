@@ -116,6 +116,9 @@ pub enum AcpEvent {
     /// 一轮 prompt 开始了（UI 用来进入生成态；此时还没有任何 chunk）
     PromptStarted {
         session_id: String,
+        /// 这一轮的 id（后端生成，前端只认它）。派活子会话取父轮；没有父轮时为 None。
+        #[ts(optional = nullable)]
+        turn_id: Option<String>,
         #[ts(optional = nullable)]
         ui_session_id: Option<String>,
         #[ts(optional = nullable)]
@@ -1186,16 +1189,13 @@ fn prompt_failure_reason(e: &transport::TransportError) -> String {
 }
 
 /// prompt 正常返回时的终态。用户点过停止、或 agent 自己回了 `cancelled`，
-/// 都只收一次 cancelled；其余情况保留 agent 的原始 stopReason。
+/// 统一收成 finished + stop_reason='cancelled'；其余情况保留 agent 的原始 stopReason。
 fn prompt_success_outcome(
     cancelled_by_user: bool,
     stop_reason: Option<String>,
 ) -> (&'static str, Option<String>) {
     if cancelled_by_user || stop_reason.as_deref() == Some("cancelled") {
-        (
-            "cancelled",
-            Some(stop_reason.unwrap_or_else(|| "cancelled".to_string())),
-        )
+        ("finished", Some("cancelled".to_string()))
     } else {
         ("finished", stop_reason)
     }
@@ -1211,13 +1211,13 @@ fn delegate_end_status(cancelled_by_user: bool, fallback: DelegateStatus) -> Del
     }
 }
 
-/// prompt 返回 Err 时的终态：用户点过停止就是 cancelled，否则是 failed + 可解释原因。
+/// prompt 返回 Err 时的终态：用户点过停止是 finished + cancelled，否则是 failed + 可解释原因。
 fn prompt_failure_outcome(
     cancelled_by_user: bool,
     e: &transport::TransportError,
 ) -> (&'static str, Option<String>) {
     if cancelled_by_user {
-        ("cancelled", Some("cancelled".to_string()))
+        ("finished", Some("cancelled".to_string()))
     } else {
         ("failed", Some(prompt_failure_reason(e)))
     }
@@ -1257,6 +1257,7 @@ pub async fn session_trace(
         .load_events(&session_id, limit * 200)
         .map_err(|e| CmdError::new(50000, format!("读取轨迹失败：{e}")))?;
     let turns = crate::trace::with_orphan_turns(turns, &session_id, &events);
+    // 轮次上的 prompt 字段保留给老数据作历史兼容；正文权威在 atoms（chat / text.user）。
     Ok(crate::trace::aggregate(turns, events))
 }
 
@@ -1371,6 +1372,9 @@ async fn record_trace(
         author_id: record.author_id.clone(),
         kind: captured.kind.to_string(),
         payload_json: captured.payload.to_string(),
+        refs: captured.refs,
+        ext: captured.ext,
+        schema: None,
         source: "live".to_string(),
         truncated: captured.truncated,
     };
@@ -1684,9 +1688,7 @@ pub async fn agent_connect(
                         // 攒起来；够 4KB 就先发一段（长回答开头不必等满 30ms）
                         let message_id = params
                             .get("update")
-                            .and_then(|u| u.get("messageId"))
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_string);
+                            .and_then(|u| crate::trace::refs_of(u).get("messageId").cloned());
                         let chunk = params
                             .get("update")
                             .and_then(|u| u.get("content"))
@@ -1804,12 +1806,21 @@ pub async fn agent_connect(
                     }
                     // 权限请求本身也是轨迹的一部分（用户要能事后查到「当时授权了什么」；
                     // 聊天正文里已不再写「权限决定」这类系统消息）
+                    // JSON-RPC 的请求 id 不在 params 里；先补进去，trace::parse 才能把它
+                    // 落成 refs.requestId（和之后的 permission_decision 对上同一块）。
+                    let mut trace_params = params.clone();
+                    if let Some(object) = trace_params.as_object_mut() {
+                        object.insert(
+                            "requestId".to_string(),
+                            serde_json::Value::String(id.to_string()),
+                        );
+                    }
                     record_trace(
                         &db_for_trace,
                         &routes,
                         &turns_for_trace,
                         &method,
-                        &params,
+                        &trace_params,
                     )
                     .await;
                     // 权限请求意味着这一轮在等用户。只有当前确实有活动轮时才改状态：
@@ -1888,7 +1899,7 @@ pub async fn agent_connect(
                     ui_session_id.clone(),
                     author_id.clone(),
                 ),
-                AcpEvent::PromptStarted { session_id, ui_session_id, author_id }
+                AcpEvent::PromptStarted { session_id, ui_session_id, author_id, .. }
                 | AcpEvent::PromptResult { session_id, ui_session_id, author_id, .. }
                 | AcpEvent::PromptFailed { session_id, ui_session_id, author_id, .. } => (
                     Some(session_id.clone()),
@@ -2767,20 +2778,34 @@ fn delegate_error_stop_reason(e: &transport::TransportError) -> Option<String> {
         .or_else(|| value.get("code").map(|code| code.to_string()))
 }
 
-fn append_delegate_event(
-    db: &db::Db,
-    parent_ui_session_id: &str,
-    turn_id: &str,
+struct DelegateEvent<'a> {
+    parent_ui_session_id: &'a str,
+    turn_id: &'a str,
     author_id: Option<String>,
-    kind: &str,
-    payload: &serde_json::Value,
+    child_acp_session_id: &'a str,
+    kind: &'a str,
+    payload: &'a serde_json::Value,
     truncated: bool,
-) {
+}
+
+fn append_delegate_event(db: &db::Db, event: DelegateEvent<'_>) {
+    let DelegateEvent {
+        parent_ui_session_id,
+        turn_id,
+        author_id,
+        child_acp_session_id,
+        kind,
+        payload,
+        truncated,
+    } = event;
     let input = db::EventInput {
         turn_id: turn_id.to_string(),
         author_id,
         kind: kind.to_string(),
         payload_json: payload.to_string(),
+        refs: Some(serde_json::json!({ "childSession": child_acp_session_id })),
+        ext: None,
+        schema: None,
         source: "live".to_string(),
         truncated,
     };
@@ -2868,12 +2893,15 @@ async fn finish_delegate(
         });
         append_delegate_event(
             db,
-            parent_ui_session_id,
-            turn_id,
-            author_id,
-            "delegate_result",
-            &payload,
-            entry.buffer.chars().count() > DELEGATE_SUMMARY_CHARS,
+            DelegateEvent {
+                parent_ui_session_id,
+                turn_id,
+                author_id,
+                child_acp_session_id,
+                kind: "delegate_result",
+                payload: &payload,
+                truncated: entry.buffer.chars().count() > DELEGATE_SUMMARY_CHARS,
+            },
         );
     }
 
@@ -2881,10 +2909,13 @@ async fn finish_delegate(
         if own_turn {
             let turn_status = match status {
                 DelegateStatus::Failed => "failed",
-                DelegateStatus::Cancelled => "cancelled",
                 _ => "finished",
             };
-            if let Err(e) = db.end_turn(turn_id, turn_status, stop_reason.as_deref()) {
+            let turn_stop_reason = match status {
+                DelegateStatus::Cancelled => Some("cancelled"),
+                _ => stop_reason.as_deref(),
+            };
+            if let Err(e) = db.end_turn(turn_id, turn_status, turn_stop_reason) {
                 tracing::warn!(target: "sincearc::trace", error = %e, "delegate 收轮失败");
             }
         }
@@ -2978,14 +3009,9 @@ pub async fn delegate_task(
             Some(turn) => (Some(turn), false),
             None => {
                 let turn = format!("turn-{}", crate::trace::now_ms());
-                let prompt = format!(
-                    "→ {}：{}",
-                    member.name,
-                    truncate_chars(&task, DELEGATE_SUMMARY_CHARS)
-                );
                 if let Err(e) = state
                     .db
-                    .start_turn(&parent_ui_session_id, &turn, &prompt, None)
+                    .start_turn(&parent_ui_session_id, &turn, "", None, None)
                 {
                     tracing::warn!(target: "sincearc::trace", error = %e, "delegate 轮次落库失败");
                 }
@@ -3012,12 +3038,15 @@ pub async fn delegate_task(
         });
         append_delegate_event(
             &state.db,
-            &parent_ui_session_id,
-            turn_id,
-            author_id,
-            "delegate",
-            &payload,
-            task.chars().count() > DELEGATE_SUMMARY_CHARS,
+            DelegateEvent {
+                parent_ui_session_id: &parent_ui_session_id,
+                turn_id,
+                author_id,
+                child_acp_session_id: &child_acp_session_id,
+                kind: "delegate",
+                payload: &payload,
+                truncated: task.chars().count() > DELEGATE_SUMMARY_CHARS,
+            },
         );
         // 派活不动父会话的 busy，而前端只在 busy/pendingPerm 变化时重读轨迹 ——
         // 不敲这一下，「派活给 X」这一步要等下一轮才出现（验收要求是立刻可见）。
@@ -3031,6 +3060,8 @@ pub async fn delegate_task(
         id: delegate_message_id.clone(),
         role: "user".into(),
         author_id: None,
+        turn_id: parent_turn_id.clone(),
+        non_turn: parent_turn_id.is_none(),
         kind: "delegate".into(),
         payload: serde_json::json!({
             "id": delegate_message_id,
@@ -3044,6 +3075,9 @@ pub async fn delegate_task(
                 "reason": reason,
             },
         }),
+        refs: Some(serde_json::json!({ "childSession": child_acp_session_id })),
+        ext: None,
+        schema: None,
     };
     if let Err(e) = state
         .db
@@ -3107,6 +3141,7 @@ pub async fn delegate_task(
             meta.clone(),
             &AcpEvent::PromptStarted {
                 session_id: child_for_task.clone(),
+                turn_id: parent_turn_for_task.clone(),
                 ui_session_id: Some(parent_ui_for_task.clone()),
                 author_id: author_for_task.clone(),
             },
@@ -3321,6 +3356,13 @@ pub async fn session_load(
     })
 }
 
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct SessionPromptResult {
+    pub turn_id: String,
+}
+
 #[tauri::command]
 pub async fn session_prompt(
     state: State<'_, AppState>,
@@ -3328,7 +3370,7 @@ pub async fn session_prompt(
     text: String,
     // 这次投递来自哪个界面会话
     ui_session_id: Option<String>,
-) -> Result<(), CmdError> {
+) -> Result<SessionPromptResult, CmdError> {
     if text.trim().is_empty() {
         return Err(CmdError::new(50300, "消息为空"));
     }
@@ -3380,8 +3422,9 @@ pub async fn session_prompt(
         if let Err(e) = state.db.start_turn(
             &ui_sid,
             &turn_id,
-            &text,
+            "",
             record.author_id.as_deref(),
+            None,
         ) {
             tracing::warn!(target: "sincearc::trace", error = %e, "轮次落库失败");
         }
@@ -3394,6 +3437,7 @@ pub async fn session_prompt(
     let sid_for_trace = sid.clone();
     let db_for_turn = state.db.clone();
     let turn_id_for_turn = turn_id.clone();
+    let turn_id_for_event = turn_id.clone();
     let proc = handle.proc.clone();
     // 这三个事件必须自带归属：推送时前端可能已经切到别的会话，
     // 「当前打开的那个」不是判断依据。
@@ -3415,6 +3459,7 @@ pub async fn session_prompt(
             meta.clone(),
             &AcpEvent::PromptStarted {
                 session_id: sid.clone(),
+                turn_id: Some(turn_id_for_event),
                 ui_session_id: ui_for_event.clone(),
                 author_id: author_for_event.clone(),
             },
@@ -3496,7 +3541,7 @@ pub async fn session_prompt(
         }
     });
 
-    Ok(())
+    Ok(SessionPromptResult { turn_id })
 }
 
 fn steer_precheck(text: &str, commands: &[CommandDto]) -> Result<String, CmdError> {
@@ -3716,6 +3761,9 @@ pub async fn agent_respond_request(
                             author_id: turn_author,
                             kind: "permission_decision".to_string(),
                             payload_json: payload.to_string(),
+                            refs: Some(serde_json::json!({ "requestId": id.to_string() })),
+                            ext: None,
+                            schema: None,
                             source: "live".to_string(),
                             truncated: false,
                         };
@@ -4231,8 +4279,13 @@ mod turn_state_tests {
     fn user_stop_and_agent_cancel_reason_produce_one_cancelled_outcome() {
         let (status, reason) =
             prompt_success_outcome(true, Some("cancelled".to_string()));
-        assert_eq!(status, "cancelled");
+        assert_eq!(status, "finished");
         assert_eq!(reason.as_deref(), Some("cancelled"));
+
+        let (status, reason) =
+            prompt_success_outcome(true, Some("end_turn".to_string()));
+        assert_eq!(status, "finished");
+        assert_eq!(reason.as_deref(), Some("cancelled"), "用户停止优先于 agent 的 stopReason");
 
         let (status, reason) =
             prompt_success_outcome(false, Some("max_tokens".to_string()));

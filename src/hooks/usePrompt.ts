@@ -12,6 +12,7 @@ import { now } from "@/lib/format";
 import { pushSystemNotice } from "@/lib/notices";
 import { clog } from "@/lib/log";
 import { newId } from "@/lib/ids";
+import { replaceTurnId } from "@/lib/turn-id";
 import type { AgentProfile, Message } from "@/types";
 import type { EnsureResult } from "./useAgentConnect";
 import type { AcpRefs } from "./useAcpEvents";
@@ -96,10 +97,17 @@ export function usePrompt({
         : !!profileId && !connected;
       const connectNoteId = `conn-note-${Date.now()}`;
 
-      // 用户消息先落地，真假链路都一样。
+      // 用户消息先上屏，真假链路都一样；落库等拿到回执或明确失败后再做。
       // 只有真要发 prompt 时才置 busy —— 连接阶段置 busy 会把输入框锁住，
       // 而连接可能要几十秒，用户会以为界面卡死了（docs/desktop-ux.md §1.6）。
-      const userMsg: Message = { id: newId("u"), role: "user", text, at };
+      const userMsg: Message = {
+        id: newId("u"),
+        role: "user",
+        atomKind: "text.user",
+        text,
+        at,
+        turnId: null,
+      };
       patchSession(sid, (s) => ({
         ...s,
         busy: !needConnect,
@@ -111,16 +119,29 @@ export function usePrompt({
                 {
                   id: connectNoteId,
                   role: "system" as const,
+                  atomKind: "notice.system",
                   text: "正在连接 agent…（连接期间可以继续操作界面）",
                   at,
+                  turnId: null,
                 },
               ]
             : []),
         ],
       }));
-      messagesAppend(sid, [
-        { id: userMsg.id, role: "user", kind: "text", payload: userMsg },
-      ]).catch((e) => console.warn("[db] append message failed", e));
+      // 用户消息也要显式表态：拿到后端回执就带真 turnId；没发出去的路径显式 nonTurn。
+      // 不再先写一条 NULL 再补 id —— 写入口已经不允许静默 NULL。
+      const persistUserMessage = (turnId?: string) => {
+        const payload = turnId ? { ...userMsg, turnId } : userMsg;
+        messagesAppend(sid, [
+          {
+            id: userMsg.id,
+            role: "user",
+            kind: "text",
+            payload,
+            ...(turnId ? { turnId } : { nonTurn: true }),
+          },
+        ]).catch((e) => console.warn("[db] append message failed", e));
+      };
 
       if (needConnect && profileId) {
         // 无感启动的保底：打开会话时可能还没连上（或刚被断开），发消息这一下必须连上，
@@ -146,6 +167,7 @@ export function usePrompt({
         }));
         if (r.error) {
           setBusy(sid, false);
+          persistUserMessage();
           // 失败原因必须落库，否则恢复会话后只剩一条没人答的提问
           pushSystemNotice(patchSession, sid, `连接失败：${r.error!.code} ${r.error!.msg}`);
           return;
@@ -156,6 +178,7 @@ export function usePrompt({
           // connectProblem，那块居中错误态正在渲染。再往消息流里塞一枚药丸，就是同一件事的两个面孔 ——
           // 而且那条会落库，重开会话后还留在历史里，看起来像一条假消息。
           setBusy(sid, false);
+          persistUserMessage();
           return;
         }
         acpSid = target ? target.acpSessionId : undefined;
@@ -181,6 +204,7 @@ export function usePrompt({
         } catch (e) {
           const err = asCmdError(e);
           setBusy(sid, false);
+          persistUserMessage();
           pushSystemNotice(patchSession, sid, `新建 ACP 会话失败：${err.code} ${err.msg}`);
           return;
         }
@@ -194,6 +218,7 @@ export function usePrompt({
           onResume(sid, loaded.resume, loaded.lastEventSeq ?? null);
           if (loaded.resume.kind === "unavailable") {
             setBusy(sid, false);
+            persistUserMessage();
             // 成员会话不属于「这个会话打不开」，主会话是好着的 —— 它是一次真实的发送失败，落库是对的。
             pushSystemNotice(
               patchSession,
@@ -205,6 +230,7 @@ export function usePrompt({
         } catch (e) {
           const err = asCmdError(e);
           setBusy(sid, false);
+          persistUserMessage();
           pushSystemNotice(patchSession, sid, `无法恢复成员会话：${err.code} ${err.msg}`);
           return;
         }
@@ -212,7 +238,8 @@ export function usePrompt({
 
       if (acpSid) {
         const actId = `act-stream-${acpSid}`;
-        const turnId = `turn-live-${Date.now()}`;
+        // 占位 id 只做本地 key：绝不允许带着 turn-live- 落库，收到后端回执后立刻替换。
+        const turnId = newId("turn-live");
         acpToTurn.current[acpSid] = turnId;
         // 归属由后端按会话记录投递（docs/desktop-ux.md「事件路由」），
         // 这里只记「这一轮的 turn id」，供轨迹栏把回答挂到对应分支上。
@@ -235,7 +262,6 @@ export function usePrompt({
             {
               id: turnId,
               at,
-              userText: text,
               branches: [
                 {
                   playerId: target?.authorId ?? MAIN_AGENT_ID,
@@ -251,11 +277,33 @@ export function usePrompt({
           "SEND",
           `acp=${acpSid} ui=${sid} target=${target ? `member:${target.authorId}` : "main"} len=${text.length}`,
         );
-        sessionPrompt(acpSid, text, sid).catch((e) => {
-          const err = asCmdError(e);
-          setBusy(sid, false);
-          pushSystemNotice(patchSession, sid, `发送失败：${err.code} ${err.msg}`);
-        });
+        void sessionPrompt(acpSid, text, sid)
+          .then(({ turnId: realTurnId }) => {
+            // 后端是轮次身份的唯一来源：本地占位只负责让 UI 先有东西可挂。
+            if (acpToTurn.current[acpSid] === turnId) {
+              acpToTurn.current[acpSid] = realTurnId;
+            }
+            patchSession(sid, (s) => ({
+              ...s,
+              turns: replaceTurnId(s.turns, turnId, realTurnId),
+              // 用户消息与已经开流的回答都补上后端真 id。占位 id 只是本地 key，
+              // 不落库；界面上的锚点必须指向真轮，否则「在轨迹里看这一轮」会找不到。
+              msgs: s.msgs.map((m) =>
+                m.id === userMsg.id
+                  ? { ...m, turnId: realTurnId }
+                  : m.role === "player" && m.streaming && !m.turnId
+                    ? { ...m, turnId: realTurnId }
+                    : m,
+              ),
+            }));
+            persistUserMessage(realTurnId);
+          })
+          .catch((e) => {
+            const err = asCmdError(e);
+            setBusy(sid, false);
+            persistUserMessage();
+            pushSystemNotice(patchSession, sid, `发送失败：${err.code} ${err.msg}`);
+          });
         return;
       }
 
@@ -263,6 +311,7 @@ export function usePrompt({
       // 以前这里会走「演示链路」编几条假回答 —— 那是在骗用户：他看着像群里有 agent 说话，
       // 其实一个字都没发出去。现在直接说清楚，并把他引到设置页。
       setBusy(sid, false);
+      persistUserMessage();
       pushSystemNotice(
         patchSession,
         sid,

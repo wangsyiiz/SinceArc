@@ -55,7 +55,7 @@ import {
   delegateCancel,
   delegateTask,
   delegateWait,
-  messageFromPayload,
+  messageFromRow,
   messagesLoad,
   mentionResolve,
   settingsLoad,
@@ -77,6 +77,9 @@ import {
 import { now } from "@/lib/format";
 import { clog } from "@/lib/log";
 import { newId } from "@/lib/ids";
+import { turnIdForPersist } from "@/lib/turn-id";
+import { locateTargetOf } from "@/lib/turn-anchors";
+import { normaliseTurnId } from "@/lib/turn-align";
 import { useAcpEvents } from "@/hooks/useAcpEvents";
 import { usePaneLayout } from "@/hooks/usePaneLayout";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -117,6 +120,9 @@ export default function App() {
   /** 派活这类「不改 busy 但改了轨迹」的写入靠它触发重读（后端写完事件敲 session.trace） */
   const [traceTick, setTraceTick] = useState(0);
   const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
+  const [traceLocate, setTraceLocate] = useState<{ turnId: string; tick: number } | null>(null);
+  const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
+  const highlightTimerRef = useRef<number | null>(null);
   const [playerFilter, setPlayerFilter] = useState<string | null>(null);
   const [memberPanel, setMemberPanel] = useState<{ id: string; anchor: HTMLElement } | null>(null);
   const [delegateTarget, setDelegateTarget] = useState<AgentUser | null>(null);
@@ -820,7 +826,7 @@ export default function App() {
       setLastSessionId(sid);
       patchSession(sid, (s) => ({
         ...s,
-        msgs: [...s.msgs, { id: newId("u"), role: "user", at: now(), text: "@claude 看一下这个 PR", quoted: { kind: "pr", label: `#${pr.number} ${pr.title}`, detail: `${repo.slug} · ${pr.head} → ${pr.base} · +${pr.additions} −${pr.deletions} · ${pr.files} 文件` } }],
+        msgs: [...s.msgs, { id: newId("u"), role: "user", atomKind: "text.user", at: now(), text: "@claude 看一下这个 PR", quoted: { kind: "pr", label: `#${pr.number} ${pr.title}`, detail: `${repo.slug} · ${pr.head} → ${pr.base} · +${pr.additions} −${pr.deletions} · ${pr.files} 文件` } }],
       }));
     },
     [openTab, patchSession, tabs],
@@ -841,6 +847,42 @@ export default function App() {
   }, [traceOpen, lastSessionId, state.busy, state.pendingPerm, traceTick]);
 
   const traceView = useMemo(() => toTraceView(traceTurns), [traceTurns]);
+
+  /** 轨迹 → 正文：滚到该轮第一条消息，并短暂用 accent 环标一下。 */
+  const locateMessage = useCallback((messageId: string) => {
+    const root = scrollRef.current;
+    if (!root) return;
+    const el = [...root.querySelectorAll<HTMLElement>("[data-message-id]")].find(
+      (candidate) => candidate.dataset.messageId === messageId,
+    );
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    setHighlightMessageId(messageId);
+    if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = window.setTimeout(() => {
+      setHighlightMessageId((current) => (current === messageId ? null : current));
+      highlightTimerRef.current = null;
+    }, 1_200);
+  }, []);
+
+  /** 正文 → 轨迹：打开面板，并把当前轮作为定位目标。 */
+  const locateTraceTurn = useCallback((turnId: string) => {
+    const key = normaliseTurnId(turnId);
+    if (!key) return;
+    setTraceOpen(true);
+    setTraceLocate((current) => ({ turnId: key, tick: (current?.tick ?? 0) + 1 }));
+  }, []);
+
+  const locateTargetForTurn = useCallback(
+    (turnId: string) => locateTargetOf(state.msgs, turnId),
+    [state.msgs],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
+    };
+  }, []);
 
   const decide = useCallback(async (optionId: string | null, note: string | null = null) => {
     const uiSid = lastSessionId;
@@ -991,12 +1033,15 @@ export default function App() {
       const text = raw.trim();
       if (!sid || !acpSid || !text) return;
 
+      const turnId = turnIdForPersist(acp.acpToTurn.current[acpSid]);
       const aside: Message = {
         id: newId("aside"),
         role: "user",
+        atomKind: "aside",
         text,
         at: now(),
         kind: "aside",
+        turnId,
       };
       // 先上屏：后端回执可能比 IPC 返回值更早到，回执要能找到这一条。
       patchSession(sid, (s) => ({ ...s, msgs: [...s.msgs, aside] }));
@@ -1011,12 +1056,19 @@ export default function App() {
       }
 
       await messagesAppend(sid, [
-        { id: aside.id, role: "user", kind: "aside", payload: { ...aside, kind: "aside" } },
+        {
+          id: aside.id,
+          role: "user",
+          kind: "aside",
+          payload: { ...aside, kind: "aside" },
+          // 插话属于它打断的那一轮；拿不到真 id 时显式非轮次，不让后端去猜。
+          ...(turnId ? { turnId } : { nonTurn: true }),
+        },
       ]).catch((e: unknown) => {
         clog("ASIDE-DB-ERR", `ui=${sid} id=${aside.id} ${String(e)}`);
       });
     },
-    [activeAcpSid, lastSessionId, patchSession],
+    [acp, activeAcpSid, lastSessionId, patchSession],
   );
 
   /**
@@ -1189,6 +1241,10 @@ export default function App() {
           animate={!dragging}
           focusId={focus?.id ?? null}
           focusTick={focus?.tick ?? 0}
+          locateTurnId={traceLocate?.turnId ?? null}
+          locateTick={traceLocate?.tick ?? 0}
+          locateTargetOf={locateTargetForTurn}
+          onLocateMessage={locateMessage}
           turns={traceView.turns}
           activities={traceView.activities}
           players={players}
@@ -1196,6 +1252,7 @@ export default function App() {
           onClose={() => {
             setTraceOpen(false);
             setFocus(null);
+            setTraceLocate(null);
           }}
         />
         {traceOpen && (
@@ -1244,7 +1301,10 @@ export default function App() {
                 traceOpen={traceOpen}
                 onToggleTrace={() =>
                   setTraceOpen((v) => {
-                    if (v) setFocus(null);
+                    if (v) {
+                      setFocus(null);
+                      setTraceLocate(null);
+                    }
                     return !v;
                   })
                 }
@@ -1317,19 +1377,31 @@ export default function App() {
                         )
                       ) : (
                         <>
-                          {state.msgs.map((m) => (
-                            <MessageItem
-                              key={m.id}
-                              message={m}
-                              players={renderPlayers}
-                              delegatePhase={
-                                m.role === "user" && m.delegate
-                                  ? delegateRunning[m.delegate.handleId]
-                                  : undefined
-                              }
-                              onCancelDelegate={cancelDelegate}
-                            />
-                          ))}
+                          {state.msgs.map((m) => {
+                            return (
+                              <div
+                                key={m.id}
+                                data-message-id={m.id}
+                                data-turn-id={m.turnId ?? ""}
+                                className={
+                                  "group relative rounded-card transition-shadow" +
+                                  (highlightMessageId === m.id ? " ring-2 ring-accent-1/70" : "")
+                                }
+                              >
+                                <MessageItem
+                                  message={m}
+                                  players={renderPlayers}
+                                  delegatePhase={
+                                    m.role === "user" && m.delegate
+                                      ? delegateRunning[m.delegate.handleId]
+                                      : undefined
+                                  }
+                                  onCancelDelegate={cancelDelegate}
+                                  onLocateTrace={locateTraceTurn}
+                                />
+                              </div>
+                            );
+                          })}
                           {state.acts
                             .filter((a) => a.status === "running")
                             .map((a) => {
@@ -1515,7 +1587,7 @@ export default function App() {
             setDelegateRunning((current) => ({ ...current, [handle.handleId]: "running" }));
             void messagesLoad(sid)
               .then((page) => {
-                const fromDb = page.messages.map((row) => messageFromPayload(row.payload));
+                const fromDb = page.messages.map((row) => messageFromRow(row));
                 const seqs: Record<string, number> = {};
                 for (const row of page.messages) seqs[row.id] = row.seq;
                 patchSession(sid, (s) => ({

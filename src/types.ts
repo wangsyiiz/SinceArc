@@ -137,16 +137,14 @@ export type TraceTurnStatus =
   | "running"
   | "waiting_approval"
   | "finished"
-  | "cancelled"
   | "failed"
   | "unknown";
 
 export interface TraceTurn {
   id: string;
   at: string;
-  userText: string;
   branches: TraceBranch[];
-  /** 这一轮的终态；cancelled 时界面上要写「已停止」，不能当成正常结束 */
+  /** 这一轮的终态；finished + stopReason='cancelled' 时界面上要写「已停止」 */
   status?: TraceTurnStatus;
   /** agent 原始的 stopReason：finished 且不是 end_turn 时界面要把它写出来 */
   stopReason?: string;
@@ -161,10 +159,21 @@ export interface MessageDelegate {
   reason: string;
 }
 
-export type Message =
-  | { id: string; role: "user"; text: string; at: string; kind?: "aside"; quoted?: QuotedRef; delegate?: MessageDelegate; asideReceipt?: string }
-  | { id: string; role: "player"; playerId: string; text: string; at: string; streaming?: boolean; /** 用户中途点了停止：已生成的部分保留，但要标出来 */ stopped?: boolean }
-  | { id: string; role: "system"; text: string; at: string };
+interface MessageBase {
+  id: string;
+  at: string;
+  /** atoms.kind 的权威点号 kind；聊天区可见性只认它。 */
+  atomKind: string;
+  /** 这一条属于哪一轮；null/undefined = 不属于任何轮（老数据、非轮次提示） */
+  turnId?: string | null;
+}
+
+export type Message = MessageBase &
+  (
+    | { role: "user"; text: string; kind?: "aside"; quoted?: QuotedRef; delegate?: MessageDelegate; asideReceipt?: string }
+    | { role: "player"; playerId: string; text: string; streaming?: boolean; /** 用户中途点了停止：已生成的部分保留，但要标出来 */ stopped?: boolean }
+    | { role: "system"; text: string }
+  );
 
 /** 「加入对话」带进来的引用（PR / issue / 文件） */
 export interface QuotedRef {

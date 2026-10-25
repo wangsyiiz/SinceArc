@@ -104,7 +104,14 @@ export function sessionBindAcp(id: string, acpSessionId: string): Promise<void> 
 
 export function messagesAppend(
   sessionId: string,
-  messages: { id: string; role: string; kind?: string; payload: unknown }[],
+  messages: {
+    id: string;
+    role: string;
+    kind?: string;
+    turnId?: string | null;
+    nonTurn?: boolean;
+    payload: unknown;
+  }[],
 ): Promise<void> {
   return invokeCmd<void>("messages_append", { sessionId, messages });
 }

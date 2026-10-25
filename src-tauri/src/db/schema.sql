@@ -58,18 +58,46 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_acp
 CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_profile ON sessions(profile_id, updated_at DESC);
 
-CREATE TABLE IF NOT EXISTS messages (
+-- 唯一写入点：正文与轨迹共用一张 atoms，靠 channel 分开（docs/message-model.md §13.1）。
+CREATE TABLE IF NOT EXISTS atoms (
   id           TEXT PRIMARY KEY,
   session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  seq          INTEGER NOT NULL,
-  role         TEXT NOT NULL CHECK (role IN ('user', 'player', 'agent', 'system')),
-  kind         TEXT NOT NULL DEFAULT 'text',
-  payload_json TEXT NOT NULL,               -- 原始消息对象，不做有损转换
-  created_at   INTEGER NOT NULL,
-  UNIQUE (session_id, seq)                  -- 流式重放的去重键
+  channel      TEXT NOT NULL CHECK (channel IN ('chat', 'trace')),
+  turn_id      TEXT,                        -- 非轮次原子为 NULL
+  seq          INTEGER NOT NULL,            -- channel 内自增，两套空间互不干扰
+  at           INTEGER NOT NULL,
+  role         TEXT CHECK (role IN ('user', 'player', 'agent', 'system')),
+  author_id    TEXT,                        -- trace：群成员 id；主 agent 为 NULL
+  kind         TEXT NOT NULL,
+  schema       INTEGER NOT NULL DEFAULT 1,  -- payload 版本（docs/message-model.md §2.3）
+  payload_json TEXT NOT NULL,
+  refs_json    TEXT,                        -- 命名键 refs（childSession / parentAtomId…）
+  ext_json     TEXT,                        -- x.<domain>.<name> 扩展键
+  source       TEXT NOT NULL DEFAULT 'live' CHECK (source IN ('live', 'replay')),
+  truncated    INTEGER NOT NULL DEFAULT 0,
+  sealed_at    INTEGER,                     -- NULL = 仍在流式归并中（M2b）
+  UNIQUE (session_id, channel, seq)
 );
 
-CREATE INDEX IF NOT EXISTS idx_messages_session_seq ON messages(session_id, seq);
+CREATE INDEX IF NOT EXISTS idx_atoms_turn   ON atoms(session_id, turn_id);
+CREATE INDEX IF NOT EXISTS idx_atoms_kind   ON atoms(session_id, kind);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_atoms_open
+  ON atoms(session_id, turn_id, kind) WHERE sealed_at IS NULL;
+
+-- 读路径零改动：旧名字变视图，列与旧表一一对应。
+CREATE VIEW IF NOT EXISTS messages AS
+  SELECT id, session_id, turn_id, seq, role,
+         CASE kind WHEN 'text.user' THEN 'text' WHEN 'text.agent' THEN 'text'
+                   WHEN 'aside' THEN 'aside' WHEN 'delegate.card' THEN 'delegate'
+                   ELSE 'text' END AS kind,
+         atoms.kind AS atom_kind,
+         payload_json, at AS created_at, author_id
+    FROM atoms WHERE channel = 'chat';
+
+CREATE VIEW IF NOT EXISTS session_events AS
+  SELECT id, session_id, turn_id, seq, at, author_id,
+         kind, payload_json, source, truncated
+    FROM atoms WHERE channel = 'trace';
 
 CREATE TABLE IF NOT EXISTS permission_rules (
   id            TEXT PRIMARY KEY,
@@ -123,42 +151,25 @@ CREATE TABLE IF NOT EXISTS session_members (
   PRIMARY KEY (session_id, user_id)
 );
 
--- 轨迹事件（思考 / 工具调用 / 权限 / 用量）：**源数据**，轨迹图由后端按需聚合，不在这里存。
--- 为什么自己记一份：ACP 没有「读历史」的标准方法，只有 session/load 的重放副作用；
--- 重放要起进程、思考还会残缺，也给不出发生时间。详见 docs/ipc-contract.md §7。
-CREATE TABLE IF NOT EXISTS session_events (
-  id           TEXT PRIMARY KEY,
-  session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  -- 一轮对话：与 messages 里那轮的提问/回答对齐（由 session_prompt 起算）
-  turn_id      TEXT NOT NULL,
-  seq          INTEGER NOT NULL,
-  -- 我们记下的发生时刻（agent 侧没有时间戳，只有到达顺序）
-  at           INTEGER NOT NULL,
-  -- 谁做的：群成员 id；主 agent 为 NULL
-  author_id    TEXT,
-  -- 自由字符串：新增轨迹种类（如 permission_decision）不需要迁移枚举
-  kind         TEXT NOT NULL,
-  -- 结构化摘要 + 原始字段；单行上限 64KB，思考正文只留前 8KB（truncated=1 时界面要标注）
-  payload_json TEXT NOT NULL,
-  -- live = 实时采集；replay = 事后用 session/load 补录（不作实时数据源）
-  source       TEXT NOT NULL DEFAULT 'live' CHECK (source IN ('live', 'replay')),
-  truncated    INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id, seq);
+-- 轨迹事件（思考 / 工具调用 / 权限 / 用量）的读取入口是上面定义的 `session_events`
+-- 同名视图；轨迹图由后端按需聚合，不单独存表。详见 docs/ipc-contract.md §7。
 
 -- 轮次：一次「提问 → agent 干完活」。轨迹按轮组织，没有它就只能看到一堆碎片事件，
 -- 看不出「这一轮问了什么、用了多久、谁在写」。
 CREATE TABLE IF NOT EXISTS turns (
   id           TEXT PRIMARY KEY,
   session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  -- 提问正文（与 messages 里那条用户消息同源，但轨迹要能单独读，不靠前端猜）
+  -- 老数据的历史正文。新轮不再写副本（写空串），正文权威在
+  -- atoms(channel='chat', kind='text.user') 那一行。
   prompt       TEXT NOT NULL DEFAULT '',
+  -- prompt 的 atom id；老数据没有归属，保持 NULL。
+  prompt_atom_id TEXT,
   -- 这一轮是向谁提的：群成员 id；主 agent 为 NULL
   author_id    TEXT,
   started_at   INTEGER NOT NULL,
   ended_at     INTEGER,
-  -- running / waiting_approval / finished / cancelled / failed
+  -- running / waiting_approval / finished / failed
+  -- 取消 = finished + stop_reason='cancelled'，不单独占用 status
   -- unknown 只用于「有事件、没有轮次行」的孤儿轮兜底
   status       TEXT NOT NULL DEFAULT 'running',
   -- agent 给的原始 stopReason（end_turn / max_tokens / refusal / cancelled …）

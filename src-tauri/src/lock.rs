@@ -87,10 +87,7 @@ impl WriteLocks {
         let session_update = update
             .get("sessionUpdate")
             .and_then(serde_json::Value::as_str)?;
-        let tool_call_id = update
-            .get("toolCallId")
-            .and_then(serde_json::Value::as_str)?
-            .to_string();
+        let tool_call_id = crate::trace::refs_of(update).get("toolCallId").cloned()?;
 
         let proposed = match session_update {
             "tool_call" => {

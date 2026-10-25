@@ -5,6 +5,7 @@ pub mod db;
 pub mod lock;
 pub mod mcp;
 pub mod mention;
+pub mod message_kind;
 pub mod state;
 pub mod trace;
 pub mod wire;

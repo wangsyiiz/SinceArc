@@ -27,6 +27,7 @@ import {
 } from "@/lib/late-window";
 import { pushSystemNotice } from "@/lib/notices";
 import { keyOf } from "@/lib/stream-key";
+import { replaceTurnId, turnIdForPersist } from "@/lib/turn-id";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import type { UsageDto } from "@/lib/ipc/types.gen/UsageDto";
 import type { SessionSummary } from "@/types";
@@ -47,6 +48,8 @@ interface StreamState {
   messageId: string | null;
   /** 谁说的话：群成员 id；主 agent 为 null */
   authorId: string | null;
+  /** 这条正文属于哪一轮；开流时从 turn 归属表快照，避免下一轮覆盖上一轮 */
+  turnId: string | null;
   msgId: string;
   /** 已经推到界面上的文本 */
   text: string;
@@ -282,24 +285,32 @@ export function useAcpEvents({
         diag(`flush -> ${st.uiSid} +${text.length} 字`);
         clog("FLUSH", `acp=${st.acpSid} key=${streamKey} ui=${st.uiSid} +${text.length}`);
       }
+      const turnId = acpToTurn.current[st.acpSid];
+      const persistTurnId = turnIdForPersist(turnId);
+      const messageTurnId = st.turnId ?? persistTurnId;
+      if (messageTurnId && !st.turnId) st.turnId = messageTurnId;
       patchSession(st.uiSid, (s) => {
         const last = s.msgs[s.msgs.length - 1];
         const msgs =
           last && last.id === st.msgId && last.role === "player"
-            ? [...s.msgs.slice(0, -1), { ...last, text: last.text + text }]
+            ? [
+                ...s.msgs.slice(0, -1),
+                { ...last, text: last.text + text, turnId: last.turnId ?? messageTurnId },
+              ]
             : [
                 ...s.msgs,
                 {
                   id: st.msgId,
                   role: "player" as const,
+                  atomKind: "text.agent",
                   playerId: st.authorId ?? MAIN_AGENT_ID,
                   text,
                   at: now(),
                   streaming: true,
+                  turnId: messageTurnId,
                 },
               ];
 
-        const turnId = acpToTurn.current[st.acpSid];
         const turns = turnId
           ? s.turns.map((t) =>
               t.id === turnId
@@ -362,6 +373,8 @@ export function useAcpEvents({
             id: st.msgId,
             role: "player",
             kind: "text",
+            turnId: st.turnId ?? undefined,
+            nonTurn: st.turnId == null,
             payload: {
               id: st.msgId,
               role: "player",
@@ -369,6 +382,7 @@ export function useAcpEvents({
               text: full,
               at: now(),
               streaming: false,
+              ...(st.turnId ? { turnId: st.turnId } : {}),
             },
           },
         ])
@@ -502,7 +516,7 @@ export function useAcpEvents({
           let index = -1;
           for (let i = s.msgs.length - 1; i >= 0; i -= 1) {
             const message = s.msgs[i];
-            if (message.role === "user" && message.kind === "aside") {
+            if (message.role === "user" && message.atomKind === "aside") {
               index = i;
               break;
             }
@@ -654,6 +668,7 @@ export function useAcpEvents({
           msgId: messageId ? streamKey : `stream-${acpSid}-${Date.now()}`,
           text: "",
           buf: "",
+          turnId: turnIdForPersist(acpToTurn.current[acpSid]),
           late,
         });
         // 同一条 ACP 会话被另一个界面会话接手时，以最新一次投递为准
@@ -674,6 +689,18 @@ export function useAcpEvents({
 
       if (event.kind === "promptStarted") {
         if (!acpSid) return;
+        // 事件里的 turnId 是首选；拿不到时保留本地占位，等 sessionPrompt 回执再替换。
+        const eventTurnId = turnIdForPersist(event.turnId);
+        if (eventTurnId) {
+          const previous = acpToTurn.current[acpSid];
+          acpToTurn.current[acpSid] = eventTurnId;
+          if (uiSid && previous && previous !== eventTurnId) {
+            patchSession(uiSid, (s) => ({
+              ...s,
+              turns: replaceTurnId(s.turns, previous, eventTurnId),
+            }));
+          }
+        }
         // 新的一轮开始：把上一轮迟到窗口里还没收尾的正文先落库。
         settleLateStream(acpSid, "next-prompt");
         delete lateUntil.current[acpSid];
@@ -695,6 +722,8 @@ export function useAcpEvents({
               id,
               role: "player",
               kind: "text",
+              turnId: stale.turnId ?? undefined,
+              nonTurn: stale.turnId == null,
               payload: {
                 id,
                 role: "player",
@@ -702,6 +731,7 @@ export function useAcpEvents({
                 text: stale.text,
                 at: now(),
                 streaming: false,
+                ...(stale.turnId ? { turnId: stale.turnId } : {}),
               },
             },
           ])
@@ -739,6 +769,10 @@ export function useAcpEvents({
         const streamingIds = new Set(streamsForTurn.map(([, stream]) => stream.msgId));
         const actId = `act-stream-${acpSid ?? "x"}`;
         const turnId = acpSid ? acpToTurn.current[acpSid] : undefined;
+        const persistTurnId = turnIdForPersist(turnId);
+        for (const [, stream] of streamsForTurn) {
+          if (!stream.turnId && persistTurnId) stream.turnId = persistTurnId;
+        }
         const failed = event.kind === "promptFailed";
         const stopReason = event.kind === "promptResult" ? stopReasonOf(event.result) : null;
         const cancelled = stopReason === "cancelled";
@@ -767,7 +801,12 @@ export function useAcpEvents({
           msgs: [
             ...s.msgs.map((m) =>
               streamingIds.has(m.id) && m.role === "player"
-                ? { ...m, streaming: false, stopped: cancelled || m.stopped }
+                ? {
+                    ...m,
+                    streaming: false,
+                    stopped: cancelled || m.stopped,
+                    ...(persistTurnId && !m.turnId ? { turnId: persistTurnId } : {}),
+                  }
                 : m,
             ),
             ...(failed
@@ -775,8 +814,10 @@ export function useAcpEvents({
                   {
                     id: newId("perr"),
                     role: "system" as const,
+                    atomKind: "notice.system",
                     text: `这一轮失败：${event.msg}`,
                     at: now(),
+                    turnId: null,
                   },
                 ]
               : []),
@@ -796,7 +837,14 @@ export function useAcpEvents({
               id,
               role: "system",
               kind: "text",
-              payload: { id, role: "system", text: `这一轮失败：${event.msg}`, at: now() },
+              payload: {
+                id,
+                role: "system",
+                text: `这一轮失败：${event.msg}`,
+                at: now(),
+                turnId: null,
+              },
+              nonTurn: true,
             },
           ]).catch((e) => console.warn("[db] append failure notice failed", e));
         }
@@ -809,6 +857,8 @@ export function useAcpEvents({
                   id: st.msgId,
                   role: "player",
                   kind: "text",
+                  turnId: st.turnId ?? undefined,
+                  nonTurn: st.turnId == null,
                   payload: {
                     id: st.msgId,
                     role: "player",
@@ -816,6 +866,7 @@ export function useAcpEvents({
                     text: st.text,
                     at: now(),
                     streaming: false,
+                    ...(st.turnId ? { turnId: st.turnId } : {}),
                   },
                 },
               ]);

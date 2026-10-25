@@ -1,9 +1,18 @@
 import { useState } from "react";
-import { FileText, GitPullRequest, CircleDot, SendHorizontal, Square } from "lucide-react";
+import {
+  CircleDot,
+  FileText,
+  GitPullRequest,
+  SendHorizontal,
+  Square,
+  Waypoints,
+} from "lucide-react";
 import type { Message, Player, QuotedRef } from "@/types";
 import { cn } from "@/lib/utils";
 import { delegateActionLabel } from "@/lib/delegate-status";
 import { delegateCapsDetail } from "@/lib/delegate-target";
+import { chatVisibilityOf } from "@/lib/chat-visibility";
+import { normaliseTurnId } from "@/lib/turn-align";
 import { PlayerAvatar } from "./PlayerAvatar";
 import { RemovedBadge } from "./RemovedBadge";
 
@@ -58,15 +67,20 @@ export function MessageItem({
   players,
   delegatePhase,
   onCancelDelegate,
+  onLocateTrace,
 }: {
   message: Message;
   players: Player[];
   delegatePhase?: string | null;
   onCancelDelegate?: (handleId: string) => void | Promise<void>;
+  onLocateTrace?: (turnId: string) => void;
 }) {
   const [delegateExpanded, setDelegateExpanded] = useState(false);
 
-  if (message.role === "system") {
+  const chatKind = chatVisibilityOf(message);
+  if (chatKind === null) return null;
+
+  if (chatKind === "notice.system") {
     return (
       <div className="flex justify-center py-0.5">
         <span className="rounded-full bg-surface-3/35 px-2.5 py-1 font-mono text-micro text-ink-3">
@@ -76,18 +90,18 @@ export function MessageItem({
     );
   }
 
-  if (message.role === "user") {
-    if (message.kind === "aside") {
-      return (
-        <div className="flex flex-col gap-0.5 text-caption text-ink-3">
-          <div className="whitespace-pre-wrap">{renderText(message.text, players)}</div>
-          {message.asideReceipt && (
-            <div className="whitespace-pre-wrap">{message.asideReceipt}</div>
-          )}
-        </div>
-      );
-    }
+  if (chatKind === "aside" && message.role === "user") {
+    return (
+      <div className="flex flex-col gap-0.5 text-caption text-ink-3">
+        <div className="whitespace-pre-wrap">{renderText(message.text, players)}</div>
+        {message.asideReceipt && (
+          <div className="whitespace-pre-wrap">{message.asideReceipt}</div>
+        )}
+      </div>
+    );
+  }
 
+  if (chatKind === "delegate.card" && message.role === "user") {
     if (message.delegate) {
       const handleId = message.delegate.handleId;
       const action = delegateActionLabel(delegatePhase);
@@ -134,7 +148,10 @@ export function MessageItem({
         </div>
       );
     }
+    return null;
+  }
 
+  if (chatKind === "text.user" && message.role === "user") {
     return (
       <div className="flex flex-col items-end gap-1.5">
         {message.quoted && <div className="max-w-3/4"><QuoteBlock quoted={message.quoted} /></div>}
@@ -145,7 +162,10 @@ export function MessageItem({
     );
   }
 
+  if (chatKind !== "text.agent" || message.role !== "player") return null;
+
   const p = players.find((x) => x.id === message.playerId);
+  const traceTurnId = normaliseTurnId(message.turnId);
   return (
     <div className="flex gap-2.5">
       {p && <PlayerAvatar player={p} size={22} className="mt-0.5" />}
@@ -156,6 +176,16 @@ export function MessageItem({
           </span>
           <RemovedBadge player={p} />
           <span className="font-mono text-micro text-ink-3">{message.at}</span>
+          {traceTurnId && onLocateTrace && (
+            <button
+              type="button"
+              aria-label="在轨迹里看这一轮"
+              onClick={() => onLocateTrace(traceTurnId)}
+              className="inline-flex shrink-0 self-center items-center text-ink-3 transition-colors hover:text-ink-1"
+            >
+              <Waypoints className="size-3" />
+            </button>
+          )}
         </div>
         <div
           className={cn(

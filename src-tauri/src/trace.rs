@@ -8,6 +8,7 @@
 //! - 思考正文只保留前 8KB，并标记 `truncated`（界面要写明，别让用户以为是 bug）；
 //! - 任何单条事件序列化后不超过 64KB。
 
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
@@ -43,6 +44,40 @@ pub fn usage_of(payload: &Value) -> Option<(u64, u64)> {
     let used = payload.get("used")?.as_u64()?;
     let size = payload.get("size")?.as_u64()?;
     Some((used, size))
+}
+
+/// payload 里的命名关联键。M1 只收口读取，不改 payload、不加列。
+pub fn refs_of(payload: &Value) -> BTreeMap<String, String> {
+    ["toolCallId", "requestId", "handleId", "messageId"]
+        .into_iter()
+        .filter_map(|key| {
+            payload
+                .get(key)
+                .and_then(Value::as_str)
+                .map(|value| (key.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+/// 协议 update 里的扩展键：以 `x.` 开头的键原样收进 ext。普通字段一律不进。
+fn ext_of(value: &Value) -> Option<Value> {
+    let object = value.as_object()?;
+    let ext: serde_json::Map<String, Value> = object
+        .iter()
+        .filter(|(key, _)| key.starts_with("x."))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    (!ext.is_empty()).then_some(Value::Object(ext))
+}
+
+fn refs_with(entries: &[(&str, Option<&str>)]) -> Option<Value> {
+    let refs: serde_json::Map<String, Value> = entries
+        .iter()
+        .filter_map(|(key, value)| {
+            value.map(|value| (key.to_string(), Value::String(value.to_string())))
+        })
+        .collect();
+    (!refs.is_empty()).then_some(Value::Object(refs))
 }
 
 /// 单条命令只保留协议里对界面有用的三个字段。
@@ -107,6 +142,8 @@ fn commands_payload(update: &Value) -> (Value, bool) {
 pub struct Captured {
     pub kind: &'static str,
     pub payload: Value,
+    pub refs: Option<Value>,
+    pub ext: Option<Value>,
     pub truncated: bool,
 }
 
@@ -181,6 +218,17 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
     match method {
         "session/request_permission" => {
             let tool = params.get("toolCall").cloned().unwrap_or(Value::Null);
+            let refs = refs_of(&tool);
+            let request_id = params
+                .get("requestId")
+                .or_else(|| params.get("id"))
+                .and_then(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .or_else(|| value.as_u64().map(|id| id.to_string()))
+                });
+            let tool_call_id = refs.get("toolCallId").map(String::as_str);
             let options: Vec<Value> = params
                 .get("options")
                 .and_then(Value::as_array)
@@ -200,17 +248,23 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
                 kind: "permission",
                 payload: json!({
                     "toolCall": {
-                        "toolCallId": tool.get("toolCallId").and_then(Value::as_str),
+                        "toolCallId": refs.get("toolCallId"),
                         "title": tool.get("title").and_then(Value::as_str),
                         "kind": tool.get("kind").and_then(Value::as_str),
                     },
                     "options": options,
                 }),
+                refs: refs_with(&[
+                    ("requestId", request_id.as_deref()),
+                    ("toolCallId", tool_call_id),
+                ]),
+                ext: ext_of(params),
                 truncated: false,
             })
         }
         "session/update" => {
             let update = params.get("update")?;
+            let ext = ext_of(update);
             // 两种形状都带同一份 availableCommands：session/new 没有 sessionUpdate，
             // session/load 是 available_commands_update。必须在取判别符前接住。
             if update
@@ -221,6 +275,8 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
                 return Some(Captured {
                     kind: "commands",
                     payload,
+                    refs: None,
+                    ext,
                     truncated,
                 });
             }
@@ -232,14 +288,20 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
                     Some(Captured {
                         kind: "thought",
                         payload: json!({ "text": text, "bytes": raw.len() }),
+                        refs: refs_with(&[(
+                            "messageId",
+                            refs_of(update).get("messageId").map(String::as_str),
+                        )]),
+                        ext,
                         truncated,
                     })
                 }
                 "tool_call" | "tool_call_update" => {
                     // 工具调用要结构化保存：界面靠 kind/路径/状态判断「谁在写」，
                     // 只存描述文本就推不出来（E6 的写锁要靠这些字段）。
+                    let refs = refs_of(update);
                     let payload = json!({
-                        "toolCallId": update.get("toolCallId").and_then(Value::as_str),
+                        "toolCallId": refs.get("toolCallId"),
                         "title": update.get("title").and_then(Value::as_str),
                         "kind": update.get("kind").and_then(Value::as_str),
                         "status": update.get("status").and_then(Value::as_str),
@@ -251,6 +313,11 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
                     Some(Captured {
                         kind: if kind == "tool_call" { "tool_call" } else { "tool_call_update" },
                         payload,
+                        refs: refs_with(&[(
+                            "toolCallId",
+                            refs.get("toolCallId").map(String::as_str),
+                        )]),
+                        ext,
                         truncated,
                     })
                 }
@@ -259,11 +326,15 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
                     payload: json!({
                         "currentModeId": update.get("currentModeId").and_then(Value::as_str),
                     }),
+                    refs: None,
+                    ext,
                     truncated: false,
                 }),
                 "usage_update" => Some(Captured {
                     kind: "usage",
                     payload: update.clone(),
+                    refs: None,
+                    ext,
                     truncated: false,
                 }),
                 // agent_message_chunk / user_message_chunk 是对话正文，走 messages，不进轨迹
@@ -330,6 +401,8 @@ pub struct TraceItem {
 #[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct TraceTurn {
     pub id: String,
+    // 历史兼容字段：正文权威在 atoms(channel='chat', kind='text.user')。
+    // 新轮这里通常是空串；不要把它当成可回写的第二份正文。
     pub prompt: String,
     pub author_id: Option<String>,
     #[ts(type = "number")]
@@ -397,8 +470,9 @@ pub fn aggregate(turns: Vec<crate::db::TurnRow>, events: Vec<crate::db::EventRow
                 let payload: Value = serde_json::from_str(&e.payload_json)
                     .unwrap_or_else(|_| json!({ "raw": e.payload_json }));
 
-                // 思考是流式的：hermes 按 token 段发（实测一轮 24 条，"User"、" asks: from now"…
-                // 各自成条）。不合并的话轨迹就是 24 行碎片，读不出任何东西。
+                // M2b 起库里一行就是一段思考（open → sealed），单行时这里天然只走一次。
+                // 保留相邻合并只是为了兜底 M2 之前留下的 chunk 级历史数据（旧库/旧备份），
+                // 不能把这段当成新的写入粒度。
                 if e.kind == "thought" {
                     if let Some(last) = items.last_mut().filter(|i| i.kind == "thought"
                         && i.author_id == e.author_id)
@@ -423,8 +497,9 @@ pub fn aggregate(turns: Vec<crate::db::TurnRow>, events: Vec<crate::db::EventRow
                     }
                 }
 
+                let refs = refs_of(&payload);
                 if e.kind == "tool_call_update" {
-                    if let Some(id) = payload.get("toolCallId").and_then(Value::as_str) {
+                    if let Some(id) = refs.get("toolCallId") {
                         if let Some(&idx) = calls.get(id) {
                             let slot = &mut items[idx];
                             merge_tool_call(&mut slot.payload, &payload);
@@ -433,7 +508,7 @@ pub fn aggregate(turns: Vec<crate::db::TurnRow>, events: Vec<crate::db::EventRow
                     }
                 }
                 if e.kind == "tool_call" {
-                    if let Some(id) = payload.get("toolCallId").and_then(Value::as_str) {
+                    if let Some(id) = refs.get("toolCallId") {
                         calls.insert(id.to_string(), items.len());
                     }
                 }
@@ -505,6 +580,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn refs_of_只取四个命名关联键的字符串值() {
+        let payload = json!({
+            "toolCallId": "tool-1",
+            "requestId": 7,
+            "handleId": "handle-1",
+            "messageId": "msg-1",
+            "other": "ignored",
+        });
+        let refs = refs_of(&payload);
+        assert_eq!(refs.len(), 3);
+        assert_eq!(refs.get("toolCallId").map(String::as_str), Some("tool-1"));
+        assert_eq!(refs.get("handleId").map(String::as_str), Some("handle-1"));
+        assert_eq!(refs.get("messageId").map(String::as_str), Some("msg-1"));
+        assert_eq!(refs.get("requestId"), None, "非字符串值不能当引用键");
+        assert_eq!(refs.get("other"), None);
+    }
+
+    #[test]
     fn 思考超限只留前八_kb_并标记() {
         let long = "思".repeat(5000); // 5k 个汉字 = 15KB
         let params = json!({
@@ -525,14 +618,36 @@ mod tests {
             "update": {
                 "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "写入文件",
                 "kind": "edit", "status": "pending",
-                "locations": [{ "path": "/tmp/a.txt" }]
+                "locations": [{ "path": "/tmp/a.txt" }],
+                "x.demo.a": 1
             }
         });
         let cap = parse("session/update", &params).expect("tool");
         assert_eq!(cap.kind, "tool_call");
         assert_eq!(cap.payload["toolCallId"], "t1");
         assert_eq!(cap.payload["kind"], "edit");
+        assert_eq!(cap.refs, Some(json!({ "toolCallId": "t1" })));
+        assert_eq!(cap.ext, Some(json!({ "x.demo.a": 1 })));
+        assert!(
+            cap.payload.get("x.demo.a").is_none(),
+            "普通 payload 不能混入 ext 键"
+        );
         assert!(!cap.truncated);
+    }
+
+    #[test]
+    fn 思考分片带_message_id_时自动填_refs() {
+        let params = json!({
+            "update": {
+                "sessionUpdate": "agent_thought_chunk",
+                "messageId": "msg-1",
+                "content": { "type": "text", "text": "想一下" }
+            }
+        });
+        let cap = parse("session/update", &params).expect("thought");
+        assert_eq!(cap.kind, "thought");
+        assert_eq!(cap.refs, Some(json!({ "messageId": "msg-1" })));
+        assert_eq!(cap.ext, None);
     }
 
     #[test]
@@ -583,6 +698,7 @@ mod tests {
     #[test]
     fn 权限请求解析出标题与选项() {
         let params = json!({
+            "requestId": "req-1",
             "toolCall": { "toolCallId": "t1", "title": "执行 rm -rf", "kind": "execute" },
             "options": [
                 { "kind": "allow_once", "optionId": "allow_once", "name": "允许一次" },
@@ -593,6 +709,11 @@ mod tests {
         assert_eq!(cap.kind, "permission");
         assert_eq!(cap.payload["toolCall"]["title"], "执行 rm -rf");
         assert_eq!(cap.payload["options"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            cap.refs,
+            Some(json!({ "requestId": "req-1", "toolCallId": "t1" })),
+            "权限请求必须能挂回 requestId 与 toolCallId"
+        );
     }
 
     #[test]
