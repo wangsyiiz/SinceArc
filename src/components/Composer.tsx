@@ -8,6 +8,7 @@ import { Menu, type MenuItem } from "./ui/Menu";
 import { SessionMcpButton } from "./SessionMcpMenu";
 import { SlashMenu } from "./SlashMenu";
 import { filterCommands, slashQuery, type SlashCommand } from "@/lib/slash-filter";
+import { steerUnavailableReason, type SteerGate } from "@/lib/steer-availability";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 
 interface ComposerProps {
@@ -15,8 +16,8 @@ interface ComposerProps {
   onSend: (text: string) => void;
   /** 忙碌时发送键切成插话；文本不含 `/steer ` 前缀。 */
   onSteer?: (text: string) => void | Promise<void>;
-  /** 命令列表与本轮正文是否带过 messageId 都满足时才允许插话。 */
-  steerable?: boolean;
+  /** 插话入口三态：off=没声明 steer / waiting=还没见过正文分组 / on=可插 */
+  steerGate?: SteerGate;
   commands?: CommandDto[];
   onStop: () => void;
   placeholder?: string;
@@ -36,7 +37,7 @@ export function Composer({
   busy,
   onSend,
   onSteer,
-  steerable = false,
+  steerGate = "off",
   commands = [],
   onStop,
   placeholder,
@@ -143,7 +144,8 @@ export function Composer({
   const canSend = value.trim().length > 0 && !busy;
   const slashItems = slashOpen ? filterCommands(value, commands) : [];
   const slashVisible = slashOpen && slashItems.length > 0;
-  const canSteerSend = busy && steerable && value.trim().length > 0;
+  const canSteerSend = busy && steerGate === "on" && value.trim().length > 0;
+  const steerReason = steerUnavailableReason(steerGate);
 
   /**
    * 档位选择器（docs/desktop-ux.md §10）：
@@ -349,8 +351,8 @@ export function Composer({
             }
             items={autoApproveItems}
           />
-          {busy && !steerable && (
-            <span className="mr-1 text-micro text-ink-3">这个 agent 不支持插话</span>
+          {busy && steerReason && (
+            <span className="mr-1 text-micro text-ink-3">{steerReason}</span>
           )}
           {busy ? (
             <>
@@ -370,11 +372,7 @@ export function Composer({
                 onClick={submit}
                 disabled={!canSteerSend}
                 disabledReason={
-                  !steerable
-                    ? "这个 agent 不支持插话"
-                    : !canSteerSend
-                      ? "先输入内容再插话"
-                      : undefined
+                  steerReason ?? (!canSteerSend ? "先输入内容再插话" : undefined)
                 }
                 aria-label="插话"
                 className="h-7 gap-1 px-2 text-caption"

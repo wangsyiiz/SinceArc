@@ -253,6 +253,11 @@ impl Asides {
             .map(|request| request.ui_session_id.clone())
     }
 
+    /// 回执已经按「无 messageId」认领掉：立刻结算，别让窗口拖到下一段正文。
+    pub async fn settle_if_text_arrived(&self, acp_session_id: &str) {
+        self.settle(acp_session_id).await;
+    }
+
     /// 一次请求只有一个响应；按发起顺序结算最早的一条。
     pub async fn settle(&self, acp_session_id: &str) {
         let mut all = self.0.lock().await;

@@ -223,6 +223,8 @@ export function useAcpEvents({
   >({});
   /** ACP 会话 -> 本轮正文是否已经出现过 messageId（插话门禁的一部分）。 */
   const [messageIdByAcpSession, setMessageIdByAcpSession] = useState<Record<string, boolean>>({});
+  /** 界面会话 -> ACP 会话（来自事件归属，不依赖数据库列）。 */
+  const [acpByUiSession, setAcpByUiSession] = useState<Record<string, string>>({});
   const diag = useCallback((text: string) => {
     setEventLog((prev) => [...prev, { at: Date.now(), text: `· ${text}` }].slice(-80));
   }, []);
@@ -560,6 +562,13 @@ export function useAcpEvents({
       const acpSid: string | null = "sessionId" in event ? (event.sessionId ?? null) : null;
       const authorId: string | null = "authorId" in event ? (event.authorId ?? null) : null;
 
+      // 界面会话 → ACP 会话：事件自己带着这两样，不必等数据库那一列回填。
+      // 新建会话的 `sessions.acp_session_id` 只在恢复路径落库，第一轮可能还是空的，
+      // 而命令列表 / 能力面板 / 插话入口都挂在 ACP 会话上（见 docs/steering.md §5）。
+      if (uiSid && acpSid) {
+        setAcpByUiSession((prev) => (prev[uiSid] === acpSid ? prev : { ...prev, [uiSid]: acpSid }));
+      }
+
       if (event.kind === "request" && event.method === "session/request_permission") {
         if (!uiSid) {
           diag(`权限请求 #${event.id} 没有归属会话（acp=${acpSid ?? "-"}），按拒绝作答`);
@@ -582,6 +591,16 @@ export function useAcpEvents({
         const modeId = su.update.currentModeId;
         if (uiSid && modeId) onAgentSwitch?.(uiSid, modeId);
         // 这条通知只是状态同步，没有正文
+        return;
+      }
+
+      // 思考块和正文块用的是同一个 messageId 分配器：它们带 id 就足以证明
+      // 「这个 agent 会给一段输出打 id」，插话回执正是靠这个区分（无需等正文首字）。
+      if (su?.update?.sessionUpdate === "agent_thought_chunk") {
+        const mid = su.update.messageId;
+        if (acpSid && typeof mid === "string" && mid.trim()) {
+          setMessageIdByAcpSession((prev) => (prev[acpSid] ? prev : { ...prev, [acpSid]: true }));
+        }
         return;
       }
 
@@ -646,12 +665,9 @@ export function useAcpEvents({
         settleLateStream(acpSid, "next-prompt");
         delete lateUntil.current[acpSid];
         awaiting.current[acpSid] = true;
-        setMessageIdByAcpSession((prev) => {
-          if (!prev[acpSid]) return prev;
-          const next = { ...prev };
-          delete next[acpSid];
-          return next;
-        });
+        // 这里**不清** messageId 的证据：它说的是「这个 agent 会不会给正文分组」这个属性，
+        // 不是「这一轮有没有分过组」。每轮清掉会让每轮开头几秒都判定成「不能插话」，
+        // 而 hermes 是先想后写，正好整段时间都插不进去。
         // 上一轮如果没收到 promptResult（进程崩了、连接断了），文本会留在这里。
         // 新一轮开始时先把它落库，别悄悄丢掉已经显示给用户的内容。
         const staleStreams = Object.entries(streams.current).filter(
@@ -867,6 +883,7 @@ export function useAcpEvents({
     sessionsByProfile,
     commandsByAcpSession,
     messageIdByAcpSession,
+    acpByUiSession,
     flushStream,
     onAgentEvent,
     onSession,

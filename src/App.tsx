@@ -23,7 +23,7 @@ import { pushSystemNotice } from "@/lib/notices";
 import { delegateCancelFailureMessage, type DelegatePhase } from "@/lib/delegate-status";
 import { mergeMessages } from "@/lib/messages-merge";
 import { buildPlayers } from "@/lib/players";
-import { canSteer } from "@/lib/steer-availability";
+import { steerGate, type SteerGate } from "@/lib/steer-availability";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
 import { StatusBar } from "@/components/StatusBar";
@@ -348,7 +348,7 @@ export default function App() {
     },
     [permissions.expire, sessions],
   );
-  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, commandsByAcpSession, messageIdByAcpSession, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired, onTraceChanged: () => setTraceTick((t) => t + 1) });
+  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, commandsByAcpSession, messageIdByAcpSession, acpByUiSession, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired, onTraceChanged: () => setTraceTick((t) => t + 1) });
 
   useEffect(() => {
     permissionDiagRef.current = diag;
@@ -418,12 +418,16 @@ export default function App() {
   // 已经移除，靠它就等于靠一个永远空着的值
   const sessionProfile = profiles.find((p) => p.id === activeSession?.profileId) ?? activeProfile;
   // 命令属于 ACP 会话，不属于 UI 会话：没有 acpSessionId 就不传，块不出现。
-  const acpCommands = activeSession?.acpSessionId
-    ? commandsByAcpSession[activeSession.acpSessionId]
-    : undefined;
-  const steerable = canSteer(
+  /**
+   * 活动会话的 ACP 会话 id：优先用会话记录的字段，没有就用事件流里学到的映射。
+   * 新建会话的数据库列可能还没回填，而命令列表 / 能力面板 / 插话入口都挂在 ACP 会话上。
+   */
+  const activeAcpSid = activeSession?.acpSessionId ?? acpByUiSession[lastSessionId] ?? null;
+  const acpCommands = activeAcpSid ? commandsByAcpSession[activeAcpSid] : undefined;
+  /** 插话入口的三态：off=这个 agent 没声明 steer；waiting=声明了但还没见过正文分组；on=可插 */
+  const steerMode: SteerGate = steerGate(
     acpCommands,
-    activeSession?.acpSessionId ? !!messageIdByAcpSession[activeSession.acpSessionId] : false,
+    activeAcpSid ? !!messageIdByAcpSession[activeAcpSid] : false,
   );
   const isStopping = !!cancelling[lastSessionId] && state.busy;
 
@@ -940,7 +944,7 @@ export default function App() {
   const sendSteer = useCallback(
     async (raw: string) => {
       const sid = lastSessionId;
-      const acpSid = activeSession?.acpSessionId;
+      const acpSid = activeAcpSid;
       const text = raw.trim();
       if (!sid || !acpSid || !text) return;
 
@@ -969,7 +973,7 @@ export default function App() {
         clog("ASIDE-DB-ERR", `ui=${sid} id=${aside.id} ${String(e)}`);
       });
     },
-    [activeSession?.acpSessionId, lastSessionId, patchSession],
+    [activeAcpSid, lastSessionId, patchSession],
   );
 
   /**
@@ -1364,7 +1368,7 @@ export default function App() {
                           busy={state.busy}
                           onSend={sendInGroup}
                           onSteer={sendSteer}
-                          steerable={steerable}
+                          steerGate={steerMode}
                           commands={acpCommands}
                           onStop={stopGeneration}
                           placeholder={

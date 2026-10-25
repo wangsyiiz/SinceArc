@@ -32,6 +32,8 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 const STEER_INVALID: u32 = 50001;
+/// 插话回执的认领窗口：响应之后再等这么久，等那条「无 messageId」的 chunk 到。
+const STEER_RECLAIM_WINDOW: Duration = Duration::from_secs(2);
 const STEER_NO_COMMAND: u32 = 50404;
 
 #[derive(Debug, Clone, Serialize)]
@@ -1287,6 +1289,7 @@ fn emit_text(
         "sessionUpdate": "agent_message_chunk",
         "content": { "type": "text", "text": f.text },
     });
+    // 正文的 messageId 原样带给前端：插话回执没有这个字段，前端就是靠它把两者分开的。
     if let Some(message_id) = f.message_id {
         update["messageId"] = serde_json::Value::String(message_id);
     }
@@ -1714,6 +1717,8 @@ pub async fn agent_connect(
                                             &aside,
                                         );
                                     }
+                                    // 认领即结算：否则窗口内后续的无 id chunk 也会被当成回执。
+                                    asides_for_task.settle(acp_sid).await;
                                     continue;
                                 }
                             }
@@ -3330,7 +3335,7 @@ pub async fn session_prompt(
     // 归属以「这一次是谁发的」为准：同一个成员会话可能被不同的群 @ 过，
     // 事件必须投给当前这次提问所在的群，而不是它上一次被绑的地方。
     if let Some(ui) = ui_session_id.clone() {
-        record.ui_session_id = Some(ui);
+        record.ui_session_id = Some(ui.clone());
         state
             .insert_session(session_id.clone(), record.clone())
             .await;
@@ -3557,6 +3562,10 @@ pub async fn session_steer(
         if let Err(e) = proc.await_response(pending, PROMPT_TIMEOUT).await {
             tracing::warn!(target: "sincearc::ipc", session = %sid, error = %e, "steer request failed");
         }
+        // **不要**在这里结算：回执那条 chunk 和这个响应是两条独立的报文，谁先被处理没有保证
+        // （实测出现过响应先到）。留一个短窗口，等回执 chunk 自己认领（无 messageId），
+        // 或者等到窗口超时兜底 —— 否则回执会掉进正文流，被当成回答的一部分落库。
+        tokio::time::sleep(STEER_RECLAIM_WINDOW).await;
         asides.settle(&sid).await;
     });
 
