@@ -193,6 +193,8 @@ pub struct MessageRow {
     pub seq: i64,
     pub role: String,
     pub author_id: Option<String>,
+    /// 这一条属于哪一轮；老数据/非轮次消息为 None
+    pub turn_id: Option<String>,
     pub kind: String,
     /// 原始消息对象（前端 `Message` 的形状），不做有损转换
     #[ts(type = "unknown")]
@@ -229,16 +231,22 @@ pub struct AgentUserRow {
 }
 
 /// 写入用：seq 由后端按 MAX+1 分配，前端不需要知道
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct MessageInput {
     pub id: String,
     pub role: String,
     /// 仅 role = 'player' 时有值：这条回答出自哪个 agent user（docs/group-chat.md §4）
     #[serde(default)]
     pub author_id: Option<String>,
+    /// 调用方明确知道所属轮次时传入；None 由后端按 running 轮兜底
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub turn_id: Option<String>,
     #[serde(default = "default_kind")]
     pub kind: String,
+    #[ts(type = "unknown")]
     pub payload: serde_json::Value,
 }
 
@@ -277,6 +285,48 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, decl: &str) -> ru
         conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
     }
     Ok(())
+}
+
+/// `messages.kind` 的旧词表。触发器 SQL 必须由这一份常量拼出来，避免代码与库约束各写一份。
+pub const LEGACY_MESSAGE_KINDS: &[&str] = &["text", "aside", "delegate"];
+
+/// kind 只允许旧词表里的值。SQLite 不能给已有表补 CHECK，所以用启动时重建的触发器兜住。
+fn ensure_message_kind_guard(conn: &Connection) -> rusqlite::Result<()> {
+    let allowed = LEGACY_MESSAGE_KINDS
+        .iter()
+        .map(|kind| format!("'{}'", kind.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    conn.execute_batch(&format!(
+        "DROP TRIGGER IF EXISTS messages_kind_guard_ins;
+         DROP TRIGGER IF EXISTS messages_kind_guard_upd;
+         CREATE TRIGGER messages_kind_guard_ins
+           BEFORE INSERT ON messages
+           WHEN NEW.kind NOT IN ({allowed})
+         BEGIN
+           SELECT RAISE(ABORT, 'unknown message kind');
+         END;
+         CREATE TRIGGER messages_kind_guard_upd
+           BEFORE UPDATE OF kind ON messages
+           WHEN NEW.kind NOT IN ({allowed})
+         BEGIN
+           SELECT RAISE(ABORT, 'unknown message kind');
+         END;"
+    ))
+}
+
+/// M1 的加列 / 索引 / 第三态收口 / kind 触发器。所有语句都可重复执行。
+fn ensure_m1_contract(conn: &Connection) -> rusqlite::Result<()> {
+    ensure_column(conn, "messages", "turn_id", "TEXT")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_messages_turn ON messages(session_id, turn_id);
+         -- 取消不再占一个 status；stop_reason 为空的老行补成 cancelled。
+         UPDATE turns
+            SET status = 'finished',
+                stop_reason = coalesce(stop_reason, 'cancelled')
+          WHERE status = 'cancelled';",
+    )?;
+    ensure_message_kind_guard(conn)
 }
 
 /// 早期 `session_events.kind` 带 CHECK 枚举，新增 `permission_decision` 会被数据库拒绝。
@@ -440,6 +490,8 @@ impl Db {
         ensure_column(&conn, "messages", "author_id", "TEXT")?;
         // E13.3：轮次终态要能解释「为什么停」。老库这里补列，不能整表重建。
         ensure_column(&conn, "turns", "stop_reason", "TEXT")?;
+        // M1：消息指轮（老数据留 NULL）、取消统一成 finished + stop_reason、kind 触发器。
+        ensure_m1_contract(&conn)?;
         // E13.7：会话恢复句柄。老库补列；已有 live 绑定保留，字段为 NULL。
         ensure_column(&conn, "session_bindings", "agent_name", "TEXT")?;
         ensure_column(&conn, "session_bindings", "last_event_seq", "INTEGER")?;
@@ -1161,11 +1213,26 @@ impl Db {
         )?;
         let ts = now();
         for (i, m) in msgs.iter().enumerate() {
-            tx.execute(
+            // 三级兜底：显式值 → 该会话最近一条 running 轮 → NULL。
+            // 不按消息时间反推老轮次：那正是 M1 要消灭的猜测。
+            let turn_id = match m.turn_id.as_deref().filter(|id| !id.trim().is_empty()) {
+                Some(id) => Some(id.to_string()),
+                None => tx
+                    .query_row(
+                        "SELECT id FROM turns
+                          WHERE session_id = ?1 AND status = 'running'
+                          ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                        params![session_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?,
+            };
+            if let Err(e) = tx.execute(
                 "INSERT INTO messages
-                   (id, session_id, seq, role, kind, payload_json, created_at, author_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                   (id, session_id, turn_id, seq, role, kind, payload_json, created_at, author_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT(id) DO UPDATE SET
+                   turn_id = coalesce(excluded.turn_id, messages.turn_id),
                    payload_json = excluded.payload_json,
                    role = excluded.role,
                    kind = excluded.kind,
@@ -1173,6 +1240,7 @@ impl Db {
                 params![
                     m.id,
                     session_id,
+                    turn_id,
                     base + i as i64 + 1,
                     m.role,
                     m.kind,
@@ -1180,7 +1248,20 @@ impl Db {
                     ts,
                     m.author_id
                 ],
-            )?;
+            ) {
+                // bundled SQLite 3.46 的 RAISE 只接受字符串字面量（不接受 || 表达式），
+                // 所以在 Rust 侧把触发器的静态错误补成带 kind 的可读错误。
+                if e.to_string().contains("unknown message kind") {
+                    return Err(rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error {
+                            code: rusqlite::ffi::ErrorCode::ConstraintViolation,
+                            extended_code: 19,
+                        },
+                        Some(format!("unknown message kind: {}", m.kind)),
+                    ));
+                }
+                return Err(e);
+            }
         }
         tx.execute(
             "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
@@ -1298,8 +1379,8 @@ impl Db {
         Ok(())
     }
 
-    /// 收一轮。`status` 允许 finished / failed / cancelled —— 「是否还在跑」不该由调用方随口决定。
-    /// `stop_reason` 是 agent 返回的原文，不能只留映射后的状态。
+    /// 收一轮。`status` 允许 finished / failed —— 「是否还在跑」不该由调用方随口决定。
+    /// 取消是 finished + stop_reason='cancelled'。`stop_reason` 是 agent 返回的原文。
     pub fn end_turn(
         &self,
         turn_id: &str,
@@ -1326,7 +1407,7 @@ impl Db {
     }
 
     /// 权限答完：只把仍停在 waiting_approval 的轮恢复成 running。
-    /// 若 agent 已经先一步回了终态，这里不能把 finished / cancelled 盖回去。
+    /// 若 agent 已经先一步回了终态，这里不能把 finished / failed 盖回去。
     pub fn resume_turn_after_approval(&self, turn_id: &str) -> rusqlite::Result<usize> {
         let conn = self.conn.lock().expect("db poisoned");
         conn.execute(
@@ -1485,7 +1566,7 @@ impl Db {
     pub fn load_messages(&self, session_id: &str, limit: i64) -> rusqlite::Result<Vec<MessageRow>> {
         let conn = self.conn.lock().expect("db poisoned");
         let mut stmt = conn.prepare(
-            "SELECT id, seq, role, kind, payload_json, created_at, author_id
+            "SELECT id, seq, role, kind, payload_json, created_at, author_id, turn_id
              FROM messages WHERE session_id = ?1 ORDER BY seq DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![session_id, limit], |r| {
@@ -1498,6 +1579,7 @@ impl Db {
                 payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
                 created_at: r.get(5)?,
                 author_id: r.get(6)?,
+                turn_id: r.get(7)?,
             })
         })?;
         let mut out: Vec<MessageRow> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1517,7 +1599,7 @@ impl Db {
         let limit = limit.max(0);
         let conn = self.conn.lock().expect("db poisoned");
         let mut stmt = conn.prepare(
-            "SELECT id, seq, role, kind, payload_json, created_at, author_id
+            "SELECT id, seq, role, kind, payload_json, created_at, author_id, turn_id
              FROM messages
              WHERE session_id = ?1 AND (?2 IS NULL OR seq < ?2)
              ORDER BY seq DESC LIMIT ?3",
@@ -1536,6 +1618,7 @@ impl Db {
                             .unwrap_or(serde_json::Value::Null),
                         created_at: r.get(5)?,
                         author_id: r.get(6)?,
+                        turn_id: r.get(7)?,
                     })
                 },
             )?
@@ -1839,6 +1922,66 @@ mod tests {
         let turns = db.load_turns("s-old", 10).expect("新列可读");
         assert_eq!(turns[0].status, "finished");
         assert_eq!(turns[0].stop_reason.as_deref(), Some("end_turn"));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// M1 必须先在旧 messages 表补 turn_id，再建索引；顺序反了旧库会在 SCHEMA 阶段直接打不开。
+    #[test]
+    fn old_messages_table_gains_turn_id_before_index_creation() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "sincearc-db-message-turn-migrate-{}-{nanos}.db",
+            std::process::id()
+        ));
+
+        {
+            let conn = Connection::open(&path).expect("raw open");
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                   id TEXT PRIMARY KEY, acp_session_id TEXT,
+                   profile_id TEXT,
+                   title TEXT NOT NULL DEFAULT '新会话', cwd TEXT NOT NULL DEFAULT '',
+                   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 CREATE TABLE messages (
+                   id TEXT PRIMARY KEY,
+                   session_id TEXT NOT NULL,
+                   seq INTEGER NOT NULL,
+                   role TEXT NOT NULL,
+                   kind TEXT NOT NULL DEFAULT 'text',
+                   payload_json TEXT NOT NULL,
+                   created_at INTEGER NOT NULL);
+                 INSERT INTO sessions
+                   (id, acp_session_id, title, cwd, created_at, updated_at)
+                   VALUES ('s-old', 'acp-old', '老会话', '/tmp', 1, 1);
+                 INSERT INTO messages
+                   (id, session_id, seq, role, kind, payload_json, created_at)
+                   VALUES ('m-old', 's-old', 1, 'user', 'text', '{\"text\":\"老消息\"}', 1);",
+            )
+            .expect("seed old messages schema");
+        }
+
+        let db = Db::open(&path).expect("旧 messages 表应能补列后打开");
+        let rows = db.load_messages("s-old", 10).expect("旧消息不该丢");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "m-old");
+        assert_eq!(rows[0].turn_id, None, "老数据不回填 turn_id");
+
+        let index_exists: i64 = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE type = 'index' AND name = 'idx_messages_turn'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("index lookup");
+        assert_eq!(index_exists, 1);
 
         std::fs::remove_file(&path).ok();
     }
@@ -2195,6 +2338,7 @@ mod tests {
                 id: "m1".into(),
                 role: "player".into(),
                 kind: "text".into(),
+                turn_id: None,
                 payload: serde_json::json!({"text": "在"}),
                 author_id: Some("u1".into()),
             }],
@@ -2248,6 +2392,24 @@ mod tests {
         row.created_at = updated_at;
         row.updated_at = updated_at;
         row
+    }
+
+    fn db_with_session() -> (Db, std::path::PathBuf) {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save profile");
+        db.upsert_session(&session("s-1", None)).expect("insert session");
+        (db, path)
+    }
+
+    fn msg(id: &str, text: &str, turn_id: Option<&str>) -> MessageInput {
+        MessageInput {
+            id: id.into(),
+            author_id: None,
+            turn_id: turn_id.map(str::to_string),
+            role: "user".into(),
+            kind: "text".into(),
+            payload: serde_json::json!({ "id": id, "text": text }),
+        }
     }
 
     fn acp_state(db: &Db, id: &str) -> Option<String> {
@@ -2528,6 +2690,7 @@ mod tests {
         let user = |id: &str, text: &str| MessageInput {
             id: id.into(),
             author_id: None,
+            turn_id: None,
             role: "user".into(),
             kind: "text".into(),
             payload: serde_json::json!({ "id": id, "text": text }),
@@ -2559,6 +2722,7 @@ mod tests {
         let mk = |id: &str, text: &str| MessageInput {
             id: id.into(),
             author_id: None,
+            turn_id: None,
             role: "player".into(),
             kind: "text".into(),
             payload: serde_json::json!({ "id": id, "text": text }),
@@ -2582,11 +2746,147 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    #[test]
+    fn message_uses_explicit_turn_id_and_never_nulls_it_on_update() {
+        let (db, path) = db_with_session();
+
+        db.append_messages("s-1", &[msg("m1", "先写", None)])
+            .expect("initial append");
+        assert_eq!(db.load_messages("s-1", 10).unwrap()[0].turn_id, None);
+
+        db.append_messages("s-1", &[msg("m1", "补真 id", Some("turn-explicit"))])
+            .expect("attach turn");
+        assert_eq!(
+            db.load_messages("s-1", 10).unwrap()[0].turn_id.as_deref(),
+            Some("turn-explicit")
+        );
+
+        db.append_messages("s-1", &[msg("m1", "后续更新", None)])
+            .expect("update without turn");
+        assert_eq!(
+            db.load_messages("s-1", 10).unwrap()[0].turn_id.as_deref(),
+            Some("turn-explicit"),
+            "coalesce 不能把已有非空 turn_id 覆盖成 NULL"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn message_falls_back_to_latest_running_turn() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "turn-old", "旧轮", None).expect("old");
+        db.start_turn("s-1", "turn-latest", "新轮", None)
+            .expect("latest");
+
+        db.append_messages("s-1", &[msg("m1", "没显式给", None)])
+            .expect("append");
+        assert_eq!(
+            db.load_messages("s-1", 10).unwrap()[0].turn_id.as_deref(),
+            Some("turn-latest")
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn message_has_null_turn_when_nothing_is_running() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "turn-done", "已结束", None)
+            .expect("start");
+        db.end_turn("turn-done", "finished", Some("end_turn"))
+            .expect("end");
+
+        db.append_messages("s-1", &[msg("m1", "无轮消息", None)])
+            .expect("append");
+        assert_eq!(db.load_messages("s-1", 10).unwrap()[0].turn_id, None);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn known_message_kind_is_accepted() {
+        let (db, path) = db_with_session();
+        db.append_messages("s-1", &[msg("m1", "正文", None)])
+            .expect("text kind");
+        assert_eq!(db.load_messages("s-1", 10).unwrap()[0].kind, "text");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn unknown_message_kind_aborts_and_rolls_back_the_batch() {
+        let (db, path) = db_with_session();
+        let mut unknown = msg("m2", "未来", None);
+        unknown.kind = "未来新类型".into();
+
+        let err = db
+            .append_messages("s-1", &[msg("m1", "先插一条", None), unknown])
+            .expect_err("未知 kind 必须失败");
+        assert!(
+            err.to_string().contains("未来新类型"),
+            "错误信息要带上非法 kind：{err}"
+        );
+        assert!(
+            db.load_messages("s-1", 10).unwrap().is_empty(),
+            "同一批里先插入的行也必须随事务回滚"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn m1_turn_migration_is_idempotent() {
+        let (db, path) = db_with_session();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO turns (id, session_id, prompt, started_at, status, stop_reason)
+                   VALUES ('t-null', 's-1', '取消一', 1, 'cancelled', NULL);
+                 INSERT INTO turns (id, session_id, prompt, started_at, status, stop_reason)
+                   VALUES ('t-reason', 's-1', '取消二', 2, 'cancelled', 'end_turn');",
+            )
+            .expect("seed cancelled turns");
+        drop(db);
+
+        let first = Db::open(&path).expect("first migration");
+        let first_rows = first.load_turns("s-1", 10).expect("first rows");
+        drop(first);
+        let second = Db::open(&path).expect("second migration");
+        let second_rows = second.load_turns("s-1", 10).expect("second rows");
+
+        assert_eq!(first_rows.len(), 2);
+        for rows in [&first_rows, &second_rows] {
+            assert!(rows.iter().all(|turn| turn.status == "finished"));
+            let null_reason = rows.iter().find(|turn| turn.id == "t-null").unwrap();
+            let kept_reason = rows.iter().find(|turn| turn.id == "t-reason").unwrap();
+            assert_eq!(null_reason.stop_reason.as_deref(), Some("cancelled"));
+            assert_eq!(kept_reason.stop_reason.as_deref(), Some("end_turn"));
+        }
+
+        let guard_count: i64 = second
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE type = 'trigger' AND name IN ('messages_kind_guard_ins', 'messages_kind_guard_upd')",
+                [],
+                |r| r.get(0),
+            )
+            .expect("trigger count");
+        assert_eq!(guard_count, 2);
+
+        drop(second);
+        std::fs::remove_file(&path).ok();
+    }
+
     fn seed_sixty_messages(db: &Db) {
         let messages: Vec<MessageInput> = (1..=60)
             .map(|i| MessageInput {
                 id: format!("m{i}"),
                 author_id: None,
+                turn_id: None,
                 role: if i % 2 == 0 { "player" } else { "user" }.into(),
                 kind: "text".into(),
                 payload: serde_json::json!({ "id": format!("m{i}"), "text": format!("第{i}条") }),
@@ -2740,18 +3040,19 @@ mod tests {
             &[MessageInput {
                 id: "partial-1".into(),
                 author_id: None,
+                turn_id: None,
                 role: "player".into(),
                 kind: "text".into(),
                 payload: serde_json::json!({ "id": "partial-1", "text": "写了一半" }),
             }],
         )
         .expect("append partial");
-        db.end_turn("t-cancel", "cancelled", Some("cancelled"))
+        db.end_turn("t-cancel", "finished", Some("cancelled"))
             .expect("end cancelled");
 
         let turns = db.load_turns("s-1", 10).expect("load turns");
         assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0].status, "cancelled");
+        assert_eq!(turns[0].status, "finished");
         assert_eq!(turns[0].stop_reason.as_deref(), Some("cancelled"));
         assert!(turns[0].ended_at.is_some());
 

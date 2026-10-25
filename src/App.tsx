@@ -77,6 +77,7 @@ import {
 import { now } from "@/lib/format";
 import { clog } from "@/lib/log";
 import { newId } from "@/lib/ids";
+import { turnIdForPersist } from "@/lib/turn-id";
 import { useAcpEvents } from "@/hooks/useAcpEvents";
 import { usePaneLayout } from "@/hooks/usePaneLayout";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -1011,12 +1012,18 @@ export default function App() {
       }
 
       await messagesAppend(sid, [
-        { id: aside.id, role: "user", kind: "aside", payload: { ...aside, kind: "aside" } },
+        {
+          id: aside.id,
+          role: "user",
+          kind: "aside",
+          turnId: turnIdForPersist(acp.acpToTurn.current[acpSid]),
+          payload: { ...aside, kind: "aside" },
+        },
       ]).catch((e: unknown) => {
         clog("ASIDE-DB-ERR", `ui=${sid} id=${aside.id} ${String(e)}`);
       });
     },
-    [activeAcpSid, lastSessionId, patchSession],
+    [acp, activeAcpSid, lastSessionId, patchSession],
   );
 
   /**

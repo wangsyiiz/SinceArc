@@ -12,6 +12,7 @@ import { now } from "@/lib/format";
 import { pushSystemNotice } from "@/lib/notices";
 import { clog } from "@/lib/log";
 import { newId } from "@/lib/ids";
+import { replaceTurnId } from "@/lib/turn-id";
 import type { AgentProfile, Message } from "@/types";
 import type { EnsureResult } from "./useAgentConnect";
 import type { AcpRefs } from "./useAcpEvents";
@@ -119,7 +120,7 @@ export function usePrompt({
         ],
       }));
       messagesAppend(sid, [
-        { id: userMsg.id, role: "user", kind: "text", payload: userMsg },
+        { id: userMsg.id, role: "user", kind: "text", payload: userMsg, turnId: null },
       ]).catch((e) => console.warn("[db] append message failed", e));
 
       if (needConnect && profileId) {
@@ -212,7 +213,8 @@ export function usePrompt({
 
       if (acpSid) {
         const actId = `act-stream-${acpSid}`;
-        const turnId = `turn-live-${Date.now()}`;
+        // 占位 id 只做本地 key：绝不允许带着 turn-live- 落库，收到后端回执后立刻替换。
+        const turnId = newId("turn-live");
         acpToTurn.current[acpSid] = turnId;
         // 归属由后端按会话记录投递（docs/desktop-ux.md「事件路由」），
         // 这里只记「这一轮的 turn id」，供轨迹栏把回答挂到对应分支上。
@@ -251,11 +253,30 @@ export function usePrompt({
           "SEND",
           `acp=${acpSid} ui=${sid} target=${target ? `member:${target.authorId}` : "main"} len=${text.length}`,
         );
-        sessionPrompt(acpSid, text, sid).catch((e) => {
-          const err = asCmdError(e);
-          setBusy(sid, false);
-          pushSystemNotice(patchSession, sid, `发送失败：${err.code} ${err.msg}`);
-        });
+        void sessionPrompt(acpSid, text, sid)
+          .then(({ turnId: realTurnId }) => {
+            // 后端是轮次身份的唯一来源：本地占位只负责让 UI 先有东西可挂。
+            acpToTurn.current[acpSid] = realTurnId;
+            patchSession(sid, (s) => ({
+              ...s,
+              turns: replaceTurnId(s.turns, turnId, realTurnId),
+            }));
+            // 用户消息先以 NULL 落过一次，这里补上真 id；coalesce 不会把已有非空值冲掉。
+            messagesAppend(sid, [
+              {
+                id: userMsg.id,
+                role: "user",
+                kind: "text",
+                payload: userMsg,
+                turnId: realTurnId,
+              },
+            ]).catch((e) => console.warn("[db] attach turn id failed", e));
+          })
+          .catch((e) => {
+            const err = asCmdError(e);
+            setBusy(sid, false);
+            pushSystemNotice(patchSession, sid, `发送失败：${err.code} ${err.msg}`);
+          });
         return;
       }
 

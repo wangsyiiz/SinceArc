@@ -347,7 +347,8 @@ test("派活失败时同一步写失败原因", () => {
 
 test("用户停止的派活是已停止，不是还在跑也不是回来", () => {
   const dto = turn({
-    status: "cancelled",
+    status: "finished",
+    stopReason: "cancelled",
     items: [
       {
         seq: 1,

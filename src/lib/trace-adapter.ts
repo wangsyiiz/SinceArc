@@ -9,6 +9,7 @@ import { MAIN_AGENT_ID } from "./main-agent.ts";
 import { permissionKindLabel } from "./permission-kind.ts";
 import type { Activity, ActivityKind, TraceTurn } from "@/types";
 import { delegateCapsDetail as delegateCapsDetailText } from "./delegate-target.ts";
+import { isTurnCancelled } from "./turn-status.ts";
 
 /** agent 的工具调用类型 → 面板的图标类别。 */
 function activityKindOf(item: TraceTurnDto["items"][number]): ActivityKind | null {
@@ -453,7 +454,7 @@ export function toTraceView(dtos: TraceTurnDto[]): TraceView {
               ? "running"
               : t.status === "failed"
                 ? "error"
-                : t.status === "cancelled"
+                : isTurnCancelled(t.status, t.stopReason)
                   ? "cancelled"
                   : "ok",
       };

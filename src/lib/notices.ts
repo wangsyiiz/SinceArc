@@ -23,7 +23,13 @@ export function pushSystemNotice(
   const msg: Message = { id: newId("sys"), role: "system", text, at };
   patchSession(sid, (s) => ({ ...s, msgs: [...s.msgs, msg] }));
   messagesAppend(sid, [
-    { id: msg.id, role: "system", kind: "text", payload: opts?.also ? opts.also(msg) : msg },
+    {
+      id: msg.id,
+      role: "system",
+      kind: "text",
+      turnId: null,
+      payload: opts?.also ? opts.also(msg) : msg,
+    },
   ]).catch((e) => console.warn("[db] append system notice failed", e));
   return msg;
 }

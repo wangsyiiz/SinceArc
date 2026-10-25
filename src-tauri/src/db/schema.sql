@@ -61,6 +61,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_profile ON sessions(profile_id, updated_
 CREATE TABLE IF NOT EXISTS messages (
   id           TEXT PRIMARY KEY,
   session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  -- 这一条属于哪一轮；老数据/非轮次消息为 NULL，不做时间反推
+  turn_id      TEXT,
   seq          INTEGER NOT NULL,
   role         TEXT NOT NULL CHECK (role IN ('user', 'player', 'agent', 'system')),
   kind         TEXT NOT NULL DEFAULT 'text',
@@ -158,7 +160,8 @@ CREATE TABLE IF NOT EXISTS turns (
   author_id    TEXT,
   started_at   INTEGER NOT NULL,
   ended_at     INTEGER,
-  -- running / waiting_approval / finished / cancelled / failed
+  -- running / waiting_approval / finished / failed
+  -- 取消 = finished + stop_reason='cancelled'，不单独占用 status
   -- unknown 只用于「有事件、没有轮次行」的孤儿轮兜底
   status       TEXT NOT NULL DEFAULT 'running',
   -- agent 给的原始 stopReason（end_turn / max_tokens / refusal / cancelled …）
