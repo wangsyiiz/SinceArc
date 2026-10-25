@@ -7,6 +7,7 @@ import {
   sessionPrompt,
   type ResumeOutcome,
 } from "@/lib/ipc";
+import type { ModesSnapshot } from "@/lib/ipc/types";
 import { now } from "@/lib/format";
 import { pushSystemNotice } from "@/lib/notices";
 import { clog } from "@/lib/log";
@@ -45,8 +46,17 @@ export function usePrompt({
   acpSessionOf: (uiSid: string) => string | null;
   /** 这条界面会话的 cwd；为空时退回 profile 的 cwd。 */
   cwdOf: (uiSid: string, profileId: string | null) => string;
-  /** 新建 ACP 会话后回写界面状态（会话记录 + uiSid → acpSid 映射）。 */
-  onSessionCreated: (uiSid: string, profileId: string, acpSid: string) => void;
+  /**
+   * 新建 ACP 会话后回写界面状态（会话记录 + uiSid → acpSid 映射）。
+   * `modes` 是这条会话建好时 agent 报的模式快照：不带回去，界面就会显示「不支持」，
+   * 而同一个 agent 从连接路径建出来却有模式可选（docs/data-plane.md §3）。
+   */
+  onSessionCreated: (
+    uiSid: string,
+    profileId: string,
+    acpSid: string,
+    modes: ModesSnapshot | null,
+  ) => void;
   contextMessages: number;
   acp: AcpRefs;
   /** 会话归属哪个连接（老会话没记录时返回 null） */
@@ -167,7 +177,7 @@ export function usePrompt({
         try {
           const info = await sessionNew(profileId, cwdOf(sid, profileId), sid);
           acpSid = info.sessionId;
-          onSessionCreated(sid, profileId, info.sessionId);
+          onSessionCreated(sid, profileId, info.sessionId, info.modes ?? null);
         } catch (e) {
           const err = asCmdError(e);
           setBusy(sid, false);
