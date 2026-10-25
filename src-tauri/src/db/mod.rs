@@ -25,6 +25,7 @@ pub const SCHEMA: &str = include_str!("schema.sql");
 const SETTINGS_KEY_CONTEXT_MESSAGES: &str = "contextMessages";
 const SETTINGS_KEY_THEME: &str = "theme";
 const SETTINGS_KEY_AUTO_APPROVE: &str = "autoApproveDefault";
+const SETTINGS_KEY_MCP_INHERIT_DEFAULT: &str = "mcp_inherit_default";
 
 /// 结构版本：与 schema.sql 不符时整表重建（自用工具，会话数据可再生）
 const SCHEMA_VERSION: i64 = 6;
@@ -318,6 +319,45 @@ fn ensure_event_kind_is_free(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// MCP 目录条目本身没有「启用」开关（docs/mcp.md §3）。早期表里有 `enabled`，
+/// 打开旧库时按原列顺序重建，保留目录内容；取舍是丢弃旧的单条启用状态。
+fn ensure_mcp_catalog_has_no_enabled(conn: &Connection) -> rusqlite::Result<()> {
+    let has_table: bool = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'mcp_servers'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? > 0;
+    if !has_table {
+        return Ok(());
+    }
+    let has_enabled: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('mcp_servers') WHERE name = 'enabled'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? > 0;
+    if !has_enabled {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "BEGIN;
+         CREATE TABLE mcp_servers_new (
+           name        TEXT PRIMARY KEY,
+           kind        TEXT NOT NULL CHECK (kind IN ('stdio','http','sse')),
+           config_json TEXT NOT NULL,
+           created_at  INTEGER NOT NULL,
+           updated_at  INTEGER NOT NULL
+         );
+         INSERT INTO mcp_servers_new
+           (name, kind, config_json, created_at, updated_at)
+           SELECT name, kind, config_json, created_at, updated_at
+             FROM mcp_servers;
+         DROP TABLE mcp_servers;
+         ALTER TABLE mcp_servers_new RENAME TO mcp_servers;
+         COMMIT;",
+    )?;
+    Ok(())
+}
+
 /// 轨迹种类清单。schema 不再用 CHECK 约束（新增种类要重建表），改由这里 + `debug_assert` 兜。
 pub const KNOWN_EVENT_KINDS: &[&str] = &[
     "thought",
@@ -381,6 +421,7 @@ impl Db {
 
         conn.execute_batch(SCHEMA)?;
         ensure_event_kind_is_free(&conn)?;
+        ensure_mcp_catalog_has_no_enabled(&conn)?;
         ensure_column(&conn, "profiles", "default_mode", "TEXT")?;
         // E13.5：MCP 三层名单。NULL 有语义（继承），所以两列都不能给默认值。
         ensure_column(&conn, "profiles", "default_mcp_json", "TEXT")?;
@@ -512,9 +553,24 @@ impl Db {
         let mut conn = self.conn.lock().expect("db poisoned");
         let tx = conn.transaction()?;
         let ts = now();
+        // 全局开关只决定**新插入**那一行的初值；已有行自己的选择不在这里改。
+        let inherit_default: bool = tx
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![SETTINGS_KEY_MCP_INHERIT_DEFAULT],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|value| value.parse::<bool>().ok())
+            .unwrap_or(true);
 
         for p in list {
             let args = serde_json::to_string(&p.args).unwrap_or_else(|_| "[]".into());
+            let default_mcp = match p.default_mcp.as_ref() {
+                Some(names) => Some(serde_json::to_string(names).unwrap_or_else(|_| "[]".into())),
+                None if inherit_default => None,
+                None => Some("[]".to_string()),
+            };
             // 决定「这个 agent 会报什么能力」的字段一旦变了，旧快照立刻作废 ——
             // 否则把命令从 hermes 改成 codex，面板还在用 hermes 的握手结论描述 codex。
             // 判据与「改了会话字段就退回未测试」同源：只认环境与命令，不认名字/颜色这类身份字段。
@@ -538,8 +594,8 @@ impl Db {
                 "INSERT INTO profiles
                    (id, name, launch_kind, distro, shell, program, args_json, env_json,
                     default_cwd, default_mode, ssh_host, ssh_port, ssh_user, ssh_auth, ssh_key_path,
-                    created_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,'{}',?8,?9,?10,?11,?12,?13,?14,?15,?15)
+                    default_mcp_json, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'{}',?8,?9,?10,?11,?12,?13,?14,?15,?16,?16)
                  ON CONFLICT(id) DO UPDATE SET
                    name=excluded.name, launch_kind=excluded.launch_kind,
                    distro=excluded.distro, shell=excluded.shell,
@@ -548,8 +604,8 @@ impl Db {
                    ssh_host=excluded.ssh_host,
                    ssh_port=excluded.ssh_port, ssh_user=excluded.ssh_user,
                    ssh_auth=excluded.ssh_auth, ssh_key_path=excluded.ssh_key_path,
-                   caps_json=CASE WHEN ?16 THEN NULL ELSE profiles.caps_json END,
-                   caps_at=CASE WHEN ?16 THEN NULL ELSE profiles.caps_at END,
+                   caps_json=CASE WHEN ?17 THEN NULL ELSE profiles.caps_json END,
+                   caps_at=CASE WHEN ?17 THEN NULL ELSE profiles.caps_at END,
                    updated_at=excluded.updated_at",
                 params![
                     p.id,
@@ -566,6 +622,7 @@ impl Db {
                     p.ssh_user,
                     p.ssh_auth,
                     p.ssh_key_path,
+                    default_mcp,
                     ts,
                     stale
                 ],
@@ -653,6 +710,17 @@ impl Db {
                     tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
                     issues.push(note);
                 }
+                SETTINGS_KEY_MCP_INHERIT_DEFAULT => match value.parse::<bool>() {
+                    Ok(next) => settings.mcp_inherit_default = next,
+                    Err(_) => {
+                        let note = format!(
+                            "设置项 {key} 的值 `{value}` 不认识（应为 true/false），已用默认值 {}",
+                            settings.mcp_inherit_default
+                        );
+                        tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
+                        issues.push(note);
+                    }
+                },
                 _ => {}
             }
         }
@@ -680,6 +748,14 @@ impl Db {
             "INSERT INTO settings(key, value) VALUES(?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![SETTINGS_KEY_AUTO_APPROVE, settings.auto_approve_default.as_str()],
+        )?;
+        tx.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![
+                SETTINGS_KEY_MCP_INHERIT_DEFAULT,
+                settings.mcp_inherit_default.to_string()
+            ],
         )?;
         tx.commit()
     }
@@ -940,7 +1016,7 @@ impl Db {
         .optional()
     }
 
-    /// 外层 None = profile 不存在；内层 None = 列值 NULL（继承目录 enabled）。
+    /// 外层 None = profile 不存在；内层 None = 列值 NULL（继承目录全部）。
     pub fn profile_default_mcp_raw(&self, profile_id: &str) -> rusqlite::Result<Option<Option<String>>> {
         let conn = self.conn.lock().expect("db poisoned");
         conn.query_row(
@@ -968,7 +1044,7 @@ impl Db {
     pub fn mcp_catalog_rows(&self) -> rusqlite::Result<Vec<crate::mcp::McpRow>> {
         let conn = self.conn.lock().expect("db poisoned");
         let mut stmt = conn.prepare(
-            "SELECT name, kind, config_json, enabled, rowid
+            "SELECT name, kind, config_json, rowid
                FROM mcp_servers ORDER BY rowid ASC",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -976,8 +1052,7 @@ impl Db {
                 r.get(0)?,
                 r.get(1)?,
                 r.get(2)?,
-                r.get::<_, i64>(3)? != 0,
-                r.get(4)?,
+                r.get(3)?,
             ))
         })?;
         rows.collect()
@@ -988,19 +1063,17 @@ impl Db {
         name: &str,
         kind: &str,
         config_json: &str,
-        enabled: bool,
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().expect("db poisoned");
         let ts = now();
         conn.execute(
-            "INSERT INTO mcp_servers (name, kind, config_json, enabled, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+            "INSERT INTO mcp_servers (name, kind, config_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)
              ON CONFLICT(name) DO UPDATE SET
                kind = excluded.kind,
                config_json = excluded.config_json,
-               enabled = excluded.enabled,
                updated_at = excluded.updated_at",
-            params![name, kind, config_json, enabled as i64, ts],
+            params![name, kind, config_json, ts],
         )?;
         Ok(())
     }
@@ -1755,12 +1828,65 @@ mod tests {
     }
 
     #[test]
+    fn old_mcp_catalog_drops_enabled_without_losing_rows() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "sincearc-db-mcp-migrate-{}-{nanos}.db",
+            std::process::id()
+        ));
+
+        {
+            let conn = Connection::open(&path).expect("raw open");
+            conn.execute_batch(
+                "CREATE TABLE mcp_servers (
+                   name TEXT PRIMARY KEY,
+                   kind TEXT NOT NULL,
+                   config_json TEXT NOT NULL,
+                   enabled INTEGER NOT NULL DEFAULT 1,
+                   created_at INTEGER NOT NULL,
+                   updated_at INTEGER NOT NULL);
+                 INSERT INTO mcp_servers
+                   (name, kind, config_json, enabled, created_at, updated_at)
+                 VALUES
+                   ('a', 'stdio', '{\"command\":\"a\",\"args\":[],\"env\":[]}', 1, 10, 20),
+                   ('b', 'http', '{\"url\":\"https://b.example\",\"headers\":[]}', 0, 30, 40);",
+            )
+            .expect("seed old mcp table");
+        }
+
+        let db = Db::open(&path).expect("迁移后应当能打开");
+        let rows = db.mcp_catalog_rows().expect("读取迁移后的目录");
+        assert_eq!(rows.len(), 2, "目录条目不能因重建而丢失");
+        assert_eq!(rows[0].0, "a");
+        assert_eq!(rows[1].0, "b");
+        assert_eq!(rows[0].3, 1);
+        assert_eq!(rows[1].3, 2);
+        let has_enabled: i64 = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('mcp_servers') WHERE name = 'enabled'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("check migrated columns");
+        assert_eq!(has_enabled, 0, "重建后的目录不该再有 enabled");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn settings_new_db_returns_defaults() {
         let (db, path) = temp_db();
         let settings = db.load_settings().expect("load settings");
         assert_eq!(settings.context_messages, 5);
         assert_eq!(settings.theme, "dark");
         assert_eq!(settings.auto_approve_default, "off");
+        assert!(settings.mcp_inherit_default);
         std::fs::remove_file(&path).ok();
     }
 
@@ -1771,6 +1897,7 @@ mod tests {
             context_messages: 17,
             theme: "system".into(),
             auto_approve_default: "edits".into(),
+            mcp_inherit_default: false,
         })
         .expect("save settings");
 
@@ -1778,6 +1905,7 @@ mod tests {
         assert_eq!(settings.context_messages, 17);
         assert_eq!(settings.theme, "system");
         assert_eq!(settings.auto_approve_default, "edits");
+        assert!(!settings.mcp_inherit_default);
         std::fs::remove_file(&path).ok();
     }
 
@@ -1851,6 +1979,7 @@ mod tests {
             context_messages: 12,
             theme: "light".into(),
             auto_approve_default: "off".into(),
+            mcp_inherit_default: true,
         })
         .expect("save settings");
         let loaded = db.load_settings().expect("load settings");
@@ -1897,10 +2026,70 @@ mod tests {
             context_messages: 7,
             theme: "light".into(),
             auto_approve_default: "off".into(),
+            mcp_inherit_default: true,
         })
         .expect("save settings");
         let (_, clean) = db.load_settings_report().expect("load report");
         assert!(clean.is_empty(), "合法值不该被报成脏值：{clean:?}");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn new_profile_default_mcp_uses_global_inherit_setting() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("seed profile");
+        assert_eq!(
+            db.profile_default_mcp_raw("p1").expect("read"),
+            Some(None),
+            "默认开启时新连接写 NULL"
+        );
+
+        db.save_settings(&AppSettingsDto {
+            context_messages: 5,
+            theme: "dark".into(),
+            auto_approve_default: "off".into(),
+            mcp_inherit_default: false,
+        })
+        .expect("save settings");
+
+        let mut second = sample();
+        second.id = "p2".into();
+        second.name = "Second".into();
+        db.save_profiles(&[sample(), second])
+            .expect("insert second profile");
+        assert_eq!(
+            db.profile_default_mcp_raw("p1").expect("read p1"),
+            Some(None),
+            "更新已有连接时不能改写它自己的选择"
+        );
+        assert_eq!(
+            db.profile_default_mcp_raw("p2").expect("read p2"),
+            Some(Some("[]".into())),
+            "关闭继承时新连接写空数组"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn explicit_profile_default_mcp_wins_over_global_setting() {
+        let (db, path) = temp_db();
+        db.save_settings(&AppSettingsDto {
+            context_messages: 5,
+            theme: "dark".into(),
+            auto_approve_default: "off".into(),
+            mcp_inherit_default: false,
+        })
+        .expect("save settings");
+
+        let mut explicit = sample();
+        explicit.default_mcp = Some(vec!["a".into(), "b".into()]);
+        db.save_profiles(&[explicit]).expect("save explicit profile");
+        assert_eq!(
+            db.profile_default_mcp_raw("p1").expect("read"),
+            Some(Some(r#"["a","b"]"#.into()))
+        );
+
         std::fs::remove_file(&path).ok();
     }
 

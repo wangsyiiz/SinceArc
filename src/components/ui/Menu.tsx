@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { createPortal } from "react-dom";
 import { Check } from "lucide-react";
 import { computeLayerPosition, type Placement } from "@/lib/anchored";
@@ -54,6 +62,8 @@ export function useAnchoredLayer(opts: {
   align?: "start" | "end";
   prefer?: Placement;
   triggerRef?: React.RefObject<HTMLButtonElement | null>;
+  /** 向上展开时以这个元素的上沿为界，避免浮层盖住它。 */
+  avoidRef?: RefObject<HTMLElement | null>;
 }): {
   triggerRef: React.RefObject<HTMLButtonElement | null>;
   panelRef: React.RefObject<HTMLDivElement | null>;
@@ -69,6 +79,7 @@ export function useAnchoredLayer(opts: {
 } {
   const align = opts.align ?? "start";
   const prefer = opts.prefer ?? "below";
+  const avoidRef = opts.avoidRef;
   const internalTriggerRef = useRef<HTMLButtonElement>(null);
   const triggerRef = opts.triggerRef ?? internalTriggerRef;
   const panelRef = useRef<HTMLDivElement>(null);
@@ -80,20 +91,24 @@ export function useAnchoredLayer(opts: {
     const panel = panelRef.current;
     if (!trigger || !panel) return;
     const triggerRect = trigger.getBoundingClientRect();
+    const avoidRect = avoidRef?.current?.getBoundingClientRect();
     const next = computeLayerPosition({
-      trigger: {
-        top: triggerRect.top,
-        left: triggerRect.left,
-        width: triggerRect.width,
-        height: triggerRect.height,
-      },
+      trigger: avoidRect
+        ? {
+            // 横向仍对齐触发控件；纵向把整块需要避让的区域当作锚点下方的边界。
+            top: avoidRect.top,
+            left: triggerRect.left,
+            width: triggerRect.width,
+            height: window.innerHeight,
+          }
+        : triggerRect,
       panel: { width: panel.offsetWidth, height: panel.offsetHeight },
       viewport: { width: window.innerWidth, height: window.innerHeight },
       align,
       prefer,
     });
     setPosition({ top: next.top, left: next.left, ready: true });
-  }, [align, prefer]);
+  }, [align, avoidRef, prefer]);
 
   useLayoutEffect(() => {
     if (!open) {
@@ -139,8 +154,9 @@ export function useAnchoredLayer(opts: {
     const observer = new ResizeObserver(() => measure());
     if (panelRef.current) observer.observe(panelRef.current);
     if (triggerRef.current) observer.observe(triggerRef.current);
+    if (avoidRef?.current) observer.observe(avoidRef.current);
     return () => observer.disconnect();
-  }, [measure, open]);
+  }, [avoidRef, measure, open]);
 
   const toggle = useCallback(() => setOpen((value) => !value), []);
 

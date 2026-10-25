@@ -392,10 +392,7 @@ export default function App() {
     settingsLoad()
       .then((report) => {
         if (!alive) return;
-        savedSettings.current = JSON.stringify([
-          report.settings.contextMessages,
-          report.settings.theme,
-        ]);
+        savedSettings.current = settingsKey(report.settings);
         setSettings(report.settings);
         // 脏值不许静默：后端已经写了日志，这里再推进诊断面板，让用户当场看得见
         report.issues.forEach((issue) => diag(issue));
@@ -1081,7 +1078,6 @@ export default function App() {
             setDeleteError(null);
             setPendingDelete(x);
           }}
-          onReconnectMcp={reconnectMcp}
           isSessionBusy={(id) => !!sessionState[id]?.busy}
           onOpenRepo={(repoId) => {
             const repo = repoList.find((r) => r.id === repoId);
@@ -1332,6 +1328,13 @@ export default function App() {
                           autoApprove={activeAutoApprove}
                           autoApproveCovered={autoApproveCoveredByAgent}
                           onAutoApproveChange={setAutoApproveLevel}
+                          sessionId={lastSessionId}
+                          sessionProfile={sessionProfile}
+                          onReconnectMcp={() =>
+                            lastSessionId && sessionProfile
+                              ? reconnectMcp(lastSessionId, sessionProfile.id)
+                              : Promise.reject({ code: 50300, msg: "缺少会话或连接配置" })
+                          }
                         />
                       </div>
                     </div>
@@ -1359,11 +1362,6 @@ export default function App() {
             <SettingsView
               settings={settings}
               profiles={profiles}
-              selectedProfile={
-                activeSession?.profileId
-                  ? profiles.find((profile) => profile.id === activeSession.profileId)
-                  : undefined
-              }
               theme={settings.theme}
               onUpdateProfile={updateProfile}
               onAddProfile={(draft) => addProfile(draft)}
@@ -1381,6 +1379,9 @@ export default function App() {
               onCycleTheme={(theme) => setSettings((s) => ({ ...s, theme }))}
               onChangeAutoApproveDefault={(autoApproveDefault) =>
                 setSettings((s) => ({ ...s, autoApproveDefault }))
+              }
+              onChangeMcpInheritDefault={(mcpInheritDefault) =>
+                setSettings((s) => ({ ...s, mcpInheritDefault }))
               }
             />
           )}

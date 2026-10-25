@@ -71,8 +71,6 @@ interface SettingsViewProps {
   settings: ThreadSettings;
   theme: ThemeMode;
   profiles: AgentProfile[];
-  /** 当前会话所属连接；MCP 目录据此标注 agent 的传输能力。 */
-  selectedProfile?: AgentProfile;
   onUpdateProfile: (next: AgentProfile) => void;
   /** 连接/断开都走 App 里的那一份实现（并发去重、状态回写都在那边） */
   onConnect: (p: AgentProfile) => Promise<{
@@ -90,6 +88,8 @@ interface SettingsViewProps {
   onCycleTheme: (t: ThemeMode) => void;
   /** 新会话默认自动同意档（客户端应答策略，不是 agent 的审批档） */
   onChangeAutoApproveDefault: (level: AutoApproveLevel) => void;
+  /** 新建连接默认继承整份 MCP 目录（只影响新连接） */
+  onChangeMcpInheritDefault: (value: boolean) => void;
   /** agent 发现（docs/discovery.md）：缓存结果、是否在扫、手动重扫 */
   discovery?: DiscoveryOutcome | null;
   discoveryScanning?: boolean;
@@ -231,7 +231,6 @@ export function SettingsView({
   settings,
   theme,
   profiles,
-  selectedProfile,
   onUpdateProfile,
   onConnect,
   onDisconnect,
@@ -242,6 +241,7 @@ export function SettingsView({
   onChangeContext,
   onCycleTheme,
   onChangeAutoApproveDefault,
+  onChangeMcpInheritDefault,
   discovery = null,
   discoveryScanning = false,
   discoveryError = null,
@@ -437,6 +437,12 @@ export function SettingsView({
       : ` · ${head}`;
   };
 
+  const newConnectionDraft = (id: string): AgentProfile => ({
+    ...createEmptyConnection(id),
+    // 新连接草稿就先呈现全局开关的语义；保存时后端仍会以显式值优先。
+    defaultMcp: settings.mcpInheritDefault ? null : [],
+  });
+
   /** 发现结果的预填值由 App 组装；这里只负责合并默认值。 */
   const discoveredProfile = (
     id: string,
@@ -446,7 +452,7 @@ export function SettingsView({
   ): AgentProfile | null => {
     const partial = onUseDiscovered?.(candidate, hit);
     if (!partial) return null;
-    return { ...(base ?? createEmptyConnection(id)), ...partial, id };
+    return { ...(base ?? newConnectionDraft(id)), ...partial, id };
   };
 
   const closeDraft = useCallback(
@@ -540,7 +546,7 @@ export function SettingsView({
   const startNewConnection = () => {
     const id = newId("p-draft");
     invalidateProbe(id);
-    setDraft({ profile: createEmptyConnection(id), isNew: true, addPath: "manual" });
+    setDraft({ profile: newConnectionDraft(id), isNew: true, addPath: "manual" });
     setConnectionId(null);
   };
 
@@ -577,12 +583,20 @@ export function SettingsView({
     const gate = canSaveConnection(probeResults[effective.id]?.ok === true, effective);
     if (!gate.ok) return;
     const isNew = draft.isNew;
-    const id = isNew ? onAddProfile(effective) : effective.id;
+    // 新连接未显式选名单时，按全局开关决定落库初值；已有连接保持自己的选择。
+    const defaultMcp =
+      isNew && effective.defaultMcp == null
+        ? settings.mcpInheritDefault
+          ? null
+          : []
+        : (effective.defaultMcp ?? null);
+    const saved = isNew ? { ...effective, defaultMcp } : effective;
+    const id = isNew ? onAddProfile(saved) : saved.id;
     try {
       // 新连接先落库，profile_set_default_mcp 才能 UPDATE 到这一行。
-      if (isNew) await profilesSave([...profiles, effective]);
-      await profileSetDefaultMcp(id, effective.defaultMcp ?? null);
-      if (!isNew) onUpdateProfile(effective);
+      if (isNew) await profilesSave([...profiles, saved]);
+      await profileSetDefaultMcp(id, defaultMcp);
+      if (!isNew) onUpdateProfile(saved);
     } catch (e) {
       const err = asCmdError(e);
       setErrors((prev) => ({
@@ -1189,7 +1203,10 @@ export function SettingsView({
                 )}
 
                 {section === "mcp" && (
-                  <McpCatalogSection selectedProfile={selectedProfile} />
+                  <McpCatalogSection
+                    inheritDefault={settings.mcpInheritDefault}
+                    onInheritDefaultChange={onChangeMcpInheritDefault}
+                  />
                 )}
 
                 {section === "chat" && (

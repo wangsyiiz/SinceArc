@@ -98,6 +98,11 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
                       <div className="px-1.5 py-1 text-micro tracking-wide text-ink-3">
                         {group}
                       </div>
+                      {group === "MCP" && (
+                        <p className="px-1.5 pb-1 text-micro leading-relaxed text-ink-3">
+                          未声明 ≠ 不支持：有的 agent 不报这三项也照样能连
+                        </p>
+                      )}
                       {groupRows.map((r) => (
                         <div
                           key={r.key}
@@ -105,11 +110,12 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
                         >
                           <span
                             className={cn(
-                              "w-3 shrink-0 text-center font-mono",
+                              "shrink-0 text-center font-mono",
+                              r.group === "MCP" ? "w-10" : "w-3",
                               r.on ? "text-ok-1" : "text-ink-3",
                             )}
                           >
-                            {r.on ? "✓" : "✗"}
+                            {r.display}
                           </span>
                           <span className={r.on ? "text-ink-1" : "text-ink-3"}>{r.label}</span>
                         </div>

@@ -48,3 +48,33 @@ test("12 行分组顺序稳定", () => {
 test("null 输入返回空数组", () => {
   assert.deepEqual(capsRows(null), []);
 });
+
+test("MCP 三项未声明时显示「未声明」，已声明仍是 ✓", () => {
+  const allOff: AgentCaps = {
+    ...allOn,
+    mcpHttp: false,
+    mcpSse: false,
+    mcpAcp: false,
+  };
+  const mcpOff = capsRows(allOff).filter((row) => row.group === "MCP");
+  assert.deepEqual(
+    mcpOff.map((row) => row.display),
+    ["未声明", "未声明", "未声明"],
+  );
+  assert.ok(mcpOff.every((row) => !row.on));
+
+  const mcpOn = capsRows(allOn).filter((row) => row.group === "MCP");
+  assert.ok(mcpOn.every((row) => row.on && row.display === "✓"));
+});
+
+test("非 MCP 组的 false 仍保持原来的状态字", () => {
+  const rows = capsRows({
+    ...allOn,
+    promptImage: false,
+    loadSession: false,
+  }).filter((row) => row.group !== "MCP");
+  assert.deepEqual(
+    rows.filter((row) => !row.on).map((row) => row.display),
+    ["✗", "✗"],
+  );
+});

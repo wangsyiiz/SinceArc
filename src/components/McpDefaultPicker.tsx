@@ -6,7 +6,7 @@ import { Segmented } from "./ui/Segmented";
 type DefaultMode = "follow" | "custom";
 
 /**
- * 连接默认是便捷性层：NULL 跟随目录 enabled，数组是明确集合。
+ * 连接默认是便捷性层：NULL 跟随目录全部，数组是明确集合。
  * 组件只改草稿，真正的 profile_set_default_mcp 在连接保存时发出。
  */
 export function McpDefaultPicker({
@@ -37,16 +37,13 @@ export function McpDefaultPicker({
     };
   }, []);
 
-  const enabledNames = useMemo(
-    () => catalog.filter((entry) => entry.enabled).map((entry) => entry.name),
-    [catalog],
-  );
+  const catalogNames = useMemo(() => catalog.map((entry) => entry.name), [catalog]);
   const mode: DefaultMode = value === null ? "follow" : "custom";
   const selected = value ?? [];
 
   const chooseMode = (next: DefaultMode) => {
     if (next === mode) return;
-    onChange(next === "follow" ? null : enabledNames);
+    onChange(next === "follow" ? null : catalogNames);
   };
 
   const toggle = (name: string, checked: boolean) => {
@@ -64,7 +61,7 @@ export function McpDefaultPicker({
           ariaLabel="默认 MCP 服务器"
           compact
           options={[
-            { value: "follow", label: "跟随目录默认" },
+            { value: "follow", label: "跟随目录全部" },
             { value: "custom", label: "自定义" },
           ]}
           value={mode}
@@ -75,7 +72,7 @@ export function McpDefaultPicker({
 
       <p className="mt-1.5 text-caption text-ink-3">
         {mode === "follow"
-          ? `跟随目录默认启用（${enabledNames.length} 个）`
+          ? `跟随目录全部（${catalogNames.length} 个）`
           : `自定义（${selected.length} 个）`}
       </p>
 

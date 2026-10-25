@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   default_cwd   TEXT NOT NULL,
   -- 连接的默认编辑审批模式；NULL = 不推
   default_mode  TEXT,
-  -- 这个连接默认注入的 MCP 名单；NULL = 继承目录 enabled，'[]' = 一个都不要
+  -- 这个连接默认注入的 MCP 名单；NULL = 继承目录全部，'[]' = 一个都不要
   default_mcp_json TEXT,
   -- SSH 凭证：密码不在这张表里（只在内存过一手）
   ssh_host      TEXT,
@@ -92,7 +92,6 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
   name        TEXT PRIMARY KEY,
   kind        TEXT NOT NULL CHECK (kind IN ('stdio','http','sse')),
   config_json TEXT NOT NULL,
-  enabled     INTEGER NOT NULL DEFAULT 1,
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );

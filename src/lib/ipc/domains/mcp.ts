@@ -7,8 +7,8 @@ export function mcpCatalog(): Promise<McpCatalogEntryDto[]> {
   return invokeCmd<McpCatalogEntryDto[]>("mcp_catalog", {});
 }
 
-export function mcpUpsert(server: McpServerDto, enabled: boolean): Promise<void> {
-  return invokeCmd<void>("mcp_upsert", { server, enabled });
+export function mcpUpsert(server: McpServerDto): Promise<void> {
+  return invokeCmd<void>("mcp_upsert", { server });
 }
 
 export function mcpDelete(name: string): Promise<void> {

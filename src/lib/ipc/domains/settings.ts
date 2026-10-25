@@ -31,6 +31,7 @@ export async function settingsLoad(): Promise<{
       contextMessages: report.settings.contextMessages,
       theme: asTheme(report.settings.theme),
       autoApproveDefault: asAutoApprove(report.settings.autoApproveDefault),
+      mcpInheritDefault: report.settings.mcpInheritDefault,
     },
     issues: report.issues,
   };

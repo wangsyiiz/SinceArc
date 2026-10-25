@@ -28,7 +28,6 @@ function entry(kind: string, server: Record<string, unknown>): McpCatalogEntryDt
   return {
     name: String(server.name ?? "server"),
     kind,
-    enabled: true,
     server: server as unknown as McpServerDto,
   };
 }

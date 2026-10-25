@@ -32,7 +32,7 @@ export interface AgentProfile {
   cwd?: string;
   /** 连接的默认编辑审批模式；null/undefined = 不推，跟随 agent 默认 */
   defaultMode?: string | null;
-  /** 这个连接默认注入的 MCP 名单；null = 跟随目录里默认启用的那些。 */
+  /** 这个连接默认注入的 MCP 名单；null = 跟随目录全部。 */
   defaultMcp?: string[] | null;
   /** 启动命令（如 hermes acp / npx -y @agentclientprotocol/codex-acp） */
   program?: string;
@@ -278,6 +278,8 @@ export interface ThreadSettings {
   theme: ThemeMode;
   /** 新会话默认自动同意档；`off` = 不替用户答，`edits` = 编辑类自动答 */
   autoApproveDefault: AutoApproveLevel;
+  /** 新建连接时默认继承整份 MCP 目录；只影响新连接，不追溯已有连接 */
+  mcpInheritDefault: boolean;
 }
 
 export const CONTEXT_MESSAGES_MAX = 20;
@@ -286,4 +288,5 @@ export const DEFAULT_THREAD_SETTINGS: ThreadSettings = {
   contextMessages: CONTEXT_MESSAGES_DEFAULT,
   theme: "dark",
   autoApproveDefault: "off",
+  mcpInheritDefault: true,
 };

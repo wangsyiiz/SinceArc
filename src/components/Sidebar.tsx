@@ -24,8 +24,6 @@ interface SidebarProps {
   onOpenSettings: () => void;
   /** 删除会话（App 负责确认与落库；这里只发起） */
   onDeleteSession: (s: SessionSummary) => void;
-  /** 会话级 MCP 减少后的显式重连：先断开，再由 App 调 ensureConnected。 */
-  onReconnectMcp: (sessionId: string, profileId: string) => Promise<void>;
   /** 这一轮还在跑的会话：不允许删（还没有 session/cancel，删了会留下没人看的 agent） */
   isSessionBusy?: (id: string) => boolean;
   onOpenRepo: (repoId: string) => void;
@@ -49,7 +47,6 @@ export function Sidebar({
   onNewWithProfile,
   onOpenSettings,
   onDeleteSession,
-  onReconnectMcp,
   isSessionBusy,
   onOpenRepo,
   onAddRepo,
@@ -180,13 +177,8 @@ export function Sidebar({
                       {/* hover 才出现：删除是低频破坏性操作，不该一直挂在那儿等误点 */}
                       <div className="absolute right-1 top-1.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
                         <SessionMoreMenu
-                          sessionId={s.id}
-                          profile={profile}
                           busy={busy}
                           onDelete={() => onDeleteSession(s)}
-                          onReconnect={() =>
-                            profile ? onReconnectMcp(s.id, profile.id) : Promise.resolve()
-                          }
                         />
                       </div>
                     </div>

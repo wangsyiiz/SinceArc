@@ -13,5 +13,6 @@ export function settingsKey(settings: ThreadSettings): string {
     settings.contextMessages,
     settings.theme,
     settings.autoApproveDefault,
+    settings.mcpInheritDefault,
   ]);
 }

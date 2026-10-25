@@ -4,4 +4,8 @@ export type AppSettingsDto = { contextMessages: number, theme: string,
 /**
  * 新会话默认自动同意档：off | edits
  */
-autoApproveDefault: string, };
+autoApproveDefault: string, 
+/**
+ * 新建连接时是否默认继承整份 MCP 目录；只影响新连接，不追溯已有连接。
+ */
+mcpInheritDefault: boolean, };

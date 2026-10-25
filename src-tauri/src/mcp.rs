@@ -1,7 +1,7 @@
 //! MCP 目录与三层名单（docs/mcp.md）。
 //!
 //! 目录是全局唯一的一份配置；profile / session 只存名字。解析规则永远是
-//! `session ?? profile ?? 目录 enabled`，不做合并：NULL 表示继承，`[]` 表示明确为空。
+//! `session ?? profile ?? 目录全部`，不做合并：NULL 表示继承，`[]` 表示明确为空。
 
 use std::collections::HashSet;
 
@@ -18,7 +18,7 @@ const NAME_MAX_CHARS: usize = 64;
 const PAIRS_MAX: usize = 32;
 const VALUE_MAX_BYTES: usize = 4 * 1024;
 
-pub(crate) type McpRow = (String, String, String, bool, i64);
+pub(crate) type McpRow = (String, String, String, i64);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
@@ -234,7 +234,6 @@ impl<'de> Deserialize<'de> for McpServerDto {
 pub struct McpCatalogEntryDto {
     pub name: String,
     pub kind: String,
-    pub enabled: bool,
     pub server: McpServerDto,
 }
 
@@ -322,8 +321,8 @@ fn validate_pairs(field: &str, pairs: &[McpKeyValueDto]) -> Result<(), CmdError>
 
 pub(crate) fn catalog_entries(rows: &[McpRow]) -> Vec<McpCatalogEntryDto> {
     let mut entries = Vec::with_capacity(rows.len());
-    for (name, kind, config_json, enabled, _) in rows {
-        match row_to_entry(name.clone(), kind.clone(), config_json, *enabled) {
+    for (name, kind, config_json, _) in rows {
+        match row_to_entry(name.clone(), kind.clone(), config_json) {
             Some(entry) => entries.push(entry),
             None => tracing::warn!(
                 target: "sincearc::mcp",
@@ -339,7 +338,6 @@ pub(crate) fn catalog_entries(rows: &[McpRow]) -> Vec<McpCatalogEntryDto> {
 pub(crate) fn upsert_server(
     state: &AppState,
     server: McpServerDto,
-    enabled: bool,
 ) -> Result<(), CmdError> {
     validate_mcp_server(&server)?;
     let server = server.with_trimmed_name();
@@ -354,7 +352,7 @@ pub(crate) fn upsert_server(
     let config = config_json(&server)?;
     state
         .db
-        .upsert_mcp_server(server.name(), server.kind(), &config, enabled)
+        .upsert_mcp_server(server.name(), server.kind(), &config)
         .map_err(|e| CmdError::new(50000, format!("保存 MCP 目录失败：{e}")))
 }
 
@@ -443,7 +441,7 @@ pub(crate) async fn session_state(
     } else if let Some(names) = profile_names.as_ref() {
         names.clone()
     } else {
-        enabled_names(&rows)
+        catalog_names(&rows)
     };
     let effective = entries_for_names(&rows, &effective_names, "本会话")?;
 
@@ -493,7 +491,7 @@ fn session_names_from_state(
         }
     }
 
-    Ok(enabled_names(rows))
+    Ok(catalog_names(rows))
 }
 
 fn profile_names_from_state(
@@ -510,7 +508,7 @@ fn profile_names_from_state(
             return Ok(names);
         }
     }
-    Ok(enabled_names(rows))
+    Ok(catalog_names(rows))
 }
 
 fn parse_names(raw: &str, table: &str, id: &str) -> Option<Vec<String>> {
@@ -529,11 +527,8 @@ fn parse_names(raw: &str, table: &str, id: &str) -> Option<Vec<String>> {
     }
 }
 
-fn enabled_names(rows: &[McpRow]) -> Vec<String> {
-    rows.iter()
-        .filter(|row| row.3)
-        .map(|row| row.0.clone())
-        .collect()
+fn catalog_names(rows: &[McpRow]) -> Vec<String> {
+    rows.iter().map(|row| row.0.clone()).collect()
 }
 
 fn entries_for_names(
@@ -555,11 +550,11 @@ fn entries_for_names(
     }
 
     let mut entries = Vec::new();
-    for (name, kind, config_json, enabled, _) in rows {
+    for (name, kind, config_json, _) in rows {
         if !wanted.contains(name.as_str()) {
             continue;
         }
-        match row_to_entry(name.clone(), kind.clone(), config_json, *enabled) {
+        match row_to_entry(name.clone(), kind.clone(), config_json) {
             Some(entry) => entries.push(entry),
             None => tracing::warn!(
                 target: "sincearc::mcp",
@@ -593,7 +588,6 @@ fn row_to_entry(
     name: String,
     kind: String,
     config_json: &str,
-    enabled: bool,
 ) -> Option<McpCatalogEntryDto> {
     let config: Value = serde_json::from_str(config_json).ok()?;
     let mut object = config.as_object()?.clone();
@@ -609,7 +603,6 @@ fn row_to_entry(
     Some(McpCatalogEntryDto {
         name,
         kind,
-        enabled,
         server,
     })
 }
@@ -696,19 +689,15 @@ mod tests {
     fn seed_catalog(state: &AppState) {
         state
             .db
-            .upsert_mcp_server("a", "stdio", r#"{"command":"a","args":[],"env":[]}"#, true)
+            .upsert_mcp_server("a", "stdio", r#"{"command":"a","args":[],"env":[]}"#)
             .unwrap();
         state
             .db
-            .upsert_mcp_server("b", "http", r#"{"url":"https://b.example","headers":[]}"#, true)
+            .upsert_mcp_server("b", "http", r#"{"url":"https://b.example","headers":[]}"#)
             .unwrap();
         state
             .db
-            .upsert_mcp_server("c", "sse", r#"{"url":"https://c.example","headers":[]}"#, true)
-            .unwrap();
-        state
-            .db
-            .upsert_mcp_server("d", "stdio", r#"{"command":"d","args":[],"env":[]}"#, false)
+            .upsert_mcp_server("c", "sse", r#"{"url":"https://c.example","headers":[]}"#)
             .unwrap();
     }
 
@@ -830,8 +819,8 @@ mod tests {
     #[test]
     fn duplicate_trimmed_name_overwrites_instead_of_duplicating() {
         let (state, path) = temp_state();
-        upsert_server(&state, stdio("fs", "first"), true).unwrap();
-        upsert_server(&state, stdio(" fs ", "second"), true).unwrap();
+        upsert_server(&state, stdio("fs", "first")).unwrap();
+        upsert_server(&state, stdio(" fs ", "second")).unwrap();
         let rows = state.db.mcp_catalog_rows().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0, "fs");
@@ -896,16 +885,16 @@ mod tests {
     fn catalog_rejects_65th_entry() {
         let (state, path) = temp_state();
         for index in 0..64 {
-            upsert_server(&state, stdio(&format!("s{index:02}"), "npx"), true).unwrap();
+            upsert_server(&state, stdio(&format!("s{index:02}"), "npx")).unwrap();
         }
-        let error = upsert_server(&state, stdio("s64", "npx"), true).expect_err("65th entry");
+        let error = upsert_server(&state, stdio("s64", "npx")).expect_err("65th entry");
         assert_eq!(error.code, 50700);
         assert!(error.msg.contains("64"));
         cleanup(&path);
     }
 
     #[tokio::test]
-    async fn session_and_profile_null_follow_catalog_enabled() {
+    async fn session_and_profile_null_follow_all_catalog_names() {
         let (state, path) = temp_state();
         seed_catalog(&state);
         seed_profile_and_session(&state);
@@ -1027,7 +1016,6 @@ mod tests {
                     &format!("s{index:02}"),
                     "stdio",
                     r#"{"command":"npx","args":[],"env":[]}"#,
-                    true,
                 )
                 .unwrap();
         }

@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useReducer, useState } from "react";
 import { Eye, EyeOff, Pencil, Plus, Trash2, X } from "lucide-react";
-import type { AgentProfile } from "@/types";
 import {
   asCmdError,
   mcpCatalog,
@@ -14,9 +13,12 @@ import {
   describeServer,
   entryKind,
   serverFields,
-  transportSupportNote,
   type McpKind,
 } from "@/lib/mcp-display";
+import {
+  MCP_CATALOG_EDITOR_CLOSED,
+  mcpCatalogEditorReducer,
+} from "@/lib/mcp-catalog-editor";
 import { newId } from "@/lib/ids";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -45,7 +47,6 @@ interface FormState {
   url: string;
   env: PairRow[];
   headers: PairRow[];
-  enabled: boolean;
 }
 
 function pairRow(name = "", value = ""): PairRow {
@@ -62,7 +63,6 @@ function emptyForm(): FormState {
     url: "",
     env: [pairRow()],
     headers: [pairRow()],
-    enabled: true,
   };
 }
 
@@ -80,7 +80,6 @@ function formFromEntry(entry: McpCatalogEntryDto): FormState {
       fields.headers.length > 0
         ? fields.headers.map((pair) => pairRow(pair.name, pair.value))
         : [pairRow()],
-    enabled: entry.enabled,
   };
 }
 
@@ -122,7 +121,7 @@ function validateForm(form: FormState): string | null {
   return null;
 }
 
-function EnabledToggle({
+function ToggleSwitch({
   checked,
   label,
   disabled = false,
@@ -225,13 +224,19 @@ function PairEditor({
 }
 
 export function McpCatalogSection({
-  selectedProfile,
+  inheritDefault,
+  onInheritDefaultChange,
 }: {
-  selectedProfile?: AgentProfile;
+  inheritDefault: boolean;
+  onInheritDefaultChange: (next: boolean) => void;
 }) {
   const [entries, setEntries] = useState<McpCatalogEntryDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState<FormState | null>(null);
+  const [editor, dispatchEditor] = useReducer(
+    mcpCatalogEditorReducer,
+    MCP_CATALOG_EDITOR_CLOSED,
+  );
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -254,15 +259,23 @@ export function McpCatalogSection({
   }, [load]);
 
   const startAdd = () => {
+    dispatchEditor({ type: "add" });
     setForm(emptyForm());
     setFormError(null);
     setError(null);
   };
 
   const startEdit = (entry: McpCatalogEntryDto) => {
+    dispatchEditor({ type: "edit", name: entry.name });
     setForm(formFromEntry(entry));
     setFormError(null);
     setError(null);
+  };
+
+  const cancelEdit = () => {
+    dispatchEditor({ type: "close" });
+    setForm(null);
+    setFormError(null);
   };
 
   const save = async () => {
@@ -275,7 +288,8 @@ export function McpCatalogSection({
     setSaving(true);
     setFormError(null);
     try {
-      await mcpUpsert(formServer(form), form.enabled);
+      await mcpUpsert(formServer(form));
+      dispatchEditor({ type: "close" });
       setForm(null);
       await load();
     } catch (e) {
@@ -286,21 +300,8 @@ export function McpCatalogSection({
     }
   };
 
-  const toggleEnabled = async (entry: McpCatalogEntryDto, enabled: boolean) => {
-    setBusy(entry.name);
-    setError(null);
-    try {
-      await mcpUpsert(entry.server, enabled);
-      await load();
-    } catch (e) {
-      const err = asCmdError(e);
-      setError(`更新 MCP 默认启用失败：${err.msg}`);
-    } finally {
-      setBusy(null);
-    }
-  };
-
   const remove = async (entry: McpCatalogEntryDto) => {
+    if (editor.mode === "edit" && editor.name === entry.name) cancelEdit();
     setBusy(entry.name);
     setError(null);
     try {
@@ -319,6 +320,114 @@ export function McpCatalogSection({
     setFormError(null);
   };
 
+  const renderForm = (title: string, inline = false) => {
+    if (!form) return null;
+    return (
+      <div className={cn("sc-pane space-y-4 p-3", !inline && "mt-3")}>
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-ui font-medium text-ink-1">{title}</h3>
+          <Button variant="ghost" size="sm" onClick={cancelEdit}>
+            取消
+          </Button>
+        </div>
+
+        <Field
+          label="名称"
+          htmlFor="mcp-name"
+          required
+          hint={form.originalName ? "名称是目录里的唯一键，创建后不能改。" : undefined}
+        >
+          <Input
+            id="mcp-name"
+            value={form.name}
+            readOnly={form.originalName !== null}
+            placeholder="例如 filesystem"
+            spellCheck={false}
+            onChange={(event) => patchForm({ name: event.target.value })}
+          />
+        </Field>
+
+        <div className="flex flex-col gap-1.5">
+          <span className="text-caption font-medium text-ink-2">类型</span>
+          <Segmented
+            ariaLabel="MCP 类型"
+            compact
+            options={KIND_OPTIONS}
+            value={form.kind}
+            onChange={(kind) => patchForm({ kind })}
+          />
+        </div>
+
+        {form.kind === "stdio" ? (
+          <>
+            <Field label="command" htmlFor="mcp-command" required>
+              <Input
+                id="mcp-command"
+                value={form.command}
+                placeholder="npx"
+                spellCheck={false}
+                onChange={(event) => patchForm({ command: event.target.value })}
+                className="font-mono"
+              />
+            </Field>
+            <Field
+              label="args"
+              htmlFor="mcp-args"
+              hint="每行一个参数；参数里的空格会原样保留。"
+            >
+              <Textarea
+                id="mcp-args"
+                value={form.argsText}
+                placeholder={"-y\n@modelcontextprotocol/server-filesystem\n/mnt/c/source"}
+                spellCheck={false}
+                onChange={(event) => patchForm({ argsText: event.target.value })}
+                className="font-mono"
+              />
+            </Field>
+            <PairEditor
+              label="环境变量"
+              rows={form.env}
+              onChange={(env) => patchForm({ env })}
+            />
+          </>
+        ) : (
+          <>
+            <Field label="url" htmlFor="mcp-url" required>
+              <Input
+                id="mcp-url"
+                value={form.url}
+                placeholder="https://example.com/mcp"
+                spellCheck={false}
+                onChange={(event) => patchForm({ url: event.target.value })}
+                className="font-mono"
+              />
+            </Field>
+            <PairEditor
+              label="请求头"
+              rows={form.headers}
+              onChange={(headers) => patchForm({ headers })}
+            />
+          </>
+        )}
+
+        {formError && (
+          <p role="alert" className="text-caption text-danger-1">
+            {formError}
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={cancelEdit}>
+            取消
+          </Button>
+          <Button variant="primary" size="sm" loading={saving} onClick={() => void save()}>
+            保存
+          </Button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="mt-5">
       <div className="flex items-center justify-between gap-3">
@@ -335,121 +444,21 @@ export function McpCatalogSection({
         </p>
       )}
 
-      {form && (
-        <div className="sc-pane mt-3 space-y-4 p-3">
-          <div className="flex items-center justify-between gap-3">
-            <h3 className="text-ui font-medium text-ink-1">
-              {form.originalName ? `编辑 ${form.originalName}` : "添加 MCP 服务器"}
-            </h3>
-            <Button variant="ghost" size="sm" onClick={() => setForm(null)}>
-              取消
-            </Button>
-          </div>
-
-          <Field
-            label="名称"
-            htmlFor="mcp-name"
-            required
-            hint={form.originalName ? "名称是目录里的唯一键，创建后不能改。" : undefined}
-          >
-            <Input
-              id="mcp-name"
-              value={form.name}
-              readOnly={form.originalName !== null}
-              placeholder="例如 filesystem"
-              spellCheck={false}
-              onChange={(event) => patchForm({ name: event.target.value })}
-            />
-          </Field>
-
-          <div className="flex flex-col gap-1.5">
-            <span className="text-caption font-medium text-ink-2">类型</span>
-            <Segmented
-              ariaLabel="MCP 类型"
-              compact
-              options={KIND_OPTIONS}
-              value={form.kind}
-              onChange={(kind) => patchForm({ kind })}
-            />
-          </div>
-
-          {form.kind === "stdio" ? (
-            <>
-              <Field label="command" htmlFor="mcp-command" required>
-                <Input
-                  id="mcp-command"
-                  value={form.command}
-                  placeholder="npx"
-                  spellCheck={false}
-                  onChange={(event) => patchForm({ command: event.target.value })}
-                  className="font-mono"
-                />
-              </Field>
-              <Field
-                label="args"
-                htmlFor="mcp-args"
-                hint="每行一个参数；参数里的空格会原样保留。"
-              >
-                <Textarea
-                  id="mcp-args"
-                  value={form.argsText}
-                  placeholder={"-y\n@modelcontextprotocol/server-filesystem\n/mnt/c/source"}
-                  spellCheck={false}
-                  onChange={(event) => patchForm({ argsText: event.target.value })}
-                  className="font-mono"
-                />
-              </Field>
-              <PairEditor
-                label="环境变量"
-                rows={form.env}
-                onChange={(env) => patchForm({ env })}
-              />
-            </>
-          ) : (
-            <>
-              <Field label="url" htmlFor="mcp-url" required>
-                <Input
-                  id="mcp-url"
-                  value={form.url}
-                  placeholder="https://example.com/mcp"
-                  spellCheck={false}
-                  onChange={(event) => patchForm({ url: event.target.value })}
-                  className="font-mono"
-                />
-              </Field>
-              <PairEditor
-                label="请求头"
-                rows={form.headers}
-                onChange={(headers) => patchForm({ headers })}
-              />
-            </>
-          )}
-
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-ui text-ink-1">默认启用</span>
-            <EnabledToggle
-              checked={form.enabled}
-              label="默认启用"
-              onChange={(enabled) => patchForm({ enabled })}
-            />
-          </div>
-
-          {formError && (
-            <p role="alert" className="text-caption text-danger-1">
-              {formError}
-            </p>
-          )}
-
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setForm(null)}>
-              取消
-            </Button>
-            <Button variant="primary" size="sm" loading={saving} onClick={() => void save()}>
-              保存
-            </Button>
-          </div>
+      <div className="mt-3 flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-ui text-ink-1">新建连接默认继承这份目录</div>
+          <p className="mt-0.5 text-caption text-ink-3">
+            只影响之后新建的连接；已有连接各自保留自己的选择。
+          </p>
         </div>
-      )}
+        <ToggleSwitch
+          checked={inheritDefault}
+          label="新建连接默认继承这份目录"
+          onChange={onInheritDefaultChange}
+        />
+      </div>
+
+      {editor.mode === "add" && renderForm("添加 MCP 服务器")}
 
       {loading ? (
         <p className="mt-4 text-caption text-ink-3">正在读取 MCP 目录…</p>
@@ -473,7 +482,13 @@ export function McpCatalogSection({
             const kind = entryKind(entry);
             const summary = describeServer(entry);
             const fullSummary = describeServer(entry, 100000);
-            const note = transportSupportNote(kind, selectedProfile?.caps ?? null);
+            if (editor.mode === "edit" && editor.name === entry.name) {
+              return (
+                <div key={entry.name}>
+                  {renderForm(`编辑 ${form?.originalName ?? entry.name}`, true)}
+                </div>
+              );
+            }
             return (
               <div
                 key={entry.name}
@@ -495,16 +510,8 @@ export function McpCatalogSection({
                   >
                     {summary}
                   </span>
-                  {note && <span className="shrink-0 text-micro text-warn-1">{note}</span>}
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
-                  <span className="text-caption text-ink-3">默认启用</span>
-                  <EnabledToggle
-                    checked={entry.enabled}
-                    label={`${entry.name} 默认启用`}
-                    disabled={busy === entry.name}
-                    onChange={(enabled) => void toggleEnabled(entry, enabled)}
-                  />
                   <Button
                     variant="ghost"
                     size="sm"

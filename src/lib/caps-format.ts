@@ -7,10 +7,12 @@ export interface CapsRow {
   key: keyof AgentCaps;
   label: string;
   on: boolean;
+  /** 面板里的状态字：MCP 的 false 是「未声明」，不是「不支持」。 */
+  display: "✓" | "✗" | "未声明";
 }
 
 /** 分组与组内顺序都是固定的：面板和探测结果共用同一份，避免两处各排一套。 */
-const ROWS: Omit<CapsRow, "on">[] = [
+const ROWS: Omit<CapsRow, "on" | "display">[] = [
   { group: "输入", key: "promptImage", label: "图片输入" },
   { group: "输入", key: "promptAudio", label: "音频输入" },
   { group: "输入", key: "promptEmbeddedContext", label: "嵌入上下文" },
@@ -28,5 +30,12 @@ const ROWS: Omit<CapsRow, "on">[] = [
 /** `null` = 还没握手过：返回空数组，让调用方说「还没连过」而不是编一张全 false 的表。 */
 export function capsRows(caps: AgentCaps | null): CapsRow[] {
   if (!caps) return [];
-  return ROWS.map((row) => ({ ...row, on: caps[row.key] }));
+  return ROWS.map((row) => {
+    const on = caps[row.key];
+    return {
+      ...row,
+      on,
+      display: on ? "✓" : row.group === "MCP" ? "未声明" : "✗",
+    };
+  });
 }

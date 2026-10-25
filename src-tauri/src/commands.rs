@@ -258,8 +258,8 @@ pub struct ProfileDto {
     pub cwd: String,
     #[serde(default)]
     pub default_mode: Option<String>,
-    /// 这个连接默认注入的 MCP 名单；None = 继承目录 enabled。
-    /// 只读：由 `profile_set_default_mcp` 单独写，`profiles_save` 不碰它。
+    /// 这个连接默认注入的 MCP 名单；None = 继承目录全部。
+    /// 新插入时按这个值（None 时看 `mcp_inherit_default`）落库；更新已有行时不碰它。
     #[serde(default)]
     pub default_mcp: Option<Vec<String>>,
     /// 上次握手报上来的能力快照；从未握手为 None。
@@ -308,6 +308,13 @@ pub struct AppSettingsDto {
     pub theme: String,
     /// 新会话默认自动同意档：off | edits
     pub auto_approve_default: String,
+    /// 新建连接时是否默认继承整份 MCP 目录；只影响新连接，不追溯已有连接。
+    #[serde(default = "default_true")]
+    pub mcp_inherit_default: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppSettingsDto {
@@ -316,6 +323,7 @@ impl Default for AppSettingsDto {
             context_messages: 5,
             theme: "dark".into(),
             auto_approve_default: "off".into(),
+            mcp_inherit_default: true,
         }
     }
 }
@@ -2221,9 +2229,8 @@ pub async fn mcp_catalog(
 pub async fn mcp_upsert(
     state: State<'_, AppState>,
     server: McpServerDto,
-    enabled: bool,
 ) -> Result<(), CmdError> {
-    mcp::upsert_server(state.inner(), server, enabled)
+    mcp::upsert_server(state.inner(), server)
 }
 
 #[tauri::command]
@@ -4307,6 +4314,7 @@ mod settings_tests {
             context_messages: 99,
             theme: "dark".into(),
             auto_approve_default: "off".into(),
+            mcp_inherit_default: true,
         };
         let err = settings.validate().expect_err("99 必须被拒");
         assert_eq!(err.code, 50001);
@@ -4319,6 +4327,7 @@ mod settings_tests {
             context_messages: 5,
             theme: "neon".into(),
             auto_approve_default: "off".into(),
+            mcp_inherit_default: true,
         };
         let err = settings.validate().expect_err("未知主题必须被拒");
         assert_eq!(err.code, 50001);

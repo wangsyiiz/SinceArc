@@ -15,6 +15,7 @@ export function toDto(p: AgentProfile) {
     args: p.args ?? ["acp"],
     cwd: p.cwd ?? "",
     defaultMode: p.defaultMode ?? null,
+    defaultMcp: p.defaultMcp ?? null,
     distro: p.distro ?? "fedora",
     shell: p.shell ?? "zsh",
     sshHost: p.ssh?.host,

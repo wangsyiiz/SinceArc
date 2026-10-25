@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Square, Paperclip, ChevronDown } from "lucide-react";
-import type { Player } from "@/types";
+import type { AgentProfile, Player } from "@/types";
 import type { AutoApproveLevel } from "@/lib/auto-approve";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/Button";
 import { Menu, type MenuItem } from "./ui/Menu";
+import { SessionMcpButton } from "./SessionMcpMenu";
 
 interface ComposerProps {
   busy: boolean;
@@ -16,6 +17,11 @@ interface ComposerProps {
   /** agent 档为 accept_edits / dont_ask：客户端这道闸被覆盖 */
   autoApproveCovered?: boolean;
   onAutoApproveChange?: (level: AutoApproveLevel) => void;
+  /** 当前界面会话；没有会话时不渲染 MCP 入口 */
+  sessionId?: string | null;
+  sessionProfile?: AgentProfile;
+  /** 会话名单减少后的显式重连 */
+  onReconnectMcp?: () => Promise<void>;
 }
 
 export function Composer({
@@ -27,9 +33,13 @@ export function Composer({
   autoApprove = "off",
   autoApproveCovered = false,
   onAutoApproveChange,
+  sessionId,
+  sessionProfile,
+  onReconnectMcp,
 }: ComposerProps) {
   const [value, setValue] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
+  const inputBoxRef = useRef<HTMLDivElement>(null);
   /**
    * @ 补全（docs/group-chat.md §3）：只列**本群成员**。
    * 候选来自 players（App 传进来的就是当前会话的成员），所以「没拉进群的人」不会出现在这里 ——
@@ -167,6 +177,7 @@ export function Composer({
         </div>
       )}
       <div
+      ref={inputBoxRef}
       className={cn(
         "sc-glass rounded-card transition-colors focus-within:border-accent-1",
         busy && "border-accent-1/25",
@@ -231,6 +242,14 @@ export function Composer({
         </span>
 
         <div className="ml-auto flex items-center gap-1">
+          {sessionId && (
+            <SessionMcpButton
+              sessionId={sessionId}
+              profile={sessionProfile}
+              onReconnect={onReconnectMcp ?? (() => Promise.resolve())}
+              avoidRef={inputBoxRef}
+            />
+          )}
           <Menu
             ariaLabel="自动同意：agent 发来的权限请求要不要替你答"
             align="end"

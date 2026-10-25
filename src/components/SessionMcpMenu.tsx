@@ -26,56 +26,88 @@ function modeOf(state: SessionMcpStateDto): SessionMode {
   return state.sessionNames.length === 0 ? "none" : "custom";
 }
 
-/**
- * 会话条目的「更多操作」。MCP 浮层和操作菜单共用同一个触发器 ref，
- * 但各自用 useAnchoredLayer 量自己的面板尺寸 —— 菜单选中后关闭，
- * 浮层仍贴在同一颗「⋯」旁边，且 render 到 body 不受侧栏 overflow 裁切。
- */
+/** 会话条目的「更多操作」；MCP 入口已移到输入区工具行，这里只留删除。 */
 export function SessionMoreMenu({
-  sessionId,
-  profile,
   busy,
   onDelete,
+}: {
+  busy: boolean;
+  onDelete: () => void;
+}) {
+  return (
+    <MoreMenu
+      items={[
+        {
+          label: "删除会话",
+          icon: <Trash2 size={12} />,
+          danger: true,
+          disabled: busy,
+          hint: busy ? "这一轮还在跑，等它结束再删" : undefined,
+          onSelect: onDelete,
+        },
+      ]}
+    />
+  );
+}
+
+/** 输入区工具行的会话 MCP 入口：显示已注入数量，面板向上展开。 */
+export function SessionMcpButton({
+  sessionId,
+  profile,
   onReconnect,
+  avoidRef,
 }: {
   sessionId: string;
   profile?: AgentProfile;
-  busy: boolean;
-  onDelete: () => void;
   onReconnect: () => Promise<void>;
+  avoidRef?: RefObject<HTMLElement | null>;
 }) {
-  const mcpLayer = useAnchoredLayer({ align: "end", prefer: "below" });
+  const layer = useAnchoredLayer({ align: "end", prefer: "above", avoidRef });
+  const [state, setState] = useState<SessionMcpStateDto | null>(null);
+  const count = state?.effective.length ?? 0;
+
+  useEffect(() => {
+    let alive = true;
+    setState(null);
+    sessionMcpState(sessionId)
+      .then((next) => {
+        if (alive) setState(next);
+      })
+      .catch(() => {
+        // 面板自己会显示读取失败；入口只显示可确定的数量。
+        if (alive) setState(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [sessionId]);
 
   return (
     <>
-      <MoreMenu
-        triggerRef={mcpLayer.triggerRef}
-        items={[
-          {
-            label: "MCP 服务器…",
-            icon: <PlugZap size={12} />,
-            onSelect: () => mcpLayer.setOpen(true),
-          },
-          {
-            label: "删除会话",
-            icon: <Trash2 size={12} />,
-            danger: true,
-            disabled: busy,
-            hint: busy ? "这一轮还在跑，等它结束再删" : undefined,
-            onSelect: onDelete,
-          },
-        ]}
-      />
+      <Button
+        ref={layer.triggerRef}
+        variant="ghost"
+        size="sm"
+        aria-haspopup="dialog"
+        aria-expanded={layer.open}
+        aria-label="MCP 服务器设置"
+        className="h-7 gap-1 px-1.5 text-caption"
+        onClick={layer.toggle}
+      >
+        <PlugZap className="size-3" aria-hidden="true" />
+        <span className="font-mono text-micro text-ink-3">MCP · {count}</span>
+      </Button>
 
-      {mcpLayer.open &&
+      {layer.open &&
         createPortal(
           <SessionMcpPanel
             sessionId={sessionId}
             profile={profile}
             onReconnect={onReconnect}
-            onClose={() => mcpLayer.setOpen(false)}
-            panelRef={mcpLayer.panelRef}
-            style={mcpLayer.style}
+            onStateChange={setState}
+            onClose={() => layer.setOpen(false)}
+            panelRef={layer.panelRef}
+            style={layer.style}
           />,
           document.body,
         )}
@@ -87,6 +119,7 @@ function SessionMcpPanel({
   sessionId,
   profile,
   onReconnect,
+  onStateChange,
   onClose,
   panelRef,
   style,
@@ -94,6 +127,7 @@ function SessionMcpPanel({
   sessionId: string;
   profile?: AgentProfile;
   onReconnect: () => Promise<void>;
+  onStateChange?: (state: SessionMcpStateDto) => void;
   onClose: () => void;
   panelRef: RefObject<HTMLDivElement | null>;
   style: CSSProperties;
@@ -111,6 +145,7 @@ function SessionMcpPanel({
 
   const applyLoadedState = (next: SessionMcpStateDto) => {
     setState(next);
+    onStateChange?.(next);
     setMode(modeOf(next));
     setCustomNames(next.sessionNames ?? next.effective.map((entry) => entry.name));
   };
@@ -191,7 +226,7 @@ function SessionMcpPanel({
 
   const followCount =
     state?.profileNames === null
-      ? catalog.filter((entry) => entry.enabled).length
+      ? catalog.length
       : catalog.filter((entry) => state?.profileNames?.includes(entry.name)).length;
   const effective = state?.effective ?? [];
 
