@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Waypoints, X } from "lucide-react";
+import { X } from "lucide-react";
 import { ActivityRail } from "@/components/ActivityRail";
 import { Composer } from "@/components/Composer";
 import { ConnectErrorState } from "@/components/ConnectErrorState";
@@ -32,7 +32,6 @@ import { TabStrip } from "@/components/TabStrip";
 import { ThinkingRow } from "@/components/ThinkingRow";
 import { TitleBar } from "@/components/TitleBar";
 import { TracePanel } from "@/components/TracePanel";
-import { Button } from "@/components/ui/Button";
 import { sessionTrace, type TraceTurnDto } from "@/lib/ipc";
 import { toTraceView } from "@/lib/trace-adapter";
 import { summarizeLocks } from "@/lib/locks";
@@ -1378,7 +1377,6 @@ export default function App() {
                       ) : (
                         <>
                           {state.msgs.map((m) => {
-                            const turnId = normaliseTurnId(m.turnId);
                             return (
                               <div
                                 key={m.id}
@@ -1398,21 +1396,8 @@ export default function App() {
                                       : undefined
                                   }
                                   onCancelDelegate={cancelDelegate}
+                                  onLocateTrace={locateTraceTurn}
                                 />
-                                {turnId && (
-                                  <div className="absolute right-1 top-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
-                                    <Button
-                                      variant="ghost"
-                                      size="sm"
-                                      aria-label="在轨迹里看这一轮"
-                                      onClick={() => locateTraceTurn(turnId)}
-                                      className="h-auto gap-1 rounded-mark px-1.5 py-1 text-caption"
-                                    >
-                                      <Waypoints className="size-3" />
-                                      轨迹
-                                    </Button>
-                                  </div>
-                                )}
                               </div>
                             );
                           })}
