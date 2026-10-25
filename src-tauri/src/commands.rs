@@ -1257,6 +1257,7 @@ pub async fn session_trace(
         .load_events(&session_id, limit * 200)
         .map_err(|e| CmdError::new(50000, format!("读取轨迹失败：{e}")))?;
     let turns = crate::trace::with_orphan_turns(turns, &session_id, &events);
+    // 轮次上的 prompt 字段保留给老数据作历史兼容；正文权威在 atoms（chat / text.user）。
     Ok(crate::trace::aggregate(turns, events))
 }
 
@@ -1371,6 +1372,9 @@ async fn record_trace(
         author_id: record.author_id.clone(),
         kind: captured.kind.to_string(),
         payload_json: captured.payload.to_string(),
+        refs: captured.refs,
+        ext: captured.ext,
+        schema: None,
         source: "live".to_string(),
         truncated: captured.truncated,
     };
@@ -1802,12 +1806,21 @@ pub async fn agent_connect(
                     }
                     // 权限请求本身也是轨迹的一部分（用户要能事后查到「当时授权了什么」；
                     // 聊天正文里已不再写「权限决定」这类系统消息）
+                    // JSON-RPC 的请求 id 不在 params 里；先补进去，trace::parse 才能把它
+                    // 落成 refs.requestId（和之后的 permission_decision 对上同一块）。
+                    let mut trace_params = params.clone();
+                    if let Some(object) = trace_params.as_object_mut() {
+                        object.insert(
+                            "requestId".to_string(),
+                            serde_json::Value::String(id.to_string()),
+                        );
+                    }
                     record_trace(
                         &db_for_trace,
                         &routes,
                         &turns_for_trace,
                         &method,
-                        &params,
+                        &trace_params,
                     )
                     .await;
                     // 权限请求意味着这一轮在等用户。只有当前确实有活动轮时才改状态：
@@ -2765,20 +2778,34 @@ fn delegate_error_stop_reason(e: &transport::TransportError) -> Option<String> {
         .or_else(|| value.get("code").map(|code| code.to_string()))
 }
 
-fn append_delegate_event(
-    db: &db::Db,
-    parent_ui_session_id: &str,
-    turn_id: &str,
+struct DelegateEvent<'a> {
+    parent_ui_session_id: &'a str,
+    turn_id: &'a str,
     author_id: Option<String>,
-    kind: &str,
-    payload: &serde_json::Value,
+    child_acp_session_id: &'a str,
+    kind: &'a str,
+    payload: &'a serde_json::Value,
     truncated: bool,
-) {
+}
+
+fn append_delegate_event(db: &db::Db, event: DelegateEvent<'_>) {
+    let DelegateEvent {
+        parent_ui_session_id,
+        turn_id,
+        author_id,
+        child_acp_session_id,
+        kind,
+        payload,
+        truncated,
+    } = event;
     let input = db::EventInput {
         turn_id: turn_id.to_string(),
         author_id,
         kind: kind.to_string(),
         payload_json: payload.to_string(),
+        refs: Some(serde_json::json!({ "childSession": child_acp_session_id })),
+        ext: None,
+        schema: None,
         source: "live".to_string(),
         truncated,
     };
@@ -2866,12 +2893,15 @@ async fn finish_delegate(
         });
         append_delegate_event(
             db,
-            parent_ui_session_id,
-            turn_id,
-            author_id,
-            "delegate_result",
-            &payload,
-            entry.buffer.chars().count() > DELEGATE_SUMMARY_CHARS,
+            DelegateEvent {
+                parent_ui_session_id,
+                turn_id,
+                author_id,
+                child_acp_session_id,
+                kind: "delegate_result",
+                payload: &payload,
+                truncated: entry.buffer.chars().count() > DELEGATE_SUMMARY_CHARS,
+            },
         );
     }
 
@@ -2979,14 +3009,9 @@ pub async fn delegate_task(
             Some(turn) => (Some(turn), false),
             None => {
                 let turn = format!("turn-{}", crate::trace::now_ms());
-                let prompt = format!(
-                    "→ {}：{}",
-                    member.name,
-                    truncate_chars(&task, DELEGATE_SUMMARY_CHARS)
-                );
                 if let Err(e) = state
                     .db
-                    .start_turn(&parent_ui_session_id, &turn, &prompt, None)
+                    .start_turn(&parent_ui_session_id, &turn, "", None, None)
                 {
                     tracing::warn!(target: "sincearc::trace", error = %e, "delegate 轮次落库失败");
                 }
@@ -3013,12 +3038,15 @@ pub async fn delegate_task(
         });
         append_delegate_event(
             &state.db,
-            &parent_ui_session_id,
-            turn_id,
-            author_id,
-            "delegate",
-            &payload,
-            task.chars().count() > DELEGATE_SUMMARY_CHARS,
+            DelegateEvent {
+                parent_ui_session_id: &parent_ui_session_id,
+                turn_id,
+                author_id,
+                child_acp_session_id: &child_acp_session_id,
+                kind: "delegate",
+                payload: &payload,
+                truncated: task.chars().count() > DELEGATE_SUMMARY_CHARS,
+            },
         );
         // 派活不动父会话的 busy，而前端只在 busy/pendingPerm 变化时重读轨迹 ——
         // 不敲这一下，「派活给 X」这一步要等下一轮才出现（验收要求是立刻可见）。
@@ -3047,6 +3075,9 @@ pub async fn delegate_task(
                 "reason": reason,
             },
         }),
+        refs: Some(serde_json::json!({ "childSession": child_acp_session_id })),
+        ext: None,
+        schema: None,
     };
     if let Err(e) = state
         .db
@@ -3391,8 +3422,9 @@ pub async fn session_prompt(
         if let Err(e) = state.db.start_turn(
             &ui_sid,
             &turn_id,
-            &text,
+            "",
             record.author_id.as_deref(),
+            None,
         ) {
             tracing::warn!(target: "sincearc::trace", error = %e, "轮次落库失败");
         }
@@ -3729,6 +3761,9 @@ pub async fn agent_respond_request(
                             author_id: turn_author,
                             kind: "permission_decision".to_string(),
                             payload_json: payload.to_string(),
+                            refs: Some(serde_json::json!({ "requestId": id.to_string() })),
+                            ext: None,
+                            schema: None,
                             source: "live".to_string(),
                             truncated: false,
                         };

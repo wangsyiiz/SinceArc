@@ -7,8 +7,8 @@ test("占位 turn id 会被后端返回值替换，且不会带着 turn-live- �
   const placeholder = "turn-live-1760000000000";
   const realId = "turn-1760000000001";
   const turns = [
-    { id: placeholder, userText: "这一轮" },
-    { id: "turn-old", userText: "旧轮" },
+    { id: placeholder },
+    { id: "turn-old" },
   ];
 
   const replaced = replaceTurnId(turns, placeholder, realId);

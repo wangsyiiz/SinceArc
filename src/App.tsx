@@ -826,7 +826,7 @@ export default function App() {
       setLastSessionId(sid);
       patchSession(sid, (s) => ({
         ...s,
-        msgs: [...s.msgs, { id: newId("u"), role: "user", at: now(), text: "@claude 看一下这个 PR", quoted: { kind: "pr", label: `#${pr.number} ${pr.title}`, detail: `${repo.slug} · ${pr.head} → ${pr.base} · +${pr.additions} −${pr.deletions} · ${pr.files} 文件` } }],
+        msgs: [...s.msgs, { id: newId("u"), role: "user", atomKind: "text.user", at: now(), text: "@claude 看一下这个 PR", quoted: { kind: "pr", label: `#${pr.number} ${pr.title}`, detail: `${repo.slug} · ${pr.head} → ${pr.base} · +${pr.additions} −${pr.deletions} · ${pr.files} 文件` } }],
       }));
     },
     [openTab, patchSession, tabs],
@@ -1037,6 +1037,7 @@ export default function App() {
       const aside: Message = {
         id: newId("aside"),
         role: "user",
+        atomKind: "aside",
         text,
         at: now(),
         kind: "aside",

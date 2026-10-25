@@ -179,6 +179,12 @@ pub struct EventInput {
     pub author_id: Option<String>,
     pub kind: String,
     pub payload_json: String,
+    /// 命名关联键；None = 不写 refs_json（SQL NULL）。
+    pub refs: Option<serde_json::Value>,
+    /// `x.<domain>.<name>` 扩展键；None = 不写 ext_json（SQL NULL）。
+    pub ext: Option<serde_json::Value>,
+    /// payload 版本；None = 按初版 1 写入。
+    pub schema: Option<i64>,
     pub source: String,
     pub truncated: bool,
 }
@@ -208,7 +214,10 @@ pub struct MessageRow {
     pub author_id: Option<String>,
     /// 这一条属于哪一轮；老数据/非轮次消息为 None
     pub turn_id: Option<String>,
+    /// 视图按读路径习惯映射后的历史 kind（`text` / `aside` / `delegate`）。
     pub kind: String,
+    /// atoms 上的权威 kind（`text.user` / `text.agent` / `aside` …）。
+    pub atom_kind: String,
     /// 原始消息对象（前端 `Message` 的形状），不做有损转换
     #[ts(type = "unknown")]
     pub payload: serde_json::Value,
@@ -265,6 +274,18 @@ pub struct MessageInput {
     pub kind: String,
     #[ts(type = "unknown")]
     pub payload: serde_json::Value,
+    /// 命名关联键；None = refs_json 为 NULL。
+    #[serde(default)]
+    #[ts(skip)]
+    pub refs: Option<serde_json::Value>,
+    /// `x.<domain>.<name>` 扩展键；None = ext_json 为 NULL。
+    #[serde(default)]
+    #[ts(skip)]
+    pub ext: Option<serde_json::Value>,
+    /// payload 版本；None = 按初版 1 写入。
+    #[serde(default)]
+    #[ts(skip)]
+    pub schema: Option<i64>,
 }
 
 fn default_kind() -> String {
@@ -413,6 +434,24 @@ fn seal_open_atoms(
     }
 }
 
+/// 未封口只对仍在进行的轮有意义：终态轮与无轮次原子的迟到分片必须直接封口。
+fn open_allowed(conn: &Connection, turn_id: Option<&str>) -> rusqlite::Result<bool> {
+    let Some(turn_id) = turn_id else {
+        return Ok(false);
+    };
+    let status: Option<String> = conn
+        .query_row(
+            "SELECT status FROM turns WHERE id = ?1",
+            params![turn_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(matches!(
+        status.as_deref(),
+        Some("running") | Some("waiting_approval")
+    ))
+}
+
 /// 按字符边界截断，和 `trace::capture` 的口径一致，别切坏中文。
 fn truncate_utf8(text: &str, max_bytes: usize) -> (String, bool) {
     if text.len() <= max_bytes {
@@ -499,6 +538,38 @@ fn merge_chat_payload(existing_payload: &str, incoming: &serde_json::Value) -> S
     merged.insert("text".to_string(), serde_json::Value::String(text));
     serde_json::Value::Object(merged).to_string()
 }
+
+/// open 行的 refs 合并：新值整体覆盖旧值；新分片没带 refs 时保留旧行。
+fn merge_refs_json(existing: Option<&str>, incoming: Option<&serde_json::Value>) -> Option<String> {
+    incoming
+        .map(serde_json::Value::to_string)
+        .or_else(|| existing.map(str::to_string))
+}
+
+/// open 行的 ext 合并：`x.<domain>.<name>` 浅合并，同名键以新值为准，其余保留。
+fn merge_ext_json(existing: Option<&str>, incoming: Option<&serde_json::Value>) -> Option<String> {
+    let Some(incoming) = incoming else {
+        return existing.map(str::to_string);
+    };
+    let Some(incoming) = incoming.as_object() else {
+        return Some(incoming.to_string());
+    };
+    let mut merged = existing
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    for (key, value) in incoming {
+        merged.insert(key.clone(), value.clone());
+    }
+    Some(serde_json::Value::Object(merged).to_string())
+}
+
+fn json_string(value: &Option<serde_json::Value>) -> Option<String> {
+    value.as_ref().map(serde_json::Value::to_string)
+}
+
+/// M2b open 行：id / payload / truncated / refs_json / ext_json。
+type OpenStreamRow = (String, String, i64, Option<String>, Option<String>);
 
 fn is_trace_stream_kind(kind: &str) -> bool {
     matches!(kind, "thought" | "text.agent")
@@ -1333,26 +1404,56 @@ impl Db {
         for (i, m) in msgs.iter().enumerate() {
             let seq = base + i as i64 + 1;
             let turn_id = turn_ids[i].as_deref();
-            let mergeable = is_chat_stream_message(&m.role, &m.kind, turn_id);
+            let has_delegate = m
+                .payload
+                .get("delegate")
+                .is_some_and(serde_json::Value::is_object);
+            let kind = crate::message_kind::chat_kind_of(&m.role, &m.kind, has_delegate)
+                .map(crate::message_kind::MessageKind::as_str)
+                .unwrap_or(m.kind.as_str());
+            let mergeable =
+                is_chat_stream_message(&m.role, kind, turn_id) && open_allowed(&tx, turn_id)?;
             let result: rusqlite::Result<()> = (|| {
                 if mergeable {
-                    let open: Option<(String, String, i64)> = tx
+                    let open: Option<OpenStreamRow> = tx
                         .query_row(
-                            "SELECT id, payload_json, truncated FROM atoms
+                            "SELECT id, payload_json, truncated, refs_json, ext_json FROM atoms
                               WHERE session_id = ?1 AND channel = 'chat'
                                 AND turn_id = ?2 AND kind = ?3 AND sealed_at IS NULL",
-                            params![session_id, turn_id, m.kind],
-                            |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)?)),
+                            params![session_id, turn_id, kind],
+                            |r| {
+                                Ok((
+                                    r.get(0)?,
+                                    r.get(1)?,
+                                    r.get::<_, i64>(2)?,
+                                    r.get(3)?,
+                                    r.get(4)?,
+                                ))
+                            },
                         )
                         .optional()?;
-                    if let Some((open_id, payload_json, truncated)) = open {
+                    if let Some((open_id, payload_json, truncated, refs_json, ext_json)) = open {
                         if open_id == m.id {
                             let payload = merge_chat_payload(&payload_json, &m.payload);
+                            let refs_json =
+                                merge_refs_json(refs_json.as_deref(), m.refs.as_ref());
+                            let ext_json = merge_ext_json(ext_json.as_deref(), m.ext.as_ref());
                             tx.execute(
                                 "UPDATE atoms
-                                    SET payload_json = ?1, truncated = ?2, at = ?3, seq = ?4
-                                  WHERE id = ?5",
-                                params![payload, truncated, ts, seq, open_id],
+                                    SET payload_json = ?1, truncated = ?2, at = ?3, seq = ?4,
+                                        refs_json = ?5, ext_json = ?6,
+                                        schema = COALESCE(?7, schema)
+                                  WHERE id = ?8",
+                                params![
+                                    payload,
+                                    truncated,
+                                    ts,
+                                    seq,
+                                    refs_json,
+                                    ext_json,
+                                    m.schema,
+                                    open_id,
+                                ],
                             )?;
                             return Ok(());
                         }
@@ -1368,14 +1469,23 @@ impl Db {
                 tx.execute(
                     "INSERT INTO atoms
                        (id, session_id, channel, turn_id, seq, at, role, author_id,
-                        kind, payload_json, source, truncated, sealed_at)
-                     VALUES (?1, ?2, 'chat', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'live', 0, ?10)
+                        kind, payload_json, refs_json, ext_json, schema,
+                        source, truncated, sealed_at)
+                     VALUES (?1, ?2, 'chat', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                             'live', 0, ?13)
                      ON CONFLICT(id) DO UPDATE SET
                        turn_id = coalesce(excluded.turn_id, atoms.turn_id),
                        payload_json = excluded.payload_json,
                        role = excluded.role,
                        kind = excluded.kind,
-                       author_id = excluded.author_id",
+                       author_id = excluded.author_id,
+                       refs_json = coalesce(excluded.refs_json, atoms.refs_json),
+                       ext_json = CASE
+                         WHEN excluded.ext_json IS NULL THEN atoms.ext_json
+                         WHEN atoms.ext_json IS NULL THEN excluded.ext_json
+                         ELSE json_patch(atoms.ext_json, excluded.ext_json)
+                       END,
+                       schema = excluded.schema",
                     params![
                         m.id,
                         session_id,
@@ -1384,8 +1494,11 @@ impl Db {
                         ts,
                         m.role,
                         m.author_id,
-                        m.kind,
+                        kind,
                         m.payload.to_string(),
+                        json_string(&m.refs),
+                        json_string(&m.ext),
+                        m.schema.unwrap_or(1),
                         sealed_at,
                     ],
                 )?;
@@ -1404,6 +1517,18 @@ impl Db {
                     )));
                 }
                 return Err(DbError::Sql(e));
+            }
+            // user 正文就是这一轮的 prompt。起轮与写正文不在同一次调用里（session_prompt
+            // 先起轮，前端拿到回执后再 append），所以归属必须与正文写入在同一个事务里
+            // 回填：要么两者都成功，要么都不落库。已有归属的轮不被后续 user 消息覆盖。
+            if m.role == "user" && matches!(m.kind.as_str(), "text" | "text.user") {
+                if let Some(turn_id) = turn_id {
+                    tx.execute(
+                        "UPDATE turns SET prompt_atom_id = ?1
+                          WHERE id = ?2 AND prompt_atom_id IS NULL",
+                        params![m.id, turn_id],
+                    )?;
+                }
             }
         }
         tx.execute(
@@ -1506,19 +1631,23 @@ impl Db {
 
     /// 记一轮的开始。`turn_id` 由命令层生成并同时交给 `AppState.turns`，
     /// 保证事件、轮次、前端看到的「正在跑」是同一个 id。
+    ///
+    /// `prompt` 参数已退役：正文权威在 `atoms(channel='chat', kind='text.user')`，
+    /// 新轮一律写空串，避免同一份正文有两个来源。保留参数只是为了调用点签名稳定。
     pub fn start_turn(
         &self,
         session_id: &str,
         turn_id: &str,
-        prompt: &str,
+        _prompt: &str,
         author_id: Option<&str>,
+        prompt_atom_id: Option<&str>,
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().expect("db poisoned");
         conn.execute(
             "INSERT OR REPLACE INTO turns
-               (id, session_id, prompt, author_id, started_at, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'running')",
-            params![turn_id, session_id, prompt, author_id, now_ms()],
+               (id, session_id, prompt, prompt_atom_id, author_id, started_at, status)
+             VALUES (?1, ?2, '', ?3, ?4, ?5, 'running')",
+            params![turn_id, session_id, prompt_atom_id, author_id, now_ms()],
         )?;
         Ok(())
     }
@@ -1641,17 +1770,27 @@ impl Db {
         let at = now_ms();
         for e in events {
             seq += 1;
-            let sealed_at = if is_trace_stream_kind(&e.kind) {
-                let open: Option<(String, String, i64)> = tx
+            let sealed_at = if is_trace_stream_kind(&e.kind)
+                && open_allowed(&tx, Some(e.turn_id.as_str()))?
+            {
+                let open: Option<OpenStreamRow> = tx
                     .query_row(
-                        "SELECT id, payload_json, truncated FROM atoms
+                        "SELECT id, payload_json, truncated, refs_json, ext_json FROM atoms
                           WHERE session_id = ?1 AND channel = 'trace'
                             AND turn_id = ?2 AND kind = ?3 AND sealed_at IS NULL",
                         params![session_id, e.turn_id, e.kind],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)?)),
+                        |r| {
+                            Ok((
+                                r.get(0)?,
+                                r.get(1)?,
+                                r.get::<_, i64>(2)?,
+                                r.get(3)?,
+                                r.get(4)?,
+                            ))
+                        },
                     )
                     .optional()?;
-                if let Some((open_id, payload_json, truncated)) = open {
+                if let Some((open_id, payload_json, truncated, refs_json, ext_json)) = open {
                     let existing_truncated = truncated != 0;
                     let (payload, truncated) = if e.kind == "thought" {
                         merge_thought_payload(
@@ -1668,12 +1807,25 @@ impl Db {
                             existing_truncated || e.truncated,
                         )
                     };
+                    let refs_json = merge_refs_json(refs_json.as_deref(), e.refs.as_ref());
+                    let ext_json = merge_ext_json(ext_json.as_deref(), e.ext.as_ref());
                     // 同一段流只更新那一行；seq 跟着最新分片走，水位与 MAX(seq) 不脱节。
                     tx.execute(
                         "UPDATE atoms
-                            SET payload_json = ?1, truncated = ?2, at = ?3, seq = ?4
-                          WHERE id = ?5",
-                        params![payload, truncated as i64, at, seq, open_id],
+                            SET payload_json = ?1, truncated = ?2, at = ?3, seq = ?4,
+                                refs_json = ?5, ext_json = ?6,
+                                schema = COALESCE(?7, schema)
+                          WHERE id = ?8",
+                        params![
+                            payload,
+                            truncated as i64,
+                            at,
+                            seq,
+                            refs_json,
+                            ext_json,
+                            e.schema,
+                            open_id,
+                        ],
                     )?;
                     continue;
                 }
@@ -1687,8 +1839,10 @@ impl Db {
             tx.execute(
                 "INSERT INTO atoms
                    (id, session_id, channel, turn_id, seq, at, role, author_id,
-                    kind, payload_json, source, truncated, sealed_at)
-                 VALUES (?1, ?2, 'trace', ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    kind, payload_json, refs_json, ext_json, schema,
+                    source, truncated, sealed_at)
+                 VALUES (?1, ?2, 'trace', ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11,
+                         ?12, ?13, ?14)",
                 params![
                     format!("{session_id}-{seq}"),
                     session_id,
@@ -1698,6 +1852,9 @@ impl Db {
                     e.author_id,
                     e.kind,
                     e.payload_json,
+                    json_string(&e.refs),
+                    json_string(&e.ext),
+                    e.schema.unwrap_or(1),
                     e.source,
                     e.truncated as i64,
                     sealed_at,
@@ -1766,7 +1923,7 @@ impl Db {
     pub fn load_messages(&self, session_id: &str, limit: i64) -> rusqlite::Result<Vec<MessageRow>> {
         let conn = self.conn.lock().expect("db poisoned");
         let mut stmt = conn.prepare(
-            "SELECT id, seq, role, kind, payload_json, created_at, author_id, turn_id
+            "SELECT id, seq, role, kind, payload_json, created_at, author_id, turn_id, atom_kind
              FROM messages WHERE session_id = ?1 ORDER BY seq DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![session_id, limit], |r| {
@@ -1776,6 +1933,7 @@ impl Db {
                 seq: r.get(1)?,
                 role: r.get(2)?,
                 kind: r.get(3)?,
+                atom_kind: r.get(8)?,
                 payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
                 created_at: r.get(5)?,
                 author_id: r.get(6)?,
@@ -1799,7 +1957,7 @@ impl Db {
         let limit = limit.max(0);
         let conn = self.conn.lock().expect("db poisoned");
         let mut stmt = conn.prepare(
-            "SELECT id, seq, role, kind, payload_json, created_at, author_id, turn_id
+            "SELECT id, seq, role, kind, payload_json, created_at, author_id, turn_id, atom_kind
              FROM messages
              WHERE session_id = ?1 AND (?2 IS NULL OR seq < ?2)
              ORDER BY seq DESC LIMIT ?3",
@@ -1814,6 +1972,7 @@ impl Db {
                         seq: r.get(1)?,
                         role: r.get(2)?,
                         kind: r.get(3)?,
+                        atom_kind: r.get(8)?,
                         payload: serde_json::from_str(&payload)
                             .unwrap_or(serde_json::Value::Null),
                         created_at: r.get(5)?,
@@ -2549,6 +2708,9 @@ mod tests {
                 turn_id: None,
                 non_turn: true,
                 payload: serde_json::json!({"text": "在"}),
+                refs: None,
+                ext: None,
+                schema: None,
                 author_id: Some("u1".into()),
             }],
         )
@@ -2619,6 +2781,9 @@ mod tests {
             role: "user".into(),
             kind: "text".into(),
             payload: serde_json::json!({ "id": id, "text": text }),
+            refs: None,
+            ext: None,
+            schema: None,
         }
     }
 
@@ -2628,6 +2793,9 @@ mod tests {
             author_id: None,
             kind: "thought".into(),
             payload_json: serde_json::json!({ "text": text, "bytes": text.len() }).to_string(),
+            refs: None,
+            ext: None,
+            schema: None,
             source: "live".into(),
             truncated: false,
         }
@@ -2642,7 +2810,28 @@ mod tests {
             role: "player".into(),
             kind: kind.into(),
             payload: serde_json::json!({ "id": id, "role": "player", "text": text }),
+            refs: None,
+            ext: None,
+            schema: None,
         }
+    }
+
+    /// 原子 id 与 ACP messageId 分开给：同一段迟到回答的多个原子仍共享 messageId。
+    fn chat_stream_with_message_id(
+        atom_id: &str,
+        message_id: &str,
+        text: &str,
+        turn_id: &str,
+    ) -> MessageInput {
+        let mut msg = chat_stream(atom_id, text, turn_id, "text.agent");
+        msg.payload = serde_json::json!({
+            "id": message_id,
+            "role": "player",
+            "text": text,
+            "turnId": turn_id,
+        });
+        msg.refs = Some(serde_json::json!({ "messageId": message_id }));
+        msg
     }
 
     fn acp_state(db: &Db, id: &str) -> Option<String> {
@@ -2928,6 +3117,9 @@ mod tests {
             role: "user".into(),
             kind: "text".into(),
             payload: serde_json::json!({ "id": id, "text": text }),
+            refs: None,
+            ext: None,
+            schema: None,
         };
         db.append_messages("s-1", &[user("u1", "第一行标题\n第二行不要")])
             .expect("a");
@@ -2961,6 +3153,9 @@ mod tests {
             role: "player".into(),
             kind: "text".into(),
             payload: serde_json::json!({ "id": id, "text": text }),
+            refs: None,
+            ext: None,
+            schema: None,
         };
         db.append_messages("s-1", &[mk("m1", "第一句")]).expect("a");
         db.append_messages("s-1", &[mk("m2", "第二句")]).expect("b");
@@ -3010,8 +3205,8 @@ mod tests {
     #[test]
     fn message_falls_back_to_latest_running_turn() {
         let (db, path) = db_with_session();
-        db.start_turn("s-1", "turn-old", "旧轮", None).expect("old");
-        db.start_turn("s-1", "turn-latest", "新轮", None)
+        db.start_turn("s-1", "turn-old", "旧轮", None, None).expect("old");
+        db.start_turn("s-1", "turn-latest", "新轮", None, None)
             .expect("latest");
 
         db.append_messages("s-1", &[msg("m1", "没显式给", None, false)])
@@ -3027,7 +3222,7 @@ mod tests {
     #[test]
     fn message_has_null_turn_when_nothing_is_running() {
         let (db, path) = db_with_session();
-        db.start_turn("s-1", "turn-done", "已结束", None)
+        db.start_turn("s-1", "turn-done", "已结束", None, None)
             .expect("start");
         db.end_turn("turn-done", "finished", Some("end_turn"))
             .expect("end");
@@ -3072,7 +3267,7 @@ mod tests {
     #[test]
     fn blank_explicit_turn_id_falls_back_to_running_turn() {
         let (db, path) = db_with_session();
-        db.start_turn("s-1", "turn-running", "正在跑", None)
+        db.start_turn("s-1", "turn-running", "正在跑", None, None)
             .expect("start");
         let mut blank = msg("m-blank", "空白 id", None, false);
         blank.turn_id = Some("   ".into());
@@ -3229,11 +3424,16 @@ mod tests {
     #[test]
     fn append_events_writes_trace_atoms_visible_through_view() {
         let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
         let ev = |kind: &str, turn: &str| EventInput {
             turn_id: turn.into(),
             author_id: None,
             kind: kind.into(),
             payload_json: r#"{"text":"x"}"#.into(),
+            refs: None,
+            ext: None,
+            schema: None,
             source: "live".into(),
             truncated: false,
         };
@@ -3269,8 +3469,108 @@ mod tests {
     }
 
     #[test]
+    fn append_events_persists_refs_ext_and_schema_default() {
+        let (db, path) = db_with_session();
+        let refs = serde_json::json!({ "toolCallId": "c1" });
+        let ext = serde_json::json!({ "x.demo.a": 1 });
+        db.append_events(
+            "s-1",
+            &[EventInput {
+                turn_id: "t-1".into(),
+                author_id: None,
+                kind: "tool_call".into(),
+                payload_json: r#"{"toolCallId":"c1"}"#.into(),
+                refs: Some(refs.clone()),
+                ext: Some(ext.clone()),
+                schema: None,
+                source: "live".into(),
+                truncated: false,
+            }],
+        )
+        .expect("append event");
+
+        let conn = db.conn.lock().unwrap();
+        let (refs_json, ext_json, schema): (String, String, i64) = conn
+            .query_row(
+                "SELECT refs_json, ext_json, schema FROM atoms
+                  WHERE session_id = 's-1' AND kind = 'tool_call'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("refs/ext/schema");
+        assert_eq!(refs_json, refs.to_string(), "refs_json 必须逐字一致");
+        assert_eq!(ext_json, ext.to_string(), "ext_json 必须逐字一致");
+        assert_eq!(schema, 1, "未显式给 schema 时必须写 1");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn append_messages_persists_refs_ext_and_schema_default() {
+        let (db, path) = db_with_session();
+        let mut message = msg("m-1", "正文", None, true);
+        message.refs = Some(serde_json::json!({ "messageId": "m-1" }));
+        message.ext = Some(serde_json::json!({ "x.demo.b": 2 }));
+        db.append_messages("s-1", &[message]).expect("append message");
+
+        let conn = db.conn.lock().unwrap();
+        let (refs_json, ext_json, schema): (String, String, i64) = conn
+            .query_row(
+                "SELECT refs_json, ext_json, schema FROM atoms WHERE id = 'm-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("message refs/ext/schema");
+        assert_eq!(refs_json, r#"{"messageId":"m-1"}"#);
+        assert_eq!(ext_json, r#"{"x.demo.b":2}"#);
+        assert_eq!(schema, 1);
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn open_stream_fragments_merge_ext_shallowly_and_keep_old_refs() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
+        let mut first = thought("一", "t-1");
+        first.refs = Some(serde_json::json!({ "messageId": "m-1" }));
+        first.ext = Some(serde_json::json!({ "x.demo.a": 1, "x.demo.keep": "old" }));
+        let mut second = thought("二", "t-1");
+        second.refs = None;
+        second.ext = Some(serde_json::json!({ "x.demo.a": 2, "x.demo.b": 3 }));
+        db.append_events("s-1", &[first]).expect("first fragment");
+        db.append_events("s-1", &[second]).expect("second fragment");
+
+        let conn = db.conn.lock().unwrap();
+        let (count, refs_json, ext_json): (i64, String, String) = conn
+            .query_row(
+                "SELECT COUNT(*), refs_json, ext_json FROM atoms
+                  WHERE session_id = 's-1' AND kind = 'thought'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("merged open row");
+        assert_eq!(count, 1, "同一段流只能留一行");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&refs_json).unwrap(),
+            serde_json::json!({ "messageId": "m-1" }),
+            "新分片没带 refs 时保留旧值"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&ext_json).unwrap(),
+            serde_json::json!({ "x.demo.a": 2, "x.demo.keep": "old", "x.demo.b": 3 }),
+            "ext 浅合并：同名键取新值，其余键保留"
+        );
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn five_thought_chunks_merge_into_one_open_atom() {
         let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
         for part in ["一", "二", "三", "四", "五"] {
             db.append_events("s-1", &[thought(part, "t-1")])
                 .expect("append thought chunk");
@@ -3301,6 +3601,8 @@ mod tests {
     #[test]
     fn tool_call_seals_the_thought_stream_and_the_next_thought_opens_a_new_row() {
         let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
         db.append_events("s-1", &[thought("前", "t-1")])
             .expect("thought before");
         db.append_events(
@@ -3310,6 +3612,9 @@ mod tests {
                 author_id: None,
                 kind: "tool_call".into(),
                 payload_json: r#"{"toolCallId":"call-1","title":"读文件"}"#.into(),
+                refs: None,
+                ext: None,
+                schema: None,
                 source: "live".into(),
                 truncated: false,
             }],
@@ -3349,9 +3654,9 @@ mod tests {
     }
 
     #[test]
-    fn finishing_a_turn_seals_its_open_thought_and_late_chunks_start_a_new_row() {
+    fn finishing_a_turn_seals_its_open_thought_and_late_chunks_stay_sealed() {
         let (db, path) = db_with_session();
-        db.start_turn("s-1", "t-1", "问", None).expect("start");
+        db.start_turn("s-1", "t-1", "问", None, None).expect("start");
         db.append_events("s-1", &[thought("前", "t-1")])
             .expect("thought before end");
         db.end_turn("t-1", "finished", Some("end_turn"))
@@ -3369,7 +3674,7 @@ mod tests {
             )
             .expect("thought rows");
         assert_eq!(count, 2, "终态后不能累加回旧行");
-        assert_eq!(sealed_count, 1, "旧行已封口，迟到分片开出的新行仍 open");
+        assert_eq!(sealed_count, 2, "终态后迟到分片也必须直接封口");
         drop(conn);
         std::fs::remove_file(&path).ok();
     }
@@ -3377,6 +3682,8 @@ mod tests {
     #[test]
     fn thought_accumulation_stops_at_eight_kilobytes_and_marks_truncated() {
         let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
         let chunk = "x".repeat(5000);
         for _ in 0..2 {
             db.append_events("s-1", &[thought(&chunk, "t-1")])
@@ -3396,6 +3703,8 @@ mod tests {
     #[test]
     fn reopening_the_db_seals_open_rows_left_by_a_previous_process() {
         let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
         db.append_events("s-1", &[thought("写到一半", "t-1")])
             .expect("open thought");
         drop(db);
@@ -3436,6 +3745,8 @@ mod tests {
     #[test]
     fn chat_agent_text_chunks_merge_and_a_different_message_id_seals_the_previous_row() {
         let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
         db.append_messages("s-1", &[chat_stream("m-1", "你", "t-1", "text.agent")])
             .expect("first fragment");
         db.append_messages("s-1", &[chat_stream("m-1", "好", "t-1", "text.agent")])
@@ -3471,6 +3782,8 @@ mod tests {
     #[test]
     fn chat_non_stream_messages_seal_open_agent_text_and_stay_one_row_each() {
         let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
         db.append_messages("s-1", &[chat_stream("m-1", "答", "t-1", "text")])
             .expect("agent stream");
         let user = MessageInput {
@@ -3481,6 +3794,9 @@ mod tests {
             role: "user".into(),
             kind: "text".into(),
             payload: serde_json::json!({ "id": "u-1", "role": "user", "text": "问" }),
+            refs: None,
+            ext: None,
+            schema: None,
         };
         db.append_messages("s-1", &[user]).expect("user message");
 
@@ -3497,6 +3813,123 @@ mod tests {
             )
             .expect("open agent");
         assert_eq!(open_agent, 0, "用户消息到达后 agent 正文段必须封口");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn agent_text_arriving_after_finished_turn_is_sealed() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-finished", "问", None, None)
+            .expect("start turn");
+        db.end_turn("t-finished", "finished", Some("end_turn"))
+            .expect("finish turn");
+
+        db.append_messages(
+            "s-1",
+            &[chat_stream("m-late", "迟到正文", "t-finished", "text.agent")],
+        )
+        .expect("late agent text");
+
+        let conn = db.conn.lock().unwrap();
+        let (sealed_at, status): (Option<i64>, String) = conn
+            .query_row(
+                "SELECT a.sealed_at, t.status
+                   FROM atoms a JOIN turns t ON t.id = a.turn_id
+                  WHERE a.id = 'm-late'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("late atom");
+        assert_eq!(status, "finished");
+        assert!(sealed_at.is_some(), "终态轮的迟到正文不能留 open");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn agent_text_fragments_in_running_turn_merge_and_stay_open() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-running", "问", None, None)
+            .expect("start turn");
+
+        db.append_messages(
+            "s-1",
+            &[chat_stream("m-running", "你", "t-running", "text.agent")],
+        )
+        .expect("first fragment");
+        db.append_messages(
+            "s-1",
+            &[chat_stream("m-running", "好", "t-running", "text.agent")],
+        )
+        .expect("second fragment");
+
+        let rows = db.load_messages("s-1", 10).expect("load");
+        assert_eq!(rows.len(), 1, "running 轮的同一段正文仍归并成一行");
+        assert_eq!(rows[0].payload["text"], "你好");
+        let conn = db.conn.lock().unwrap();
+        let open: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM atoms
+                  WHERE session_id = 's-1' AND id = 'm-running' AND sealed_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("open row");
+        assert_eq!(open, 1, "running 轮允许继续归并");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn late_fragments_after_finished_turn_do_not_merge_and_are_all_sealed() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-late", "问", None, None)
+            .expect("start turn");
+        db.end_turn("t-late", "finished", Some("end_turn"))
+            .expect("finish turn");
+
+        let first = chat_stream_with_message_id("late-atom-1", "m-late", "第一片", "t-late");
+        let second = chat_stream_with_message_id("late-atom-2", "m-late", "第二片", "t-late");
+        db.append_messages("s-1", &[first])
+            .expect("first late fragment");
+        db.append_messages("s-1", &[second])
+            .expect("second late fragment");
+
+        let conn = db.conn.lock().unwrap();
+        let (count, sealed_count, open_count): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), SUM(sealed_at IS NOT NULL), SUM(sealed_at IS NULL)
+                   FROM atoms
+                  WHERE session_id = 's-1' AND turn_id = 't-late'
+                    AND json_extract(payload_json, '$.id') = 'm-late'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("late fragment rows");
+        assert_eq!(count, 2, "终态后同一 messageId 的迟到分片不能再归并");
+        assert_eq!(sealed_count, 2, "两条迟到分片都必须封口");
+        assert_eq!(open_count, 0, "终态轮不能留 open 行");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn non_turn_message_is_sealed_immediately() {
+        let (db, path) = db_with_session();
+        db.append_messages("s-1", &[msg("m-non-turn", "非轮次消息", None, true)])
+            .expect("append non-turn message");
+
+        let conn = db.conn.lock().unwrap();
+        let (turn_id, sealed_at): (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT turn_id, sealed_at FROM atoms WHERE id = 'm-non-turn'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("non-turn atom");
+        assert_eq!(turn_id, None);
+        assert!(sealed_at.is_some(), "无轮次消息永远不会有分片续写，必须直接封口");
         drop(conn);
         std::fs::remove_file(&path).ok();
     }
@@ -3549,6 +3982,87 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    #[test]
+    fn append_messages_writes_dot_kind_while_messages_view_returns_legacy_kind() {
+        let (db, path) = db_with_session();
+        db.append_messages(
+            "s-1",
+            &[chat_stream("m-player-text", "答", "t-1", "text")],
+        )
+        .expect("append player text");
+
+        let rows = db.load_messages("s-1", 10).expect("load messages");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, "text", "视图仍给聊天区 legacy kind");
+        assert_eq!(rows[0].atom_kind, "text.agent", "IPC 带 atoms.kind");
+
+        let conn = db.conn.lock().unwrap();
+        let atom_kind: String = conn
+            .query_row(
+                "SELECT kind FROM atoms WHERE id = 'm-player-text'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("atom kind");
+        let view_kind: String = conn
+            .query_row(
+                "SELECT kind FROM messages WHERE id = 'm-player-text'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("view kind");
+        assert_eq!(atom_kind, "text.agent");
+        assert_eq!(view_kind, "text");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn m2_08_migrates_legacy_chat_kinds_and_view_still_returns_legacy() {
+        let (db, path) = db_with_session();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS atoms_kind_guard_ins;
+                 DROP TRIGGER IF EXISTS atoms_kind_guard_upd;
+                 INSERT INTO atoms
+                   (id, session_id, channel, turn_id, seq, at, role, author_id,
+                    kind, payload_json, source, truncated, sealed_at)
+                 VALUES
+                   ('u', 's-1', 'chat', 't-1', 1, 1, 'user', NULL,
+                    'text', '{\"id\":\"u\",\"role\":\"user\",\"text\":\"问\"}', 'live', 0, 1),
+                   ('a', 's-1', 'chat', 't-1', 2, 2, 'player', NULL,
+                    'text', '{\"id\":\"a\",\"role\":\"player\",\"text\":\"答\"}', 'live', 0, 1),
+                   ('s', 's-1', 'chat', 't-1', 3, 3, 'system', NULL,
+                    'text', '{\"id\":\"s\",\"role\":\"system\",\"text\":\"提示\"}', 'live', 0, 1),
+                   ('aside', 's-1', 'chat', 't-1', 4, 4, 'user', NULL,
+                    'aside', '{\"id\":\"aside\",\"role\":\"user\",\"text\":\"插话\"}', 'live', 0, 1),
+                   ('delegate', 's-1', 'chat', 't-1', 5, 5, 'user', NULL,
+                    'delegate', '{\"id\":\"delegate\",\"role\":\"user\",\"text\":\"派活\",\"delegate\":{}}', 'live', 0, 1),
+                   ('text-delegate', 's-1', 'chat', 't-1', 6, 6, 'user', NULL,
+                    'text', '{\"id\":\"text-delegate\",\"role\":\"user\",\"text\":\"派活\",\"delegate\":{}}', 'live', 0, 1);",
+            )
+            .expect("seed legacy chat atoms");
+        }
+        drop(db);
+
+        for _ in 0..2 {
+            let reopened = Db::open(&path).expect("reopen migrates");
+            let rows = reopened.load_messages("s-1", 20).expect("load messages");
+            let by_id: std::collections::HashMap<_, _> = rows
+                .iter()
+                .map(|row| (row.id.as_str(), (row.kind.as_str(), row.atom_kind.as_str())))
+                .collect();
+            assert_eq!(by_id["u"], ("text", "text.user"));
+            assert_eq!(by_id["a"], ("text", "text.agent"));
+            assert_eq!(by_id["s"], ("text", "notice.system"));
+            assert_eq!(by_id["aside"], ("aside", "aside"));
+            assert_eq!(by_id["delegate"], ("delegate", "delegate.card"));
+            assert_eq!(by_id["text-delegate"], ("delegate", "delegate.card"));
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
     fn seed_sixty_messages(db: &Db) {
         let messages: Vec<MessageInput> = (1..=60)
             .map(|i| MessageInput {
@@ -3559,6 +4073,9 @@ mod tests {
                 role: if i % 2 == 0 { "player" } else { "user" }.into(),
                 kind: "text".into(),
                 payload: serde_json::json!({ "id": format!("m{i}"), "text": format!("第{i}条") }),
+                refs: None,
+                ext: None,
+                schema: None,
             })
             .collect();
         db.append_messages("s-1", &messages).expect("seed");
@@ -3641,6 +4158,9 @@ mod tests {
             author_id: None,
             kind: kind.into(),
             payload_json: r#"{"text":"x"}"#.into(),
+            refs: None,
+            ext: None,
+            schema: None,
             source: "live".into(),
             truncated: false,
         };
@@ -3669,13 +4189,13 @@ mod tests {
 
 
     #[test]
-    fn turns_record_prompt_and_finish_state() {
+    fn turns_record_finish_state_without_a_prompt_copy() {
         let (db, path) = temp_db();
         db.save_profiles(&[sample()]).expect("save");
         db.upsert_session(&session("s-1", None)).expect("insert");
 
-        db.start_turn("s-1", "t1", "现在几点", None).expect("start");
-        db.start_turn("s-1", "t2", "写个文件", None).expect("start2");
+        db.start_turn("s-1", "t1", "现在几点", None, None).expect("start");
+        db.start_turn("s-1", "t2", "写个文件", None, None).expect("start2");
         db.end_turn("t2", "failed", Some("timeout: timed out after 120s"))
             .expect("end");
 
@@ -3688,11 +4208,139 @@ mod tests {
         // 没收到结束的轮次保持 running —— 界面据此显示「还在跑」
         assert_eq!(turns[1].status, "running");
         assert!(turns[1].ended_at.is_none());
-        assert_eq!(turns[1].prompt, "现在几点");
+        assert_eq!(turns[1].prompt, "", "新轮不再写正文副本");
 
         db.delete_session("s-1").expect("del");
         assert!(db.load_turns("s-1", 10).expect("load2").is_empty());
 
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn start_turn_records_prompt_atom_id() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "正文不该落在这里", None, Some("u-1"))
+            .expect("start turn");
+
+        let conn = db.conn.lock().expect("db poisoned");
+        let (prompt, atom_id): (String, Option<String>) = conn
+            .query_row(
+                "SELECT prompt, prompt_atom_id FROM turns WHERE id = 't-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("read turn");
+        assert_eq!(prompt, "");
+        assert_eq!(atom_id.as_deref(), Some("u-1"));
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn user_atom_backfills_turns_prompt_atom_id_in_the_same_transaction() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "", None, None).expect("start turn");
+
+        let user = MessageInput {
+            id: "u-1".into(),
+            author_id: None,
+            turn_id: Some("t-1".into()),
+            non_turn: false,
+            role: "user".into(),
+            kind: "text.user".into(),
+            payload: serde_json::json!({ "id": "u-1", "role": "user", "text": "问一下" }),
+            refs: None,
+            ext: None,
+            schema: None,
+        };
+        db.append_messages("s-1", &[user]).expect("append user atom");
+
+        let conn = db.conn.lock().expect("db poisoned");
+        let joined: Option<String> = conn
+            .query_row(
+                "SELECT a.id FROM turns t
+                   JOIN atoms a ON a.id = t.prompt_atom_id
+                  WHERE t.id = 't-1'
+                    AND a.channel = 'chat' AND a.kind = 'text.user'
+                    AND a.role = 'user'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("prompt atom must join back");
+        assert_eq!(joined.as_deref(), Some("u-1"));
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn old_prompt_survives_migration_while_new_turns_stay_empty() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "sincearc-db-prompt-atom-migrate-{}-{nanos}.db",
+            std::process::id()
+        ));
+        {
+            let conn = Connection::open(&path).expect("raw open");
+            conn.execute_batch(
+                "CREATE TABLE profiles (
+                   id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                   launch_kind TEXT NOT NULL CHECK (launch_kind IN ('local','wsl','ssh')),
+                   distro TEXT, shell TEXT, program TEXT NOT NULL,
+                   args_json TEXT NOT NULL DEFAULT '[]', env_json TEXT NOT NULL DEFAULT '{}',
+                   default_cwd TEXT NOT NULL,
+                   ssh_host TEXT, ssh_port INTEGER, ssh_user TEXT, ssh_auth TEXT, ssh_key_path TEXT,
+                   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 CREATE TABLE sessions (
+                   id TEXT PRIMARY KEY, acp_session_id TEXT,
+                   profile_id TEXT REFERENCES profiles(id) ON DELETE CASCADE,
+                   title TEXT NOT NULL DEFAULT '新会话', cwd TEXT NOT NULL DEFAULT '',
+                   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 CREATE TABLE turns (
+                   id TEXT PRIMARY KEY,
+                   session_id TEXT NOT NULL,
+                   prompt TEXT NOT NULL DEFAULT '',
+                   author_id TEXT,
+                   started_at INTEGER NOT NULL,
+                   ended_at INTEGER,
+                   status TEXT NOT NULL DEFAULT 'running');
+                 INSERT INTO sessions (id, acp_session_id, title, cwd, created_at, updated_at)
+                   VALUES ('s-old', 'acp-old', '老会话', '/tmp', 1, 1);
+                 INSERT INTO turns (id, session_id, prompt, started_at, status)
+                   VALUES ('t-old', 's-old', '老问题正文', 1, 'running');",
+            )
+            .expect("seed old schema");
+        }
+
+        let db = Db::open(&path).expect("migrate old db");
+        let old = db.load_turns("s-old", 10).expect("load old turns");
+        assert_eq!(old.len(), 1);
+        assert_eq!(old[0].prompt, "老问题正文", "老行不能被迁移改写");
+
+        db.start_turn("s-old", "t-new", "新正文", None, Some("u-new"))
+            .expect("start new turn");
+
+        let conn = db.conn.lock().expect("db poisoned");
+        let old_atom: Option<String> = conn
+            .query_row(
+                "SELECT prompt_atom_id FROM turns WHERE id = 't-old'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("old prompt atom");
+        assert_eq!(old_atom, None, "老行没有 prompt 归属");
+        let (new_prompt, new_atom): (String, Option<String>) = conn
+            .query_row(
+                "SELECT prompt, prompt_atom_id FROM turns WHERE id = 't-new'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("new turn");
+        assert_eq!(new_prompt, "", "新轮只存 atom id，不存正文副本");
+        assert_eq!(new_atom.as_deref(), Some("u-new"));
+        drop(conn);
         std::fs::remove_file(&path).ok();
     }
 
@@ -3702,7 +4350,7 @@ mod tests {
         db.save_profiles(&[sample()]).expect("save");
         db.upsert_session(&session("s-1", None)).expect("insert");
 
-        db.start_turn("s-1", "t-cancel", "继续写", None)
+        db.start_turn("s-1", "t-cancel", "继续写", None, None)
             .expect("start");
         db.append_messages(
             "s-1",
@@ -3714,6 +4362,9 @@ mod tests {
                 role: "player".into(),
                 kind: "text".into(),
                 payload: serde_json::json!({ "id": "partial-1", "text": "写了一半" }),
+                refs: None,
+                ext: None,
+                schema: None,
             }],
         )
         .expect("append partial");
@@ -3739,7 +4390,7 @@ mod tests {
         db.save_profiles(&[sample()]).expect("save");
         db.upsert_session(&session("s-1", None)).expect("insert");
 
-        db.start_turn("s-1", "t1", "改个文件", None).expect("start");
+        db.start_turn("s-1", "t1", "改个文件", None, None).expect("start");
         assert_eq!(
             db.load_turns("s-1", 1).expect("running")[0].status,
             "running"
@@ -3791,7 +4442,7 @@ mod tests {
         db.save_profiles(&[sample()]).expect("save");
         db.upsert_session(&session("s-1", None)).expect("insert");
 
-        db.start_turn("s-1", "t-fail", "跑一下", None)
+        db.start_turn("s-1", "t-fail", "跑一下", None, None)
             .expect("start");
         db.end_turn(
             "t-fail",
@@ -3826,19 +4477,22 @@ mod tests {
             author_id: None,
             kind: kind.into(),
             payload_json: "{}".into(),
+            refs: None,
+            ext: None,
+            schema: None,
             source: "live".into(),
             truncated: false,
         };
         // 60 条：验证「单会话只留最近 N 条」
-        db.start_turn("s-1", "t-new", "新的一轮", None).expect("turn");
+        db.start_turn("s-1", "t-new", "新的一轮", None, None).expect("turn");
         for _ in 0..60 {
             // tool_call 是非归并类事件，每条独立成行；这里验证的是保留策略，不是流归并。
             db.append_events("s-1", &[ev("tool_call", "t-new")]).expect("e");
         }
         // 一个正在跑的轮次（不收尾）：它的事件清空后，轮次本身不能被删
-        db.start_turn("s-1", "t-running", "还在跑", None).expect("turn2");
+        db.start_turn("s-1", "t-running", "还在跑", None, None).expect("turn2");
         // 等用户批准的轮次同样还没收尾，不能当成「没有事件的历史轮」清掉
-        db.start_turn("s-1", "t-waiting", "等你批准", None)
+        db.start_turn("s-1", "t-waiting", "等你批准", None, None)
             .expect("turn3");
         db.mark_turn_waiting_approval("t-waiting")
             .expect("waiting");
@@ -3897,7 +4551,7 @@ mod tests {
     fn permission_decision_lands_in_the_turn_and_reads_back_its_author() {
         let (db, _path) = temp_db();
         seed_session(&db, "s-1");
-        db.start_turn("s-1", "t-1", "改个文件", Some("m-7"))
+        db.start_turn("s-1", "t-1", "改个文件", Some("m-7"), None)
             .expect("start turn");
 
         // 轮次上下文：决定要挂在同一会话、同一支线下，作者用来显示「谁的动作」
@@ -3917,6 +4571,9 @@ mod tests {
                 author_id: Some("m-7".to_string()),
                 kind: "permission_decision".to_string(),
                 payload_json: r#"{"verdict":"allow","optionId":"allow_once"}"#.to_string(),
+                refs: None,
+                ext: None,
+                schema: None,
                 source: "live".to_string(),
                 truncated: false,
             }],
@@ -3990,6 +4647,9 @@ mod tests {
             author_id: None,
             kind: "thought".into(),
             payload_json: r#"{"text":"x"}"#.into(),
+            refs: None,
+            ext: None,
+            schema: None,
             source: "live".into(),
             truncated: false,
         };

@@ -4,7 +4,15 @@ export type MessageRow = { id: string, seq: number, role: string, authorId: stri
 /**
  * 这一条属于哪一轮；老数据/非轮次消息为 None
  */
-turnId: string | null, kind: string, 
+turnId: string | null, 
+/**
+ * 视图按读路径习惯映射后的历史 kind（`text` / `aside` / `delegate`）。
+ */
+kind: string, 
+/**
+ * atoms 上的权威 kind（`text.user` / `text.agent` / `aside` …）。
+ */
+atomKind: string, 
 /**
  * 原始消息对象（前端 `Message` 的形状），不做有损转换
  */

@@ -15,6 +15,11 @@ L4 消息   message(id)    正文 / 旁注 aside / 派活发起行；带 kind
 L5 轨迹   session_events thought / tool_call / permission，属于某一轮
 ```
 
+> 存储形态（2026-10-26 M2 之后）：L4 与 L5 的**唯一写入表是 `atoms`**，按 `channel` 分
+> `chat` / `trace` 两条流；`messages`、`session_events` 这两个名字现在是 atoms 上的同名视图，
+> 列与旧表一一对应。读代码时把它们当「视图」看，写代码时只能写 atoms
+> （见 `docs/message-model.md` §12–§14）。
+
 两条硬规则：
 
 1. **上层 id 只能从下层派生**。界面只持有 `uiSessionId`；`profileId`、`acpSessionId`、

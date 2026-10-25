@@ -438,3 +438,39 @@ M2-05  schema.sql 同步（新库直接是 atoms + 视图）
 界面    轨迹面板内容与改前一致（DOM 文本比对）；聊天区无变化
 门禁    cargo / clippy / tsc / node --test / vite build 全绿
 ```
+
+## 14. 扩展点落地（E16 收口复盘，2026-10-26）
+
+模型 §1/§2 承诺了 `schema`、`refs`、`ext` 三个扩展点，M2 只把前两个建成了空列、`schema` 直接漏了。
+本节把「结构上留位」补成「写入路径真的填」—— 扩展点不能只在建表语句里存在。
+
+### 14.1 列
+
+```sql
+ALTER TABLE atoms ADD COLUMN schema INTEGER NOT NULL DEFAULT 1;   -- 迁移 M2-06
+refs_json / ext_json 已有，本卡开始真写
+```
+
+### 14.2 写入
+
+```
+refs   trace 捕获时就地填（不靠调用方记得传）：
+         tool_call / tool_call_update → {"toolCallId": …}
+         permission / permission_decision → {"requestId": …}
+         delegate / delegate.result → {"childSession": …}
+         text.agent 流 → {"messageId": …}
+       规则：refs 只放「定位键」，能用来把后续原子挂回同一个对象；
+             放不进命名键结构的信息进 payload，不塞 refs。
+ext    协议里 `x.<domain>.<name>` 形状的键原样收进 ext_json（未注册也留），渲染忽略。
+schema 每个 kind 的 payload 版本，初始一律 1；改 payload 的可选字段 +1 次版本，
+       改语义/删字段升主版本（旧读法保留）。
+```
+
+### 14.3 验收
+
+```
+写一条带 refs={"toolCallId":"c1"} 与 ext={"x.demo.a":1} 的 atom → 读回逐字一致
+真库跑一轮带工具调用的对话 → SELECT refs_json FROM atoms WHERE kind='tool_call' 非空
+                              SELECT count(*) FROM atoms WHERE refs_json IS NOT NULL > 0
+界面不变（refs/ext 不参与渲染）
+```

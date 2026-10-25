@@ -100,7 +100,14 @@ export function usePrompt({
       // 用户消息先上屏，真假链路都一样；落库等拿到回执或明确失败后再做。
       // 只有真要发 prompt 时才置 busy —— 连接阶段置 busy 会把输入框锁住，
       // 而连接可能要几十秒，用户会以为界面卡死了（docs/desktop-ux.md §1.6）。
-      const userMsg: Message = { id: newId("u"), role: "user", text, at, turnId: null };
+      const userMsg: Message = {
+        id: newId("u"),
+        role: "user",
+        atomKind: "text.user",
+        text,
+        at,
+        turnId: null,
+      };
       patchSession(sid, (s) => ({
         ...s,
         busy: !needConnect,
@@ -112,6 +119,7 @@ export function usePrompt({
                 {
                   id: connectNoteId,
                   role: "system" as const,
+                  atomKind: "notice.system",
                   text: "正在连接 agent…（连接期间可以继续操作界面）",
                   at,
                   turnId: null,
@@ -254,7 +262,6 @@ export function usePrompt({
             {
               id: turnId,
               at,
-              userText: text,
               branches: [
                 {
                   playerId: target?.authorId ?? MAIN_AGENT_ID,

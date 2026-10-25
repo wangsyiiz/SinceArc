@@ -20,7 +20,14 @@ export function pushSystemNotice(
   opts?: { also?: (m: Message) => Message },
 ): Message {
   const at = now();
-  const msg: Message = { id: newId("sys"), role: "system", text, at, turnId: null };
+  const msg: Message = {
+    id: newId("sys"),
+    role: "system",
+    atomKind: "notice.system",
+    text,
+    at,
+    turnId: null,
+  };
   patchSession(sid, (s) => ({ ...s, msgs: [...s.msgs, msg] }));
   messagesAppend(sid, [
     {

@@ -223,6 +223,27 @@ pub fn is_chat_kind(kind: &str) -> bool {
     spec(kind).is_some_and(|entry| entry.chat)
 }
 
+/// 老 `MessageInput` 形状 → chat 原子 kind。
+///
+/// 写入路径只认这一张表；调用方仍可按历史形状传 `text` / `aside` / `delegate`。
+/// 已经在用点号 kind 的调用方由注册表兜底放行，未登记的 kind 返回 `None`，
+/// 继续交给 kind 守卫拒绝。
+pub fn chat_kind_of(role: &str, legacy_kind: &str, has_delegate: bool) -> Option<MessageKind> {
+    let mapped = match (role, legacy_kind, has_delegate) {
+        ("system", _, _) => Some(MessageKind::NoticeSystem),
+        ("user", _, true) | ("user", "delegate", _) => Some(MessageKind::DelegateCard),
+        ("user", "aside", _) => Some(MessageKind::Aside),
+        ("user", "text", _) => Some(MessageKind::TextUser),
+        ("player" | "agent", "text", _) => Some(MessageKind::TextAgent),
+        _ => None,
+    };
+    mapped.or_else(|| {
+        spec(legacy_kind)
+            .filter(|entry| entry.chat)
+            .map(|entry| entry.kind)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +273,21 @@ mod tests {
         assert!(is_chat_kind("text.agent"));
         assert!(!is_chat_kind("thought"));
         assert!(!is_chat_kind("未来新类型"));
+    }
+
+    #[test]
+    fn legacy_chat_shapes_map_to_registered_chat_kinds() {
+        let kind = |role, legacy, delegate| {
+            chat_kind_of(role, legacy, delegate).map(MessageKind::as_str)
+        };
+        assert_eq!(kind("user", "text", false), Some("text.user"));
+        assert_eq!(kind("user", "aside", false), Some("aside"));
+        assert_eq!(kind("user", "delegate", false), Some("delegate.card"));
+        assert_eq!(kind("user", "text", true), Some("delegate.card"));
+        assert_eq!(kind("player", "text", false), Some("text.agent"));
+        assert_eq!(kind("agent", "text", false), Some("text.agent"));
+        assert_eq!(kind("system", "text", false), Some("notice.system"));
+        assert_eq!(kind("player", "text.agent", false), Some("text.agent"));
+        assert_eq!(kind("player", "thought", false), None);
     }
 }

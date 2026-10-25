@@ -11,23 +11,10 @@ import type { Message, Player, QuotedRef } from "@/types";
 import { cn } from "@/lib/utils";
 import { delegateActionLabel } from "@/lib/delegate-status";
 import { delegateCapsDetail } from "@/lib/delegate-target";
-import { isChatKind } from "@/lib/chat-kinds";
+import { chatVisibilityOf } from "@/lib/chat-visibility";
 import { normaliseTurnId } from "@/lib/turn-align";
 import { PlayerAvatar } from "./PlayerAvatar";
 import { RemovedBadge } from "./RemovedBadge";
-
-/**
- * 老 `Message` 形状 → 新的 kind 名（M0 的过渡投影）。
- * 认不出来的 message 一律返回 null —— 不进聊天区，等它升级成真正的 atom kind。
- */
-function chatKindOf(message: Message): string | null {
-  if (message.role === "system") return "notice.system";
-  if (message.role === "player") return "text.agent";
-  if (message.kind === "aside") return "aside";
-  if (message.delegate) return "delegate.card";
-  if (message.role === "user") return "text.user";
-  return null;
-}
 
 /**
  * 把 @handle 渲染成该玩家的颜色。
@@ -90,10 +77,10 @@ export function MessageItem({
 }) {
   const [delegateExpanded, setDelegateExpanded] = useState(false);
 
-  const chatKind = chatKindOf(message);
-  if (chatKind === null || !isChatKind(chatKind)) return null;
+  const chatKind = chatVisibilityOf(message);
+  if (chatKind === null) return null;
 
-  if (message.role === "system") {
+  if (chatKind === "notice.system") {
     return (
       <div className="flex justify-center py-0.5">
         <span className="rounded-full bg-surface-3/35 px-2.5 py-1 font-mono text-micro text-ink-3">
@@ -103,18 +90,18 @@ export function MessageItem({
     );
   }
 
-  if (message.role === "user") {
-    if (message.kind === "aside") {
-      return (
-        <div className="flex flex-col gap-0.5 text-caption text-ink-3">
-          <div className="whitespace-pre-wrap">{renderText(message.text, players)}</div>
-          {message.asideReceipt && (
-            <div className="whitespace-pre-wrap">{message.asideReceipt}</div>
-          )}
-        </div>
-      );
-    }
+  if (chatKind === "aside" && message.role === "user") {
+    return (
+      <div className="flex flex-col gap-0.5 text-caption text-ink-3">
+        <div className="whitespace-pre-wrap">{renderText(message.text, players)}</div>
+        {message.asideReceipt && (
+          <div className="whitespace-pre-wrap">{message.asideReceipt}</div>
+        )}
+      </div>
+    );
+  }
 
+  if (chatKind === "delegate.card" && message.role === "user") {
     if (message.delegate) {
       const handleId = message.delegate.handleId;
       const action = delegateActionLabel(delegatePhase);
@@ -161,7 +148,10 @@ export function MessageItem({
         </div>
       );
     }
+    return null;
+  }
 
+  if (chatKind === "text.user" && message.role === "user") {
     return (
       <div className="flex flex-col items-end gap-1.5">
         {message.quoted && <div className="max-w-3/4"><QuoteBlock quoted={message.quoted} /></div>}
@@ -171,6 +161,8 @@ export function MessageItem({
       </div>
     );
   }
+
+  if (chatKind !== "text.agent" || message.role !== "player") return null;
 
   const p = players.find((x) => x.id === message.playerId);
   const traceTurnId = normaliseTurnId(message.turnId);

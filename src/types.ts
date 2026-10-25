@@ -143,7 +143,6 @@ export type TraceTurnStatus =
 export interface TraceTurn {
   id: string;
   at: string;
-  userText: string;
   branches: TraceBranch[];
   /** 这一轮的终态；finished + stopReason='cancelled' 时界面上要写「已停止」 */
   status?: TraceTurnStatus;
@@ -163,6 +162,8 @@ export interface MessageDelegate {
 interface MessageBase {
   id: string;
   at: string;
+  /** atoms.kind 的权威点号 kind；聊天区可见性只认它。 */
+  atomKind: string;
   /** 这一条属于哪一轮；null/undefined = 不属于任何轮（老数据、非轮次提示） */
   turnId?: string | null;
 }

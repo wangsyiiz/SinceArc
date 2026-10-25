@@ -8,6 +8,7 @@ const msg = (id: string, turnId?: string | null): Message => ({
   id,
   role: "player",
   playerId: "p1",
+  atomKind: "text.agent",
   text: id,
   at: "10:00",
   turnId,

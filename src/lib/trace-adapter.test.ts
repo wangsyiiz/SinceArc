@@ -39,7 +39,7 @@ test("工具调用与思考各自成为一条活动，用量被忽略", () => {
   assert.equal(view.activities[0].kind, "execute");
   assert.equal(view.activities[0].title, "terminal: date");
   assert.equal(view.activities[1].kind, "thinking");
-  assert.equal(view.turns[0].userText, "现在几点");
+  assert.equal("userText" in view.turns[0], false, "轨迹视图不再携带 prompt 正文");
 });
 
 test("截断的思考带可见标记，不能只是被裁短", () => {

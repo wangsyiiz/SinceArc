@@ -18,7 +18,7 @@
 | 7 | `@` 提及 | 同上（成员关系即真源） | — | 无（投递走 `session_prompt`） | 🟡 | 被 @ 成员拿不到上下文（E2.2） |
 | 8 | 权限应答 | `pending` 登记表 | 待答→已答/过期 | `agent_respond_request` | 🟡 | 无取消路径（E3.1） |
 | 9 | 模式（编辑审批） | `sessions.mode_override` + `profiles.default_mode` | 跟随 / 覆盖 / 不推 | `session_apply_mode` | ✅ | — |
-| 10 | 活动轨迹与写锁 | `session_events`（待建）+ 内存视图 | 运行中→完成/错误 | 无（当前前端派生） | 🟡 | 事件未落库、轨迹由前端推导、思考/操作未进历史（E10） |
+| 10 | 活动轨迹与写锁 | `atoms(channel='trace')`（`session_events` 是其视图）+ 内存视图 | 运行中→完成/错误 | `session_trace` | ✅ | 已落库并按轮聚合；思考按块入库（§12.1） |
 | 11 | 设置页 | 各实体 | — | 多条命令 | ✅ | 发现/成员/诊断/外观都在 |
 | 12 | 布局与主题 | 本地偏好 | — | 前端 | ✅ | — |
 | 13 | 日志与诊断 | `sincearc.log` + 事件日志面板 | — | `client_log` | 🟡 | 用法未写进排障手册（L4） |

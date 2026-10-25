@@ -8,8 +8,8 @@ export function turnLabel(index: number): string {
 /**
  * 轮头完整摘要：「第 N 轮 · 时刻 · 结局」。
  *
- * 只取轮的身份、开始时刻与结局，不读 `userText` —— 轨迹面板只讲过程，
- * 用户原文留在聊天区（docs/message-model.md §11）。
+ * 只取轮的身份、开始时刻与结局 —— 轨迹面板只讲过程，用户原文留在聊天区
+ * （docs/message-model.md §11）。
  */
 export function turnHeading(
   turn: Pick<TraceTurn, "at">,
