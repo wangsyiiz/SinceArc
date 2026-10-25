@@ -31,6 +31,19 @@ use crate::wire::{Meta, WireEvent};
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
+const STEER_INVALID: u32 = 50001;
+/// 插话回执的认领窗口：响应之后再等这么久，等那条「无 messageId」的 chunk 到。
+const STEER_RECLAIM_WINDOW: Duration = Duration::from_secs(2);
+const STEER_NO_COMMAND: u32 = 50404;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AsideEvent {
+    session_id: String,
+    ui_session_id: Option<String>,
+    text: String,
+}
+
 /// 权限应答的本地轨迹元数据（不进 ACP 协议）。
 ///
 /// 收成一个结构体而不是继续往命令上加参数：参数已经到 10 个，clippy 的 too_many_arguments 是
@@ -1272,12 +1285,17 @@ fn emit_text(
     profile_id: &str,
 ) {
     let Some(f) = flush else { return };
+    let mut update = serde_json::json!({
+        "sessionUpdate": "agent_message_chunk",
+        "content": { "type": "text", "text": f.text },
+    });
+    // 正文的 messageId 原样带给前端：插话回执没有这个字段，前端就是靠它把两者分开的。
+    if let Some(message_id) = f.message_id {
+        update["messageId"] = serde_json::Value::String(message_id);
+    }
     let params = serde_json::json!({
         "sessionId": f.session_id,
-        "update": {
-            "sessionUpdate": "agent_message_chunk",
-            "content": { "type": "text", "text": f.text },
-        },
+        "update": update,
     });
     let event = AcpEvent::Notification {
         method: "session/update".to_string(),
@@ -1485,6 +1503,8 @@ pub async fn agent_connect(
     let delegates = state.delegates.clone();
     // 命令是 ACP 会话的运行时属性：按会话 id 覆盖，不落库、不依赖界面会话归属。
     let commands_for_task = state.commands.clone();
+    // 插话只要让事件泵知道「这条文本是不是回执」，不参与轮次/归属判断。
+    let asides_for_task = state.asides.clone();
     // 轨迹采集：事件落地需要库和「这一轮是谁」——两者都在 task 外面，clone 进去
     let db_for_trace = state.db.clone();
     let turns_for_trace = state.turns.clone();
@@ -1662,6 +1682,11 @@ pub async fn agent_connect(
                     }
                     if is_text {
                         // 攒起来；够 4KB 就先发一段（长回答开头不必等满 30ms）
+                        let message_id = params
+                            .get("update")
+                            .and_then(|u| u.get("messageId"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string);
                         let chunk = params
                             .get("update")
                             .and_then(|u| u.get("content"))
@@ -1669,11 +1694,41 @@ pub async fn agent_connect(
                             .and_then(serde_json::Value::as_str)
                             .unwrap_or("")
                             .to_string();
+                        if let Some(acp_sid) = session_id.as_deref() {
+                            if message_id.is_none() {
+                                if let Some(aside_ui) = asides_for_task.pending_ui(acp_sid).await {
+                                    // 回执与正文不能混在同一个合批里：先冲正文，再单独发 aside。
+                                    emit_text(text.flush(), &bus, &profile_for_task);
+                                    if !chunk.is_empty() {
+                                        let aside = AsideEvent {
+                                            session_id: acp_sid.to_string(),
+                                            ui_session_id: aside_ui.or(ui_session_id.clone()),
+                                            text: chunk,
+                                        };
+                                        bus.emit_json(
+                                            "acp.aside",
+                                            true,
+                                            Meta::for_session(
+                                                profile_for_task.clone(),
+                                                acp_sid.to_string(),
+                                                aside.ui_session_id.clone(),
+                                                author_id.clone(),
+                                            ),
+                                            &aside,
+                                        );
+                                    }
+                                    // 认领即结算：否则窗口内后续的无 id chunk 也会被当成回执。
+                                    asides_for_task.settle(acp_sid).await;
+                                    continue;
+                                }
+                            }
+                        }
                         emit_text(
                             text.push(
                                 session_id.clone(),
                                 ui_session_id.clone(),
                                 author_id.clone(),
+                                message_id,
                                 &chunk,
                             ),
                             &bus,
@@ -3280,7 +3335,7 @@ pub async fn session_prompt(
     // 归属以「这一次是谁发的」为准：同一个成员会话可能被不同的群 @ 过，
     // 事件必须投给当前这次提问所在的群，而不是它上一次被绑的地方。
     if let Some(ui) = ui_session_id.clone() {
-        record.ui_session_id = Some(ui);
+        record.ui_session_id = Some(ui.clone());
         state
             .insert_session(session_id.clone(), record.clone())
             .await;
@@ -3433,6 +3488,85 @@ pub async fn session_prompt(
                 });
             }
         }
+    });
+
+    Ok(())
+}
+
+fn steer_precheck(text: &str, commands: &[CommandDto]) -> Result<String, CmdError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(CmdError::new(STEER_INVALID, "参数不合法"));
+    }
+    if !commands.iter().any(|command| command.name == "steer") {
+        return Err(CmdError::new(
+            STEER_NO_COMMAND,
+            "这个 agent 没有声明 steer 命令",
+        ));
+    }
+    Ok(text.to_string())
+}
+
+/// 往当前轮插一句话：发 `/steer <text>`，但不把这次请求当成新一轮。
+#[tauri::command]
+pub async fn session_steer(
+    state: State<'_, AppState>,
+    session_id: String,
+    ui_session_id: String,
+    text: String,
+) -> Result<(), CmdError> {
+    if text.trim().is_empty() {
+        return Err(CmdError::new(STEER_INVALID, "参数不合法"));
+    }
+
+    let record = state.session(&session_id).await.ok_or_else(|| {
+        CmdError::new(
+            50300,
+            format!("未知会话（不属于任何已连接 agent）：{session_id}"),
+        )
+    })?;
+    let handle = state.get(&record.profile_id).await.ok_or_else(|| {
+        CmdError::new(
+            50400,
+            format!("连接不存在或已断开：{}", record.profile_id),
+        )
+    })?;
+
+    let commands = state.commands.commands_of(&session_id).await;
+    let text = steer_precheck(&text, &commands)?;
+    let params = serde_json::json!({
+        "sessionId": session_id,
+        "prompt": [{ "type": "text", "text": format!("/steer {text}") }],
+    });
+    state
+        .asides
+        .begin(&session_id, Some(ui_session_id.clone()))
+        .await;
+
+    let pending = match handle.proc.request_detached("session/prompt", params).await {
+        Ok(pending) => pending,
+        Err(e) => {
+            state.asides.settle(&session_id).await;
+            return Err(e.into());
+        }
+    };
+    let proc = handle.proc.clone();
+    let asides = state.asides.clone();
+    let sid = session_id.clone();
+    tracing::info!(
+        target: "sincearc::ipc", session = %session_id, ui = %ui_session_id,
+        chars = text.chars().count(), "steer sent"
+    );
+    tokio::spawn(async move {
+        // 响应必须吃掉：它只表示 agent 收下了这次投递，不是当前那一轮的终态。
+        if let Err(e) = proc.await_response(pending, PROMPT_TIMEOUT).await {
+            tracing::warn!(target: "sincearc::ipc", session = %sid, error = %e, "steer request failed");
+        }
+        // **不要**在这里结算：回执那条 chunk 和这个响应是两条独立的报文，谁先被处理没有保证
+        // （实测出现过响应先到）。留一个短窗口，等回执 chunk 自己认领（无 messageId），
+        // 或者等到窗口超时兜底 —— 否则回执会掉进正文流，被当成回答的一部分落库。
+        tokio::time::sleep(STEER_RECLAIM_WINDOW).await;
+        asides.settle(&sid).await;
     });
 
     Ok(())
@@ -4424,5 +4558,33 @@ mod resume_decision_tests {
         assert_eq!(resumed_note(Some(""), "codex"), "");
         let n = resumed_note(Some("hermes"), "codex");
         assert!(n.contains("hermes") && n.contains("codex") && n.contains("不等价"), "{n}");
+    }
+}
+
+#[cfg(test)]
+mod steer_tests {
+    use super::*;
+
+    fn command(name: &str) -> CommandDto {
+        CommandDto {
+            name: name.into(),
+            description: None,
+            hint: None,
+        }
+    }
+
+    #[test]
+    fn steer_rejects_empty_text() {
+        let err = steer_precheck("   ", &[command("steer")]).expect_err("空文本必须被拒");
+        assert_eq!(err.code, 50001);
+        assert_eq!(err.msg, "参数不合法");
+    }
+
+    #[test]
+    fn steer_rejects_agent_without_command() {
+        let err = steer_precheck("改成杭州西湖", &[command("status")])
+            .expect_err("没有 steer 命令必须被拒");
+        assert_eq!(err.code, 50404);
+        assert_eq!(err.msg, "这个 agent 没有声明 steer 命令");
     }
 }

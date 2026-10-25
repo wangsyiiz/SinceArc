@@ -77,6 +77,17 @@ export function MessageItem({
   }
 
   if (message.role === "user") {
+    if (message.kind === "aside") {
+      return (
+        <div className="flex flex-col gap-0.5 text-caption text-ink-3">
+          <div className="whitespace-pre-wrap">{renderText(message.text, players)}</div>
+          {message.asideReceipt && (
+            <div className="whitespace-pre-wrap">{message.asideReceipt}</div>
+          )}
+        </div>
+      );
+    }
+
     if (message.delegate) {
       const handleId = message.delegate.handleId;
       const action = delegateActionLabel(delegatePhase);

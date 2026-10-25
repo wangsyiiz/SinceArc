@@ -16,12 +16,16 @@ pub struct Flush {
     pub session_id: Option<String>,
     pub ui_session_id: Option<String>,
     pub author_id: Option<String>,
+    pub message_id: Option<String>,
     pub text: String,
 }
 
+/// 合批的「同一段」判据：会话 / 界面会话 / 作者 / 消息 id 任一变化都必须先冲掉上一段。
+type CoalesceKey = (Option<String>, Option<String>, Option<String>, Option<String>);
+
 #[derive(Debug, Default)]
 pub struct TextCoalescer {
-    key: Option<(Option<String>, Option<String>, Option<String>)>,
+    key: Option<CoalesceKey>,
     text: String,
 }
 
@@ -39,9 +43,10 @@ impl TextCoalescer {
         session_id: Option<String>,
         ui_session_id: Option<String>,
         author_id: Option<String>,
+        message_id: Option<String>,
         chunk: &str,
     ) -> Option<Flush> {
-        let key = (session_id, ui_session_id, author_id);
+        let key = (session_id, ui_session_id, author_id, message_id);
         let mut flushed = None;
 
         if self.key.as_ref() != Some(&key) {
@@ -72,11 +77,13 @@ impl TextCoalescer {
         if self.text.is_empty() {
             return None;
         }
-        let (session_id, ui_session_id, author_id) = self.key.clone().unwrap_or((None, None, None));
+        let (session_id, ui_session_id, author_id, message_id) =
+            self.key.clone().unwrap_or((None, None, None, None));
         Some(Flush {
             session_id,
             ui_session_id,
             author_id,
+            message_id,
             text: std::mem::take(&mut self.text),
         })
     }
@@ -98,7 +105,7 @@ mod tests {
     fn 不足阈值时先攒着() {
         let mut c = TextCoalescer::default();
         let (s, u, a) = sid();
-        assert!(c.push(s, u, a, "你好").is_none());
+        assert!(c.push(s, u, a, None, "你好").is_none());
         assert_eq!(c.pending(), 6);
     }
 
@@ -107,7 +114,7 @@ mod tests {
         let mut c = TextCoalescer::default();
         let (s, u, a) = sid();
         let big = "字".repeat(1400); // 4200 字节
-        let out = c.push(s, u, a, &big).expect("够 4KB 要立刻发");
+        let out = c.push(s, u, a, None, &big).expect("够 4KB 要立刻发");
         assert_eq!(out.text.len(), big.len());
         assert_eq!(c.pending(), 0, "发完要清空");
     }
@@ -116,9 +123,9 @@ mod tests {
     fn 换会话时先把上一段冲掉_顺序不串() {
         let mut c = TextCoalescer::default();
         let (s, u, a) = sid();
-        c.push(s.clone(), u.clone(), a.clone(), "第一段");
+        c.push(s.clone(), u.clone(), a.clone(), None, "第一段");
         let out = c
-            .push(Some("acp-2".into()), u, a, "第二段")
+            .push(Some("acp-2".into()), u, a, None, "第二段")
             .expect("换 key 必须先冲上一段");
         assert_eq!(out.session_id.as_deref(), Some("acp-1"));
         assert_eq!(out.text, "第一段");
@@ -129,5 +136,17 @@ mod tests {
     fn 空缓冲不发空事件() {
         let mut c = TextCoalescer::default();
         assert!(c.flush().is_none());
+    }
+
+    #[test]
+    fn message_id_变化时先冲上一段() {
+        let mut c = TextCoalescer::default();
+        let (s, u, a) = sid();
+        c.push(s.clone(), u.clone(), a.clone(), Some("m1".into()), "第一段");
+        let out = c
+            .push(s, u, a, Some("m2".into()), "第二段")
+            .expect("换 messageId 必须先冲上一段");
+        assert_eq!(out.message_id.as_deref(), Some("m1"));
+        assert_eq!(out.text, "第一段");
     }
 }

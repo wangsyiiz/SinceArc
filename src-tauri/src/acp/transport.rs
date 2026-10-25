@@ -95,6 +95,12 @@ impl std::error::Error for TransportError {}
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, Value>>>>>;
 
+/// 已写入 stdout、还没等到响应的请求。用于「投递成功就返回、响应后台吃掉」。
+pub struct PendingResponse {
+    id: u64,
+    rx: oneshot::Receiver<Result<Value, Value>>,
+}
+
 /// 一次 kill_tree 的结果。`clean = false` 表示可能有残留，界面要提示。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KillOutcome {
@@ -559,16 +565,12 @@ impl AgentProcess {
 }
 
 impl AgentProcess {
-    /// 发一条请求并等 id 匹配的响应。
-    ///
-    /// 与旧实现的区别：不再独占 `self` —— 内部用 pending 表配对，
-    /// 所以可以并发发多条（`&self`）。通知与 agent 请求走 `incoming`。
-    pub async fn request(
+    /// 发一条请求，写完 stdout 就返回等待句柄；错误在写入阶段原样返回。
+    pub async fn request_detached(
         &self,
         method: &str,
         params: Value,
-        timeout: Duration,
-    ) -> Result<Value, TransportError> {
+    ) -> Result<PendingResponse, TransportError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel::<Result<Value, Value>>();
         self.pending
@@ -582,7 +584,16 @@ impl AgentProcess {
             "method": method,
             "params": params,
         });
-        let mut payload = serde_json::to_string(&msg).map_err(TransportError::Json)?;
+        let mut payload = match serde_json::to_string(&msg) {
+            Ok(payload) => payload,
+            Err(e) => {
+                self.pending
+                    .lock()
+                    .expect("pending map poisoned")
+                    .remove(&id);
+                return Err(TransportError::Json(e));
+            }
+        };
         payload.push('\n');
 
         {
@@ -603,6 +614,17 @@ impl AgentProcess {
             }
         }
 
+        Ok(PendingResponse { id, rx })
+    }
+
+    /// 等一条已发出的请求的响应；超时会从 pending 表摘掉，避免泄漏。
+    pub async fn await_response(
+        &self,
+        pending: PendingResponse,
+        timeout: Duration,
+    ) -> Result<Value, TransportError> {
+        let PendingResponse { id, rx } = pending;
+
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(Ok(v))) => Ok(v),
             Ok(Ok(Err(e))) => Err(TransportError::Agent(e)),
@@ -615,6 +637,20 @@ impl AgentProcess {
                 Err(TransportError::Timeout(timeout.as_secs()))
             }
         }
+    }
+
+    /// 发一条请求并等 id 匹配的响应。
+    ///
+    /// 与旧实现的区别：不再独占 `self` —— 内部用 pending 表配对，
+    /// 所以可以并发发多条（`&self`）。通知与 agent 请求走 `incoming`。
+    pub async fn request(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, TransportError> {
+        let pending = self.request_detached(method, params).await?;
+        self.await_response(pending, timeout).await
     }
 
     /// 回一条响应给 agent（用于 client 侧实现的 `fs/*`、`session/request_permission` 等）。

@@ -23,6 +23,7 @@ import { pushSystemNotice } from "@/lib/notices";
 import { delegateCancelFailureMessage, type DelegatePhase } from "@/lib/delegate-status";
 import { mergeMessages } from "@/lib/messages-merge";
 import { buildPlayers } from "@/lib/players";
+import { steerGate, type SteerGate } from "@/lib/steer-availability";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
 import { StatusBar } from "@/components/StatusBar";
@@ -39,6 +40,7 @@ import type {
   AgentProfile,
   GithubPR,
   GithubRepo,
+  Message,
   PermissionRequest,
   Player,
   SessionSummary,
@@ -62,6 +64,8 @@ import {
   sessionMemberRemove,
   sessionMembers,
   sessionRebind,
+  messagesAppend,
+  sessionSteer,
   sessionUpsert,
   type AgentUser,
   type DiscoveryCandidate,
@@ -344,7 +348,7 @@ export default function App() {
     },
     [permissions.expire, sessions],
   );
-  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, commandsByAcpSession, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired, onTraceChanged: () => setTraceTick((t) => t + 1) });
+  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, commandsByAcpSession, messageIdByAcpSession, acpByUiSession, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired, onTraceChanged: () => setTraceTick((t) => t + 1) });
 
   useEffect(() => {
     permissionDiagRef.current = diag;
@@ -414,9 +418,17 @@ export default function App() {
   // 已经移除，靠它就等于靠一个永远空着的值
   const sessionProfile = profiles.find((p) => p.id === activeSession?.profileId) ?? activeProfile;
   // 命令属于 ACP 会话，不属于 UI 会话：没有 acpSessionId 就不传，块不出现。
-  const acpCommands = activeSession?.acpSessionId
-    ? commandsByAcpSession[activeSession.acpSessionId]
-    : undefined;
+  /**
+   * 活动会话的 ACP 会话 id：优先用会话记录的字段，没有就用事件流里学到的映射。
+   * 新建会话的数据库列可能还没回填，而命令列表 / 能力面板 / 插话入口都挂在 ACP 会话上。
+   */
+  const activeAcpSid = activeSession?.acpSessionId ?? acpByUiSession[lastSessionId] ?? null;
+  const acpCommands = activeAcpSid ? commandsByAcpSession[activeAcpSid] : undefined;
+  /** 插话入口的三态：off=这个 agent 没声明 steer；waiting=声明了但还没见过正文分组；on=可插 */
+  const steerMode: SteerGate = steerGate(
+    acpCommands,
+    activeAcpSid ? !!messageIdByAcpSession[activeAcpSid] : false,
+  );
   const isStopping = !!cancelling[lastSessionId] && state.busy;
 
   /**
@@ -929,6 +941,41 @@ export default function App() {
     [send, lastSessionId, patchSession, refreshTitles],
   );
 
+  const sendSteer = useCallback(
+    async (raw: string) => {
+      const sid = lastSessionId;
+      const acpSid = activeAcpSid;
+      const text = raw.trim();
+      if (!sid || !acpSid || !text) return;
+
+      const aside: Message = {
+        id: newId("aside"),
+        role: "user",
+        text,
+        at: now(),
+        kind: "aside",
+      };
+      // 先上屏：后端回执可能比 IPC 返回值更早到，回执要能找到这一条。
+      patchSession(sid, (s) => ({ ...s, msgs: [...s.msgs, aside] }));
+      try {
+        await sessionSteer(acpSid, sid, text);
+      } catch (e) {
+        patchSession(sid, (s) => ({ ...s, msgs: s.msgs.filter((m) => m.id !== aside.id) }));
+        const err = asCmdError(e);
+        clog("ASIDE-ERR", `ui=${sid} acp=${acpSid} ${err.code} ${err.msg}`);
+        pushSystemNotice(patchSession, sid, `插话没有发出：${err.msg}`);
+        return;
+      }
+
+      await messagesAppend(sid, [
+        { id: aside.id, role: "user", kind: "aside", payload: { ...aside, kind: "aside" } },
+      ]).catch((e: unknown) => {
+        clog("ASIDE-DB-ERR", `ui=${sid} id=${aside.id} ${String(e)}`);
+      });
+    },
+    [activeAcpSid, lastSessionId, patchSession],
+  );
+
   /**
    * 停止按钮必须把取消送到 agent，而不是只关掉本地的「生成中」。
    * 请求送达后继续保持 busy，等 promptResult / promptFailed 给出真正终态。
@@ -1320,6 +1367,9 @@ export default function App() {
                         <Composer
                           busy={state.busy}
                           onSend={sendInGroup}
+                          onSteer={sendSteer}
+                          steerGate={steerMode}
+                          commands={acpCommands}
                           onStop={stopGeneration}
                           placeholder={
                             isStopping ? "正在停止…" : "输入消息，@ 玩家提问…"

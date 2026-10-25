@@ -3,7 +3,7 @@
 //! 只放「进程 + 握手结果」。会话、消息、权限请求属于会话层（E2 起），不放这里 ——
 //! 一个 profile 可以连多个 session，两者的生命周期不同。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -221,6 +221,56 @@ impl Commands {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct AsideRequest {
+    pub ui_session_id: Option<String>,
+}
+
+/// 已发出、还没收到 `session/prompt` 响应的插话。
+///
+/// 只活在内存里：它的作用是让事件泵把没有 `messageId` 的文本认成回执，
+/// 并在请求真正结算后清掉，不影响任何持久化状态。
+#[derive(Clone, Default)]
+pub struct Asides(Arc<Mutex<HashMap<String, VecDeque<AsideRequest>>>>);
+
+impl Asides {
+    pub async fn begin(&self, acp_session_id: &str, ui_session_id: Option<String>) {
+        self.0
+            .lock()
+            .await
+            .entry(acp_session_id.to_string())
+            .or_default()
+            .push_back(AsideRequest { ui_session_id });
+    }
+
+    /// 返回仍待结算插话的界面会话。None = 这条 ACP 会话没有 in-flight aside。
+    pub async fn pending_ui(&self, acp_session_id: &str) -> Option<Option<String>> {
+        self.0
+            .lock()
+            .await
+            .get(acp_session_id)
+            .and_then(|requests| requests.front())
+            .map(|request| request.ui_session_id.clone())
+    }
+
+    /// 回执已经按「无 messageId」认领掉：立刻结算，别让窗口拖到下一段正文。
+    pub async fn settle_if_text_arrived(&self, acp_session_id: &str) {
+        self.settle(acp_session_id).await;
+    }
+
+    /// 一次请求只有一个响应；按发起顺序结算最早的一条。
+    pub async fn settle(&self, acp_session_id: &str) {
+        let mut all = self.0.lock().await;
+        let Some(requests) = all.get_mut(acp_session_id) else {
+            return;
+        };
+        requests.pop_front();
+        if requests.is_empty() {
+            all.remove(acp_session_id);
+        }
+    }
+}
+
 pub struct AppState {
     /// 全局事件总线：所有域的出站事件都从这里走（wire.rs）。
     pub bus: Arc<crate::wire::EventBus>,
@@ -239,6 +289,8 @@ pub struct AppState {
     pub delegates: Arc<Delegates>,
     /// ACP 会话 id → 最近一次 `availableCommands`（会话状态，不落库）。
     pub commands: Commands,
+    /// 已经发出、还没收到 prompt 响应的插话（内存态，只用于事件归因）。
+    pub asides: Asides,
     /// 配置与会话记账（同步 SQLite，操作都是毫秒级，直接锁用）
     pub db: Arc<crate::db::Db>,
     /// 已经请求取消、还没等到终态的 ACP 会话。
@@ -373,6 +425,7 @@ impl AppState {
             turns: Arc::new(Turns::default()),
             delegates: Arc::new(Delegates::default()),
             commands: Commands::default(),
+            asides: Asides::default(),
             db: Arc::new(db),
             cancel_requested: Cancels::default(),
             locks: WriteLocks::default(),
