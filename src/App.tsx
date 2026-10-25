@@ -20,6 +20,7 @@ import { autoApproveCovered, type AutoApproveLevel } from "@/lib/auto-approve";
 import { settingsKey } from "@/lib/settings-key";
 import { profileLabel } from "@/lib/format";
 import { pushSystemNotice } from "@/lib/notices";
+import { delegateCancelFailureMessage, type DelegatePhase } from "@/lib/delegate-status";
 import { mergeMessages } from "@/lib/messages-merge";
 import { buildPlayers } from "@/lib/players";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
@@ -48,6 +49,7 @@ import { DEFAULT_THREAD_SETTINGS } from "@/types";
 import {
   asCmdError,
   agentUsersList,
+  delegateCancel,
   delegateTask,
   delegateWait,
   messageFromPayload,
@@ -132,6 +134,8 @@ export default function App() {
   const [composerH, setComposerH] = useState(128);
   /** 已发出取消请求、还在等 promptResult / promptFailed 的界面会话 */
   const [cancelling, setCancelling] = useState<Record<string, boolean>>({});
+  /** handleId → 这次派活的界面阶段；终态后删掉，引用条不显示历史 */
+  const [delegateRunning, setDelegateRunning] = useState<Record<string, DelegatePhase>>({});
   const [resumeBusy, setResumeBusy] = useState(false);
 
 
@@ -967,6 +971,33 @@ export default function App() {
     state.acts,
   ]);
 
+  /** 停一次派活：先进入「正在停止…」，失败必须删 key，否则会一直卡在停止中。 */
+  const cancelDelegate = useCallback(
+    async (handleId: string) => {
+      if (delegateRunning[handleId] !== "running") return;
+      setDelegateRunning((current) => ({ ...current, [handleId]: "cancelling" }));
+      try {
+        await delegateCancel(handleId);
+        // 成功也不删：等 delegateWait 收到子会话终态再退出「正在停止…」。
+      } catch (e) {
+        const err = asCmdError(e);
+        setDelegateRunning((current) => {
+          const next = { ...current };
+          delete next[handleId];
+          return next;
+        });
+        if (lastSessionId) {
+          pushSystemNotice(
+            patchSession,
+            lastSessionId,
+            `停止失败：${delegateCancelFailureMessage(err.code)}`,
+          );
+        }
+      }
+    },
+    [delegateRunning, lastSessionId, patchSession],
+  );
+
   /**
    * 用发现到的命令直接建连接：program / args / 环境 / 工作目录都已经知道，
    * 让用户再手填一遍是白费功夫（也最容易填错）。这里只组装预填值，
@@ -1188,6 +1219,12 @@ export default function App() {
                               key={m.id}
                               message={m}
                               players={renderPlayers}
+                              delegatePhase={
+                                m.role === "user" && m.delegate
+                                  ? delegateRunning[m.delegate.handleId]
+                                  : undefined
+                              }
+                              onCancelDelegate={cancelDelegate}
                             />
                           ))}
                           {state.acts
@@ -1359,6 +1396,7 @@ export default function App() {
           onSubmit={async (task) => {
             const sid = lastSessionId;
             const handle = await delegateTask(sid, delegateTarget.id, task);
+            setDelegateRunning((current) => ({ ...current, [handle.handleId]: "running" }));
             void messagesLoad(sid)
               .then((page) => {
                 const fromDb = page.messages.map((row) => messageFromPayload(row.payload));
@@ -1370,6 +1408,9 @@ export default function App() {
                 }));
               })
               .catch((e) => console.warn("[delegate] messages refresh failed", e));
+            // 终态到了才收绳：cancelled 要留在引用条上（答「停没停」），
+            // timed_out 说明还在跑（wait 只是不等了），这两种都不能把「停止」摘掉。
+            let keepPhase = false;
             void delegateWait(handle.handleId, 120_000)
               .then((outcome) => {
                 if (outcome.status === "failed") {
@@ -1379,9 +1420,25 @@ export default function App() {
                     `这条派活没成功：${outcome.stopReason ?? "原因不明"}`,
                   );
                 }
+                if (outcome.status === "cancelled") {
+                  keepPhase = true;
+                  setDelegateRunning((current) => ({
+                    ...current,
+                    [handle.handleId]: "cancelled",
+                  }));
+                }
+                if (outcome.status === "timed_out") keepPhase = true;
               })
               .catch(() => {
-                // 超时/异常不写消息，轨迹那一步已经写着进行中
+                // 异常不写消息，轨迹那一步已经写着进行中
+              })
+              .finally(() => {
+                if (keepPhase) return;
+                setDelegateRunning((current) => {
+                  const next = { ...current };
+                  delete next[handle.handleId];
+                  return next;
+                });
               });
           }}
         />

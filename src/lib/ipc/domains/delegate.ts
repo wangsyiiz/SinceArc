@@ -28,3 +28,8 @@ export function delegateTask(
 export function delegateWait(handleId: string, timeoutMs: number): Promise<DelegateOutcomeDto> {
   return callDelegate<DelegateOutcomeDto>("delegate_wait", { handleId, timeoutMs });
 }
+
+/** 请求停止；返回 `cancelling` 只代表通知已送达，终态仍等 delegateWait。 */
+export function delegateCancel(handleId: string): Promise<DelegateOutcomeDto> {
+  return callDelegate<DelegateOutcomeDto>("delegate_cancel", { handleId });
+}

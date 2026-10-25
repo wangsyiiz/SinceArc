@@ -345,6 +345,33 @@ test("派活失败时同一步写失败原因", () => {
   assert.equal(activity.status, "error");
 });
 
+test("用户停止的派活是已停止，不是还在跑也不是回来", () => {
+  const dto = turn({
+    status: "cancelled",
+    items: [
+      {
+        seq: 1,
+        at: t0,
+        authorId: null,
+        kind: "delegate",
+        payload: { handleId: "dlg-3", targetName: "Kimi", context: "task_only" },
+        truncated: false,
+      },
+      {
+        seq: 2,
+        at: t0 + 300,
+        authorId: null,
+        kind: "delegate_result",
+        payload: { handleId: "dlg-3", status: "cancelled", elapsedMs: 300 },
+        truncated: false,
+      },
+    ],
+  });
+  const activity = toTraceView([dto]).activities[0];
+  assert.equal(activity.title, "Kimi 已停止");
+  assert.equal(activity.status, "cancelled");
+});
+
 test("还在跑的轮次支线不收尾，结束的收尾", () => {
   const running = toTraceView([turn({ status: "running", endedAt: null })]);
   assert.equal(running.turns[0].branches.length, 0);

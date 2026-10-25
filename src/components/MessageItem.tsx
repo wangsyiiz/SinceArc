@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { FileText, GitPullRequest, CircleDot, SendHorizontal } from "lucide-react";
+import { FileText, GitPullRequest, CircleDot, SendHorizontal, Square } from "lucide-react";
 import type { Message, Player, QuotedRef } from "@/types";
 import { cn } from "@/lib/utils";
+import { delegateActionLabel } from "@/lib/delegate-status";
 import { delegateCapsDetail } from "@/lib/delegate-target";
 import { PlayerAvatar } from "./PlayerAvatar";
 import { RemovedBadge } from "./RemovedBadge";
@@ -52,7 +53,17 @@ function QuoteBlock({ quoted }: { quoted: QuotedRef }) {
   );
 }
 
-export function MessageItem({ message, players }: { message: Message; players: Player[] }) {
+export function MessageItem({
+  message,
+  players,
+  delegatePhase,
+  onCancelDelegate,
+}: {
+  message: Message;
+  players: Player[];
+  delegatePhase?: string | null;
+  onCancelDelegate?: (handleId: string) => void | Promise<void>;
+}) {
   const [delegateExpanded, setDelegateExpanded] = useState(false);
 
   if (message.role === "system") {
@@ -67,31 +78,49 @@ export function MessageItem({ message, players }: { message: Message; players: P
 
   if (message.role === "user") {
     if (message.delegate) {
+      const handleId = message.delegate.handleId;
+      const action = delegateActionLabel(delegatePhase);
       return (
-        <button
-          type="button"
-          aria-expanded={delegateExpanded}
-          onClick={() => setDelegateExpanded((expanded) => !expanded)}
-          className="flex w-full flex-col gap-1 border-l-2 border-line-1/60 pl-2.5 text-left"
-        >
+        <div className="flex w-full flex-col gap-1 border-l-2 border-line-1/60 pl-2.5 text-left">
           <div className="flex items-center gap-1.5 text-micro text-ink-3">
             <SendHorizontal size={12} className="shrink-0" />
-            <span className="min-w-0 truncate">
+            <button
+              type="button"
+              aria-expanded={delegateExpanded}
+              onClick={() => setDelegateExpanded((expanded) => !expanded)}
+              className="min-w-0 flex-1 truncate text-left"
+            >
               派活给 {message.delegate.targetName} ·{" "}
               {delegateCapsDetail(message.delegate.context, message.delegate.reason)}
-            </span>
+            </button>
+            {action === "停止" ? (
+              <button
+                type="button"
+                aria-label="停止这次派活"
+                onClick={() => void onCancelDelegate?.(handleId)}
+                className="flex shrink-0 items-center gap-1 text-caption text-ink-3 hover:text-ink-1"
+              >
+                <Square size={12} />
+                停止
+              </button>
+            ) : action ? (
+              <span className="shrink-0 text-caption text-ink-3">{action}</span>
+            ) : null}
           </div>
-          <div
+          <button
+            type="button"
+            aria-expanded={delegateExpanded}
+            onClick={() => setDelegateExpanded((expanded) => !expanded)}
             title={message.text}
             className={cn(
               // 展开只改「看不看得全」，不改字号 —— 点一下字变大，会像整块内容在跳。
-              "text-small text-ink-2",
+              "text-left text-small text-ink-2",
               delegateExpanded ? "whitespace-pre-wrap" : "truncate",
             )}
           >
             {renderText(message.text, players)}
-          </div>
-        </button>
+          </button>
+        </div>
       );
     }
 

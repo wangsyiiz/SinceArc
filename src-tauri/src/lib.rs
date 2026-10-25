@@ -216,6 +216,7 @@ pub fn run() {
             commands::session_cancel,
             commands::delegate_task,
             commands::delegate_wait,
+            commands::delegate_cancel,
             commands::profiles_load,
             commands::profiles_save,
             commands::settings_load,

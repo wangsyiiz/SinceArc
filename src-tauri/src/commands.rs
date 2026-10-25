@@ -1167,6 +1167,16 @@ fn prompt_success_outcome(
     }
 }
 
+/// 派活终态。取消优先于 agent 自己报的 stopReason：用户已经明确要求停止时，
+/// agent 随后回 `end_turn` 或中途报错都不该把这次派活说成正常完成 / 真失败。
+fn delegate_end_status(cancelled_by_user: bool, fallback: DelegateStatus) -> DelegateStatus {
+    if cancelled_by_user {
+        DelegateStatus::Cancelled
+    } else {
+        fallback
+    }
+}
+
 /// prompt 返回 Err 时的终态：用户点过停止就是 cancelled，否则是 failed + 可解释原因。
 fn prompt_failure_outcome(
     cancelled_by_user: bool,
@@ -2664,6 +2674,7 @@ async fn finish_delegate(
         if own_turn {
             let turn_status = match status {
                 DelegateStatus::Failed => "failed",
+                DelegateStatus::Cancelled => "cancelled",
                 _ => "finished",
             };
             if let Err(e) = db.end_turn(turn_id, turn_status, stop_reason.as_deref()) {
@@ -2868,6 +2879,7 @@ pub async fn delegate_task(
     let parent_turn_for_task = parent_turn_id.clone();
     let own_turn_for_task = own_turn;
     let author_for_task = Some(member.id.clone());
+    let cancels_for_task = state.cancels();
     // ACP 的 session/prompt 终态是这一次 request 的响应，不经过 agent_connect 的入站循环；
     // 因此终态在这里收，正文 chunk 仍由转发 task 先追加进 buffer。
     tokio::spawn(async move {
@@ -2925,7 +2937,7 @@ pub async fn delegate_task(
                 );
             }
         }
-        let (status, stop_reason) = match result {
+        let (agent_status, stop_reason) = match result {
             Ok(value) => (
                 DelegateStatus::Finished,
                 value
@@ -2941,6 +2953,9 @@ pub async fn delegate_task(
                 (DelegateStatus::Failed, delegate_error_stop_reason(&e))
             }
         };
+        // 只在这里取一次：取走即清，终态之后不能再拿同一个标记影响下一轮。
+        let cancelled = cancels_for_task.take(&child_for_task).await;
+        let status = delegate_end_status(cancelled, agent_status);
         finish_delegate(
             &db_for_task,
             &delegates,
@@ -2975,6 +2990,58 @@ pub async fn delegate_wait(
     timeout_ms: u64,
 ) -> Result<DelegateOutcomeDto, CmdError> {
     wait_for_delegate(&state.delegates, &handle_id, timeout_ms).await
+}
+
+/// 取消一次派活。`session/cancel` 是 notification，送达不等于已停：
+/// 这里只把请求送到目标成员那条连接上的子会话，终态仍由 promptResult / promptFailed 决定。
+///
+/// 不 teardown 连接：成员连接上还有 TA 自己的会话和父会话那一轮，杀连接会连带停掉别人的活。
+#[tauri::command]
+pub async fn delegate_cancel(
+    state: State<'_, AppState>,
+    handle_id: String,
+) -> Result<DelegateOutcomeDto, CmdError> {
+    let entry = state
+        .delegates
+        .get(&handle_id)
+        .await
+        .ok_or_else(|| CmdError::new(50704, "delegate 句柄不存在"))?;
+    if entry.status != DelegateStatus::Running {
+        return Ok(outcome_from_entry(&entry));
+    }
+
+    let handle = state
+        .get(&entry.profile_id)
+        .await
+        .ok_or_else(|| CmdError::new(50300, "目标连接已断开，这次派活没有可停的对象"))?;
+
+    // 先打标记再发通知：agent 可能立刻回终态，晚一步就区分不出「取消导致的 failed」。
+    state.request_cancel(&entry.child_acp_session_id).await;
+    if let Err(e) = handle
+        .proc
+        .notify(
+            "session/cancel",
+            serde_json::json!({ "sessionId": entry.child_acp_session_id.clone() }),
+        )
+        .await
+    {
+        // 通知送不到也可能已经半死；这时更要让界面进入「正在停止」，等终态收尾。
+        tracing::warn!(
+            target: "sincearc::ipc", profile = %entry.profile_id, session = %entry.child_acp_session_id,
+            error = %e, "delegate cancel notify failed"
+        );
+    }
+
+    tracing::info!(
+        target: "sincearc::ipc", handle = %handle_id, session = %entry.child_acp_session_id,
+        target_member = %entry.target_member_id, "delegate cancel requested"
+    );
+    Ok(DelegateOutcomeDto {
+        status: "cancelling".to_string(),
+        summary: None,
+        elapsed_ms: delegate_elapsed_ms(entry.started_at),
+        stop_reason: None,
+    })
 }
 
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(600);
@@ -3893,8 +3960,8 @@ mod delegate_tests {
     use tokio::sync::Notify;
 
     use super::{
-        forkable_member_session, guard_delegate_concurrency, guard_delegate_depth, plan_child,
-        wait_for_delegate,
+        delegate_end_status, forkable_member_session, guard_delegate_concurrency,
+        guard_delegate_depth, plan_child, wait_for_delegate,
     };
     use crate::state::{ContextMode, ContextReason, DelegateEntry, DelegateStatus, Delegates};
 
@@ -3950,6 +4017,50 @@ mod delegate_tests {
         assert_eq!(forkable_member_session(""), None);
         assert_eq!(forkable_member_session(" \t\n"), None);
         assert_eq!(forkable_member_session(" x "), Some("x"));
+    }
+
+    #[test]
+    fn user_cancel_wins_over_the_agents_terminal_status() {
+        assert_eq!(
+            delegate_end_status(true, DelegateStatus::Finished),
+            DelegateStatus::Cancelled
+        );
+        assert_eq!(
+            delegate_end_status(true, DelegateStatus::Failed),
+            DelegateStatus::Cancelled
+        );
+        assert_eq!(
+            delegate_end_status(false, DelegateStatus::Finished),
+            DelegateStatus::Finished
+        );
+        assert_eq!(
+            delegate_end_status(false, DelegateStatus::Failed),
+            DelegateStatus::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_is_a_terminal_delegate_status_finished_only_once() {
+        let delegates = Delegates::default();
+        delegates
+            .insert(entry("h-cancel", "ui-parent", "child-cancel"))
+            .await;
+
+        delegates
+            .finish("h-cancel", DelegateStatus::Cancelled, None, None)
+            .await
+            .expect("running -> cancelled");
+        assert_eq!(
+            delegates.get("h-cancel").await.expect("kept").status.as_str(),
+            "cancelled"
+        );
+        assert!(
+            delegates
+                .finish("h-cancel", DelegateStatus::Finished, None, None)
+                .await
+                .is_none(),
+            "终态只能写一次"
+        );
     }
 
     #[tokio::test]

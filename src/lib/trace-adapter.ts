@@ -52,6 +52,7 @@ function delegateTargetName(payload: Record<string, unknown>): string {
 }
 
 function delegateResultTitle(targetName: string, payload: Record<string, unknown>): string {
+  if (stringOf(payload.status) === "cancelled") return `${targetName} 已停止`;
   const elapsed = numberOf(payload.elapsedMs);
   return elapsed === undefined
     ? `${targetName} 回来了`
@@ -70,6 +71,7 @@ function delegateResultStatus(payload: Record<string, unknown>): Activity["statu
   const status = stringOf(payload.status);
   if (status === "failed") return "error";
   if (status === "finished") return "ok";
+  if (status === "cancelled") return "cancelled";
   return "running";
 }
 

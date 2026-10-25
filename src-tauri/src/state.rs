@@ -64,6 +64,7 @@ pub enum DelegateStatus {
     Running,
     Finished,
     Failed,
+    Cancelled,
 }
 
 impl DelegateStatus {
@@ -72,6 +73,7 @@ impl DelegateStatus {
             Self::Running => "running",
             Self::Finished => "finished",
             Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
         }
     }
 }
