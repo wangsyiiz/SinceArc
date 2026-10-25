@@ -194,7 +194,7 @@ session/update
 显示出来；等真加按钮那一步再按这条规矩接。
 
 **不要用 `mcpCapabilities` 缺失来推断「不能注入 mcpServers」**：hermes 不报这一项，但
-`session/new` 的 `mcpServers` 是请求参数、由 agent 自己决定怎么用。能不能注入要在 E13.5 实测，
+`session/new` 的 `mcpServers` 是请求参数、由 agent 自己决定怎么用（合同见 `docs/mcp.md`）。
 不能拿能力位当门。
 
 
