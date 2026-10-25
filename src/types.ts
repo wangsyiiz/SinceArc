@@ -143,7 +143,6 @@ export type TraceTurnStatus =
 export interface TraceTurn {
   id: string;
   at: string;
-  userText: string;
   branches: TraceBranch[];
   /** 这一轮的终态；finished + stopReason='cancelled' 时界面上要写「已停止」 */
   status?: TraceTurnStatus;

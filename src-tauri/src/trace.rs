@@ -401,6 +401,8 @@ pub struct TraceItem {
 #[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct TraceTurn {
     pub id: String,
+    // 历史兼容字段：正文权威在 atoms(channel='chat', kind='text.user')。
+    // 新轮这里通常是空串；不要把它当成可回写的第二份正文。
     pub prompt: String,
     pub author_id: Option<String>,
     #[ts(type = "number")]

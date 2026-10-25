@@ -1489,6 +1489,18 @@ impl Db {
                 }
                 return Err(DbError::Sql(e));
             }
+            // user 正文就是这一轮的 prompt。起轮与写正文不在同一次调用里（session_prompt
+            // 先起轮，前端拿到回执后再 append），所以归属必须与正文写入在同一个事务里
+            // 回填：要么两者都成功，要么都不落库。已有归属的轮不被后续 user 消息覆盖。
+            if m.role == "user" && matches!(m.kind.as_str(), "text" | "text.user") {
+                if let Some(turn_id) = turn_id {
+                    tx.execute(
+                        "UPDATE turns SET prompt_atom_id = ?1
+                          WHERE id = ?2 AND prompt_atom_id IS NULL",
+                        params![m.id, turn_id],
+                    )?;
+                }
+            }
         }
         tx.execute(
             "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
@@ -1590,19 +1602,23 @@ impl Db {
 
     /// 记一轮的开始。`turn_id` 由命令层生成并同时交给 `AppState.turns`，
     /// 保证事件、轮次、前端看到的「正在跑」是同一个 id。
+    ///
+    /// `prompt` 参数已退役：正文权威在 `atoms(channel='chat', kind='text.user')`，
+    /// 新轮一律写空串，避免同一份正文有两个来源。保留参数只是为了调用点签名稳定。
     pub fn start_turn(
         &self,
         session_id: &str,
         turn_id: &str,
-        prompt: &str,
+        _prompt: &str,
         author_id: Option<&str>,
+        prompt_atom_id: Option<&str>,
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().expect("db poisoned");
         conn.execute(
             "INSERT OR REPLACE INTO turns
-               (id, session_id, prompt, author_id, started_at, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'running')",
-            params![turn_id, session_id, prompt, author_id, now_ms()],
+               (id, session_id, prompt, prompt_atom_id, author_id, started_at, status)
+             VALUES (?1, ?2, '', ?3, ?4, ?5, 'running')",
+            params![turn_id, session_id, prompt_atom_id, author_id, now_ms()],
         )?;
         Ok(())
     }
@@ -3138,8 +3154,8 @@ mod tests {
     #[test]
     fn message_falls_back_to_latest_running_turn() {
         let (db, path) = db_with_session();
-        db.start_turn("s-1", "turn-old", "旧轮", None).expect("old");
-        db.start_turn("s-1", "turn-latest", "新轮", None)
+        db.start_turn("s-1", "turn-old", "旧轮", None, None).expect("old");
+        db.start_turn("s-1", "turn-latest", "新轮", None, None)
             .expect("latest");
 
         db.append_messages("s-1", &[msg("m1", "没显式给", None, false)])
@@ -3155,7 +3171,7 @@ mod tests {
     #[test]
     fn message_has_null_turn_when_nothing_is_running() {
         let (db, path) = db_with_session();
-        db.start_turn("s-1", "turn-done", "已结束", None)
+        db.start_turn("s-1", "turn-done", "已结束", None, None)
             .expect("start");
         db.end_turn("turn-done", "finished", Some("end_turn"))
             .expect("end");
@@ -3200,7 +3216,7 @@ mod tests {
     #[test]
     fn blank_explicit_turn_id_falls_back_to_running_turn() {
         let (db, path) = db_with_session();
-        db.start_turn("s-1", "turn-running", "正在跑", None)
+        db.start_turn("s-1", "turn-running", "正在跑", None, None)
             .expect("start");
         let mut blank = msg("m-blank", "空白 id", None, false);
         blank.turn_id = Some("   ".into());
@@ -3581,7 +3597,7 @@ mod tests {
     #[test]
     fn finishing_a_turn_seals_its_open_thought_and_late_chunks_start_a_new_row() {
         let (db, path) = db_with_session();
-        db.start_turn("s-1", "t-1", "问", None).expect("start");
+        db.start_turn("s-1", "t-1", "问", None, None).expect("start");
         db.append_events("s-1", &[thought("前", "t-1")])
             .expect("thought before end");
         db.end_turn("t-1", "finished", Some("end_turn"))
@@ -3908,13 +3924,13 @@ mod tests {
 
 
     #[test]
-    fn turns_record_prompt_and_finish_state() {
+    fn turns_record_finish_state_without_a_prompt_copy() {
         let (db, path) = temp_db();
         db.save_profiles(&[sample()]).expect("save");
         db.upsert_session(&session("s-1", None)).expect("insert");
 
-        db.start_turn("s-1", "t1", "现在几点", None).expect("start");
-        db.start_turn("s-1", "t2", "写个文件", None).expect("start2");
+        db.start_turn("s-1", "t1", "现在几点", None, None).expect("start");
+        db.start_turn("s-1", "t2", "写个文件", None, None).expect("start2");
         db.end_turn("t2", "failed", Some("timeout: timed out after 120s"))
             .expect("end");
 
@@ -3927,11 +3943,139 @@ mod tests {
         // 没收到结束的轮次保持 running —— 界面据此显示「还在跑」
         assert_eq!(turns[1].status, "running");
         assert!(turns[1].ended_at.is_none());
-        assert_eq!(turns[1].prompt, "现在几点");
+        assert_eq!(turns[1].prompt, "", "新轮不再写正文副本");
 
         db.delete_session("s-1").expect("del");
         assert!(db.load_turns("s-1", 10).expect("load2").is_empty());
 
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn start_turn_records_prompt_atom_id() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "正文不该落在这里", None, Some("u-1"))
+            .expect("start turn");
+
+        let conn = db.conn.lock().expect("db poisoned");
+        let (prompt, atom_id): (String, Option<String>) = conn
+            .query_row(
+                "SELECT prompt, prompt_atom_id FROM turns WHERE id = 't-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("read turn");
+        assert_eq!(prompt, "");
+        assert_eq!(atom_id.as_deref(), Some("u-1"));
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn user_atom_backfills_turns_prompt_atom_id_in_the_same_transaction() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "", None, None).expect("start turn");
+
+        let user = MessageInput {
+            id: "u-1".into(),
+            author_id: None,
+            turn_id: Some("t-1".into()),
+            non_turn: false,
+            role: "user".into(),
+            kind: "text.user".into(),
+            payload: serde_json::json!({ "id": "u-1", "role": "user", "text": "问一下" }),
+            refs: None,
+            ext: None,
+            schema: None,
+        };
+        db.append_messages("s-1", &[user]).expect("append user atom");
+
+        let conn = db.conn.lock().expect("db poisoned");
+        let joined: Option<String> = conn
+            .query_row(
+                "SELECT a.id FROM turns t
+                   JOIN atoms a ON a.id = t.prompt_atom_id
+                  WHERE t.id = 't-1'
+                    AND a.channel = 'chat' AND a.kind = 'text.user'
+                    AND a.role = 'user'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("prompt atom must join back");
+        assert_eq!(joined.as_deref(), Some("u-1"));
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn old_prompt_survives_migration_while_new_turns_stay_empty() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "sincearc-db-prompt-atom-migrate-{}-{nanos}.db",
+            std::process::id()
+        ));
+        {
+            let conn = Connection::open(&path).expect("raw open");
+            conn.execute_batch(
+                "CREATE TABLE profiles (
+                   id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                   launch_kind TEXT NOT NULL CHECK (launch_kind IN ('local','wsl','ssh')),
+                   distro TEXT, shell TEXT, program TEXT NOT NULL,
+                   args_json TEXT NOT NULL DEFAULT '[]', env_json TEXT NOT NULL DEFAULT '{}',
+                   default_cwd TEXT NOT NULL,
+                   ssh_host TEXT, ssh_port INTEGER, ssh_user TEXT, ssh_auth TEXT, ssh_key_path TEXT,
+                   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 CREATE TABLE sessions (
+                   id TEXT PRIMARY KEY, acp_session_id TEXT,
+                   profile_id TEXT REFERENCES profiles(id) ON DELETE CASCADE,
+                   title TEXT NOT NULL DEFAULT '新会话', cwd TEXT NOT NULL DEFAULT '',
+                   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 CREATE TABLE turns (
+                   id TEXT PRIMARY KEY,
+                   session_id TEXT NOT NULL,
+                   prompt TEXT NOT NULL DEFAULT '',
+                   author_id TEXT,
+                   started_at INTEGER NOT NULL,
+                   ended_at INTEGER,
+                   status TEXT NOT NULL DEFAULT 'running');
+                 INSERT INTO sessions (id, acp_session_id, title, cwd, created_at, updated_at)
+                   VALUES ('s-old', 'acp-old', '老会话', '/tmp', 1, 1);
+                 INSERT INTO turns (id, session_id, prompt, started_at, status)
+                   VALUES ('t-old', 's-old', '老问题正文', 1, 'running');",
+            )
+            .expect("seed old schema");
+        }
+
+        let db = Db::open(&path).expect("migrate old db");
+        let old = db.load_turns("s-old", 10).expect("load old turns");
+        assert_eq!(old.len(), 1);
+        assert_eq!(old[0].prompt, "老问题正文", "老行不能被迁移改写");
+
+        db.start_turn("s-old", "t-new", "新正文", None, Some("u-new"))
+            .expect("start new turn");
+
+        let conn = db.conn.lock().expect("db poisoned");
+        let old_atom: Option<String> = conn
+            .query_row(
+                "SELECT prompt_atom_id FROM turns WHERE id = 't-old'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("old prompt atom");
+        assert_eq!(old_atom, None, "老行没有 prompt 归属");
+        let (new_prompt, new_atom): (String, Option<String>) = conn
+            .query_row(
+                "SELECT prompt, prompt_atom_id FROM turns WHERE id = 't-new'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("new turn");
+        assert_eq!(new_prompt, "", "新轮只存 atom id，不存正文副本");
+        assert_eq!(new_atom.as_deref(), Some("u-new"));
+        drop(conn);
         std::fs::remove_file(&path).ok();
     }
 
@@ -3941,7 +4085,7 @@ mod tests {
         db.save_profiles(&[sample()]).expect("save");
         db.upsert_session(&session("s-1", None)).expect("insert");
 
-        db.start_turn("s-1", "t-cancel", "继续写", None)
+        db.start_turn("s-1", "t-cancel", "继续写", None, None)
             .expect("start");
         db.append_messages(
             "s-1",
@@ -3981,7 +4125,7 @@ mod tests {
         db.save_profiles(&[sample()]).expect("save");
         db.upsert_session(&session("s-1", None)).expect("insert");
 
-        db.start_turn("s-1", "t1", "改个文件", None).expect("start");
+        db.start_turn("s-1", "t1", "改个文件", None, None).expect("start");
         assert_eq!(
             db.load_turns("s-1", 1).expect("running")[0].status,
             "running"
@@ -4033,7 +4177,7 @@ mod tests {
         db.save_profiles(&[sample()]).expect("save");
         db.upsert_session(&session("s-1", None)).expect("insert");
 
-        db.start_turn("s-1", "t-fail", "跑一下", None)
+        db.start_turn("s-1", "t-fail", "跑一下", None, None)
             .expect("start");
         db.end_turn(
             "t-fail",
@@ -4075,15 +4219,15 @@ mod tests {
             truncated: false,
         };
         // 60 条：验证「单会话只留最近 N 条」
-        db.start_turn("s-1", "t-new", "新的一轮", None).expect("turn");
+        db.start_turn("s-1", "t-new", "新的一轮", None, None).expect("turn");
         for _ in 0..60 {
             // tool_call 是非归并类事件，每条独立成行；这里验证的是保留策略，不是流归并。
             db.append_events("s-1", &[ev("tool_call", "t-new")]).expect("e");
         }
         // 一个正在跑的轮次（不收尾）：它的事件清空后，轮次本身不能被删
-        db.start_turn("s-1", "t-running", "还在跑", None).expect("turn2");
+        db.start_turn("s-1", "t-running", "还在跑", None, None).expect("turn2");
         // 等用户批准的轮次同样还没收尾，不能当成「没有事件的历史轮」清掉
-        db.start_turn("s-1", "t-waiting", "等你批准", None)
+        db.start_turn("s-1", "t-waiting", "等你批准", None, None)
             .expect("turn3");
         db.mark_turn_waiting_approval("t-waiting")
             .expect("waiting");
@@ -4142,7 +4286,7 @@ mod tests {
     fn permission_decision_lands_in_the_turn_and_reads_back_its_author() {
         let (db, _path) = temp_db();
         seed_session(&db, "s-1");
-        db.start_turn("s-1", "t-1", "改个文件", Some("m-7"))
+        db.start_turn("s-1", "t-1", "改个文件", Some("m-7"), None)
             .expect("start turn");
 
         // 轮次上下文：决定要挂在同一会话、同一支线下，作者用来显示「谁的动作」

@@ -478,7 +478,6 @@ export function toTraceView(dtos: TraceTurnDto[]): TraceView {
       id: t.id,
       at: clock(t.startedAt),
       // 结局由抬头状态标签统一显示，不再把「已停止」拼进提问正文。
-      userText: t.prompt,
       status: t.status as TraceTurn["status"],
       stopReason: t.stopReason,
       branches: [...lanes.entries()].map(([playerId, activityIds]) => ({

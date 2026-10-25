@@ -1,11 +1,11 @@
 //! 增量迁移。
 //!
-//! 迁移顺序编号：M1-01…M1-03，M2-01…M2-06。
+//! 迁移顺序编号：M1-01…M1-03，M2-01…M2-07。
 //!
 //! 执行约定：`Db::open` 在 `execute_batch(SCHEMA)` 与既有 `ensure_*` 调用之后调用
 //! `migrations::run(&mut conn)?`。
 //!
-//! 追加位置：新迁移函数加在 `run()` 末尾、编号递增（`M2-06`…），不要改已有步骤的
+//! 追加位置：新迁移函数加在 `run()` 末尾、编号递增（`M2-07`…），不要改已有步骤的
 //! 顺序与编号。
 //!
 //! 幂等要求：每一步必须能重复执行（`IF NOT EXISTS` / 查 `sqlite_master.type` /
@@ -25,6 +25,7 @@ pub fn run(conn: &mut Connection) -> rusqlite::Result<()> {
     m2_04_atoms_kind_guard(&tx)?;
     m2_05_schema_sync(&tx)?;
     m2_06_atoms_schema(&tx)?;
+    m2_07_turns_prompt_atom_id(&tx)?;
     tx.commit()
 }
 
@@ -173,6 +174,12 @@ fn m2_05_schema_sync(_conn: &Connection) -> rusqlite::Result<()> {
 /// 是刻意的 —— 没有版本号的 atom 读方无法判断该怎么解释 payload。
 fn m2_06_atoms_schema(conn: &Connection) -> rusqlite::Result<()> {
     super::ensure_column(conn, "atoms", "schema", "INTEGER NOT NULL DEFAULT 1")
+}
+
+/// M2-07：轮次只存 prompt atom 的 id，不再存正文副本。老行保持原样：
+/// `prompt` 继续作为历史文本，`prompt_atom_id` 为 NULL 表示没有归属。
+fn m2_07_turns_prompt_atom_id(conn: &Connection) -> rusqlite::Result<()> {
+    super::ensure_column(conn, "turns", "prompt_atom_id", "TEXT")
 }
 
 fn allowed_kinds_sql() -> String {

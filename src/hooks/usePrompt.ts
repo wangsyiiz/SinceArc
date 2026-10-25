@@ -254,7 +254,6 @@ export function usePrompt({
             {
               id: turnId,
               at,
-              userText: text,
               branches: [
                 {
                   playerId: target?.authorId ?? MAIN_AGENT_ID,

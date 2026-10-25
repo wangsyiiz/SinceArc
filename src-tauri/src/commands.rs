@@ -1257,6 +1257,7 @@ pub async fn session_trace(
         .load_events(&session_id, limit * 200)
         .map_err(|e| CmdError::new(50000, format!("读取轨迹失败：{e}")))?;
     let turns = crate::trace::with_orphan_turns(turns, &session_id, &events);
+    // 轮次上的 prompt 字段保留给老数据作历史兼容；正文权威在 atoms（chat / text.user）。
     Ok(crate::trace::aggregate(turns, events))
 }
 
@@ -3008,14 +3009,9 @@ pub async fn delegate_task(
             Some(turn) => (Some(turn), false),
             None => {
                 let turn = format!("turn-{}", crate::trace::now_ms());
-                let prompt = format!(
-                    "→ {}：{}",
-                    member.name,
-                    truncate_chars(&task, DELEGATE_SUMMARY_CHARS)
-                );
                 if let Err(e) = state
                     .db
-                    .start_turn(&parent_ui_session_id, &turn, &prompt, None)
+                    .start_turn(&parent_ui_session_id, &turn, "", None, None)
                 {
                     tracing::warn!(target: "sincearc::trace", error = %e, "delegate 轮次落库失败");
                 }
@@ -3426,8 +3422,9 @@ pub async fn session_prompt(
         if let Err(e) = state.db.start_turn(
             &ui_sid,
             &turn_id,
-            &text,
+            "",
             record.author_id.as_deref(),
+            None,
         ) {
             tracing::warn!(target: "sincearc::trace", error = %e, "轮次落库失败");
         }

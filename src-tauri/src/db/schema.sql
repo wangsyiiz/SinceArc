@@ -155,8 +155,11 @@ CREATE TABLE IF NOT EXISTS session_members (
 CREATE TABLE IF NOT EXISTS turns (
   id           TEXT PRIMARY KEY,
   session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  -- 提问正文（与 messages 里那条用户消息同源，但轨迹要能单独读，不靠前端猜）
+  -- 老数据的历史正文。新轮不再写副本（写空串），正文权威在
+  -- atoms(channel='chat', kind='text.user') 那一行。
   prompt       TEXT NOT NULL DEFAULT '',
+  -- prompt 的 atom id；老数据没有归属，保持 NULL。
+  prompt_atom_id TEXT,
   -- 这一轮是向谁提的：群成员 id；主 agent 为 NULL
   author_id    TEXT,
   started_at   INTEGER NOT NULL,
