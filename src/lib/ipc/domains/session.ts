@@ -109,6 +109,7 @@ export function messagesAppend(
     role: string;
     kind?: string;
     turnId?: string | null;
+    nonTurn?: boolean;
     payload: unknown;
   }[],
 ): Promise<void> {

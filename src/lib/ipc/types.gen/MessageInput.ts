@@ -9,6 +9,11 @@ export type MessageInput = { id: string, role: string,
  */
 authorId: string | null, 
 /**
- * 调用方明确知道所属轮次时传入；None 由后端按 running 轮兜底
+ * 调用方明确知道所属轮次时传入；None 时按 running 轮兜底，再不行必须显式 nonTurn。
  */
-turnId?: string | null, kind: string, payload: unknown, };
+turnId?: string | null, 
+/**
+ * 显式声明「这条消息不属于任何轮」（握手期提示 / 发送失败 / 历史补写）。
+ * 缺省 false 是有意的：缺 turn_id 又取不到运行中的轮时必须报错，不能静默落 NULL。
+ */
+nonTurn: boolean, kind: string, payload: unknown, };

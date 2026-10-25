@@ -1011,13 +1011,15 @@ export default function App() {
         return;
       }
 
+      const turnId = turnIdForPersist(acp.acpToTurn.current[acpSid]);
       await messagesAppend(sid, [
         {
           id: aside.id,
           role: "user",
           kind: "aside",
-          turnId: turnIdForPersist(acp.acpToTurn.current[acpSid]),
           payload: { ...aside, kind: "aside" },
+          // 插话属于它打断的那一轮；拿不到真 id 时显式非轮次，不让后端去猜。
+          ...(turnId ? { turnId } : { nonTurn: true }),
         },
       ]).catch((e: unknown) => {
         clog("ASIDE-DB-ERR", `ui=${sid} id=${aside.id} ${String(e)}`);

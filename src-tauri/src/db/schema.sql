@@ -61,8 +61,6 @@ CREATE INDEX IF NOT EXISTS idx_sessions_profile ON sessions(profile_id, updated_
 CREATE TABLE IF NOT EXISTS messages (
   id           TEXT PRIMARY KEY,
   session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  -- 这一条属于哪一轮；老数据/非轮次消息为 NULL，不做时间反推
-  turn_id      TEXT,
   seq          INTEGER NOT NULL,
   role         TEXT NOT NULL CHECK (role IN ('user', 'player', 'agent', 'system')),
   kind         TEXT NOT NULL DEFAULT 'text',
@@ -72,6 +70,8 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session_seq ON messages(session_id, seq);
+-- turn_id 的列与索引不写在这里：旧库执行 SCHEMA 时还没有这一列，
+-- 写在这里会让旧库直接打不开（no such column）。统一由 db/migrations.rs 的 M1-01 补齐。
 
 CREATE TABLE IF NOT EXISTS permission_rules (
   id            TEXT PRIMARY KEY,

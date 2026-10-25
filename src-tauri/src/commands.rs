@@ -116,6 +116,9 @@ pub enum AcpEvent {
     /// 一轮 prompt 开始了（UI 用来进入生成态；此时还没有任何 chunk）
     PromptStarted {
         session_id: String,
+        /// 这一轮的 id（后端生成，前端只认它）。派活子会话取父轮；没有父轮时为 None。
+        #[ts(optional = nullable)]
+        turn_id: Option<String>,
         #[ts(optional = nullable)]
         ui_session_id: Option<String>,
         #[ts(optional = nullable)]
@@ -1883,7 +1886,7 @@ pub async fn agent_connect(
                     ui_session_id.clone(),
                     author_id.clone(),
                 ),
-                AcpEvent::PromptStarted { session_id, ui_session_id, author_id }
+                AcpEvent::PromptStarted { session_id, ui_session_id, author_id, .. }
                 | AcpEvent::PromptResult { session_id, ui_session_id, author_id, .. }
                 | AcpEvent::PromptFailed { session_id, ui_session_id, author_id, .. } => (
                     Some(session_id.clone()),
@@ -3030,6 +3033,7 @@ pub async fn delegate_task(
         role: "user".into(),
         author_id: None,
         turn_id: parent_turn_id.clone(),
+        non_turn: parent_turn_id.is_none(),
         kind: "delegate".into(),
         payload: serde_json::json!({
             "id": delegate_message_id,
@@ -3106,6 +3110,7 @@ pub async fn delegate_task(
             meta.clone(),
             &AcpEvent::PromptStarted {
                 session_id: child_for_task.clone(),
+                turn_id: parent_turn_for_task.clone(),
                 ui_session_id: Some(parent_ui_for_task.clone()),
                 author_id: author_for_task.clone(),
             },
@@ -3400,6 +3405,7 @@ pub async fn session_prompt(
     let sid_for_trace = sid.clone();
     let db_for_turn = state.db.clone();
     let turn_id_for_turn = turn_id.clone();
+    let turn_id_for_event = turn_id.clone();
     let proc = handle.proc.clone();
     // 这三个事件必须自带归属：推送时前端可能已经切到别的会话，
     // 「当前打开的那个」不是判断依据。
@@ -3421,6 +3427,7 @@ pub async fn session_prompt(
             meta.clone(),
             &AcpEvent::PromptStarted {
                 session_id: sid.clone(),
+                turn_id: Some(turn_id_for_event),
                 ui_session_id: ui_for_event.clone(),
                 author_id: author_for_event.clone(),
             },

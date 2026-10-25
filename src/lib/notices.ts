@@ -27,8 +27,8 @@ export function pushSystemNotice(
       id: msg.id,
       role: "system",
       kind: "text",
-      turnId: null,
       payload: opts?.also ? opts.also(msg) : msg,
+      nonTurn: true,
     },
   ]).catch((e) => console.warn("[db] append system notice failed", e));
   return msg;

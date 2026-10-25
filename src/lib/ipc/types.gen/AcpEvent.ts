@@ -16,4 +16,8 @@ uiSessionId?: string | null,
 /**
  * 发言者（群成员身份）；主 agent 时为 None
  */
-authorId?: string | null, } | { "kind": "request", id: number, method: string, params: unknown, sessionId?: string | null, uiSessionId?: string | null, authorId?: string | null, } | { "kind": "hello" } | { "kind": "exited" } | { "kind": "promptStarted", sessionId: string, uiSessionId?: string | null, authorId?: string | null, } | { "kind": "promptResult", sessionId: string, uiSessionId?: string | null, authorId?: string | null, result: unknown, } | { "kind": "promptFailed", sessionId: string, uiSessionId?: string | null, authorId?: string | null, msg: string, };
+authorId?: string | null, } | { "kind": "request", id: number, method: string, params: unknown, sessionId?: string | null, uiSessionId?: string | null, authorId?: string | null, } | { "kind": "hello" } | { "kind": "exited" } | { "kind": "promptStarted", sessionId: string, 
+/**
+ * 这一轮的 id（后端生成，前端只认它）。派活子会话取父轮；没有父轮时为 None。
+ */
+turnId?: string | null, uiSessionId?: string | null, authorId?: string | null, } | { "kind": "promptResult", sessionId: string, uiSessionId?: string | null, authorId?: string | null, result: unknown, } | { "kind": "promptFailed", sessionId: string, uiSessionId?: string | null, authorId?: string | null, msg: string, };
