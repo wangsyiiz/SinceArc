@@ -351,3 +351,90 @@ M1 的迁移只有三种动作：加列（可留）、`UPDATE turns`（可逆）
 
 **功能定义不随模型改变；模型是服务功能的实现手段。** 任何「因为模型这样，所以功能得那样」
 的提案都先回到功能：先说清用户要什么，再说模型怎么承载。反过来做，模型就会开始改写产品。
+
+## 13. M2 实施要点（atoms 成为唯一权威，2026-10-26 开工）
+
+### 13.1 结构：一张表 + 两个同名视图
+
+```sql
+-- 唯一写入点
+CREATE TABLE atoms (
+  id           TEXT PRIMARY KEY,
+  session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  channel      TEXT NOT NULL CHECK (channel IN ('chat', 'trace')),  -- 正文流 / 过程流
+  turn_id      TEXT,                    -- 非轮次原子为 NULL（§10.2 四级口径）
+  seq          INTEGER NOT NULL,        -- channel 内自增，两套空间互不干扰
+  at           INTEGER NOT NULL,
+  role         TEXT,                    -- chat：user / player / agent / system
+  author_id    TEXT,                    -- trace：群成员 id；主 agent 为 NULL
+  kind         TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  refs_json    TEXT,                    -- 命名键 refs（childSession / parentAtomId…）
+  ext_json     TEXT,                    -- x.<domain>.<name> 扩展键，未注册也原样保留
+  source       TEXT NOT NULL DEFAULT 'live' CHECK (source IN ('live', 'replay')),
+  truncated    INTEGER NOT NULL DEFAULT 0,
+  sealed_at    INTEGER,                 -- NULL = 仍在流式归并中（见 13.3）
+  UNIQUE (session_id, channel, seq)
+);
+CREATE INDEX idx_atoms_turn   ON atoms(session_id, turn_id);
+CREATE INDEX idx_atoms_kind   ON atoms(session_id, kind);
+CREATE UNIQUE INDEX idx_atoms_open
+  ON atoms(session_id, turn_id, kind) WHERE sealed_at IS NULL;
+```
+
+```sql
+-- 读路径零改动：旧名字变视图，列与旧表一一对应
+CREATE VIEW messages AS SELECT id, session_id, turn_id, seq, role, kind,
+       payload_json, at AS created_at, author_id FROM atoms WHERE channel = 'chat';
+CREATE VIEW session_events AS SELECT id, session_id, turn_id, seq, at, author_id,
+       kind, payload_json, source, truncated FROM atoms WHERE channel = 'trace';
+```
+
+为什么用视图而不是改所有查询：读路径有十几处（会话历史、轨迹、水位、去重），改一处漏一处的风险
+远大于视图的查询开销；写入点只有两个（`append_messages` / `append_events`），改在那里就够了。
+
+### 13.2 写入
+
+- `append_messages` → 写 `atoms(channel='chat')`；轮次四级口径与 `ON CONFLICT(id) DO UPDATE` 语义不变。
+- `append_events` → 写 `atoms(channel='trace')`；`seq` 从 `MAX(seq) FILTER channel='trace'` 自增。
+- kind 守卫触发器从 `messages` 搬到 `atoms`（视图上不能挂触发器），条件 `channel = 'chat'`。
+- `schema.sql` 同步：新库直接建 atoms + 视图，不再建两张表。
+
+### 13.3 流式归并：一段流 = 一行（open → sealed）
+
+```sql
+-- 同一 (session, turn, kind) 允许有一行「未封口」的原子
+-- 收到下一个分片 → UPDATE 该行 payload（受 8KB 上限约束），库里始终只有 1 行
+-- 封口条件（任一）：
+--   ① 出现不同 stream key 的痕迹事件（工具调用、权限、用量、命令列表…）
+--   ② 该轮进入终态（finished / failed）
+--   ③ 会话关闭 / 进程退出（下一次打开会话时把残留 open 行当作已封口）
+```
+
+没有基于时间的切块：切块只由「流的事实边界」决定，不由停顿长短决定。
+正文同理：一段回答结束（换 messageId 或轮结束）才封口，中途只更新那一行。
+
+界面不受影响：实时思考走 ACP 事件流推给前端，面板读到的是当前那一行（内容随分片增长）。
+
+### 13.4 迁移与旧数据（按 §12.3）
+
+```
+M2-01  建 atoms 表 + 索引
+M2-02  删旧表 messages / session_events（旧行在新结构里没有位置；开发期直接删，不迁移）
+M2-03  建同名视图 messages / session_events
+M2-04  kind 守卫触发器建到 atoms 上（channel='chat'）
+M2-05  schema.sql 同步（新库直接是 atoms + 视图）
+```
+
+`sessions` / `turns` 骨架保留。旧数据删除前照例先备份一份到仓外。
+
+### 13.5 验收
+
+```
+库      跑一轮长思考 + 一轮普通回答：
+        · 该会话 channel='trace' 的 thought 行数 = 思考段数（不再是 chunk 数，预期从 1543 → 个位/十几）
+        · 正文 channel='chat' 一行一段（不随分片增加）
+        · 关掉应用重开，思考内容与条数与改前一致（read 侧 trace::aggregate 的合并逻辑仍成立）
+界面    轨迹面板内容与改前一致（DOM 文本比对）；聊天区无变化
+门禁    cargo / clippy / tsc / node --test / vite build 全绿
+```

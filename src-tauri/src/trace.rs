@@ -413,8 +413,9 @@ pub fn aggregate(turns: Vec<crate::db::TurnRow>, events: Vec<crate::db::EventRow
                 let payload: Value = serde_json::from_str(&e.payload_json)
                     .unwrap_or_else(|_| json!({ "raw": e.payload_json }));
 
-                // 思考是流式的：hermes 按 token 段发（实测一轮 24 条，"User"、" asks: from now"…
-                // 各自成条）。不合并的话轨迹就是 24 行碎片，读不出任何东西。
+                // M2b 起库里一行就是一段思考（open → sealed），单行时这里天然只走一次。
+                // 保留相邻合并只是为了兜底 M2 之前留下的 chunk 级历史数据（旧库/旧备份），
+                // 不能把这段当成新的写入粒度。
                 if e.kind == "thought" {
                     if let Some(last) = items.last_mut().filter(|i| i.kind == "thought"
                         && i.author_id == e.author_id)

@@ -304,48 +304,21 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, decl: &str) -> ru
     Ok(())
 }
 
-/// `messages.kind` 的旧词表。触发器 SQL 必须由这一份常量拼出来，避免代码与库约束各写一份。
-pub const LEGACY_MESSAGE_KINDS: &[&str] = &["text", "aside", "delegate"];
-
-/// 早期 `session_events.kind` 带 CHECK 枚举，新增 `permission_decision` 会被数据库拒绝。
-/// 轨迹是本地可再生产数据，但没必要清空：按原列顺序重建表，内容原样保留。
-fn ensure_event_kind_is_free(conn: &Connection) -> rusqlite::Result<()> {
-    let sql: Option<String> = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'session_events'",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let Some(sql) = sql else { return Ok(()) };
-    if !sql.contains("CHECK (kind IN") {
-        return Ok(());
-    }
-    conn.execute_batch(
-        "BEGIN;
-         CREATE TABLE session_events_new (
-           id           TEXT PRIMARY KEY,
-           session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-           turn_id      TEXT NOT NULL,
-           seq          INTEGER NOT NULL,
-           at           INTEGER NOT NULL,
-           author_id    TEXT,
-           kind         TEXT NOT NULL,
-           payload_json TEXT NOT NULL,
-           source       TEXT NOT NULL DEFAULT 'live' CHECK (source IN ('live', 'replay')),
-           truncated    INTEGER NOT NULL DEFAULT 0
-         );
-         INSERT INTO session_events_new
-           (id, session_id, turn_id, seq, at, author_id, kind, payload_json, source, truncated)
-           SELECT id, session_id, turn_id, seq, at, author_id, kind, payload_json, source, truncated
-             FROM session_events;
-         DROP TABLE session_events;
-         ALTER TABLE session_events_new RENAME TO session_events;
-         CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id, seq);
-         COMMIT;",
-    )?;
-    Ok(())
+/// 同名对象可能是旧表，也可能是 M2 之后的视图。迁移与建库补列都先看类型，
+/// 避免对视图执行 `ALTER TABLE` / `CREATE INDEX` / `UPDATE`。
+fn object_type(conn: &Connection, name: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT type FROM sqlite_master WHERE name = ?1 AND type IN ('table', 'view')",
+        params![name],
+        |r| r.get(0),
+    )
+    .optional()
 }
+
+/// chat 通道可写的 kind 词表。`text` / `aside` / `delegate` 是历史写法；
+/// `text.agent` / `text.user` 是 atom 层的点号名字，M2b 起正文流直接接受它们。
+/// 触发器 SQL 必须由这一份常量拼出来，避免代码与库约束各写一份。
+pub const LEGACY_MESSAGE_KINDS: &[&str] = &["text", "aside", "delegate", "text.agent", "text.user"];
 
 /// MCP 目录条目本身没有「启用」开关（docs/mcp.md §3）。早期表里有 `enabled`，
 /// 打开旧库时按原列顺序重建，保留目录内容；取舍是丢弃旧的单条启用状态。
@@ -389,12 +362,15 @@ fn ensure_mcp_catalog_has_no_enabled(conn: &Connection) -> rusqlite::Result<()> 
 /// 轨迹种类清单。schema 不再用 CHECK 约束（新增种类要重建表），改由这里 + `debug_assert` 兜。
 pub const KNOWN_EVENT_KINDS: &[&str] = &[
     "thought",
+    "text.agent",
     "tool_call",
     "tool_call_update",
     "permission",
     "permission_decision",
     "usage",
     "mode",
+    "commands",
+    "error",
     "delegate",
     "delegate_result",
 ];
@@ -416,9 +392,127 @@ fn touch_handle_seq_on(
     Ok(())
 }
 
+/// M2b 封口：一轮结束/遇到非流式事实时，该轮不再可能有新分片。
+fn seal_open_atoms(
+    conn: &Connection,
+    session_id: &str,
+    turn_id: Option<&str>,
+    at: i64,
+) -> rusqlite::Result<usize> {
+    match turn_id {
+        Some(turn_id) => conn.execute(
+            "UPDATE atoms SET sealed_at = ?1
+              WHERE session_id = ?2 AND turn_id = ?3 AND sealed_at IS NULL",
+            params![at, session_id, turn_id],
+        ),
+        None => conn.execute(
+            "UPDATE atoms SET sealed_at = ?1
+              WHERE session_id = ?2 AND turn_id IS NULL AND sealed_at IS NULL",
+            params![at, session_id],
+        ),
+    }
+}
+
+/// 按字符边界截断，和 `trace::capture` 的口径一致，别切坏中文。
+fn truncate_utf8(text: &str, max_bytes: usize) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text.to_string(), false);
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_string(), true)
+}
+
+/// 思考流累加：`text` 拼起来，`bytes` 记累计接收到的原始字节数（不受 8KB 封顶影响）。
+fn merge_thought_payload(
+    existing_payload: &str,
+    existing_truncated: bool,
+    incoming_payload: &str,
+    incoming_truncated: bool,
+) -> (String, bool) {
+    let existing: serde_json::Value =
+        serde_json::from_str(existing_payload).unwrap_or(serde_json::Value::Null);
+    let incoming: serde_json::Value =
+        serde_json::from_str(incoming_payload).unwrap_or(serde_json::Value::Null);
+    let existing_text = existing
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let incoming_text = incoming
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let existing_bytes = existing
+        .get("bytes")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(existing_text.len() as u64);
+    let incoming_bytes = incoming
+        .get("bytes")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(incoming_text.len() as u64);
+    let total_bytes = existing_bytes.saturating_add(incoming_bytes);
+
+    let mut text = String::with_capacity(existing_text.len() + incoming_text.len());
+    text.push_str(existing_text);
+    text.push_str(incoming_text);
+    let mut truncated = existing_truncated || incoming_truncated;
+    if text.len() > crate::trace::THOUGHT_MAX_BYTES {
+        let (cut, _) = truncate_utf8(&text, crate::trace::THOUGHT_MAX_BYTES);
+        text = cut;
+        truncated = true;
+    }
+
+    (
+        serde_json::json!({ "text": text, "bytes": total_bytes }).to_string(),
+        truncated,
+    )
+}
+
+/// 正文流累加：保留消息 payload 的其它字段，只把 `text` 拼长。
+fn merge_chat_payload(existing_payload: &str, incoming: &serde_json::Value) -> String {
+    let existing: serde_json::Value =
+        serde_json::from_str(existing_payload).unwrap_or(serde_json::Value::Null);
+    let existing_text = existing
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let incoming_text = incoming
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let mut merged = match existing {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    if let Some(object) = incoming.as_object() {
+        for (key, value) in object {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    let mut text = String::with_capacity(existing_text.len() + incoming_text.len());
+    text.push_str(&existing_text);
+    text.push_str(&incoming_text);
+    merged.insert("text".to_string(), serde_json::Value::String(text));
+    serde_json::Value::Object(merged).to_string()
+}
+
+fn is_trace_stream_kind(kind: &str) -> bool {
+    matches!(kind, "thought" | "text.agent")
+}
+
+fn is_chat_stream_message(role: &str, kind: &str, turn_id: Option<&str>) -> bool {
+    turn_id.is_some()
+        && matches!(role, "player" | "agent")
+        && matches!(kind, "text" | "text.agent")
+}
+
 impl Db {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
-        let conn = Connection::open(path)?;
+        let mut conn = Connection::open(path)?;
 
         // 旧结构（sessions 缺 acp_session_id 列）直接重建，不做逐列迁移：
         // 会话数据可再生产，留着半旧表只会让后面每一步都要判断两套结构。
@@ -448,7 +542,6 @@ impl Db {
         }
 
         conn.execute_batch(SCHEMA)?;
-        ensure_event_kind_is_free(&conn)?;
         ensure_mcp_catalog_has_no_enabled(&conn)?;
         ensure_column(&conn, "profiles", "default_mode", "TEXT")?;
         // E13.5：MCP 三层名单。NULL 有语义（继承），所以两列都不能给默认值。
@@ -465,24 +558,33 @@ impl Db {
             "TEXT CHECK (acp_state IN ('ok', 'invalid'))",
         )?;
         // 群聊里的消息要能指认「谁说的」：不加这列，多 agent 群所有回复长得一样（docs/group-chat.md §4）
-        ensure_column(&conn, "messages", "author_id", "TEXT")?;
+        // 新库里 messages 是视图且已含 author_id；只有旧表才需要补列。
+        if object_type(&conn, "messages")?.as_deref() == Some("table") {
+            ensure_column(&conn, "messages", "author_id", "TEXT")?;
+        }
         // E13.3：轮次终态要能解释「为什么停」。老库这里补列，不能整表重建。
         ensure_column(&conn, "turns", "stop_reason", "TEXT")?;
         // E13.7：会话恢复句柄。老库补列；已有 live 绑定保留，字段为 NULL。
         ensure_column(&conn, "session_bindings", "agent_name", "TEXT")?;
         ensure_column(&conn, "session_bindings", "last_event_seq", "INTEGER")?;
         // 轨迹时间列早期写成秒，与毫秒级的保留策略混用会把一切判成过期。
-        // 一次性换算（< 1e11 一定不是毫秒：那相当于 1973 年之前），幂等。
+        // session_events 的旧行在 M2 直接丢弃，无需换算；turns 骨架保留，仍需一次性换算。
+        // （< 1e11 一定不是毫秒：那相当于 1973 年之前，幂等。）
         conn.execute_batch(
-            "UPDATE session_events SET at = at * 1000 WHERE at > 0 AND at < 100000000000;
-             UPDATE turns SET started_at = started_at * 1000
+            "UPDATE turns SET started_at = started_at * 1000
                WHERE started_at > 0 AND started_at < 100000000000;
              UPDATE turns SET ended_at = ended_at * 1000
                WHERE ended_at IS NOT NULL AND ended_at > 0 AND ended_at < 100000000000;",
         )?;
         // 编号迁移最后执行：此时 SCHEMA 与所有 ensure_* 已将旧表补到可用形状，
         // M1 的 messages.turn_id / 索引 / 第三态 / kind 触发器只在这里落地。
-        migrations::run(&conn)?;
+        migrations::run(&mut conn)?;
+        // M2b 运行期收尾，不占迁移编号：老进程留下的 open 行不可能再等到分片，
+        // 下次打开会话时按「最后一次更新」封口。幂等，重复 open 不会改已封口的行。
+        conn.execute(
+            "UPDATE atoms SET sealed_at = at WHERE sealed_at IS NULL",
+            [],
+        )?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
 
         Ok(Self {
@@ -1222,34 +1324,74 @@ impl Db {
             })
             .collect::<Result<Vec<_>, DbError>>()?;
         let base: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?1",
+            "SELECT COALESCE(MAX(seq), 0) FROM atoms
+              WHERE session_id = ?1 AND channel = 'chat'",
             params![session_id],
             |r| r.get(0),
         )?;
         let ts = now();
         for (i, m) in msgs.iter().enumerate() {
-            if let Err(e) = tx.execute(
-                "INSERT INTO messages
-                   (id, session_id, turn_id, seq, role, kind, payload_json, created_at, author_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                 ON CONFLICT(id) DO UPDATE SET
-                   turn_id = coalesce(excluded.turn_id, messages.turn_id),
-                   payload_json = excluded.payload_json,
-                   role = excluded.role,
-                   kind = excluded.kind,
-                   author_id = excluded.author_id",
-                params![
-                    m.id,
-                    session_id,
-                    turn_ids[i].as_deref(),
-                    base + i as i64 + 1,
-                    m.role,
-                    m.kind,
-                    m.payload.to_string(),
-                    ts,
-                    m.author_id
-                ],
-            ) {
+            let seq = base + i as i64 + 1;
+            let turn_id = turn_ids[i].as_deref();
+            let mergeable = is_chat_stream_message(&m.role, &m.kind, turn_id);
+            let result: rusqlite::Result<()> = (|| {
+                if mergeable {
+                    let open: Option<(String, String, i64)> = tx
+                        .query_row(
+                            "SELECT id, payload_json, truncated FROM atoms
+                              WHERE session_id = ?1 AND channel = 'chat'
+                                AND turn_id = ?2 AND kind = ?3 AND sealed_at IS NULL",
+                            params![session_id, turn_id, m.kind],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)?)),
+                        )
+                        .optional()?;
+                    if let Some((open_id, payload_json, truncated)) = open {
+                        if open_id == m.id {
+                            let payload = merge_chat_payload(&payload_json, &m.payload);
+                            tx.execute(
+                                "UPDATE atoms
+                                    SET payload_json = ?1, truncated = ?2, at = ?3, seq = ?4
+                                  WHERE id = ?5",
+                                params![payload, truncated, ts, seq, open_id],
+                            )?;
+                            return Ok(());
+                        }
+                        // 同轮同 kind 但 id 变了 = 新的一段正文；先结束上一段。
+                        seal_open_atoms(&tx, session_id, turn_id, ts)?;
+                    }
+                } else {
+                    // 非流式事实（用户消息 / 通知 / aside…）出现，本轮不再有分片。
+                    seal_open_atoms(&tx, session_id, turn_id, ts)?;
+                }
+
+                let sealed_at = if mergeable { None } else { Some(ts) };
+                tx.execute(
+                    "INSERT INTO atoms
+                       (id, session_id, channel, turn_id, seq, at, role, author_id,
+                        kind, payload_json, source, truncated, sealed_at)
+                     VALUES (?1, ?2, 'chat', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'live', 0, ?10)
+                     ON CONFLICT(id) DO UPDATE SET
+                       turn_id = coalesce(excluded.turn_id, atoms.turn_id),
+                       payload_json = excluded.payload_json,
+                       role = excluded.role,
+                       kind = excluded.kind,
+                       author_id = excluded.author_id",
+                    params![
+                        m.id,
+                        session_id,
+                        turn_id,
+                        seq,
+                        ts,
+                        m.role,
+                        m.author_id,
+                        m.kind,
+                        m.payload.to_string(),
+                        sealed_at,
+                    ],
+                )?;
+                Ok(())
+            })();
+            if let Err(e) = result {
                 // bundled SQLite 3.46 的 RAISE 只接受字符串字面量（不接受 || 表达式），
                 // 所以在 Rust 侧把触发器的静态错误补成带 kind 的可读错误。
                 if e.to_string().contains("unknown message kind") {
@@ -1308,7 +1450,7 @@ impl Db {
             );
         } else {
             report.events_deleted += tx.execute(
-                "DELETE FROM session_events WHERE at < ?1",
+                "DELETE FROM atoms WHERE channel = 'trace' AND at < ?1",
                 params![cutoff_ms],
             )? as i64;
         }
@@ -1340,7 +1482,8 @@ impl Db {
                 .ok();
             if let Some(seq) = cutoff_seq {
                 report.events_deleted += tx.execute(
-                    "DELETE FROM session_events WHERE session_id = ?1 AND seq < ?2",
+                    "DELETE FROM atoms
+                      WHERE channel = 'trace' AND session_id = ?1 AND seq < ?2",
                     params![sid, seq],
                 )? as i64;
             }
@@ -1388,11 +1531,20 @@ impl Db {
         status: &str,
         stop_reason: Option<&str>,
     ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().expect("db poisoned");
-        conn.execute(
+        let mut conn = self.conn.lock().expect("db poisoned");
+        let tx = conn.transaction()?;
+        let at = now_ms();
+        tx.execute(
             "UPDATE turns SET ended_at = ?1, status = ?2, stop_reason = ?3 WHERE id = ?4",
-            params![now_ms(), status, stop_reason, turn_id],
+            params![at, status, stop_reason, turn_id],
         )?;
+        // 轮进终态就不会再有下一片。和 status 写在同一个事务里，读侧不会看到
+        // 「finished 但还有 open 行」的中间态。
+        tx.execute(
+            "UPDATE atoms SET sealed_at = ?1 WHERE turn_id = ?2 AND sealed_at IS NULL",
+            params![at, turn_id],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1481,17 +1633,62 @@ impl Db {
         let mut conn = self.conn.lock().expect("db poisoned");
         let tx = conn.transaction()?;
         let mut seq: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(seq), 0) FROM session_events WHERE session_id = ?1",
+            "SELECT COALESCE(MAX(seq), 0) FROM atoms
+              WHERE session_id = ?1 AND channel = 'trace'",
             params![session_id],
             |r| r.get(0),
         )?;
         let at = now_ms();
         for e in events {
             seq += 1;
+            let sealed_at = if is_trace_stream_kind(&e.kind) {
+                let open: Option<(String, String, i64)> = tx
+                    .query_row(
+                        "SELECT id, payload_json, truncated FROM atoms
+                          WHERE session_id = ?1 AND channel = 'trace'
+                            AND turn_id = ?2 AND kind = ?3 AND sealed_at IS NULL",
+                        params![session_id, e.turn_id, e.kind],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)?)),
+                    )
+                    .optional()?;
+                if let Some((open_id, payload_json, truncated)) = open {
+                    let existing_truncated = truncated != 0;
+                    let (payload, truncated) = if e.kind == "thought" {
+                        merge_thought_payload(
+                            &payload_json,
+                            existing_truncated,
+                            &e.payload_json,
+                            e.truncated,
+                        )
+                    } else {
+                        let incoming = serde_json::from_str(&e.payload_json)
+                            .unwrap_or(serde_json::Value::Null);
+                        (
+                            merge_chat_payload(&payload_json, &incoming),
+                            existing_truncated || e.truncated,
+                        )
+                    };
+                    // 同一段流只更新那一行；seq 跟着最新分片走，水位与 MAX(seq) 不脱节。
+                    tx.execute(
+                        "UPDATE atoms
+                            SET payload_json = ?1, truncated = ?2, at = ?3, seq = ?4
+                          WHERE id = ?5",
+                        params![payload, truncated as i64, at, seq, open_id],
+                    )?;
+                    continue;
+                }
+                None
+            } else {
+                // 任何非归并类事实（工具 / 权限 / 用量 / 模式…）都是流边界。
+                seal_open_atoms(&tx, session_id, Some(&e.turn_id), at)?;
+                Some(at)
+            };
+
             tx.execute(
-                "INSERT INTO session_events
-                   (id, session_id, turn_id, seq, at, author_id, kind, payload_json, source, truncated)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO atoms
+                   (id, session_id, channel, turn_id, seq, at, role, author_id,
+                    kind, payload_json, source, truncated, sealed_at)
+                 VALUES (?1, ?2, 'trace', ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     format!("{session_id}-{seq}"),
                     session_id,
@@ -1503,6 +1700,7 @@ impl Db {
                     e.payload_json,
                     e.source,
                     e.truncated as i64,
+                    sealed_at,
                 ],
             )?;
         }
@@ -1551,7 +1749,8 @@ impl Db {
                 "SELECT payload_json, author_id
                    FROM session_events
                   WHERE session_id = ?1 AND kind = 'usage'
-                  ORDER BY at DESC, rowid DESC LIMIT 1",
+                  -- 视图没有 rowid；同一毫秒内用轨迹 seq 作为稳定的后到者判据。
+                  ORDER BY at DESC, seq DESC LIMIT 1",
                 params![session_id],
                 |r| {
                     let payload: String = r.get(0)?;
@@ -1927,9 +2126,10 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
-    /// M1 必须先在旧 messages 表补 turn_id，再建索引；顺序反了旧库会在 SCHEMA 阶段直接打不开。
+    /// M2-02/03：旧库里真实存在的 messages / session_events 表被删掉，同名对象改成视图；
+    /// 新库不再建这两张表。整个迁移必须能在旧表还在的库上打开。
     #[test]
-    fn old_messages_table_gains_turn_id_before_index_creation() {
+    fn old_message_tables_are_replaced_by_views() {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -1955,34 +2155,41 @@ mod tests {
                    kind TEXT NOT NULL DEFAULT 'text',
                    payload_json TEXT NOT NULL,
                    created_at INTEGER NOT NULL);
+                 CREATE TABLE session_events (
+                   id TEXT PRIMARY KEY,
+                   session_id TEXT NOT NULL,
+                   turn_id TEXT NOT NULL,
+                   seq INTEGER NOT NULL,
+                   at INTEGER NOT NULL,
+                   author_id TEXT,
+                   kind TEXT NOT NULL,
+                   payload_json TEXT NOT NULL,
+                   source TEXT NOT NULL DEFAULT 'live',
+                   truncated INTEGER NOT NULL DEFAULT 0);
                  INSERT INTO sessions
                    (id, acp_session_id, title, cwd, created_at, updated_at)
-                   VALUES ('s-old', 'acp-old', '老会话', '/tmp', 1, 1);
-                 INSERT INTO messages
-                   (id, session_id, seq, role, kind, payload_json, created_at)
-                   VALUES ('m-old', 's-old', 1, 'user', 'text', '{\"text\":\"老消息\"}', 1);",
+                   VALUES ('s-old', 'acp-old', '老会话', '/tmp', 1, 1);",
             )
             .expect("seed old messages schema");
         }
 
-        let db = Db::open(&path).expect("旧 messages 表应能补列后打开");
-        let rows = db.load_messages("s-old", 10).expect("旧消息不该丢");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, "m-old");
-        assert_eq!(rows[0].turn_id, None, "老数据不回填 turn_id");
-
-        let index_exists: i64 = db
-            .conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master
-                  WHERE type = 'index' AND name = 'idx_messages_turn'",
-                [],
-                |r| r.get(0),
-            )
-            .expect("index lookup");
-        assert_eq!(index_exists, 1);
+        let db = Db::open(&path).expect("旧表应能在迁移后被视图替换");
+        {
+            let conn = db.conn.lock().unwrap();
+            let type_of = |name: &str| -> String {
+                conn.query_row(
+                    "SELECT type FROM sqlite_master WHERE name = ?1",
+                    params![name],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|e| panic!("missing {name}: {e}"))
+            };
+            assert_eq!(type_of("atoms"), "table");
+            assert_eq!(type_of("messages"), "view");
+            assert_eq!(type_of("session_events"), "view");
+        }
+        assert!(db.load_messages("s-old", 10).unwrap().is_empty());
+        assert!(db.load_events("s-old", 10).unwrap().is_empty());
 
         std::fs::remove_file(&path).ok();
     }
@@ -2412,6 +2619,29 @@ mod tests {
             role: "user".into(),
             kind: "text".into(),
             payload: serde_json::json!({ "id": id, "text": text }),
+        }
+    }
+
+    fn thought(text: &str, turn_id: &str) -> EventInput {
+        EventInput {
+            turn_id: turn_id.into(),
+            author_id: None,
+            kind: "thought".into(),
+            payload_json: serde_json::json!({ "text": text, "bytes": text.len() }).to_string(),
+            source: "live".into(),
+            truncated: false,
+        }
+    }
+
+    fn chat_stream(id: &str, text: &str, turn_id: &str, kind: &str) -> MessageInput {
+        MessageInput {
+            id: id.into(),
+            author_id: None,
+            turn_id: Some(turn_id.into()),
+            non_turn: false,
+            role: "player".into(),
+            kind: kind.into(),
+            payload: serde_json::json!({ "id": id, "role": "player", "text": text }),
         }
     }
 
@@ -2922,12 +3152,12 @@ mod tests {
             .unwrap()
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
-                  WHERE type = 'trigger' AND name IN ('messages_kind_guard_ins', 'messages_kind_guard_upd')",
+                  WHERE type = 'trigger' AND name IN ('atoms_kind_guard_ins', 'atoms_kind_guard_upd')",
                 [],
                 |r| r.get(0),
             )
             .expect("trigger count");
-        assert_eq!(guard_count, 2);
+        assert_eq!(guard_count, 2, "kind 守卫应在 atoms 上重建且不重复");
 
         let index_counts: (i64, i64) = second
             .conn
@@ -2935,16 +3165,387 @@ mod tests {
             .unwrap()
             .query_row(
                 "SELECT
+                   SUM(name = 'idx_atoms_turn'),
                    SUM(name = 'idx_messages_turn'),
-                   SUM(name = 'idx_messages_session_turn')
+                   SUM(name = 'idx_atoms_open')
                  FROM sqlite_master WHERE type = 'index'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .expect("index counts");
-        assert_eq!(index_counts, (1, 0), "只保留实体库已有的 idx_messages_turn");
+        assert_eq!(
+            index_counts,
+            (1, 0),
+            "atoms 索引存在，旧 messages 索引随表消失"
+        );
+        let open_index: i64 = second
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE type = 'index' AND name = 'idx_atoms_open'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("open index");
+        assert_eq!(open_index, 1);
 
         drop(second);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn m2_atoms_is_table_and_legacy_names_are_views() {
+        let (db, path) = temp_db();
+        {
+            let conn = db.conn.lock().unwrap();
+            let type_of = |name: &str| -> String {
+                conn.query_row(
+                    "SELECT type FROM sqlite_master WHERE name = ?1",
+                    params![name],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|e| panic!("missing {name}: {e}"))
+            };
+            assert_eq!(type_of("atoms"), "table");
+            assert_eq!(type_of("messages"), "view");
+            assert_eq!(type_of("session_events"), "view");
+
+            let atoms_indexes: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                      WHERE type = 'index'
+                        AND name IN ('idx_atoms_turn', 'idx_atoms_kind', 'idx_atoms_open')",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("atoms indexes");
+            assert_eq!(atoms_indexes, 3);
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn append_events_writes_trace_atoms_visible_through_view() {
+        let (db, path) = db_with_session();
+        let ev = |kind: &str, turn: &str| EventInput {
+            turn_id: turn.into(),
+            author_id: None,
+            kind: kind.into(),
+            payload_json: r#"{"text":"x"}"#.into(),
+            source: "live".into(),
+            truncated: false,
+        };
+        // M2b：同一轮、同一 kind 的思考分片归并成一行。
+        db.append_events("s-1", &[ev("thought", "t-1"), ev("thought", "t-1")])
+            .expect("append events");
+
+        {
+            let conn = db.conn.lock().unwrap();
+            let view_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM session_events WHERE session_id = 's-1'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("view count");
+            let trace_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM atoms
+                      WHERE session_id = 's-1' AND channel = 'trace'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("atoms count");
+            assert_eq!(view_count, 1);
+            assert_eq!(trace_count, 1);
+        }
+        let rows = db.load_events("s-1", 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        let payload: serde_json::Value = serde_json::from_str(&rows[0].payload_json).unwrap();
+        assert_eq!(payload["text"], "xx");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn five_thought_chunks_merge_into_one_open_atom() {
+        let (db, path) = db_with_session();
+        for part in ["一", "二", "三", "四", "五"] {
+            db.append_events("s-1", &[thought(part, "t-1")])
+                .expect("append thought chunk");
+        }
+
+        {
+            let conn = db.conn.lock().unwrap();
+            let (count, open): (i64, i64) = conn
+                .query_row(
+                    "SELECT COUNT(*), SUM(sealed_at IS NULL) FROM atoms
+                      WHERE session_id = 's-1' AND channel = 'trace' AND kind = 'thought'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .expect("thought count");
+            assert_eq!(count, 1, "五条分片只能留一行");
+            assert_eq!(open, 1, "流还没遇到边界，行应保持 open");
+        }
+
+        let rows = db.load_events("s-1", 10).expect("load");
+        assert_eq!(rows.len(), 1);
+        let payload: serde_json::Value = serde_json::from_str(&rows[0].payload_json).unwrap();
+        assert_eq!(payload["text"], "一二三四五");
+        assert_eq!(payload["bytes"], 15);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn tool_call_seals_the_thought_stream_and_the_next_thought_opens_a_new_row() {
+        let (db, path) = db_with_session();
+        db.append_events("s-1", &[thought("前", "t-1")])
+            .expect("thought before");
+        db.append_events(
+            "s-1",
+            &[EventInput {
+                turn_id: "t-1".into(),
+                author_id: None,
+                kind: "tool_call".into(),
+                payload_json: r#"{"toolCallId":"call-1","title":"读文件"}"#.into(),
+                source: "live".into(),
+                truncated: false,
+            }],
+        )
+        .expect("tool call");
+        db.append_events("s-1", &[thought("后", "t-1")])
+            .expect("thought after");
+
+        let rows = db.load_events("s-1", 10).expect("load");
+        assert_eq!(rows.len(), 3);
+        let mut ordered = rows;
+        ordered.reverse();
+        assert_eq!(ordered[0].kind, "thought");
+        assert_eq!(ordered[1].kind, "tool_call");
+        assert_eq!(ordered[2].kind, "thought");
+        let first: serde_json::Value = serde_json::from_str(&ordered[0].payload_json).unwrap();
+        let last: serde_json::Value = serde_json::from_str(&ordered[2].payload_json).unwrap();
+        assert_eq!(first["text"], "前");
+        assert_eq!(last["text"], "后");
+
+        let conn = db.conn.lock().unwrap();
+        let sealed: Vec<Option<i64>> = conn
+            .prepare(
+                "SELECT sealed_at FROM atoms
+                  WHERE session_id = 's-1' AND kind = 'thought' ORDER BY seq",
+            )
+            .expect("prepare sealed")
+            .query_map([], |r| r.get(0))
+            .expect("query sealed")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("collect sealed");
+        assert_eq!(sealed.len(), 2);
+        assert!(sealed[0].is_some(), "工具调用前的思考必须封口");
+        assert!(sealed[1].is_none(), "工具调用后的思考应重新 open");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn finishing_a_turn_seals_its_open_thought_and_late_chunks_start_a_new_row() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None).expect("start");
+        db.append_events("s-1", &[thought("前", "t-1")])
+            .expect("thought before end");
+        db.end_turn("t-1", "finished", Some("end_turn"))
+            .expect("finish turn");
+        db.append_events("s-1", &[thought("后", "t-1")])
+            .expect("thought after end");
+
+        let conn = db.conn.lock().unwrap();
+        let (count, sealed_count): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), SUM(sealed_at IS NOT NULL) FROM atoms
+                  WHERE session_id = 's-1' AND kind = 'thought'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("thought rows");
+        assert_eq!(count, 2, "终态后不能累加回旧行");
+        assert_eq!(sealed_count, 1, "旧行已封口，迟到分片开出的新行仍 open");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn thought_accumulation_stops_at_eight_kilobytes_and_marks_truncated() {
+        let (db, path) = db_with_session();
+        let chunk = "x".repeat(5000);
+        for _ in 0..2 {
+            db.append_events("s-1", &[thought(&chunk, "t-1")])
+                .expect("thought chunk");
+        }
+
+        let rows = db.load_events("s-1", 10).expect("load");
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].truncated, "超过 8KB 必须标记 truncated");
+        let payload: serde_json::Value = serde_json::from_str(&rows[0].payload_json).unwrap();
+        let text = payload["text"].as_str().unwrap();
+        assert_eq!(text.len(), crate::trace::THOUGHT_MAX_BYTES);
+        assert_eq!(payload["bytes"], 10_000, "bytes 记累计收到的原始字节数");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn reopening_the_db_seals_open_rows_left_by_a_previous_process() {
+        let (db, path) = db_with_session();
+        db.append_events("s-1", &[thought("写到一半", "t-1")])
+            .expect("open thought");
+        drop(db);
+
+        let reopened = Db::open(&path).expect("reopen");
+        let (sealed_at, at): (Option<i64>, i64) = reopened
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT sealed_at, at FROM atoms
+                  WHERE session_id = 's-1' AND kind = 'thought'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("sealed row");
+        assert_eq!(sealed_at, Some(at), "收尾按最后一次更新时间封口");
+        drop(reopened);
+
+        // 再开一次不能改已封口的时间（幂等）。
+        let reopened = Db::open(&path).expect("reopen again");
+        let sealed_again: Option<i64> = reopened
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT sealed_at FROM atoms
+                  WHERE session_id = 's-1' AND kind = 'thought'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("sealed row again");
+        assert_eq!(sealed_again, sealed_at);
+        drop(reopened);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn chat_agent_text_chunks_merge_and_a_different_message_id_seals_the_previous_row() {
+        let (db, path) = db_with_session();
+        db.append_messages("s-1", &[chat_stream("m-1", "你", "t-1", "text.agent")])
+            .expect("first fragment");
+        db.append_messages("s-1", &[chat_stream("m-1", "好", "t-1", "text.agent")])
+            .expect("second fragment");
+
+        let rows = db.load_messages("s-1", 10).expect("load");
+        assert_eq!(rows.len(), 1, "同一条消息的分片只留一行");
+        assert_eq!(rows[0].payload["text"], "你好");
+
+        db.append_messages("s-1", &[chat_stream("m-2", "下一段", "t-1", "text.agent")])
+            .expect("next message");
+        let rows = db.load_messages("s-1", 10).expect("load two");
+        assert_eq!(rows.len(), 2);
+        // load_messages 返回 seq 升序。
+        assert_eq!(rows[0].payload["text"], "你好");
+        assert_eq!(rows[1].payload["text"], "下一段");
+
+        let conn = db.conn.lock().unwrap();
+        let (sealed_count, open_count): (i64, i64) = conn
+            .query_row(
+                "SELECT SUM(sealed_at IS NOT NULL), SUM(sealed_at IS NULL)
+                   FROM atoms WHERE session_id = 's-1' AND channel = 'chat'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("chat stream state");
+        assert_eq!(sealed_count, 1, "换 messageId 后上一段必须封口");
+        assert_eq!(open_count, 1, "当前段保持 open");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn chat_non_stream_messages_seal_open_agent_text_and_stay_one_row_each() {
+        let (db, path) = db_with_session();
+        db.append_messages("s-1", &[chat_stream("m-1", "答", "t-1", "text")])
+            .expect("agent stream");
+        let user = MessageInput {
+            id: "u-1".into(),
+            author_id: None,
+            turn_id: Some("t-1".into()),
+            non_turn: false,
+            role: "user".into(),
+            kind: "text".into(),
+            payload: serde_json::json!({ "id": "u-1", "role": "user", "text": "问" }),
+        };
+        db.append_messages("s-1", &[user]).expect("user message");
+
+        let rows = db.load_messages("s-1", 10).expect("load");
+        assert_eq!(rows.len(), 2, "非流式消息独立成行");
+        let conn = db.conn.lock().unwrap();
+        let open_agent: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM atoms
+                  WHERE session_id = 's-1' AND channel = 'chat' AND role = 'player'
+                    AND sealed_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("open agent");
+        assert_eq!(open_agent, 0, "用户消息到达后 agent 正文段必须封口");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn append_messages_writes_chat_atoms_and_kind_guard_still_rejects_trace_kind() {
+        let (db, path) = db_with_session();
+        let mut chat = msg("m-chat", "正文", Some("t-1"), false);
+        chat.role = "agent".into();
+        chat.author_id = Some("u-1".into());
+        db.append_messages("s-1", &[chat]).expect("append chat");
+
+        {
+            let conn = db.conn.lock().unwrap();
+            let channel: String = conn
+                .query_row(
+                    "SELECT channel FROM atoms WHERE id = 'm-chat'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("atom channel");
+            let view_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM messages WHERE id = 'm-chat'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("view count");
+            assert_eq!(channel, "chat");
+            assert_eq!(view_count, 1);
+        }
+
+        let mut bad = msg("m-bad", "思考不能进正文", Some("t-1"), false);
+        bad.kind = "thought".into();
+        let err = db
+            .append_messages("s-1", &[bad])
+            .expect_err("chat 通道的 thought 必须被 kind 守卫拒绝");
+        assert!(err.to_string().contains("thought"), "got: {err}");
+
+        let conn = db.conn.lock().unwrap();
+        let bad_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM atoms WHERE id = 'm-bad'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("bad atom count");
+        assert_eq!(bad_count, 0, "被拒的 chat atom 不能落库");
+        drop(conn);
         std::fs::remove_file(&path).ok();
     }
 
@@ -3231,7 +3832,8 @@ mod tests {
         // 60 条：验证「单会话只留最近 N 条」
         db.start_turn("s-1", "t-new", "新的一轮", None).expect("turn");
         for _ in 0..60 {
-            db.append_events("s-1", &[ev("thought", "t-new")]).expect("e");
+            // tool_call 是非归并类事件，每条独立成行；这里验证的是保留策略，不是流归并。
+            db.append_events("s-1", &[ev("tool_call", "t-new")]).expect("e");
         }
         // 一个正在跑的轮次（不收尾）：它的事件清空后，轮次本身不能被删
         db.start_turn("s-1", "t-running", "还在跑", None).expect("turn2");
