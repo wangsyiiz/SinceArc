@@ -130,8 +130,27 @@ author_id       = 目标成员 agent_users.id  ← 轨迹里是那个人的支�
 
 - **深度 ≤ 1**：子任务不能再 delegate（返回 `50702`）。没有调度器时递归既烧 token 又说不清谁在等谁。
 - **同父会话最多 3 个在飞**（返回 `50703`）：超了让人等，不是排队。
-- **`wait` 超时不取消**：返回 `timed_out` + 仍在跑的事实。取消是不可逆动作，`interrupt` 是第二批。
+- **`wait` 超时不取消**：返回 `timed_out` + 仍在跑的事实。要停就走 §6.1 的显式取消，不用超时代劳。
 - **不跨 profile 去替用户连接**：目标 profile 未连接 → `50300`「目标连接未连上」，让用户自己去连。
+
+### 6.1 取消一次派活（`delegate_cancel`，2026-10-25 定）
+
+派活开了轮次就得有绳。协议落点只有 `session/cancel`（ACP 里是 **notification**：无 id、不等回包），
+所以「取消」的界面状态必须等那个子会话的终态，**不能点完就显示已取消**。
+
+- 命令：`delegate_cancel(handleId)`。按句柄找到 `DelegateEntry`，向**子会话**发 `session/cancel`
+  （发在**目标成员那条连接**上，`sessionId` = 子 ACP 会话）。
+- **只发通知，不 teardown 连接**：子会话跑在成员的连接上，那条连接里还有成员自己的会话和父会话那一轮 ——
+  为一个子任务杀整条连接，等于连带停掉别人的活（主会话的 `session/cancel` 目前是「停一轮 + 收进程树」，
+  两件事的代价不同，别混用；主会话那一侧要不要也收敛成「只停这一轮」另议）。
+- 返回 `status = "cancelling"`（不是 `cancelled`）：送达 ≠ 已停。
+- 终态判定：`promptResult` / `promptFailed` 到达时取走取消标记（`AppState.take_cancel(child)`），
+  标记在手 → `status = cancelled`，`stop_reason` 保留 agent 原话；否则照旧 `finished` / `failed`。
+- 幂等：句柄已终态时再调只返回当前 `DelegateOutcome`，不报错、不重发通知。
+- 错误：`50704` 句柄不存在；`50300` 目标连接已断开（这时没有可停的对象，如实说）。
+- 界面：派活引用条在飞行中出现「停止」；点下变「正在停止…」；终态后写「已停止」。
+  **取消是用户自己的动作，不弹系统提示、不染警示色**（与 `task_only` 同一条规矩：不是错误）。
+
 
 ## 7. 错误码
 
@@ -153,7 +172,9 @@ author_id       = 目标成员 agent_users.id  ← 轨迹里是那个人的支�
 - caps 缺失 → 不调 fork，`task_only` + `reason=caps_unknown`；
 - fork 返回 JSON-RPC 错误 → 回落 new，`task_only` + `reason=fork_failed`（与 unsupported 分开）；
 - 深度 1 的子任务再 delegate → `50702`；第 4 个在飞 → `50703`；
-- `wait` 超时 → `timed_out`，且**不**给目标发 cancel。
+- `wait` 超时 → `timed_out`，且**不**给目标发 cancel；
+- `delegate_cancel`：在飞的句柄 → 发出 `session/cancel`（`sessionId` = 子会话）、返回 `cancelling`；
+  终态带取消标记 → `cancelled`；已终态的句柄再取消 → 幂等返回，不重发。
 
 真机（两条都要跑）：
 
