@@ -3,6 +3,7 @@ import { AlignLeft, FileText, PencilLine, Play, Search, SendHorizontal, Sparkles
 import type { Activity, ActivityKind, Player, TraceTurn } from "@/types";
 import { cn } from "@/lib/utils";
 import { isTurnCancelled } from "@/lib/turn-status";
+import { turnHeading, turnLabel } from "@/lib/turn-summary";
 import type { LocateTarget } from "@/lib/turn-anchors";
 import { Button } from "./ui/Button";
 import { useHoverCard } from "./ui/HoverCard";
@@ -31,6 +32,8 @@ interface TraceRow {
   statusTitle?: string;
   activity?: Activity;
   playerName?: string;
+  /** 轮抬头专用：行内短标签「第 N 轮」；title 里是完整摘要。 */
+  turnLabel?: string;
   /** 轮抬头专用：该行代表哪一轮，供轨迹 → 正文 / 正文 → 轨迹定位 */
   turnId?: string;
   removed?: boolean;
@@ -50,16 +53,18 @@ function buildTrace(turns: TraceTurn[], activities: Activity[], players: Player[
   let y = 14;
   let lanes = 1;
 
-  for (const t of turns) {
+  for (const [index, t] of turns.entries()) {
     const p0 = players.find((x) => x.id === t.branches[0]?.playerId);
     const outcome = turnOutcome(t);
+    const heading = turnHeading(t, index, outcome.label);
 
     rows.push({
       id: `${t.id}-user`,
       x: MAIN_X,
       y,
       kind: "user",
-      title: t.userText,
+      title: heading,
+      turnLabel: turnLabel(index),
       at: t.at,
       color: "var(--i2)",
       status: outcome.dot,
@@ -226,7 +231,7 @@ function HoverContent({ row }: { row: TraceRow }) {
      看起来就像卡片里的内容也被截了；所以抬头只写「思考」，全文进正文（后端保留 8KB，含换行）。 */
   const headline =
     row.kind === "user"
-      ? "提问"
+      ? "这一轮"
       : row.kind === "reply"
         ? `${row.playerName ?? "玩家"} 回复`
         : activity?.kind === "thinking"
@@ -498,7 +503,9 @@ function GraphLabelRow({
         {r.kind === "user" ? (
           <>
             <span className="shrink-0 font-mono text-micro text-ink-3">{r.at}</span>
-            <span className="min-w-0 truncate text-caption">{r.title}</span>
+            <span className="min-w-0 truncate text-caption text-ink-3">
+              {r.turnLabel ?? r.title}
+            </span>
             <span className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
               <TurnLocateControl target={locateOf(r.turnId ?? "")} onLocate={onLocate} />
               {r.statusLabel && (
@@ -672,8 +679,9 @@ export function TracePanel({
             {turns.length === 0 && (
               <div className="py-8 text-center text-caption text-ink-3">没有活动</div>
             )}
-            {listGroups.map(({ turn, activities: rows }) => {
+            {listGroups.map(({ turn, activities: rows }, index) => {
               const outcome = turnOutcome(turn);
+              const heading = turnHeading(turn, index, outcome.label);
               return (
                 <div
                   key={turn.id}
@@ -681,9 +689,11 @@ export function TracePanel({
                   data-turn-id={turn.id}
                   className="mb-1"
                 >
-                  <div className="flex items-center gap-1.5 px-1 py-1" title={outcome.title}>
+                  <div className="flex items-center gap-1.5 px-1 py-1" title={heading}>
                     <span className="shrink-0 font-mono text-micro text-ink-3">{turn.at}</span>
-                    <span className="min-w-0 truncate text-caption text-ink-2">{turn.userText}</span>
+                    <span className="min-w-0 truncate text-caption text-ink-3">
+                      {turnLabel(index)}
+                    </span>
                     <TurnLocateControl
                       target={locateTargetOf(turn.id)}
                       onLocate={onLocateMessage}
