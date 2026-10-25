@@ -2,6 +2,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import readline from "node:readline";
 
 const REQUEST_TIMEOUT_MS = 5000;
@@ -32,6 +33,34 @@ function permissionConfig() {
   return { kind, options, timeoutMs };
 }
 
+
+/**
+ * 能力开关，与 fake-permission.json 同一套路：会话 cwd 下放 `fake-caps.json`，
+ * 例如 `{"fork":true,"load":true}` —— 改完不用重启客户端（下一次 spawn 生效）。
+ * 默认全关：既有用例依赖「不声明 fork / 不支持 load」的旧行为。
+ */
+function capsConfig() {
+  // initialize 早于 session/new，此时还拿不到会话 cwd：按「环境变量 → 进程 cwd → 家目录」找。
+  const candidates = [
+    process.env.FAKE_ACP_CAPS,
+    path.join(process.cwd(), "fake-caps.json"),
+    path.join(os.homedir(), ".fake-acp-caps.json"),
+  ].filter(Boolean);
+  let fork = false;
+  let load = false;
+  for (const file of candidates) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+      fork = parsed?.fork === true;
+      load = parsed?.load === true;
+      log(`caps from ${file}: fork=${fork} load=${load}`);
+      break;
+    } catch {
+      // 换下一个候选
+    }
+  }
+  return { fork, load };
+}
 
 const SESSION_ID = "fake-session-1";
 /**
@@ -293,14 +322,19 @@ async function handleLine(line) {
   }
 
   switch (message.method) {
-    case "initialize":
+    case "initialize": {
       log("initialize");
+      const caps = capsConfig();
       reply(message.id, {
         protocolVersion: 1,
-        agentCapabilities: { loadSession: false },
+        agentCapabilities: {
+          loadSession: caps.load,
+          ...(caps.fork ? { sessionCapabilities: { fork: {} } } : {}),
+        },
         authMethods: [],
       });
       return;
+    }
     case "session/new":
       log("session/new");
       adoptSessionCwd(message.params);
@@ -342,6 +376,16 @@ async function handleLine(line) {
       activeSessionId = loadedSessionId;
       reply(message.id, { sessionId: loadedSessionId });
       setTimeout(() => echoMcpServers(message.params, loadedSessionId), 100);
+      return;
+    }
+    case "session/fork": {
+      log("session/fork");
+      adoptSessionCwd(message.params);
+      dumpLifecycle("session/fork", message.params);
+      const forkedSessionId = `fake-fork-${++sessionCounter}`;
+      activeSessionId = forkedSessionId;
+      reply(message.id, { sessionId: forkedSessionId });
+      setTimeout(() => echoMcpServers(message.params, forkedSessionId), 100);
       return;
     }
     case "session/prompt":

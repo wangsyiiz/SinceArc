@@ -324,6 +324,34 @@ hermes 的 MCP 工具名是 `mcp__editor_<server>_<hash>__<tool>`，其余 agent
 复现方法：fixture 在 `~/.hermes/cache/scratch/mcp-fixtures/`（`ping-stdio.mjs` / `ping-http.mjs` /
 `ping-sse.mjs`，后两个要先起进程：7331 / 7332），目录条目按上表加进去即可。
 
+### 11.5 六个注入落点逐个验（2026-10-25，报文级）
+
+测法：假 agent 把每次生命周期请求收到的 `mcpServers` 落盘（`fake-acp-requests.jsonl`），
+不靠 agent 自述、也不看界面显示。目录固定两条（`ping` stdio / `pinghttp` http），
+靠**改名单**制造差异，所以每一行都能看出「用的是哪一层的名单」。
+
+| 落点 | 触发方式 | 报文里的 method | 名单 | 说明 |
+|---|---|---|---|---|
+| `session_new` | 新会话首次发消息 | `session/new` | 2（连接默认→目录） | 基线 |
+| `session_load` | `session_load` 恢复已有会话 | `session/load` | 1（会话名单只有 pinghttp） | 会话层覆盖生效 |
+| `session_rebind` | 重建会话 | `session/new` | 1（会话名单只有 ping） | 换名单后重建确实按会话层发 |
+| `delegate_task`（fork） | 派活，agent 报 `sessionFork` | `session/fork` | 1（父界面会话的名单） | 证明派活取的是**父会话**那份，不是连接默认 |
+| `delegate_task`（回退） | 派活，agent 未报 fork | `session/new` | 1（父界面会话的名单） | 回退路径同样带父会话名单 |
+| `agent_user_test` | 连接页「测」玩家会话 | `session/load` | 2（连接默认） | 这条落点按连接层发 |
+
+三条边界，避免下次把「没报文」当成漏测：
+
+1. **`agent_probe` 没有注入点**：它只做 `initialize` 握手，不建会话（代码里没有任何 `session/new`），
+   所以没有 `mcpServers` 可发。之前把它算成落点，是把「探活」和「建会话」混了。
+2. **界面重开一个仍然连着的会话不会重发 `session/load`**：`attach_session` 只在需要恢复时才发；
+   已经附着在这个连接上的会话直接复用，所以改完名单**再点一次会话行**什么都不会发生，
+   看不到新报文是正常的 —— 要生效得真正走一次 load（重开进程后再打开）或 new。
+3. **hermes 在 `session/load` 上没把新增的服务器登记进来**（待查）：一次实测里先以 `[ping]` 建会话
+   （登记 1 个），再把名单改成 `[ping, pinghttp]` 并恢复，日志里只有 1 个，没有 pinghttp。
+   我们的报文带了两条（同一函数、同一份名单，与上表 `session_load` 行同路径）——
+   怀疑是 agent 侧 resume 只认已有注册表，和「空名单不注销」是同一族行为。下次验证法：
+   恢复后直接问 agent「你现在有哪些 `mcp__` 工具」，看 pinghttp 在不在。
+
 ## 12. 中继 vs 自建 OAuth：摊平
 
 ```
