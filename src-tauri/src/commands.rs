@@ -2365,6 +2365,10 @@ pub async fn settings_save(
 #[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct SessionInfo {
     pub session_id: String,
+    /// 建这条会话时 agent 报上来的模式快照。
+    /// 发送路径新建的会话也要能显示模式：快照只从「打开/恢复会话」那条路径拿，
+    /// 同一条会话从发送路径建出来就会显示「不支持」（docs/data-plane.md §3）。
+    pub modes: Option<acp::SessionModes>,
 }
 
 /// 新建会话。`cwd` 属于 agent 所在的世界（WSL/SSH 是 `/home/...`）。
@@ -2407,8 +2411,9 @@ pub async fn session_new(
 
     // 任何建立 ACP 会话的路径都要留一份 modes 快照 —— 否则 session_apply_mode
     // 拿不到可选列表，只能按「不推」处理（规范 §4 兜底），用户设了什么都不会生效。
-    if let Some(modes) = acp::modes_from_response(&result) {
-        state.set_modes(session_id.clone(), modes).await;
+    let modes = acp::modes_from_response(&result);
+    if let Some(found) = &modes {
+        state.set_modes(session_id.clone(), found.clone()).await;
     }
 
     if let Some(ui_id) = ui_session_id.as_deref() {
@@ -2436,7 +2441,7 @@ pub async fn session_new(
         )
         .await;
 
-    Ok(SessionInfo { session_id })
+    Ok(SessionInfo { session_id, modes })
 }
 
 #[tauri::command]
@@ -2471,8 +2476,9 @@ pub async fn session_rebind(
         })?
         .to_string();
 
-    if let Some(modes) = acp::modes_from_response(&result) {
-        state.set_modes(session_id.clone(), modes).await;
+    let modes = acp::modes_from_response(&result);
+    if let Some(found) = &modes {
+        state.set_modes(session_id.clone(), found.clone()).await;
     }
 
     state
@@ -2503,7 +2509,7 @@ pub async fn session_rebind(
         )
         .await;
 
-    Ok(SessionInfo { session_id })
+    Ok(SessionInfo { session_id, modes })
 }
 
 /* ---------- delegate / wait（docs/orchestration.md） ---------- */

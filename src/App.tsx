@@ -486,18 +486,19 @@ export default function App() {
     [profiles, sessions],
   );
   const onAcpSessionCreated = useCallback(
-    (uiSid: string, profileId: string, acpSid: string) => {
+    (uiSid: string, profileId: string, acpSid: string, modes: ModesSnapshot | null) => {
       setSessions((prev) =>
         prev.map((s) =>
           s.id === uiSid ? { ...s, acpSessionId: acpSid, profileId } : s,
         ),
       );
       noteAcpSession(uiSid, acpSid);
+      // 建会话时就带上 agent 报的模式快照：不带，界面这条会话永远显示「不支持」。
       onSessionBound({
         profileId,
         acpSessionId: acpSid,
         uiSessionId: uiSid,
-        snapshot: null,
+        snapshot: modes,
       });
     },
     [noteAcpSession, onSessionBound, setSessions],
