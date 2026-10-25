@@ -199,3 +199,53 @@ atom id（现在那份副本正是「一个键两个来源」）。
 | **M2** | `atoms` 为唯一写入点，`messages` 与轨迹都成视图；历史搬迁、重放去重语义重定 | 全量回归，不可分批 | 1–7 |
 
 判据：M2 只在出现**第三处**「同一逻辑事件写两份」时启动；现在只有 `delegate` 一处，不足以为它付 M2 的代价。
+
+## 10. M1 实施要点（先定，再写代码）
+
+### 10.1 轮的身份只有一个来源：后端
+
+现状：后端在 `session_prompt` 里生成 `turn-<ms>` 并写进 `turns.id`，前端同时自造一个
+`turn-live-<ms>` 挂在 UI 状态上 —— 两个 id 永不相等，于是轨迹面板的「轮」与消息永远对不上。
+
+规则：
+
+- `turnId` **由后端生成**，`session_prompt` 的返回值必须带上它。
+- 前端只把返回值写回 UI 状态（先占位、收到回执后替换），**不许再自造 turn id**。
+- 任何地方要「这条消息属于哪一轮」，只能引用这个 id。
+
+### 10.2 `messages.turn_id` 的写入规则（三级，兜底明确）
+
+```
+① 调用方显式给的 turn_id（前端拿到后端返回的真 id）
+② 没给 → 该会话当前 status='running' 的轮（最近一条）
+③ 都没有 → NULL（握手期的系统提示、历史补写、非轮次消息）
+```
+
+列可为空、加索引；老数据留 NULL，不做猜测性回填 —— 按时间反推「这条属于哪轮」正是要消灭的错。
+
+### 10.3 kind 约束用触发器，不用 CHECK
+
+SQLite **不能** `ALTER TABLE ... ADD CHECK`：只能重建表（关外键、搬全表、失败回滚整表）。
+收益与触发器相同，风险高一个量级。
+
+- 启动时 `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER`（`BEFORE INSERT` / `BEFORE UPDATE`），
+  词典来自 Rust 常量（`messages.kind` 目前只写 `text` / `aside` / `delegate` 三个**旧词**，
+  点号形式是 atom 层的名字，换名属于 M2 的搬表工作）。
+- 词典一旦改动，触发器随之重建，因此不存在漂移。
+- `CHECK` 约束留到 M2 搬表时一并落库。
+
+### 10.4 `turns` 第三态只留一种说法
+
+`status ∈ {running, finished, failed}`；**取消 = `status='finished'` + `stop_reason='cancelled'`**。
+不再出现 `status='cancelled'`。迁移：`status='cancelled'` → `'finished'`，其中 `stop_reason` 为空的补 `'cancelled'`。
+
+### 10.5 `refs` 规范化在 M1 只收口读取
+
+`payload_json` 里游离的 `toolCallId` / `requestId` / `handleId` 由一个 `refs_of(payload)` 统一取，
+不改列、不改数据；落列随 M2 搬表一起做。
+
+### 10.6 回滚
+
+M1 的迁移只有三种动作：加列（可留）、`UPDATE turns`（可逆）、触发器（可 DROP）。
+迁移前自动备份整库（沿用 `db` 里既有的备份机制），旧二进制读到多出的列与触发器不受影响。
+
