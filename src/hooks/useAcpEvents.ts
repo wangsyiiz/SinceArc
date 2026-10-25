@@ -225,6 +225,19 @@ export function useAcpEvents({
   const [messageIdByAcpSession, setMessageIdByAcpSession] = useState<Record<string, boolean>>({});
   /** 界面会话 -> ACP 会话（来自事件归属，不依赖数据库列）。 */
   const [acpByUiSession, setAcpByUiSession] = useState<Record<string, string>>({});
+  /** 同一份映射的同步镜像：新建会话后 send 要在同一次调用里立刻读到它。 */
+  const acpByUiSessionRef = useRef<Record<string, string>>({});
+  const noteAcpSession = useCallback((uiSid: string, acpSid: string) => {
+    if (acpByUiSessionRef.current[uiSid] === acpSid) return;
+    acpByUiSessionRef.current = { ...acpByUiSessionRef.current, [uiSid]: acpSid };
+    setAcpByUiSession((prev) =>
+      prev[uiSid] === acpSid ? prev : { ...prev, [uiSid]: acpSid },
+    );
+  }, []);
+  const acpSessionForUi = useCallback(
+    (uiSid: string) => acpByUiSessionRef.current[uiSid] ?? null,
+    [],
+  );
   const diag = useCallback((text: string) => {
     setEventLog((prev) => [...prev, { at: Date.now(), text: `· ${text}` }].slice(-80));
   }, []);
@@ -566,7 +579,7 @@ export function useAcpEvents({
       // 新建会话的 `sessions.acp_session_id` 只在恢复路径落库，第一轮可能还是空的，
       // 而命令列表 / 能力面板 / 插话入口都挂在 ACP 会话上（见 docs/steering.md §5）。
       if (uiSid && acpSid) {
-        setAcpByUiSession((prev) => (prev[uiSid] === acpSid ? prev : { ...prev, [uiSid]: acpSid }));
+        noteAcpSession(uiSid, acpSid);
       }
 
       if (event.kind === "request" && event.method === "session/request_permission") {
@@ -834,6 +847,7 @@ export function useAcpEvents({
       onPermissionsExpired,
       onTraceChanged,
       patchSession,
+      noteAcpSession,
       scheduleFlush,
       scheduleLateSettle,
       settleLateStream,
@@ -857,6 +871,8 @@ export function useAcpEvents({
         clog("BIND-NOUI", `acp=${sessionId} profile=${profileId}（没有界面会话）`);
         return;
       }
+      // 同步记一份：send 里 await ensureConnected 之后会立刻重新读 own。
+      noteAcpSession(uiSid, sessionId);
       sessionBindAcp(uiSid, sessionId).catch((e) =>
         console.warn("[db] bind acp session failed", e),
       );
@@ -870,7 +886,7 @@ export function useAcpEvents({
         snapshot: snapshot ?? null,
       });
     },
-    [onSessionBound, setSessions],
+    [noteAcpSession, onSessionBound, setSessions],
   );
 
   const acp = useMemo<AcpRefs>(() => ({ acpToTurn }), []);
@@ -884,6 +900,8 @@ export function useAcpEvents({
     commandsByAcpSession,
     messageIdByAcpSession,
     acpByUiSession,
+    acpSessionForUi,
+    noteAcpSession,
     flushStream,
     onAgentEvent,
     onSession,
