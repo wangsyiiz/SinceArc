@@ -346,11 +346,13 @@ hermes 的 MCP 工具名是 `mcp__editor_<server>_<hash>__<tool>`，其余 agent
 2. **界面重开一个仍然连着的会话不会重发 `session/load`**：`attach_session` 只在需要恢复时才发；
    已经附着在这个连接上的会话直接复用，所以改完名单**再点一次会话行**什么都不会发生，
    看不到新报文是正常的 —— 要生效得真正走一次 load（重开进程后再打开）或 new。
-3. **hermes 在 `session/load` 上没把新增的服务器登记进来**（待查）：一次实测里先以 `[ping]` 建会话
-   （登记 1 个），再把名单改成 `[ping, pinghttp]` 并恢复，日志里只有 1 个，没有 pinghttp。
-   我们的报文带了两条（同一函数、同一份名单，与上表 `session_load` 行同路径）——
-   怀疑是 agent 侧 resume 只认已有注册表，和「空名单不注销」是同一族行为。下次验证法：
-   恢复后直接问 agent「你现在有哪些 `mcp__` 工具」，看 pinghttp 在不在。
+3. **`session/load` 带新增服务器是生效的**（2026-10-25 复核）：把名单从 `[ping]` 改成
+   `[ping, pinghttp]`，断开进程后重开该会话（走 `session/load`，报文两条），hermes 日志
+   `registered 2 tool(s) from 2 server(s)`，且问它「你现在有哪些 `mcp__` 工具」答出
+   `mcp__editor_ping_5cffc61d__ping` 与 `mcp__editor_pinghttp_fa52a681__ping` 两个。
+   早先那次「只有 1 个」是量错了：同一进程里这份名单早就登记过，重开时没有新服务器可登记，
+   所以没有新的日志行 —— **「没有新日志」≠「没发报文」**，要判这个只能看报文或问工具清单。
+   顺带确认 §11.2 的另一半：增加靠下一次 `new/load` 就够，减少才必须换进程。
 
 ## 12. 中继 vs 自建 OAuth：摊平
 
