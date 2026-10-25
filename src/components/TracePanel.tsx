@@ -3,6 +3,8 @@ import { AlignLeft, FileText, PencilLine, Play, Search, SendHorizontal, Sparkles
 import type { Activity, ActivityKind, Player, TraceTurn } from "@/types";
 import { cn } from "@/lib/utils";
 import { isTurnCancelled } from "@/lib/turn-status";
+import type { LocateTarget } from "@/lib/turn-anchors";
+import { Button } from "./ui/Button";
 import { useHoverCard } from "./ui/HoverCard";
 import { RemovedBadge } from "./RemovedBadge";
 
@@ -29,6 +31,8 @@ interface TraceRow {
   statusTitle?: string;
   activity?: Activity;
   playerName?: string;
+  /** 轮抬头专用：该行代表哪一轮，供轨迹 → 正文 / 正文 → 轨迹定位 */
+  turnId?: string;
   removed?: boolean;
   deleted?: boolean;
 }
@@ -61,6 +65,7 @@ function buildTrace(turns: TraceTurn[], activities: Activity[], players: Player[
       status: outcome.dot,
       statusLabel: outcome.label,
       statusTitle: outcome.title,
+      turnId: t.id,
     });
 
     const branchStart = y + ROW;
@@ -269,6 +274,39 @@ function HoverContent({ row }: { row: TraceRow }) {
   );
 }
 
+function TurnLocateControl({
+  target,
+  onLocate,
+}: {
+  target: LocateTarget;
+  onLocate: (messageId: string) => void;
+}) {
+  const reason =
+    target.kind === "legacy"
+      ? "这一轮没有记录正文归属（M1 之前的数据）"
+      : target.kind === "empty"
+        ? "这一轮没有正文"
+        : null;
+  return (
+    <span className="flex min-w-0 items-center gap-1">
+      {reason && <span className="min-w-0 truncate text-micro text-ink-3">{reason}</span>}
+      <Button
+        variant="ghost"
+        size="sm"
+        disabled={target.kind !== "ok"}
+        aria-label="定位到正文"
+        onClick={() => {
+          if (target.kind === "ok") onLocate(target.messageId);
+        }}
+        className="h-auto shrink-0 gap-1 rounded-mark px-1.5 py-1 text-caption"
+      >
+        <AlignLeft className="size-3" />
+        定位到正文
+      </Button>
+    </span>
+  );
+}
+
 function ActivityListRow({ activity, player }: { activity: Activity; player?: Player }) {
   const [el, setEl] = useState<HTMLDivElement | null>(null);
   const hover = useHoverCard();
@@ -424,10 +462,16 @@ function GraphLabelRow({
   row: r,
   focusId,
   register,
+  registerTurn,
+  locateOf,
+  onLocate,
 }: {
   row: TraceRow;
   focusId: string | null;
   register: (id: string, el: HTMLDivElement | null) => void;
+  registerTurn: (id: string, el: HTMLDivElement | null) => void;
+  locateOf: (turnId: string) => LocateTarget;
+  onLocate: (messageId: string) => void;
 }) {
   const [el, setEl] = useState<HTMLDivElement | null>(null);
   const hover = useHoverCard();
@@ -439,8 +483,10 @@ function GraphLabelRow({
         ref={(node) => {
           setEl(node);
           register(r.id, node);
+          if (r.kind === "user" && r.turnId) registerTurn(r.turnId, node);
         }}
         {...hover.triggerProps(el)}
+        data-turn-id={r.kind === "user" ? r.turnId : undefined}
         style={{ height: ROW }}
         title={r.statusTitle}
         className={cn(
@@ -453,20 +499,25 @@ function GraphLabelRow({
           <>
             <span className="shrink-0 font-mono text-micro text-ink-3">{r.at}</span>
             <span className="min-w-0 truncate text-caption">{r.title}</span>
-            {r.statusLabel && (
-              <span
-                className={cn(
-                  "ml-auto flex shrink-0 items-center gap-1 text-micro",
-                  turnStatusTextClass(r.status),
-                )}
-                title={r.statusTitle}
-              >
-                {r.status && (
-                  <span className={cn("size-1.5 shrink-0 rounded-full", statusDotClass(r.status))} />
-                )}
-                <span className="truncate">{r.statusLabel}</span>
-              </span>
-            )}
+            <span className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
+              <TurnLocateControl target={locateOf(r.turnId ?? "")} onLocate={onLocate} />
+              {r.statusLabel && (
+                <span
+                  className={cn(
+                    "flex shrink-0 items-center gap-1 text-micro",
+                    turnStatusTextClass(r.status),
+                  )}
+                  title={r.statusTitle}
+                >
+                  {r.status && (
+                    <span
+                      className={cn("size-1.5 shrink-0 rounded-full", statusDotClass(r.status))}
+                    />
+                  )}
+                  <span className="truncate">{r.statusLabel}</span>
+                </span>
+              )}
+            </span>
           </>
         ) : r.kind === "reply" ? (
           <span className="flex min-w-0 items-baseline gap-1.5">
@@ -502,6 +553,10 @@ interface TracePanelProps {
   open: boolean;
   focusId: string | null;
   focusTick: number;
+  locateTurnId: string | null;
+  locateTick: number;
+  locateTargetOf: (turnId: string) => LocateTarget;
+  onLocateMessage: (messageId: string) => void;
   turns: TraceTurn[];
   activities: Activity[];
   players: Player[];
@@ -515,6 +570,10 @@ export function TracePanel({
   open,
   focusId,
   focusTick,
+  locateTurnId,
+  locateTick,
+  locateTargetOf,
+  onLocateMessage,
   turns,
   activities,
   players,
@@ -525,6 +584,7 @@ export function TracePanel({
 }: TracePanelProps) {
   const [view, setView] = useState<"graph" | "list">("graph");
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const turnRefs = useRef(new Map<string, HTMLDivElement>());
   const { rows, edges, height, width: svgWidth } = useMemo(
     () => buildTrace(turns, activities, players),
     [turns, activities, players],
@@ -535,6 +595,17 @@ export function TracePanel({
     const el = rowRefs.current.get(focusId);
     if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [open, focusId, focusTick]);
+
+  useEffect(() => {
+    if (!open || !locateTurnId) return;
+    const el = turnRefs.current.get(locateTurnId);
+    if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [open, locateTurnId, locateTick, turns, view]);
+
+  const registerTurn = (id: string, el: HTMLDivElement | null) => {
+    if (el) turnRefs.current.set(id, el);
+    else turnRefs.current.delete(id);
+  };
 
   const actionCount = activities.length;
   const listGroups = useMemo(() => {
@@ -604,10 +675,19 @@ export function TracePanel({
             {listGroups.map(({ turn, activities: rows }) => {
               const outcome = turnOutcome(turn);
               return (
-                <div key={turn.id} className="mb-1">
+                <div
+                  key={turn.id}
+                  ref={(el) => registerTurn(turn.id, el)}
+                  data-turn-id={turn.id}
+                  className="mb-1"
+                >
                   <div className="flex items-center gap-1.5 px-1 py-1" title={outcome.title}>
                     <span className="shrink-0 font-mono text-micro text-ink-3">{turn.at}</span>
                     <span className="min-w-0 truncate text-caption text-ink-2">{turn.userText}</span>
+                    <TurnLocateControl
+                      target={locateTargetOf(turn.id)}
+                      onLocate={onLocateMessage}
+                    />
                     <span
                       className={cn(
                         "ml-auto flex shrink-0 items-center gap-1 text-micro",
@@ -691,6 +771,9 @@ export function TracePanel({
                     if (el) rowRefs.current.set(id, el);
                     else rowRefs.current.delete(id);
                   }}
+                  registerTurn={registerTurn}
+                  locateOf={locateTargetOf}
+                  onLocate={onLocateMessage}
                 />
               ))}
             </div>

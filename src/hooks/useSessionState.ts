@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { messageFromPayload, messagesLoad, sessionUsage } from "@/lib/ipc";
+import { messageFromRow, messagesLoad, sessionUsage } from "@/lib/ipc";
 import { mergeMessages, minSeq } from "@/lib/messages-merge";
 import { clog } from "@/lib/log";
 import type { SessionState } from "@/types";
@@ -100,7 +100,7 @@ export function useSessionState(lastSessionId: string) {
       const nextSeqs = { ...previousSeqs };
       for (const row of page.messages) nextSeqs[row.id] = row.seq;
       seqBySession.current[sid] = nextSeqs;
-      const fromDb = page.messages.map((r) => messageFromPayload(r.payload));
+      const fromDb = page.messages.map((r) => messageFromRow(r));
 
       setSessionState((prev) => {
         const cur = prev[sid] ?? emptySession();
@@ -161,7 +161,7 @@ export function useSessionState(lastSessionId: string) {
     const nextSeqs = { ...(seqBySession.current[sid] ?? {}) };
     for (const row of page.messages) nextSeqs[row.id] = row.seq;
     seqBySession.current[sid] = nextSeqs;
-    const older = page.messages.map((r) => messageFromPayload(r.payload));
+    const older = page.messages.map((r) => messageFromRow(r));
 
     setSessionState((prev) => {
       const cur = prev[sid] ?? emptySession();

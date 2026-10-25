@@ -2,6 +2,7 @@
 // 手写副本已删除；这里只保留 Rust 侧没有对应 struct、或定义在生成范围之外的类型。
 
 import type { Message } from "@/types";
+import type { MessageRow } from "./types.gen/MessageRow";
 
 export type {
   AcpEvent,
@@ -77,15 +78,27 @@ export interface SessionUpdate {
   };
 }
 
+function withTurnId(message: Message, turnId: string | null | undefined): Message {
+  return turnId === undefined ? message : { ...message, turnId };
+}
+
 /**
  * 历史行的 payload 就是前端 `Message` 的形状。派活发起行额外带 `delegate`，
  * 这里只做一次结构校验：读不到或形状不对就原样当普通用户消息，不能让一条坏记录消失。
+ *
+ * `turnId` 是 `messages.turn_id` 的权威值；payload 里的同名字段只在直接调用、
+ * 没有行上下文时兜底。历史读取必须走 `messageFromRow`，避免只有正文、没有轮归属。
  */
-export function messageFromPayload(payload: unknown): Message {
+export function messageFromPayload(payload: unknown, turnId?: string | null): Message {
   if (!payload || typeof payload !== "object") return payload as Message;
   const raw = payload as Record<string, unknown>;
+  const payloadTurnId =
+    typeof raw.turnId === "string" || raw.turnId === null
+      ? raw.turnId
+      : undefined;
+  const resolvedTurnId = turnId === undefined ? payloadTurnId : turnId;
   if (raw.role !== "user" || !raw.delegate || typeof raw.delegate !== "object") {
-    return payload as Message;
+    return withTurnId(payload as Message, resolvedTurnId);
   }
 
   const delegate = raw.delegate as Record<string, unknown>;
@@ -99,18 +112,26 @@ export function messageFromPayload(payload: unknown): Message {
     delegateContext === null ||
     typeof delegate.reason !== "string"
   ) {
-    return payload as Message;
+    return withTurnId(payload as Message, resolvedTurnId);
   }
 
-  return {
-    ...(raw as Extract<Message, { role: "user" }>),
-    delegate: {
-      handleId,
-      targetMemberId: delegate.targetMemberId,
-      targetName: delegate.targetName,
-      context: delegateContext,
-      reason: delegate.reason,
+  return withTurnId(
+    {
+      ...(raw as unknown as Extract<Message, { role: "user" }>),
+      delegate: {
+        handleId,
+        targetMemberId: delegate.targetMemberId,
+        targetName: delegate.targetName,
+        context: delegateContext,
+        reason: delegate.reason,
+      },
     },
-  };
+    resolvedTurnId,
+  );
+}
+
+/** `MessageRow` → `Message`：轮归属只认行上的 `turn_id`。 */
+export function messageFromRow(row: MessageRow): Message {
+  return messageFromPayload(row.payload, row.turnId);
 }
 

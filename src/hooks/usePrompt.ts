@@ -100,7 +100,7 @@ export function usePrompt({
       // 用户消息先上屏，真假链路都一样；落库等拿到回执或明确失败后再做。
       // 只有真要发 prompt 时才置 busy —— 连接阶段置 busy 会把输入框锁住，
       // 而连接可能要几十秒，用户会以为界面卡死了（docs/desktop-ux.md §1.6）。
-      const userMsg: Message = { id: newId("u"), role: "user", text, at };
+      const userMsg: Message = { id: newId("u"), role: "user", text, at, turnId: null };
       patchSession(sid, (s) => ({
         ...s,
         busy: !needConnect,
@@ -114,6 +114,7 @@ export function usePrompt({
                   role: "system" as const,
                   text: "正在连接 agent…（连接期间可以继续操作界面）",
                   at,
+                  turnId: null,
                 },
               ]
             : []),
@@ -122,12 +123,13 @@ export function usePrompt({
       // 用户消息也要显式表态：拿到后端回执就带真 turnId；没发出去的路径显式 nonTurn。
       // 不再先写一条 NULL 再补 id —— 写入口已经不允许静默 NULL。
       const persistUserMessage = (turnId?: string) => {
+        const payload = turnId ? { ...userMsg, turnId } : userMsg;
         messagesAppend(sid, [
           {
             id: userMsg.id,
             role: "user",
             kind: "text",
-            payload: userMsg,
+            payload,
             ...(turnId ? { turnId } : { nonTurn: true }),
           },
         ]).catch((e) => console.warn("[db] append message failed", e));
@@ -277,6 +279,15 @@ export function usePrompt({
             patchSession(sid, (s) => ({
               ...s,
               turns: replaceTurnId(s.turns, turnId, realTurnId),
+              // 用户消息与已经开流的回答都补上后端真 id。占位 id 只是本地 key，
+              // 不落库；界面上的锚点必须指向真轮，否则「在轨迹里看这一轮」会找不到。
+              msgs: s.msgs.map((m) =>
+                m.id === userMsg.id
+                  ? { ...m, turnId: realTurnId }
+                  : m.role === "player" && m.streaming && !m.turnId
+                    ? { ...m, turnId: realTurnId }
+                    : m,
+              ),
             }));
             persistUserMessage(realTurnId);
           })
