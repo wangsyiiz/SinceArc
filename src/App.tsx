@@ -24,6 +24,7 @@ import { delegateCancelFailureMessage, type DelegatePhase } from "@/lib/delegate
 import { mergeMessages } from "@/lib/messages-merge";
 import { buildPlayers } from "@/lib/players";
 import { steerGate, type SteerGate } from "@/lib/steer-availability";
+import { resolveAcpSessionId } from "@/lib/session-view";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
 import { StatusBar } from "@/components/StatusBar";
@@ -348,7 +349,7 @@ export default function App() {
     },
     [permissions.expire, sessions],
   );
-  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, commandsByAcpSession, messageIdByAcpSession, acpByUiSession, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired, onTraceChanged: () => setTraceTick((t) => t + 1) });
+  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, commandsByAcpSession, messageIdByAcpSession, acpByUiSession, acpSessionForUi, noteAcpSession, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired, onTraceChanged: () => setTraceTick((t) => t + 1) });
 
   useEffect(() => {
     permissionDiagRef.current = diag;
@@ -419,10 +420,23 @@ export default function App() {
   const sessionProfile = profiles.find((p) => p.id === activeSession?.profileId) ?? activeProfile;
   // 命令属于 ACP 会话，不属于 UI 会话：没有 acpSessionId 就不传，块不出现。
   /**
-   * 活动会话的 ACP 会话 id：优先用会话记录的字段，没有就用事件流里学到的映射。
-   * 新建会话的数据库列可能还没回填，而命令列表 / 能力面板 / 插话入口都挂在 ACP 会话上。
+   * **唯一的会话解析口**（docs/data-plane.md §2）：界面只持有 uiSessionId，其余 id 由它派生。
+   * 顺序：会话记录 → 事件流学到的映射 → null（不猜「连接当前会话」）。
    */
-  const activeAcpSid = activeSession?.acpSessionId ?? acpByUiSession[lastSessionId] ?? null;
+  const acpSessionOf = useCallback(
+    (uiSid: string) =>
+      resolveAcpSessionId(
+        sessions.find((s) => s.id === uiSid)?.acpSessionId,
+        acpSessionForUi(uiSid),
+        acpByUiSession[uiSid],
+      ),
+    [sessions, acpByUiSession, acpSessionForUi],
+  );
+  /**
+   * 活动会话的 ACP 会话 id。状态栏、模式切换、停止、能力面板、命令列表、插话门禁
+   * 全部只认这一个值 —— 少一处读「连接当前会话」就是切换数据面不完整。
+   */
+  const activeAcpSid = acpSessionOf(lastSessionId);
   const acpCommands = activeAcpSid ? commandsByAcpSession[activeAcpSid] : undefined;
   /** 插话入口的三态：off=这个 agent 没声明 steer；waiting=声明了但还没见过正文分组；on=可插 */
   const steerMode: SteerGate = steerGate(
@@ -463,11 +477,39 @@ export default function App() {
     (uiSid: string) => sessions.find((s) => s.id === uiSid)?.profileId ?? null,
     [sessions],
   );
+  const cwdOf = useCallback(
+    (uiSid: string, profileId: string | null) => {
+      const sessionCwd = sessions.find((s) => s.id === uiSid)?.cwd;
+      if (sessionCwd) return sessionCwd;
+      return profiles.find((p) => p.id === profileId)?.cwd ?? "";
+    },
+    [profiles, sessions],
+  );
+  const onAcpSessionCreated = useCallback(
+    (uiSid: string, profileId: string, acpSid: string) => {
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === uiSid ? { ...s, acpSessionId: acpSid, profileId } : s,
+        ),
+      );
+      noteAcpSession(uiSid, acpSid);
+      onSessionBound({
+        profileId,
+        acpSessionId: acpSid,
+        uiSessionId: uiSid,
+        snapshot: null,
+      });
+    },
+    [noteAcpSession, onSessionBound, setSessions],
+  );
   const { send } = usePrompt({
     lastSessionId,
     patchSession,
     activeProfile: sessionProfile,
     sessionsByProfile,
+    acpSessionOf,
+    cwdOf,
+    onSessionCreated: onAcpSessionCreated,
     contextMessages: settings.contextMessages,
     acp,
     profileIdOf,
@@ -1001,8 +1043,8 @@ export default function App() {
     const acpSessionId =
       acpFromAct ??
       member?.acpSessionId ??
-      (profileId ? sessionsByProfile[profileId] : undefined) ??
-      activeSession?.acpSessionId;
+      // 绝不退到「连接当前会话」：那可能正是另一条会话的 agent 上下文。
+      activeAcpSid;
 
     if (!profileId || !acpSessionId) {
       patchSession(sid, (s) => ({ ...s, busy: false }));
@@ -1021,14 +1063,13 @@ export default function App() {
       pushSystemNotice(patchSession, sid, `停止失败：${err.code} ${err.msg}`);
     }
   }, [
-    activeSession?.acpSessionId,
+    activeAcpSid,
     activeSession?.profileId,
     cancelling,
     lastSessionId,
     members,
     patchSession,
     sessionProfile?.id,
-    sessionsByProfile,
     state.acts,
   ]);
 
@@ -1179,7 +1220,7 @@ export default function App() {
               <StatusBar
                 cwd={cwd}
                 profile={sessionProfile}
-                sessionId={sessionProfile ? sessionsByProfile[sessionProfile.id] : undefined}
+                sessionId={activeAcpSid ?? undefined}
                 eventCount={eventCount}
                 lastEvent={lastEvent}
                 eventLog={eventLog}
@@ -1189,7 +1230,7 @@ export default function App() {
                 connectError={state.connectError}
                 connecting={!!connectPending[lastSessionId]}
                 onChooseMode={(modeId) => {
-                  const acpSid = sessionProfile ? sessionsByProfile[sessionProfile.id] : undefined;
+                  const acpSid = activeAcpSid;
                   if (sessionProfile && acpSid) {
                     void choose({
                       profileId: sessionProfile.id,

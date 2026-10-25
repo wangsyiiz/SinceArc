@@ -14,7 +14,7 @@ interface StatusBarProps {
   profile: AgentProfile | undefined;
   traceOpen: boolean;
   onToggleTrace: () => void;
-  /** 当前 profile 的会话 id（握手后建出来的那个） */
+  /** 这条界面会话自己的 ACP 会话 id（不是「连接当前会话」，见 docs/data-plane.md §2） */
   sessionId?: string;
   /** 调试用：累计收到的 inbound 事件数与其方法名 */
   eventCount?: number;
