@@ -27,6 +27,7 @@ import {
 } from "@/lib/late-window";
 import { pushSystemNotice } from "@/lib/notices";
 import { keyOf } from "@/lib/stream-key";
+import { turnIdForPersist } from "@/lib/turn-id";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import type { UsageDto } from "@/lib/ipc/types.gen/UsageDto";
 import type { SessionSummary } from "@/types";
@@ -362,6 +363,7 @@ export function useAcpEvents({
             id: st.msgId,
             role: "player",
             kind: "text",
+            turnId: turnIdForPersist(acpToTurn.current[st.acpSid]),
             payload: {
               id: st.msgId,
               role: "player",
@@ -695,6 +697,7 @@ export function useAcpEvents({
               id,
               role: "player",
               kind: "text",
+              turnId: turnIdForPersist(acpToTurn.current[stale.acpSid]),
               payload: {
                 id,
                 role: "player",
@@ -796,6 +799,7 @@ export function useAcpEvents({
               id,
               role: "system",
               kind: "text",
+              turnId: null,
               payload: { id, role: "system", text: `这一轮失败：${event.msg}`, at: now() },
             },
           ]).catch((e) => console.warn("[db] append failure notice failed", e));
@@ -809,6 +813,7 @@ export function useAcpEvents({
                   id: st.msgId,
                   role: "player",
                   kind: "text",
+                  turnId: turnIdForPersist(acpToTurn.current[st.acpSid]),
                   payload: {
                     id: st.msgId,
                     role: "player",

@@ -1186,16 +1186,13 @@ fn prompt_failure_reason(e: &transport::TransportError) -> String {
 }
 
 /// prompt 正常返回时的终态。用户点过停止、或 agent 自己回了 `cancelled`，
-/// 都只收一次 cancelled；其余情况保留 agent 的原始 stopReason。
+/// 统一收成 finished + stop_reason='cancelled'；其余情况保留 agent 的原始 stopReason。
 fn prompt_success_outcome(
     cancelled_by_user: bool,
     stop_reason: Option<String>,
 ) -> (&'static str, Option<String>) {
     if cancelled_by_user || stop_reason.as_deref() == Some("cancelled") {
-        (
-            "cancelled",
-            Some(stop_reason.unwrap_or_else(|| "cancelled".to_string())),
-        )
+        ("finished", Some("cancelled".to_string()))
     } else {
         ("finished", stop_reason)
     }
@@ -1211,13 +1208,13 @@ fn delegate_end_status(cancelled_by_user: bool, fallback: DelegateStatus) -> Del
     }
 }
 
-/// prompt 返回 Err 时的终态：用户点过停止就是 cancelled，否则是 failed + 可解释原因。
+/// prompt 返回 Err 时的终态：用户点过停止是 finished + cancelled，否则是 failed + 可解释原因。
 fn prompt_failure_outcome(
     cancelled_by_user: bool,
     e: &transport::TransportError,
 ) -> (&'static str, Option<String>) {
     if cancelled_by_user {
-        ("cancelled", Some("cancelled".to_string()))
+        ("finished", Some("cancelled".to_string()))
     } else {
         ("failed", Some(prompt_failure_reason(e)))
     }
@@ -1684,9 +1681,7 @@ pub async fn agent_connect(
                         // 攒起来；够 4KB 就先发一段（长回答开头不必等满 30ms）
                         let message_id = params
                             .get("update")
-                            .and_then(|u| u.get("messageId"))
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_string);
+                            .and_then(|u| crate::trace::refs_of(u).get("messageId").cloned());
                         let chunk = params
                             .get("update")
                             .and_then(|u| u.get("content"))
@@ -2881,10 +2876,13 @@ async fn finish_delegate(
         if own_turn {
             let turn_status = match status {
                 DelegateStatus::Failed => "failed",
-                DelegateStatus::Cancelled => "cancelled",
                 _ => "finished",
             };
-            if let Err(e) = db.end_turn(turn_id, turn_status, stop_reason.as_deref()) {
+            let turn_stop_reason = match status {
+                DelegateStatus::Cancelled => Some("cancelled"),
+                _ => stop_reason.as_deref(),
+            };
+            if let Err(e) = db.end_turn(turn_id, turn_status, turn_stop_reason) {
                 tracing::warn!(target: "sincearc::trace", error = %e, "delegate 收轮失败");
             }
         }
@@ -3031,6 +3029,7 @@ pub async fn delegate_task(
         id: delegate_message_id.clone(),
         role: "user".into(),
         author_id: None,
+        turn_id: parent_turn_id.clone(),
         kind: "delegate".into(),
         payload: serde_json::json!({
             "id": delegate_message_id,
@@ -3321,6 +3320,13 @@ pub async fn session_load(
     })
 }
 
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct SessionPromptResult {
+    pub turn_id: String,
+}
+
 #[tauri::command]
 pub async fn session_prompt(
     state: State<'_, AppState>,
@@ -3328,7 +3334,7 @@ pub async fn session_prompt(
     text: String,
     // 这次投递来自哪个界面会话
     ui_session_id: Option<String>,
-) -> Result<(), CmdError> {
+) -> Result<SessionPromptResult, CmdError> {
     if text.trim().is_empty() {
         return Err(CmdError::new(50300, "消息为空"));
     }
@@ -3496,7 +3502,7 @@ pub async fn session_prompt(
         }
     });
 
-    Ok(())
+    Ok(SessionPromptResult { turn_id })
 }
 
 fn steer_precheck(text: &str, commands: &[CommandDto]) -> Result<String, CmdError> {
@@ -4231,8 +4237,13 @@ mod turn_state_tests {
     fn user_stop_and_agent_cancel_reason_produce_one_cancelled_outcome() {
         let (status, reason) =
             prompt_success_outcome(true, Some("cancelled".to_string()));
-        assert_eq!(status, "cancelled");
+        assert_eq!(status, "finished");
         assert_eq!(reason.as_deref(), Some("cancelled"));
+
+        let (status, reason) =
+            prompt_success_outcome(true, Some("end_turn".to_string()));
+        assert_eq!(status, "finished");
+        assert_eq!(reason.as_deref(), Some("cancelled"), "用户停止优先于 agent 的 stopReason");
 
         let (status, reason) =
             prompt_success_outcome(false, Some("max_tokens".to_string()));

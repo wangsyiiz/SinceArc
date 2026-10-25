@@ -8,6 +8,7 @@
 //! - 思考正文只保留前 8KB，并标记 `truncated`（界面要写明，别让用户以为是 bug）；
 //! - 任何单条事件序列化后不超过 64KB。
 
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
@@ -43,6 +44,19 @@ pub fn usage_of(payload: &Value) -> Option<(u64, u64)> {
     let used = payload.get("used")?.as_u64()?;
     let size = payload.get("size")?.as_u64()?;
     Some((used, size))
+}
+
+/// payload 里的命名关联键。M1 只收口读取，不改 payload、不加列。
+pub fn refs_of(payload: &Value) -> BTreeMap<String, String> {
+    ["toolCallId", "requestId", "handleId", "messageId"]
+        .into_iter()
+        .filter_map(|key| {
+            payload
+                .get(key)
+                .and_then(Value::as_str)
+                .map(|value| (key.to_string(), value.to_string()))
+        })
+        .collect()
 }
 
 /// 单条命令只保留协议里对界面有用的三个字段。
@@ -181,6 +195,7 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
     match method {
         "session/request_permission" => {
             let tool = params.get("toolCall").cloned().unwrap_or(Value::Null);
+            let refs = refs_of(&tool);
             let options: Vec<Value> = params
                 .get("options")
                 .and_then(Value::as_array)
@@ -200,7 +215,7 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
                 kind: "permission",
                 payload: json!({
                     "toolCall": {
-                        "toolCallId": tool.get("toolCallId").and_then(Value::as_str),
+                        "toolCallId": refs.get("toolCallId"),
                         "title": tool.get("title").and_then(Value::as_str),
                         "kind": tool.get("kind").and_then(Value::as_str),
                     },
@@ -238,8 +253,9 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
                 "tool_call" | "tool_call_update" => {
                     // 工具调用要结构化保存：界面靠 kind/路径/状态判断「谁在写」，
                     // 只存描述文本就推不出来（E6 的写锁要靠这些字段）。
+                    let refs = refs_of(update);
                     let payload = json!({
-                        "toolCallId": update.get("toolCallId").and_then(Value::as_str),
+                        "toolCallId": refs.get("toolCallId"),
                         "title": update.get("title").and_then(Value::as_str),
                         "kind": update.get("kind").and_then(Value::as_str),
                         "status": update.get("status").and_then(Value::as_str),
@@ -423,8 +439,9 @@ pub fn aggregate(turns: Vec<crate::db::TurnRow>, events: Vec<crate::db::EventRow
                     }
                 }
 
+                let refs = refs_of(&payload);
                 if e.kind == "tool_call_update" {
-                    if let Some(id) = payload.get("toolCallId").and_then(Value::as_str) {
+                    if let Some(id) = refs.get("toolCallId") {
                         if let Some(&idx) = calls.get(id) {
                             let slot = &mut items[idx];
                             merge_tool_call(&mut slot.payload, &payload);
@@ -433,7 +450,7 @@ pub fn aggregate(turns: Vec<crate::db::TurnRow>, events: Vec<crate::db::EventRow
                     }
                 }
                 if e.kind == "tool_call" {
-                    if let Some(id) = payload.get("toolCallId").and_then(Value::as_str) {
+                    if let Some(id) = refs.get("toolCallId") {
                         calls.insert(id.to_string(), items.len());
                     }
                 }
@@ -503,6 +520,24 @@ pub fn with_orphan_turns(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refs_of_只取四个命名关联键的字符串值() {
+        let payload = json!({
+            "toolCallId": "tool-1",
+            "requestId": 7,
+            "handleId": "handle-1",
+            "messageId": "msg-1",
+            "other": "ignored",
+        });
+        let refs = refs_of(&payload);
+        assert_eq!(refs.len(), 3);
+        assert_eq!(refs.get("toolCallId").map(String::as_str), Some("tool-1"));
+        assert_eq!(refs.get("handleId").map(String::as_str), Some("handle-1"));
+        assert_eq!(refs.get("messageId").map(String::as_str), Some("msg-1"));
+        assert_eq!(refs.get("requestId"), None, "非字符串值不能当引用键");
+        assert_eq!(refs.get("other"), None);
+    }
 
     #[test]
     fn 思考超限只留前八_kb_并标记() {

@@ -1,6 +1,6 @@
 //! ACP 域：连接、会话、模式、权限、探测。
 
-import type { AcpEvent, ConnectOutcome, DiscoveryOutcome, ModeChoice, PermissionDecision, ProbeOutcome, RespondOutcome, SessionInfo, SessionLoadOutcome, SessionUpdate } from "../types";
+import type { AcpEvent, ConnectOutcome, DiscoveryOutcome, ModeChoice, PermissionDecision, ProbeOutcome, RespondOutcome, SessionInfo, SessionLoadOutcome, SessionPromptResult, SessionUpdate } from "../types";
 import type { AgentProfile } from "@/types";
 import { invokeCmd } from "../client";
 import { toDto } from "./session";
@@ -53,8 +53,8 @@ export function sessionPrompt(
   sessionId: string,
   text: string,
   uiSessionId?: string,
-): Promise<void> {
-  return invokeCmd<void>("session_prompt", { sessionId, text, uiSessionId });
+): Promise<SessionPromptResult> {
+  return invokeCmd<SessionPromptResult>("session_prompt", { sessionId, text, uiSessionId });
 }
 
 /** 插话：发 `/steer <text>`，但不开新轮次。 */

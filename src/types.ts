@@ -137,7 +137,6 @@ export type TraceTurnStatus =
   | "running"
   | "waiting_approval"
   | "finished"
-  | "cancelled"
   | "failed"
   | "unknown";
 
@@ -146,7 +145,7 @@ export interface TraceTurn {
   at: string;
   userText: string;
   branches: TraceBranch[];
-  /** 这一轮的终态；cancelled 时界面上要写「已停止」，不能当成正常结束 */
+  /** 这一轮的终态；finished + stopReason='cancelled' 时界面上要写「已停止」 */
   status?: TraceTurnStatus;
   /** agent 原始的 stopReason：finished 且不是 end_turn 时界面要把它写出来 */
   stopReason?: string;

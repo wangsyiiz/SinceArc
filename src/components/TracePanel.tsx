@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AlignLeft, FileText, PencilLine, Play, Search, SendHorizontal, Sparkles, ShieldAlert, ShieldCheck, ShieldX, Waypoints, X } from "lucide-react";
 import type { Activity, ActivityKind, Player, TraceTurn } from "@/types";
 import { cn } from "@/lib/utils";
+import { isTurnCancelled } from "@/lib/turn-status";
 import { useHoverCard } from "./ui/HoverCard";
 import { RemovedBadge } from "./RemovedBadge";
 
@@ -191,11 +192,12 @@ function turnOutcome(turn: TraceTurn): {
       return { label: "进行中", dot: "running" };
     case "waiting_approval":
       return { label: "等你批准", dot: "waiting" };
-    case "cancelled":
-      return { label: "已停止", dot: "cancelled" };
     case "failed":
       return { label: "失败", dot: "error", title: turn.stopReason };
     case "finished":
+      if (isTurnCancelled(turn.status, turn.stopReason)) {
+        return { label: "已停止", dot: "cancelled" };
+      }
       return turn.stopReason && turn.stopReason !== "end_turn"
         ? { label: `已结束（${turn.stopReason}）`, dot: "ok", title: turn.stopReason }
         : { label: "已结束", dot: "ok" };
