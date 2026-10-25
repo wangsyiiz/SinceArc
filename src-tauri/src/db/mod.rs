@@ -214,7 +214,10 @@ pub struct MessageRow {
     pub author_id: Option<String>,
     /// 这一条属于哪一轮；老数据/非轮次消息为 None
     pub turn_id: Option<String>,
+    /// 视图按读路径习惯映射后的历史 kind（`text` / `aside` / `delegate`）。
     pub kind: String,
+    /// atoms 上的权威 kind（`text.user` / `text.agent` / `aside` …）。
+    pub atom_kind: String,
     /// 原始消息对象（前端 `Message` 的形状），不做有损转换
     #[ts(type = "unknown")]
     pub payload: serde_json::Value,
@@ -1383,7 +1386,14 @@ impl Db {
         for (i, m) in msgs.iter().enumerate() {
             let seq = base + i as i64 + 1;
             let turn_id = turn_ids[i].as_deref();
-            let mergeable = is_chat_stream_message(&m.role, &m.kind, turn_id);
+            let has_delegate = m
+                .payload
+                .get("delegate")
+                .is_some_and(serde_json::Value::is_object);
+            let kind = crate::message_kind::chat_kind_of(&m.role, &m.kind, has_delegate)
+                .map(crate::message_kind::MessageKind::as_str)
+                .unwrap_or(m.kind.as_str());
+            let mergeable = is_chat_stream_message(&m.role, kind, turn_id);
             let result: rusqlite::Result<()> = (|| {
                 if mergeable {
                     let open: Option<OpenStreamRow> = tx
@@ -1391,7 +1401,7 @@ impl Db {
                             "SELECT id, payload_json, truncated, refs_json, ext_json FROM atoms
                               WHERE session_id = ?1 AND channel = 'chat'
                                 AND turn_id = ?2 AND kind = ?3 AND sealed_at IS NULL",
-                            params![session_id, turn_id, m.kind],
+                            params![session_id, turn_id, kind],
                             |r| {
                                 Ok((
                                     r.get(0)?,
@@ -1465,7 +1475,7 @@ impl Db {
                         ts,
                         m.role,
                         m.author_id,
-                        m.kind,
+                        kind,
                         m.payload.to_string(),
                         json_string(&m.refs),
                         json_string(&m.ext),
@@ -1892,7 +1902,7 @@ impl Db {
     pub fn load_messages(&self, session_id: &str, limit: i64) -> rusqlite::Result<Vec<MessageRow>> {
         let conn = self.conn.lock().expect("db poisoned");
         let mut stmt = conn.prepare(
-            "SELECT id, seq, role, kind, payload_json, created_at, author_id, turn_id
+            "SELECT id, seq, role, kind, payload_json, created_at, author_id, turn_id, atom_kind
              FROM messages WHERE session_id = ?1 ORDER BY seq DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![session_id, limit], |r| {
@@ -1902,6 +1912,7 @@ impl Db {
                 seq: r.get(1)?,
                 role: r.get(2)?,
                 kind: r.get(3)?,
+                atom_kind: r.get(8)?,
                 payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
                 created_at: r.get(5)?,
                 author_id: r.get(6)?,
@@ -1925,7 +1936,7 @@ impl Db {
         let limit = limit.max(0);
         let conn = self.conn.lock().expect("db poisoned");
         let mut stmt = conn.prepare(
-            "SELECT id, seq, role, kind, payload_json, created_at, author_id, turn_id
+            "SELECT id, seq, role, kind, payload_json, created_at, author_id, turn_id, atom_kind
              FROM messages
              WHERE session_id = ?1 AND (?2 IS NULL OR seq < ?2)
              ORDER BY seq DESC LIMIT ?3",
@@ -1940,6 +1951,7 @@ impl Db {
                         seq: r.get(1)?,
                         role: r.get(2)?,
                         kind: r.get(3)?,
+                        atom_kind: r.get(8)?,
                         payload: serde_json::from_str(&payload)
                             .unwrap_or(serde_json::Value::Null),
                         created_at: r.get(5)?,
@@ -3795,6 +3807,87 @@ mod tests {
             .expect("bad atom count");
         assert_eq!(bad_count, 0, "被拒的 chat atom 不能落库");
         drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn append_messages_writes_dot_kind_while_messages_view_returns_legacy_kind() {
+        let (db, path) = db_with_session();
+        db.append_messages(
+            "s-1",
+            &[chat_stream("m-player-text", "答", "t-1", "text")],
+        )
+        .expect("append player text");
+
+        let rows = db.load_messages("s-1", 10).expect("load messages");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, "text", "视图仍给聊天区 legacy kind");
+        assert_eq!(rows[0].atom_kind, "text.agent", "IPC 带 atoms.kind");
+
+        let conn = db.conn.lock().unwrap();
+        let atom_kind: String = conn
+            .query_row(
+                "SELECT kind FROM atoms WHERE id = 'm-player-text'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("atom kind");
+        let view_kind: String = conn
+            .query_row(
+                "SELECT kind FROM messages WHERE id = 'm-player-text'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("view kind");
+        assert_eq!(atom_kind, "text.agent");
+        assert_eq!(view_kind, "text");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn m2_08_migrates_legacy_chat_kinds_and_view_still_returns_legacy() {
+        let (db, path) = db_with_session();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS atoms_kind_guard_ins;
+                 DROP TRIGGER IF EXISTS atoms_kind_guard_upd;
+                 INSERT INTO atoms
+                   (id, session_id, channel, turn_id, seq, at, role, author_id,
+                    kind, payload_json, source, truncated, sealed_at)
+                 VALUES
+                   ('u', 's-1', 'chat', 't-1', 1, 1, 'user', NULL,
+                    'text', '{\"id\":\"u\",\"role\":\"user\",\"text\":\"问\"}', 'live', 0, 1),
+                   ('a', 's-1', 'chat', 't-1', 2, 2, 'player', NULL,
+                    'text', '{\"id\":\"a\",\"role\":\"player\",\"text\":\"答\"}', 'live', 0, 1),
+                   ('s', 's-1', 'chat', 't-1', 3, 3, 'system', NULL,
+                    'text', '{\"id\":\"s\",\"role\":\"system\",\"text\":\"提示\"}', 'live', 0, 1),
+                   ('aside', 's-1', 'chat', 't-1', 4, 4, 'user', NULL,
+                    'aside', '{\"id\":\"aside\",\"role\":\"user\",\"text\":\"插话\"}', 'live', 0, 1),
+                   ('delegate', 's-1', 'chat', 't-1', 5, 5, 'user', NULL,
+                    'delegate', '{\"id\":\"delegate\",\"role\":\"user\",\"text\":\"派活\",\"delegate\":{}}', 'live', 0, 1),
+                   ('text-delegate', 's-1', 'chat', 't-1', 6, 6, 'user', NULL,
+                    'text', '{\"id\":\"text-delegate\",\"role\":\"user\",\"text\":\"派活\",\"delegate\":{}}', 'live', 0, 1);",
+            )
+            .expect("seed legacy chat atoms");
+        }
+        drop(db);
+
+        for _ in 0..2 {
+            let reopened = Db::open(&path).expect("reopen migrates");
+            let rows = reopened.load_messages("s-1", 20).expect("load messages");
+            let by_id: std::collections::HashMap<_, _> = rows
+                .iter()
+                .map(|row| (row.id.as_str(), (row.kind.as_str(), row.atom_kind.as_str())))
+                .collect();
+            assert_eq!(by_id["u"], ("text", "text.user"));
+            assert_eq!(by_id["a"], ("text", "text.agent"));
+            assert_eq!(by_id["s"], ("text", "notice.system"));
+            assert_eq!(by_id["aside"], ("aside", "aside"));
+            assert_eq!(by_id["delegate"], ("delegate", "delegate.card"));
+            assert_eq!(by_id["text-delegate"], ("delegate", "delegate.card"));
+        }
         std::fs::remove_file(&path).ok();
     }
 

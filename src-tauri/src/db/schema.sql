@@ -86,7 +86,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_atoms_open
 
 -- 读路径零改动：旧名字变视图，列与旧表一一对应。
 CREATE VIEW IF NOT EXISTS messages AS
-  SELECT id, session_id, turn_id, seq, role, kind,
+  SELECT id, session_id, turn_id, seq, role,
+         CASE kind WHEN 'text.user' THEN 'text' WHEN 'text.agent' THEN 'text'
+                   WHEN 'aside' THEN 'aside' WHEN 'delegate.card' THEN 'delegate'
+                   ELSE 'text' END AS kind,
+         atoms.kind AS atom_kind,
          payload_json, at AS created_at, author_id
     FROM atoms WHERE channel = 'chat';
 

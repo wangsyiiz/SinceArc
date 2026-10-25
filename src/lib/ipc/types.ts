@@ -78,8 +78,16 @@ export interface SessionUpdate {
   };
 }
 
-function withTurnId(message: Message, turnId: string | null | undefined): Message {
-  return turnId === undefined ? message : { ...message, turnId };
+function withRowAttribution(
+  message: Message,
+  turnId: string | null | undefined,
+  atomKind: string,
+): Message {
+  return {
+    ...message,
+    atomKind,
+    ...(turnId === undefined ? {} : { turnId }),
+  };
 }
 
 /**
@@ -89,7 +97,11 @@ function withTurnId(message: Message, turnId: string | null | undefined): Messag
  * `turnId` 是 `messages.turn_id` 的权威值；payload 里的同名字段只在直接调用、
  * 没有行上下文时兜底。历史读取必须走 `messageFromRow`，避免只有正文、没有轮归属。
  */
-export function messageFromPayload(payload: unknown, turnId?: string | null): Message {
+export function messageFromPayload(
+  payload: unknown,
+  turnId: string | null | undefined,
+  atomKind: string,
+): Message {
   if (!payload || typeof payload !== "object") return payload as Message;
   const raw = payload as Record<string, unknown>;
   const payloadTurnId =
@@ -98,7 +110,7 @@ export function messageFromPayload(payload: unknown, turnId?: string | null): Me
       : undefined;
   const resolvedTurnId = turnId === undefined ? payloadTurnId : turnId;
   if (raw.role !== "user" || !raw.delegate || typeof raw.delegate !== "object") {
-    return withTurnId(payload as Message, resolvedTurnId);
+    return withRowAttribution(payload as Message, resolvedTurnId, atomKind);
   }
 
   const delegate = raw.delegate as Record<string, unknown>;
@@ -112,10 +124,10 @@ export function messageFromPayload(payload: unknown, turnId?: string | null): Me
     delegateContext === null ||
     typeof delegate.reason !== "string"
   ) {
-    return withTurnId(payload as Message, resolvedTurnId);
+    return withRowAttribution(payload as Message, resolvedTurnId, atomKind);
   }
 
-  return withTurnId(
+  return withRowAttribution(
     {
       ...(raw as unknown as Extract<Message, { role: "user" }>),
       delegate: {
@@ -127,11 +139,12 @@ export function messageFromPayload(payload: unknown, turnId?: string | null): Me
       },
     },
     resolvedTurnId,
+    atomKind,
   );
 }
 
 /** `MessageRow` → `Message`：轮归属只认行上的 `turn_id`。 */
 export function messageFromRow(row: MessageRow): Message {
-  return messageFromPayload(row.payload, row.turnId);
+  return messageFromPayload(row.payload, row.turnId, row.atomKind);
 }
 

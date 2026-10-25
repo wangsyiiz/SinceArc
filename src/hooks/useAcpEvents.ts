@@ -302,6 +302,7 @@ export function useAcpEvents({
                 {
                   id: st.msgId,
                   role: "player" as const,
+                  atomKind: "text.agent",
                   playerId: st.authorId ?? MAIN_AGENT_ID,
                   text,
                   at: now(),
@@ -515,7 +516,7 @@ export function useAcpEvents({
           let index = -1;
           for (let i = s.msgs.length - 1; i >= 0; i -= 1) {
             const message = s.msgs[i];
-            if (message.role === "user" && message.kind === "aside") {
+            if (message.role === "user" && message.atomKind === "aside") {
               index = i;
               break;
             }
@@ -813,6 +814,7 @@ export function useAcpEvents({
                   {
                     id: newId("perr"),
                     role: "system" as const,
+                    atomKind: "notice.system",
                     text: `这一轮失败：${event.msg}`,
                     at: now(),
                     turnId: null,

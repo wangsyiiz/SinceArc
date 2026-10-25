@@ -1,11 +1,11 @@
 //! 增量迁移。
 //!
-//! 迁移顺序编号：M1-01…M1-03，M2-01…M2-07。
+//! 迁移顺序编号：M1-01…M1-03，M2-01…M2-08。
 //!
 //! 执行约定：`Db::open` 在 `execute_batch(SCHEMA)` 与既有 `ensure_*` 调用之后调用
 //! `migrations::run(&mut conn)?`。
 //!
-//! 追加位置：新迁移函数加在 `run()` 末尾、编号递增（`M2-07`…），不要改已有步骤的
+//! 追加位置：新迁移函数加在 `run()` 末尾、编号递增（`M2-08`…），不要改已有步骤的
 //! 顺序与编号。
 //!
 //! 幂等要求：每一步必须能重复执行（`IF NOT EXISTS` / 查 `sqlite_master.type` /
@@ -26,6 +26,7 @@ pub fn run(conn: &mut Connection) -> rusqlite::Result<()> {
     m2_05_schema_sync(&tx)?;
     m2_06_atoms_schema(&tx)?;
     m2_07_turns_prompt_atom_id(&tx)?;
+    m2_08_chat_atom_kinds(&tx)?;
     tx.commit()
 }
 
@@ -61,7 +62,7 @@ fn m1_03_message_kind_guard(conn: &Connection) -> rusqlite::Result<()> {
     if super::object_type(conn, "messages")?.as_deref() != Some("table") {
         return Ok(());
     }
-    let allowed = allowed_kinds_sql();
+    let allowed = legacy_kinds_sql();
     conn.execute_batch(&format!(
         "DROP TRIGGER IF EXISTS messages_kind_guard_ins;
          DROP TRIGGER IF EXISTS messages_kind_guard_upd;
@@ -127,7 +128,11 @@ fn m2_02_drop_legacy_tables(conn: &Connection) -> rusqlite::Result<()> {
 fn m2_03_create_views(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE VIEW IF NOT EXISTS messages AS
-           SELECT id, session_id, turn_id, seq, role, kind,
+           SELECT id, session_id, turn_id, seq, role,
+                  CASE kind WHEN 'text.user' THEN 'text' WHEN 'text.agent' THEN 'text'
+                            WHEN 'aside' THEN 'aside' WHEN 'delegate.card' THEN 'delegate'
+                            ELSE 'text' END AS kind,
+                  atoms.kind AS atom_kind,
                   payload_json, at AS created_at, author_id
              FROM atoms WHERE channel = 'chat';
          CREATE VIEW IF NOT EXISTS session_events AS
@@ -143,7 +148,7 @@ fn m2_03_create_views(conn: &Connection) -> rusqlite::Result<()> {
 /// 旧表上的 `messages_kind_guard_*` 随 M2-02 的 DROP TABLE 一起消失；这里仍显式
 /// DROP 一次，保证从任何中间状态重跑都幂等。
 fn m2_04_atoms_kind_guard(conn: &Connection) -> rusqlite::Result<()> {
-    let allowed = allowed_kinds_sql();
+    let allowed = chat_kinds_sql();
     conn.execute_batch(&format!(
         "DROP TRIGGER IF EXISTS messages_kind_guard_ins;
          DROP TRIGGER IF EXISTS messages_kind_guard_upd;
@@ -182,10 +187,51 @@ fn m2_07_turns_prompt_atom_id(conn: &Connection) -> rusqlite::Result<()> {
     super::ensure_column(conn, "turns", "prompt_atom_id", "TEXT")
 }
 
-fn allowed_kinds_sql() -> String {
+/// M2-08：chat 原子改存注册表里的点号 kind，视图继续给老读路径 legacy 名字。
+///
+/// 只命中仍为 legacy 的 `text` / `delegate`；`aside` 本身就是点号 kind，不需要改写。
+/// 改写后的行不再命中 WHERE，因此重复执行是 no-op。
+fn m2_08_chat_atom_kinds(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "DROP VIEW IF EXISTS messages;
+         UPDATE atoms
+            SET kind = CASE
+              WHEN role IN ('player', 'agent') THEN 'text.agent'
+              WHEN role = 'system' THEN 'notice.system'
+              WHEN role = 'user' AND kind = 'delegate' THEN 'delegate.card'
+              WHEN role = 'user'
+                   AND json_valid(payload_json)
+                   AND json_extract(payload_json, '$.delegate') IS NOT NULL
+                THEN 'delegate.card'
+              WHEN role = 'user' THEN 'text.user'
+              ELSE kind
+            END
+          WHERE channel = 'chat' AND kind IN ('text', 'delegate');
+         CREATE VIEW messages AS
+           SELECT id, session_id, turn_id, seq, role,
+                  CASE kind WHEN 'text.user' THEN 'text' WHEN 'text.agent' THEN 'text'
+                            WHEN 'aside' THEN 'aside' WHEN 'delegate.card' THEN 'delegate'
+                            ELSE 'text' END AS kind,
+                  atoms.kind AS atom_kind,
+                  payload_json, at AS created_at, author_id
+             FROM atoms WHERE channel = 'chat';",
+    )
+}
+
+fn legacy_kinds_sql() -> String {
     super::LEGACY_MESSAGE_KINDS
         .iter()
         .map(|kind| format!("'{}'", kind.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// chat 通道的白名单只从 Rust 注册表派生，避免迁移 SQL 与注册表各写一份。
+fn chat_kinds_sql() -> String {
+    crate::message_kind::registry()
+        .iter()
+        .filter(|entry| entry.chat)
+        .map(|entry| format!("'{}'", entry.kind.as_str()))
         .collect::<Vec<_>>()
         .join(", ")
 }
