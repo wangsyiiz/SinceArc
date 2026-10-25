@@ -1,20 +1,57 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Square, Paperclip } from "lucide-react";
-import type { Player } from "@/types";
+import { ArrowUp, Square, Paperclip, ChevronDown } from "lucide-react";
+import type { AgentProfile, Player } from "@/types";
+import type { AutoApproveLevel } from "@/lib/auto-approve";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/Button";
+import { Menu, type MenuItem } from "./ui/Menu";
+import { SessionMcpButton } from "./SessionMcpMenu";
+import { SlashMenu } from "./SlashMenu";
+import { filterCommands, slashQuery, type SlashCommand } from "@/lib/slash-filter";
+import { steerUnavailableReason, type SteerGate } from "@/lib/steer-availability";
+import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 
 interface ComposerProps {
   busy: boolean;
   onSend: (text: string) => void;
+  /** 忙碌时发送键切成插话；文本不含 `/steer ` 前缀。 */
+  onSteer?: (text: string) => void | Promise<void>;
+  /** 插话入口三态：off=没声明 steer / waiting=还没见过正文分组 / on=可插 */
+  steerGate?: SteerGate;
+  commands?: CommandDto[];
   onStop: () => void;
   placeholder?: string;
   players?: Player[];
+  autoApprove?: AutoApproveLevel;
+  /** agent 档为 accept_edits / dont_ask：客户端这道闸被覆盖 */
+  autoApproveCovered?: boolean;
+  onAutoApproveChange?: (level: AutoApproveLevel) => void;
+  /** 当前界面会话；没有会话时不渲染 MCP 入口 */
+  sessionId?: string | null;
+  sessionProfile?: AgentProfile;
+  /** 会话名单减少后的显式重连 */
+  onReconnectMcp?: () => Promise<void>;
 }
 
-export function Composer({ busy, onSend, onStop, placeholder, players = [] }: ComposerProps) {
+export function Composer({
+  busy,
+  onSend,
+  onSteer,
+  steerGate = "off",
+  commands = [],
+  onStop,
+  placeholder,
+  players = [],
+  autoApprove = "off",
+  autoApproveCovered = false,
+  onAutoApproveChange,
+  sessionId,
+  sessionProfile,
+  onReconnectMcp,
+}: ComposerProps) {
   const [value, setValue] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
+  const inputBoxRef = useRef<HTMLDivElement>(null);
   /**
    * @ 补全（docs/group-chat.md §3）：只列**本群成员**。
    * 候选来自 players（App 传进来的就是当前会话的成员），所以「没拉进群的人」不会出现在这里 ——
@@ -24,6 +61,8 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [] }: Co
     null,
   );
   const [active, setActive] = useState(0);
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashActive, setSlashActive] = useState(0);
 
   const candidates = mention
     ? players.filter((p) => p.handle.toLowerCase().startsWith(mention.query.toLowerCase()))
@@ -73,6 +112,28 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [] }: Co
     });
   };
 
+  const syncSlash = (text: string) => {
+    const query = slashQuery(text);
+    const slashAt = text.indexOf("/");
+    const afterSlash = slashAt >= 0 ? text.slice(slashAt + 1) : "";
+    const eligible = query !== null && commands.length > 0 && !/\s/.test(afterSlash);
+    setSlashOpen(eligible);
+    if (eligible) setSlashActive(0);
+  };
+
+  const pickSlash = (command: SlashCommand) => {
+    const next = command.hint ? `/${command.name}` : `/${command.name} `;
+    setValue(next);
+    setSlashOpen(false);
+    setMention(null);
+    requestAnimationFrame(() => {
+      const el = ref.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(next.length, next.length);
+    });
+  };
+
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -81,17 +142,63 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [] }: Co
   }, [value]);
 
   const canSend = value.trim().length > 0 && !busy;
+  const slashItems = slashOpen ? filterCommands(value, commands) : [];
+  const slashVisible = slashOpen && slashItems.length > 0;
+  const canSteerSend = busy && steerGate === "on" && value.trim().length > 0;
+  const steerReason = steerUnavailableReason(steerGate);
+
+  /**
+   * 档位选择器（docs/desktop-ux.md §10）：
+   * - 收起态只显示「当前是哪一档」——它是个很少动的安全设置，不该在工具条里占一排按钮；
+   * - 展开后每档带一行说明，这是唯一能讲清「这一档替你放行什么」的地方；
+   * - 将来加「执行命令」档只加一行菜单项，不用换控件。
+   */
+  const autoApproveItems: MenuItem[] = [
+    {
+      id: "off",
+      label: "关",
+      checked: autoApprove === "off",
+      description: "agent 每次提问都交给你决定",
+      onSelect: () => onAutoApproveChange?.("off"),
+    },
+    {
+      id: "edits",
+      label: "编辑类",
+      checked: autoApprove === "edits",
+      description: "改文件 / 删除 / 移动替你答；命令与读取仍交给你",
+      onSelect: () => onAutoApproveChange?.("edits"),
+    },
+  ];
+  const autoApproveText = autoApprove === "edits" ? "编辑类" : "关";
 
   const submit = () => {
+    if (busy) {
+      if (!canSteerSend) return;
+      void onSteer?.(value.trim());
+      setValue("");
+      setMention(null);
+      setSlashOpen(false);
+      return;
+    }
     if (!canSend) return;
     onSend(value.trim());
     setValue("");
     setMention(null);
+    setSlashOpen(false);
   };
 
   return (
     <>
       <div className="relative">
+      <SlashMenu
+        open={slashVisible}
+        value={value}
+        commands={commands}
+        active={slashActive}
+        onActiveChange={setSlashActive}
+        onPick={pickSlash}
+        onClose={() => setSlashOpen(false)}
+      />
       {mention && (
         <div className="sc-glass absolute bottom-full left-2 z-30 mb-1.5 w-64 rounded-control p-1">
           {candidates.length > 0 ? (
@@ -128,6 +235,7 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [] }: Co
         </div>
       )}
       <div
+      ref={inputBoxRef}
       className={cn(
         "sc-glass rounded-card transition-colors focus-within:border-accent-1",
         busy && "border-accent-1/25",
@@ -140,11 +248,35 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [] }: Co
         spellCheck={false}
         placeholder={placeholder ?? "输入消息，Enter 发送，Shift+Enter 换行"}
         onChange={(e) => {
-          setValue(e.target.value);
-          syncMention(e.target.value, e.target.selectionStart ?? 0);
+          const next = e.target.value;
+          setValue(next);
+          syncMention(next, e.target.selectionStart ?? 0);
+          syncSlash(next);
         }}
         onClick={(e) => syncMention(value, e.currentTarget.selectionStart ?? 0)}
         onKeyDown={(e) => {
+          if (slashVisible) {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setSlashActive((i) => (i + 1) % slashItems.length);
+              return;
+            }
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setSlashActive((i) => (i - 1 + slashItems.length) % slashItems.length);
+              return;
+            }
+            if ((e.key === "Enter" || e.key === "Tab") && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              pickSlash(slashItems[Math.min(slashActive, slashItems.length - 1)]);
+              return;
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setSlashOpen(false);
+              return;
+            }
+          }
           // 补全列表开着的时候，方向键/回车/Tab 归它用
           if (mention && candidates.length > 0) {
             if (e.key === "ArrowDown") {
@@ -191,18 +323,64 @@ export function Composer({ busy, onSend, onStop, placeholder, players = [] }: Co
           {busy ? "agent 正在输出" : "ACP · stdio"}
         </span>
 
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-1">
+          {sessionId && (
+            <SessionMcpButton
+              sessionId={sessionId}
+              profile={sessionProfile}
+              onReconnect={onReconnectMcp ?? (() => Promise.resolve())}
+              avoidRef={inputBoxRef}
+            />
+          )}
+          <Menu
+            ariaLabel="自动同意：agent 发来的权限请求要不要替你答"
+            align="end"
+            compact
+            disabled={autoApproveCovered}
+            disabledReason={
+              autoApproveCovered
+                ? "agent 档已是 accept_edits / dont_ask，本来就少问；这道闸当前不起作用"
+                : undefined
+            }
+            trigger={
+              <>
+                <span className="text-micro text-ink-3">自动同意</span>
+                <span className="text-caption">{autoApproveText}</span>
+                <ChevronDown className="size-3.5 text-ink-3" aria-hidden="true" />
+              </>
+            }
+            items={autoApproveItems}
+          />
+          {busy && steerReason && (
+            <span className="mr-1 text-micro text-ink-3">{steerReason}</span>
+          )}
           {busy ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={onStop}
-              title="停止"
-              aria-label="停止"
-              className="size-7 gap-0 bg-surface-3/75 p-0 hover:bg-surface-3"
-            >
-              <Square className="size-3 fill-current" />
-            </Button>
+            <>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={onStop}
+                title="停止"
+                aria-label="停止"
+                className="size-7 gap-0 bg-surface-3/75 p-0 hover:bg-surface-3"
+              >
+                <Square className="size-3 fill-current" />
+              </Button>
+              <Button
+                variant="glass"
+                size="sm"
+                onClick={submit}
+                disabled={!canSteerSend}
+                disabledReason={
+                  steerReason ?? (!canSteerSend ? "先输入内容再插话" : undefined)
+                }
+                aria-label="插话"
+                className="h-7 gap-1 px-2 text-caption"
+              >
+                <ArrowUp className="size-3.5" />
+                插话
+              </Button>
+            </>
           ) : (
             <Button
               variant="glass"

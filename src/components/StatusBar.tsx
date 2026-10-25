@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { ChevronDown, Waypoints } from "lucide-react";
-import type { AgentProfile } from "@/types";
+import type { AgentProfile, SessionResumeState } from "@/types";
 import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
 import { ModeSelect } from "@/components/ModeSelect";
@@ -14,7 +14,7 @@ interface StatusBarProps {
   profile: AgentProfile | undefined;
   traceOpen: boolean;
   onToggleTrace: () => void;
-  /** 当前 profile 的会话 id（握手后建出来的那个） */
+  /** 这条界面会话自己的 ACP 会话 id（不是「连接当前会话」，见 docs/data-plane.md §2） */
   sessionId?: string;
   /** 调试用：累计收到的 inbound 事件数与其方法名 */
   eventCount?: number;
@@ -28,6 +28,12 @@ interface StatusBarProps {
   fallbackLabel?: string | null;
   /** 右侧插槽：agent 能力入口等 */
   right?: ReactNode;
+  /** 最近一次会话恢复判定；无标记表示新会话/尚未恢复 */
+  resume?: SessionResumeState | null;
+  /** 最近一次连接尝试失败；用来区分“未连接”和“连接失败” */
+  connectError?: { code: string; message: string } | null;
+  /** 正在为这个会话连（无感连接 / 手动重试）：让「打开到可用」这一段也有可见的过渡 */
+  connecting?: boolean;
 }
 
 export function StatusBar({
@@ -43,6 +49,9 @@ export function StatusBar({
   onChooseMode,
   fallbackLabel,
   right,
+  resume,
+  connectError,
+  connecting = false,
 }: StatusBarProps) {
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line-1/60 px-3">
@@ -84,6 +93,28 @@ export function StatusBar({
           />
         )}
         {right}
+        {resume && (
+          <span
+            className={cn(
+              "mr-1 max-w-60 truncate text-micro",
+              resume.kind === "unavailable" ? "text-warn-1" : "text-ink-3",
+            )}
+            title={
+              resume.kind === "unavailable"
+                ? `续不上：${resume.reason ?? "原因不明"}`
+                : [
+                    `续上（${resume.acpSessionId}）`,
+                    resume.note,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")
+            }
+          >
+            {resume.kind === "unavailable"
+              ? `续不上：${resume.reason ?? "原因不明"}`
+              : `续上（${resume.acpSessionId.slice(0, 12)}）${resume.note ? " · 注意" : ""}`}
+          </span>
+        )}
         {sessionId && (
           <span
             className="mr-1 font-mono text-micro text-ink-3"
@@ -105,16 +136,36 @@ export function StatusBar({
           <span
             className="mr-1 flex min-w-0 items-center gap-1.5"
             title={
-              profile.connected
-                ? `${profile.agentName ?? "agent"} · 协议 v${profile.protocolVersion ?? 1}`
-                : "这个会话还没有连上 agent（打开会话会自动连）"
+              connectError
+                ? `连接失败：${connectError.code} ${connectError.message}`
+                : profile.connected
+                  ? `${profile.agentName ?? "agent"} · 协议 v${profile.protocolVersion ?? 1}`
+                  : connecting
+                    ? "正在连接 agent…"
+                    : "这个会话还没有连上 agent（打开会话会自动连）"
             }
           >
             <span className="max-w-30 truncate text-caption text-ink-2">{profileLabel(profile)}</span>
             <Badge
               compact
-              status={profile.connected ? "connected" : "untested"}
-              label={profile.connected ? "已连接" : "未连接"}
+              status={
+                connectError
+                  ? "error"
+                  : profile.connected
+                    ? "connected"
+                    : connecting
+                      ? "connecting"
+                      : "untested"
+              }
+              label={
+                connectError
+                  ? "连接失败"
+                  : profile.connected
+                    ? "已连接"
+                    : connecting
+                      ? "连接中…"
+                      : "未连接"
+              }
             />
           </span>
         )}

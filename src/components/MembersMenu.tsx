@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
-import { Check, Plus, UserMinus, Users } from "lucide-react";
+import { Plus, UserMinus, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   agentUsersList,
@@ -153,37 +153,35 @@ export function MembersMenu({
               const joined = isMember(u.id);
               const p = profiles.find((x) => x.id === u.profileId);
               return (
-                <button
+                <div
                   key={u.id}
-                  type="button"
-                  disabled={busy === u.id}
-                  onClick={() => toggle(u)}
                   className={cn(
-                    "flex w-full items-center gap-1.5 rounded-mark px-1.5 py-1 text-left transition-colors hover:bg-surface-3/45",
+                    "flex w-full items-center rounded-mark transition-colors hover:bg-surface-3/45",
                     busy === u.id && "opacity-60",
                   )}
                 >
-                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: u.color }} />
-                  <span className="shrink-0 text-caption text-ink-1">{u.name}</span>
-                  <span className="shrink-0 font-mono text-micro text-ink-3">@{u.handle}</span>
-                  <span className="min-w-0 flex-1 truncate text-micro text-ink-3">
-                    {p ? profileLabel(p) : "连接已不在"}
-                  </span>
-                  {joined ? (
-                    <UserMinus size={11} className="shrink-0 text-ink-3" />
-                  ) : (
-                    <Plus size={11} className="shrink-0 text-accent-1" />
-                  )}
-                </button>
+                  <button
+                    type="button"
+                    disabled={busy === u.id}
+                    onClick={() => toggle(u)}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 py-1 text-left"
+                  >
+                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: u.color }} />
+                    <span className="shrink-0 text-caption text-ink-1">{u.name}</span>
+                    <span className="shrink-0 font-mono text-micro text-ink-3">@{u.handle}</span>
+                    <span className="min-w-0 flex-1 truncate text-micro text-ink-3">
+                      {p ? profileLabel(p) : "连接已不在"}
+                    </span>
+                    {joined ? (
+                      <UserMinus size={11} className="shrink-0 text-ink-3" />
+                    ) : (
+                      <Plus size={11} className="shrink-0 text-accent-1" />
+                    )}
+                  </button>
+                </div>
               );
             })}
           </div>
-
-          {members.length > 0 && (
-            <p className="mt-1 flex items-center gap-1 border-t border-line-1/40 px-1 pt-1 text-micro text-ink-3">
-              <Check size={10} /> 点一下即加入 / 移出，立即生效
-            </p>
-          )}
 
           {error && (
             <p className="mt-1 break-all rounded-mark bg-danger-1/10 px-1.5 py-1 font-mono text-micro text-danger-1">
@@ -192,6 +190,7 @@ export function MembersMenu({
           )}
         </div>
       )}
+
     </div>
   );
 }

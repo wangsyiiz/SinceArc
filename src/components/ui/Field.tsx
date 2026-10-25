@@ -17,7 +17,9 @@ export function Field(props: {
       : children;
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={htmlFor} className="text-ui font-medium text-ink-2">
+      {/* 标签是标签，不和正文抢同一档（13→11，2026-10-24 所有者定 B 方案）。
+          表单密集时 13px 的标签会把整页顶大一档；11px + font-medium 仍有层级。 */}
+      <label htmlFor={htmlFor} className="text-caption font-medium text-ink-2">
         {label}
         {required && (
           <span aria-hidden="true" title="必填" className="ml-0.5 text-danger-1">

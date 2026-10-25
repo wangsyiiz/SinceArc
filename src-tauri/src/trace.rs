@@ -27,8 +27,14 @@ pub fn is_write_kind(kind: &str) -> bool {
 
 /// 思考正文上限：够看出「它在往哪个方向想」，不追求逐字复现。
 pub const THOUGHT_MAX_BYTES: usize = 8 * 1024;
+/// 工具调用单个字段（rawInput / content）上限：保留足够排查问题的细节。
+pub const FIELD_MAX_BYTES: usize = 16 * 1024;
 /// 单条事件上限：超过就截断并标记。
 pub const PAYLOAD_MAX_BYTES: usize = 64 * 1024;
+/// `availableCommands` 最多保留多少条。
+pub const COMMANDS_MAX_ITEMS: usize = 100;
+/// `availableCommands` 归一化后的 payload 上限。
+pub const COMMANDS_MAX_BYTES: usize = 8 * 1024;
 
 /// `usage_update` 的 payload → `(used, size)`。
 ///
@@ -37,6 +43,64 @@ pub fn usage_of(payload: &Value) -> Option<(u64, u64)> {
     let used = payload.get("used")?.as_u64()?;
     let size = payload.get("size")?.as_u64()?;
     Some((used, size))
+}
+
+/// 单条命令只保留协议里对界面有用的三个字段。
+fn command_of(value: &Value) -> Option<Value> {
+    let name = value.get("name").and_then(Value::as_str)?;
+    if name.trim().is_empty() {
+        return None;
+    }
+    let mut command = serde_json::Map::new();
+    command.insert("name".to_string(), Value::String(name.to_string()));
+    if let Some(description) = value.get("description").and_then(Value::as_str) {
+        command.insert(
+            "description".to_string(),
+            Value::String(description.to_string()),
+        );
+    }
+    if let Some(hint) = value
+        .get("input")
+        .and_then(|input| input.get("hint"))
+        .and_then(Value::as_str)
+    {
+        command.insert("hint".to_string(), Value::String(hint.to_string()));
+    }
+    Some(Value::Object(command))
+}
+
+/// 归一化 `update.availableCommands`：最多 100 条，整体 payload 不超过 8KB。
+fn commands_payload(update: &Value) -> (Value, bool) {
+    let raw = update
+        .get("availableCommands")
+        .and_then(Value::as_array)
+        .map(|items| items.as_slice())
+        .unwrap_or_default();
+    let mut commands: Vec<Value> = raw
+        .iter()
+        .filter_map(command_of)
+        .take(COMMANDS_MAX_ITEMS + 1)
+        .collect();
+    let mut truncated = commands.len() > COMMANDS_MAX_ITEMS;
+    commands.truncate(COMMANDS_MAX_ITEMS);
+
+    let size = serde_json::to_string(&json!({ "commands": commands }))
+        .map(|text| text.len())
+        .unwrap_or(0);
+    if size > COMMANDS_MAX_BYTES {
+        truncated = true;
+        while !commands.is_empty() {
+            commands.pop();
+            let size = serde_json::to_string(&json!({ "commands": commands }))
+                .map(|text| text.len())
+                .unwrap_or(0);
+            if size <= COMMANDS_MAX_BYTES {
+                break;
+            }
+        }
+    }
+
+    (json!({ "commands": commands }), truncated)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,6 +147,35 @@ fn truncate_str(s: &str, max_bytes: usize) -> (String, bool) {
     (s[..end].to_string(), true)
 }
 
+/// 返回不超过 `max_bytes` 的前缀，并保证截断点落在 UTF-8 字符边界上。
+fn boundary_prefix(s: &str, max_bytes: usize) -> &str {
+    if max_bytes >= s.len() {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// 单个工具字段的截断。字段缺失或显式为 null 时返回 None。
+fn cap_field(value: Option<&Value>) -> Option<Value> {
+    let value = value?;
+    if value.is_null() {
+        return None;
+    }
+    let text = serde_json::to_string(value).ok()?;
+    if text.len() <= FIELD_MAX_BYTES {
+        return Some(value.clone());
+    }
+    Some(json!({
+        "__truncated": true,
+        "bytes": text.len(),
+        "preview": boundary_prefix(&text, FIELD_MAX_BYTES),
+    }))
+}
+
 /// 把一条入站消息解析成轨迹事件。不是轨迹类消息就返回 None（普通回答 chunk 不进轨迹）。
 pub fn parse(method: &str, params: &Value) -> Option<Captured> {
     match method {
@@ -118,6 +211,19 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
         }
         "session/update" => {
             let update = params.get("update")?;
+            // 两种形状都带同一份 availableCommands：session/new 没有 sessionUpdate，
+            // session/load 是 available_commands_update。必须在取判别符前接住。
+            if update
+                .get("availableCommands")
+                .is_some_and(Value::is_array)
+            {
+                let (payload, truncated) = commands_payload(update);
+                return Some(Captured {
+                    kind: "commands",
+                    payload,
+                    truncated,
+                });
+            }
             let kind = update.get("sessionUpdate").and_then(Value::as_str)?;
             match kind {
                 "agent_thought_chunk" => {
@@ -138,8 +244,10 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
                         "kind": update.get("kind").and_then(Value::as_str),
                         "status": update.get("status").and_then(Value::as_str),
                         "locations": update.get("locations").cloned().unwrap_or(Value::Null),
+                        "rawInput": cap_field(update.get("rawInput")),
+                        "content": cap_field(update.get("content")),
                     });
-                    let (payload, truncated) = cap_payload(payload);
+                    let (payload, truncated) = cap_tool_payload(payload);
                     Some(Captured {
                         kind: if kind == "tool_call" { "tool_call" } else { "tool_call_update" },
                         payload,
@@ -166,13 +274,37 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
     }
 }
 
-fn cap_payload(payload: Value) -> (Value, bool) {
+/// 工具 payload 的 64 KB 兜底：先降级 content，再降级 rawInput，
+/// 但始终保留 toolCallId / title / kind / status 这些关联与判断字段。
+fn cap_tool_payload(payload: Value) -> (Value, bool) {
     let size = serde_json::to_string(&payload).map(|s| s.len()).unwrap_or(0);
     if size <= PAYLOAD_MAX_BYTES {
-        (payload, false)
-    } else {
-        (json!({ "truncated": true, "bytes": size }), true)
+        return (payload, false);
     }
+
+    let Value::Object(mut obj) = payload else {
+        return (payload, true);
+    };
+    let mut degraded = false;
+    for key in ["content", "rawInput"] {
+        let Some(value) = obj.get(key).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        let bytes = serde_json::to_string(value).map(|s| s.len()).unwrap_or(0);
+        obj.insert(
+            key.to_string(),
+            json!({ "__truncated": true, "bytes": bytes }),
+        );
+        degraded = true;
+
+        let size = serde_json::to_string(&Value::Object(obj.clone()))
+            .map(|s| s.len())
+            .unwrap_or(0);
+        if size <= PAYLOAD_MAX_BYTES {
+            break;
+        }
+    }
+    (Value::Object(obj), degraded)
 }
 
 /* ---------------- 聚合：从源数据得到「一轮里发生了什么」 ---------------- */
@@ -205,6 +337,11 @@ pub struct TraceTurn {
     #[ts(type = "number | null")]
     pub ended_at: Option<i64>,
     pub status: String,
+    /// agent 原始的停止原因；老数据/孤儿轮没有就是 None。
+    /// `finished` + 非 `end_turn` 时要让界面显示出「撞上限」这类结局。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub stop_reason: Option<String>,
     pub items: Vec<TraceItem>,
 }
 
@@ -253,6 +390,10 @@ pub fn aggregate(turns: Vec<crate::db::TurnRow>, events: Vec<crate::db::EventRow
             let mut calls: HashMap<String, usize> = HashMap::new();
 
             for e in rows {
+                // 命令是会话能力，不是用户某一轮里发生的动作，不进轨迹展示。
+                if e.kind == "commands" {
+                    continue;
+                }
                 let payload: Value = serde_json::from_str(&e.payload_json)
                     .unwrap_or_else(|_| json!({ "raw": e.payload_json }));
 
@@ -313,6 +454,7 @@ pub fn aggregate(turns: Vec<crate::db::TurnRow>, events: Vec<crate::db::EventRow
                 started_at: t.started_at,
                 ended_at: t.ended_at,
                 status: t.status,
+                stop_reason: t.stop_reason,
                 items,
             }
         })
@@ -351,6 +493,7 @@ pub fn with_orphan_turns(
             started_at: start,
             ended_at: Some(end),
             status: "unknown".to_string(),
+            stop_reason: None,
         });
     }
     turns.sort_by_key(|t| std::cmp::Reverse(t.started_at));
@@ -390,6 +533,51 @@ mod tests {
         assert_eq!(cap.payload["toolCallId"], "t1");
         assert_eq!(cap.payload["kind"], "edit");
         assert!(!cap.truncated);
+    }
+
+    #[test]
+    fn 工具调用原样保留小对象的_raw_input() {
+        let raw_input = json!({
+            "command": "date",
+            "args": ["-u"],
+            "cwd": "/tmp",
+        });
+        let params = json!({
+            "update": {
+                "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "terminal: date",
+                "kind": "execute", "status": "pending",
+                "rawInput": raw_input.clone(),
+            }
+        });
+        let cap = parse("session/update", &params).expect("tool");
+        assert_eq!(cap.payload["rawInput"], raw_input);
+        assert_eq!(cap.payload["content"], Value::Null, "缺失字段仍是 null");
+        assert!(!cap.truncated);
+    }
+
+    #[test]
+    fn 工具字段超过十六_kb时按字符边界截断() {
+        let mixed = format!("{}{}", "命令：执行检查 ".repeat(800), "a".repeat(12 * 1024));
+        let raw_input = json!({ "command": "cat", "script": mixed });
+        let serialized = serde_json::to_string(&raw_input).expect("serialize");
+        assert!(serialized.len() > FIELD_MAX_BYTES, "用例必须真的触发截断");
+
+        let params = json!({
+            "update": {
+                "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "读取脚本",
+                "kind": "read", "rawInput": raw_input,
+            }
+        });
+        let cap = parse("session/update", &params).expect("tool");
+        let field = &cap.payload["rawInput"];
+        assert_eq!(field["__truncated"], true);
+        assert_eq!(field["bytes"].as_u64().unwrap() as usize, serialized.len());
+
+        let preview = field["preview"].as_str().expect("preview");
+        assert!(preview.len() <= FIELD_MAX_BYTES);
+        assert_eq!(preview, boundary_prefix(&serialized, FIELD_MAX_BYTES));
+        assert!(std::str::from_utf8(preview.as_bytes()).is_ok());
+        assert!(!preview.ends_with('\u{fffd}'), "不能把中文切坏");
     }
 
     #[test]
@@ -438,6 +626,7 @@ mod tests {
             started_at: 1,
             ended_at: Some(9),
             status: "finished".into(),
+            stop_reason: Some("end_turn".into()),
         };
         let ev = |seq: i64, kind: &str, payload: &str| EventRow {
             id: format!("s1-{seq}"),
@@ -457,6 +646,7 @@ mod tests {
         ];
         let out = aggregate(vec![turn], events);
         assert_eq!(out.len(), 1);
+        assert_eq!(out[0].stop_reason.as_deref(), Some("end_turn"));
         let items = &out[0].items;
         assert_eq!(items.len(), 2, "update 必须并回 tool_call，不能多一条");
         assert_eq!(items[0].kind, "tool_call");
@@ -464,6 +654,81 @@ mod tests {
         assert_eq!(items[0].payload["title"], "terminal: date", "null 不能覆盖已有标题");
         assert_eq!(items[0].payload["locations"], json!([]), "空数组不覆盖");
         assert_eq!(items[1].kind, "thought");
+    }
+
+    #[test]
+    fn 工具调用增量里的_content_会与_raw_input_一起保留() {
+        use crate::db::{EventRow, TurnRow};
+        let turn = TurnRow {
+            id: "t1".into(),
+            session_id: "s1".into(),
+            prompt: "看看目录".into(),
+            author_id: None,
+            started_at: 1,
+            ended_at: Some(9),
+            status: "finished".into(),
+            stop_reason: Some("end_turn".into()),
+        };
+        let ev = |seq: i64, kind: &str, payload: String| EventRow {
+            id: format!("s1-{seq}"),
+            seq,
+            at: seq,
+            turn_id: "t1".into(),
+            author_id: None,
+            kind: kind.into(),
+            payload_json: payload,
+            source: "live".into(),
+            truncated: false,
+        };
+        let events = vec![
+            ev(
+                1,
+                "tool_call",
+                json!({
+                    "toolCallId": "c1", "title": "terminal: ls", "kind": "execute",
+                    "status": "pending", "rawInput": { "command": "ls -la" },
+                    "content": null,
+                })
+                .to_string(),
+            ),
+            ev(
+                2,
+                "tool_call_update",
+                json!({
+                    "toolCallId": "c1", "title": null, "status": "completed",
+                    "rawInput": null, "content": [{ "type": "text", "text": "a.txt" }],
+                })
+                .to_string(),
+            ),
+        ];
+        let out = aggregate(vec![turn], events);
+        let payload = &out[0].items[0].payload;
+        assert_eq!(payload["rawInput"]["command"], "ls -la");
+        assert_eq!(payload["content"][0]["text"], "a.txt");
+        assert_eq!(payload["status"], "completed");
+    }
+
+    #[test]
+    fn 工具_payload_超过六十四_kb时先降级_content() {
+        let content = "x".repeat(PAYLOAD_MAX_BYTES);
+        let content_bytes = serde_json::to_string(&content).unwrap().len();
+        let payload = json!({
+            "toolCallId": "c1",
+            "title": "terminal: cat big",
+            "kind": "execute",
+            "status": "completed",
+            "locations": [],
+            "rawInput": { "command": "cat big" },
+            "content": content,
+        });
+        assert!(serde_json::to_string(&payload).unwrap().len() > PAYLOAD_MAX_BYTES);
+
+        let (payload, truncated) = cap_tool_payload(payload);
+        assert!(truncated, "降级必须向调用方报告");
+        assert_eq!(payload["toolCallId"], "c1", "关联键永不丢");
+        assert_eq!(payload["content"]["__truncated"], true);
+        assert_eq!(payload["content"]["bytes"].as_u64().unwrap() as usize, content_bytes);
+        assert_eq!(payload["rawInput"]["command"], "cat big", "content 先降级，rawInput 还在");
     }
 
 
@@ -485,6 +750,7 @@ mod tests {
         assert_eq!(out.len(), 1, "有事件就必须有一轮，不能静默丢掉");
         assert_eq!(out[0].id, "turn-x");
         assert_eq!(out[0].status, "unknown");
+        assert_eq!(out[0].stop_reason, None);
         assert!(out[0].prompt.contains("没有记录"));
     }
 
@@ -500,6 +766,7 @@ mod tests {
             started_at: 1,
             ended_at: Some(9),
             status: "finished".into(),
+            stop_reason: Some("end_turn".into()),
         };
         let ev = |seq: i64, text: &str| EventRow {
             id: format!("s1-{seq}"),

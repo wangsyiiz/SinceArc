@@ -34,6 +34,9 @@ fn profile(
         ssh_key_path: None,
         ssh_password: None,
         default_mode: None,
+        default_mcp: None,
+        caps: None,
+        caps_at: None,
     }
 }
 

@@ -1,8 +1,7 @@
 //! SSH 断连后，远端 agent 会退出吗？
 //!
-//! WSL 已实测：杀 `wsl.exe` 后 stdin EOF，agent 自己退出（`remote_cleanup.rs`）。
-//! SSH 多一层 sshd，行为未必一样 —— sshd 在无 pty 时是否发 SIGHUP、agent 是否
-//! 读得到 EOF，只能真连一次看。
+//! WSL 已实测（`remote_cleanup.rs`）。SSH 多一层 sshd，kill_tree 会在远端
+//! 按 setsid 进程组回收；这里真连一次验证。
 //!
 //! 需要 `SINCEARC_SSH_PASSWORD`（走密码档）。
 
@@ -28,6 +27,9 @@ fn ssh_profile(password: String) -> ProfileDto {
         ssh_key_path: None,
         ssh_password: Some(password),
         default_mode: None,
+        default_mcp: None,
+        caps: None,
+        caps_at: None,
     }
 }
 

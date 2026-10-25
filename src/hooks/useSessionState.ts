@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { messagesLoad, sessionUsage } from "@/lib/ipc";
+import { messageFromPayload, messagesLoad, sessionUsage } from "@/lib/ipc";
 import { mergeMessages, minSeq } from "@/lib/messages-merge";
 import { clog } from "@/lib/log";
-import type { Message, SessionState } from "@/types";
+import type { SessionState } from "@/types";
 
 export const emptySession = (): SessionState => ({
   msgs: [],
@@ -10,6 +10,8 @@ export const emptySession = (): SessionState => ({
   turns: [],
   busy: false,
   pendingPerm: null,
+  resume: null,
+  connectError: null,
   locks: {},
   usage: null,
 });
@@ -24,6 +26,14 @@ export interface PageState {
 
 export function useSessionState(lastSessionId: string) {
   const [sessionState, setSessionState] = useState<Record<string, SessionState>>({});
+  /**
+   * 首次打开时「历史还没读回来」。
+   *
+   * 不标记的话：打开一个慢会话（库大 / 走 9p 挂载）先看到空态提示，消息回来再被顶掉 ——
+   * 那一瞬既像空会话、又像加载失败。界面用骨架屏顶住这段（`ui/EmptyState kind="loading"`，
+   * 自带 300ms 延迟，快的时候根本不出现）。
+   */
+  const [opening, setOpening] = useState<Record<string, boolean>>({});
   const [pages, setPages] = useState<Record<string, PageState>>({});
   /** 同步读的分页状态：滚动回调连续触发时不能等 React 下一次渲染 */
   const pageRef = useRef<Record<string, PageState>>({});
@@ -55,6 +65,7 @@ export function useSessionState(lastSessionId: string) {
     const sid = lastSessionId;
     if (!sid) return;
     let alive = true;
+    setOpening((prev) => ({ ...prev, [sid]: true }));
     (async () => {
       const [page, usage] = await Promise.all([
         messagesLoad(sid).catch(() => null),
@@ -89,7 +100,7 @@ export function useSessionState(lastSessionId: string) {
       const nextSeqs = { ...previousSeqs };
       for (const row of page.messages) nextSeqs[row.id] = row.seq;
       seqBySession.current[sid] = nextSeqs;
-      const fromDb = page.messages.map((r) => r.payload as Message);
+      const fromDb = page.messages.map((r) => messageFromPayload(r.payload));
 
       setSessionState((prev) => {
         const cur = prev[sid] ?? emptySession();
@@ -108,7 +119,12 @@ export function useSessionState(lastSessionId: string) {
         oldestSeq: minSeq(nextSeqs),
         loadingOlder: false,
       });
-    })();
+    })()
+      .catch((e) => clog("LOAD", `ui=${sid} 读取失败：${String(e)}`))
+      .finally(() => {
+        if (!alive) return;
+        setOpening((prev) => ({ ...prev, [sid]: false }));
+      });
     return () => {
       alive = false;
     };
@@ -145,7 +161,7 @@ export function useSessionState(lastSessionId: string) {
     const nextSeqs = { ...(seqBySession.current[sid] ?? {}) };
     for (const row of page.messages) nextSeqs[row.id] = row.seq;
     seqBySession.current[sid] = nextSeqs;
-    const older = page.messages.map((r) => r.payload as Message);
+    const older = page.messages.map((r) => messageFromPayload(r.payload));
 
     setSessionState((prev) => {
       const cur = prev[sid] ?? emptySession();
@@ -176,6 +192,8 @@ export function useSessionState(lastSessionId: string) {
     patchSession,
     initSession,
     sessionState,
+    /** 这个会话的历史正在首次读回（界面用来顶骨架屏，不是「业务忙碌」）*/
+    opening: !!opening[lastSessionId],
     hasMore,
     loadOlder,
     loadingOlder,

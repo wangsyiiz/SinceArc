@@ -1,6 +1,6 @@
 //! ACP 域：连接、会话、模式、权限、探测。
 
-import type { AcpEvent, ConnectOutcome, DiscoveryOutcome, ModeChoice, ModesSnapshot, ProbeOutcome, RespondOutcome, SessionInfo, SessionUpdate } from "../types";
+import type { AcpEvent, ConnectOutcome, DiscoveryOutcome, ModeChoice, PermissionDecision, ProbeOutcome, RespondOutcome, SessionInfo, SessionLoadOutcome, SessionUpdate } from "../types";
 import type { AgentProfile } from "@/types";
 import { invokeCmd } from "../client";
 import { toDto } from "./session";
@@ -23,6 +23,15 @@ export function sessionNew(
   return invokeCmd<SessionInfo>("session_new", { profileId, cwd, uiSessionId });
 }
 
+/** 有句柄但续不上时，用户明确选择「新建会话」才走这里；会替换 live 绑定。 */
+export function sessionRebind(
+  uiSessionId: string,
+  profileId: string,
+  cwd: string,
+): Promise<SessionInfo> {
+  return invokeCmd<SessionInfo>("session_rebind", { uiSessionId, profileId, cwd });
+}
+
 /** 发一轮消息。立即返回：内容从事件流回来，不在这里等生成完。 */
 /** 把某个已存会话 load 进已连接的进程（向群成员发消息前必须先做） */
 
@@ -31,8 +40,8 @@ export function sessionLoad(
   acpSessionId: string,
   cwd: string,
   uiSessionId?: string,
-): Promise<ModesSnapshot | null> {
-  return invokeCmd<ModesSnapshot | null>("session_load", {
+): Promise<SessionLoadOutcome> {
+  return invokeCmd<SessionLoadOutcome>("session_load", {
     profileId,
     acpSessionId,
     cwd,
@@ -46,6 +55,15 @@ export function sessionPrompt(
   uiSessionId?: string,
 ): Promise<void> {
   return invokeCmd<void>("session_prompt", { sessionId, text, uiSessionId });
+}
+
+/** 插话：发 `/steer <text>`，但不开新轮次。 */
+export function sessionSteer(
+  sessionId: string,
+  uiSessionId: string,
+  text: string,
+): Promise<void> {
+  return invokeCmd<void>("session_steer", { sessionId, uiSessionId, text });
 }
 
 /**
@@ -68,8 +86,15 @@ export function agentRespondRequest(
   profileId: string,
   id: number,
   outcome: RespondOutcome,
+  decision?: PermissionDecision,
 ): Promise<void> {
-  return invokeCmd<void>("agent_respond_request", { profileId, id, outcome });
+  // 决策元数据整包传（`PermissionDecisionMeta`，camelCase）；缺省 null = 老客户端只回 outcome
+  return invokeCmd<void>("agent_respond_request", {
+    profileId,
+    id,
+    outcome,
+    decision: decision ?? null,
+  });
 }
 
 /** 读回本机存的连接配置 */

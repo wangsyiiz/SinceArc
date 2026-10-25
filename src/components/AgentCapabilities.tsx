@@ -1,97 +1,44 @@
-import { useEffect, useState } from "react";
-import { Sparkles, Terminal } from "lucide-react";
-import type { AgentCommand, AgentProfile } from "@/types";
-import { commandPreview } from "@/extensions/registry";
+import { Sparkles } from "lucide-react";
+import type { AgentProfile } from "@/types";
+import { capsRows, type CapsGroup } from "@/lib/caps-format";
+import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import { cn } from "@/lib/utils";
-import { Badge } from "./ui/Badge";
 import { useAnchoredLayer } from "./ui/Menu";
 
 interface AgentCapabilitiesProps {
   profile: AgentProfile | undefined;
-  /** ACP 之外的 CLI 扩展（目前只有 hermes 配了表） */
-  commands: AgentCommand[];
+  /** agent 通过 availableCommands 主动报上来的命令，只读展示 */
+  acpCommands?: CommandDto[];
 }
-
-/**
- * 协议能力键 → 中文说明。
- *
- * 键由后端从 `initialize` 的 `agentCapabilities` 摊平（`acp::capability_keys`），
- * 这里只负责翻译；不认识的键不显示 —— 猜一个能力出来比不显示更糟。
- */
-export const CAPABILITY_LABEL: Record<string, string> = {
-  loadSession: "恢复历史会话",
-  image: "图片输入",
-  audio: "音频输入",
-  embeddedContext: "嵌入上下文",
-  list: "会话列表",
-  fork: "会话分叉",
-  resume: "会话续跑",
-  delete: "删除会话",
-  mcp: "MCP 服务器",
-};
 
 /**
  * 能力面板。两块内容严格分开，因为它们的来源不同：
  *
  * - **协议能力**：来自握手，每个 agent 都有，换 agent 后跟着变；
- * - **ACP 之外的 CLI 扩展**：agent 自己的子命令，目前只有 hermes 配了表。
- *
- * 以前这个按钮只在「有 CLI 扩展」时出现，于是 Codex / Claude 这类 agent 根本没有入口 ——
- * 而它们的协议能力恰恰是用户最想知道的（`capabilities` 为空 = 还没连过，说清楚而不是藏起来）。
+ * - **命令**：agent 通过 `availableCommands` 主动报上来的 `/+` 命令，只读展示。
  */
-export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps) {
-  const [picked, setPicked] = useState<AgentCommand | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [previewFailed, setPreviewFailed] = useState(false);
-  const [previewLoading, setPreviewLoading] = useState(false);
+export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabilitiesProps) {
   const { triggerRef, panelRef, open, toggle, style } = useAnchoredLayer({
     align: "end",
     prefer: "below",
   });
 
-  useEffect(() => {
-    let alive = true;
-    setPreview(null);
-    setPreviewFailed(false);
-    setPreviewLoading(false);
-    if (!open || !picked) {
-      return () => {
-        alive = false;
-      };
-    }
-    if (!profile) {
-      setPreviewFailed(true);
-      return () => {
-        alive = false;
-      };
-    }
-
-    setPreviewLoading(true);
-    void commandPreview(profile, picked)
-      .then((line) => {
-        if (alive) setPreview(line);
-      })
-      .catch(() => {
-        if (alive) setPreviewFailed(true);
-      })
-      .finally(() => {
-        if (alive) setPreviewLoading(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [open, picked, profile]);
-
-  const caps = profile?.capabilities ?? [];
-  const rows = Object.entries(CAPABILITY_LABEL).map(([key, label]) => ({
-    key,
-    label,
-    on: caps.includes(key),
-  }));
+  const rows = capsRows(profile?.caps ?? null);
+  const groups: CapsGroup[] = ["输入", "会话", "MCP"];
   const supported = rows.filter((r) => r.on).length;
+  const hasCommands = acpCommands.length > 0;
+  const handshake = profile?.capsAt
+    ? new Date(profile.capsAt * 1000).toLocaleString("zh-CN", {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : null;
 
-  // 既没有协议能力（还没连过）也没有 CLI 扩展 → 按钮不出现
-  if (supported === 0 && commands.length === 0) return null;
+  // 既没握手过（caps = null）也没有 agent 命令 → 按钮不出现。
+  // 握手过但一项都不支持时仍然显示：那本身就是「这个 agent 什么也不报」的事实。
+  if (rows.length === 0 && acpCommands.length === 0) return null;
 
   return (
     <div className="relative">
@@ -118,80 +65,95 @@ export function AgentCapabilities({ profile, commands }: AgentCapabilitiesProps)
           role="dialog"
           aria-label="Agent 能力"
           style={style}
-          className="sc-glass sc-z-popover w-80 rounded-card p-1"
+          className={cn(
+            "sc-glass sc-z-popover flex max-h-[min(70vh,34rem)] flex-col rounded-card p-1",
+            hasCommands ? "w-128" : "w-80",
+          )}
         >
-          <div className="px-2 py-1.5 text-micro tracking-wide text-ink-3">
-            协议能力（握手报上来的）
-          </div>
-          <div className="flex flex-wrap gap-1 px-1 pb-1">
-            {rows.map((r) => (
-              <Badge
-                key={r.key}
-                status={r.on ? "connected" : "untested"}
-                label={r.label}
-                compact
-              />
-            ))}
-            {supported === 0 && (
-              <p className="px-1.5 py-1 text-micro text-ink-3">
-                还没连过这个 agent：能力要握手之后才知道。
-              </p>
+          <div className="flex shrink-0 items-baseline justify-between gap-3 px-2 py-1.5">
+            <span className="text-micro tracking-wide text-ink-3">Agent 能力</span>
+            {handshake && (
+              <span className="shrink-0 text-micro text-ink-3">{`握手 ${handshake}`}</span>
             )}
           </div>
-
-          {commands.length > 0 && (
-            <>
-              <div className="mt-1 border-t border-line-1/40 px-2 py-1.5 text-micro tracking-wide text-ink-3">
-                ACP 之外的 {commands.length} 项（预览，未接线）
-              </div>
-              {commands.map((c) => {
-                const active = picked?.id === c.id;
-                return (
-                  <button
-                    key={c.id}
-                    onClick={() => setPicked(active ? null : c)}
-                    className={cn(
-                      "flex w-full items-start gap-2 rounded-mark px-2 py-1.5 text-left transition-colors",
-                      active ? "sc-row-active" : "hover:bg-surface-3/45",
-                    )}
-                  >
-                    <Terminal className="mt-0.5 size-3 shrink-0 text-ink-3" />
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-baseline justify-between gap-2">
-                        <span className="truncate text-ui-tight text-ink-1">{c.label}</span>
-                        <span className="shrink-0 font-mono text-micro text-ink-3">
-                          {c.argv.join(" ")}
-                        </span>
-                      </span>
-                      {c.note && (
-                        <span className="mt-0.5 block text-caption text-ink-3">{c.note}</span>
-                      )}
-                    </span>
-                  </button>
-                );
-              })}
-
-              {picked && (
-                <div className="mt-1 border-t border-line-1/40 px-2 py-2">
-                  <div className="text-micro text-ink-3">将执行</div>
-                  {previewLoading && (
-                    <p className="mt-1 text-caption text-ink-3">正在生成命令预览…</p>
-                  )}
-                  {previewFailed && (
-                    <p className="mt-1 text-caption text-ink-3">无法生成命令预览</p>
-                  )}
-                  {preview && (
-                    <code className="mt-1 block break-all whitespace-pre-wrap font-mono text-caption text-ink-2">
-                      {preview}
-                    </code>
-                  )}
-                  <p className="mt-1.5 text-micro text-ink-3">
-                    未接线：目前只显示命令形态，不发起调用。
-                  </p>
-                </div>
+          <div className="flex min-h-0 flex-1">
+            <div
+              className={cn(
+                "min-h-0 px-1 pb-1",
+                hasCommands
+                  ? "w-52 shrink-0 overflow-y-auto overscroll-contain"
+                  : "min-w-0 flex-1 overflow-y-auto overscroll-contain",
               )}
-            </>
-          )}
+            >
+              <div className="px-1.5 py-1 text-micro tracking-wide text-ink-3">协议能力</div>
+              {rows.length === 0 ? (
+                <p className="px-1.5 py-1 text-micro text-ink-3">
+                  还没连过这个 agent：能力要握手之后才知道。
+                </p>
+              ) : (
+                groups.map((group) => {
+                  const groupRows = rows.filter((r) => r.group === group);
+                  return (
+                    <div key={group} className="mt-1 first:mt-0">
+                      <div className="px-1.5 py-1 text-micro tracking-wide text-ink-3">
+                        {group}
+                      </div>
+                      {group === "MCP" && (
+                        <p className="px-1.5 pb-1 text-micro leading-relaxed text-ink-3">
+                          未声明 ≠ 不支持：有的 agent 不报这三项也照样能连
+                        </p>
+                      )}
+                      {groupRows.map((r) => (
+                        <div
+                          key={r.key}
+                          className="flex items-center gap-1.5 px-1.5 py-0.5 text-caption"
+                        >
+                          <span
+                            className={cn(
+                              "shrink-0 text-center font-mono",
+                              r.group === "MCP" ? "w-10" : "w-3",
+                              r.on ? "text-ok-1" : "text-ink-3",
+                            )}
+                          >
+                            {r.display}
+                          </span>
+                          <span className={r.on ? "text-ink-1" : "text-ink-3"}>{r.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {hasCommands && (
+              <>
+                <div className="w-px shrink-0 bg-line-1/60" />
+                <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain pb-1 pl-2 pr-1">
+                  <div className="px-1.5 py-1 text-micro tracking-wide text-ink-3">命令</div>
+                  {acpCommands.map((command) => (
+                    <div key={command.name} className="px-1.5 py-1">
+                      <div className="flex min-w-0 items-baseline gap-1.5">
+                        <span className="shrink-0 font-mono text-caption text-ink-1">
+                          {command.name}
+                        </span>
+                        {command.hint && (
+                          <span className="truncate text-micro text-ink-3">
+                            {`<${command.hint}>`}
+                          </span>
+                        )}
+                      </div>
+                      {command.description && (
+                        <div className="mt-0.5 truncate text-caption text-ink-2">
+                          {command.description}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

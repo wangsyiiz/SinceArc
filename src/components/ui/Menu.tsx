@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import { createPortal } from "react-dom";
 import { Check } from "lucide-react";
 import { computeLayerPosition, type Placement } from "@/lib/anchored";
 import { cn } from "@/lib/utils";
@@ -39,6 +48,8 @@ export interface MenuProps {
   disabledReason?: string;
   className?: string;
   ariaLabel?: string;
+  /** 多个浮层共用一个触发器时，由调用方传入同一个 ref。 */
+  triggerRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
 interface LayerPosition {
@@ -50,6 +61,9 @@ interface LayerPosition {
 export function useAnchoredLayer(opts: {
   align?: "start" | "end";
   prefer?: Placement;
+  triggerRef?: React.RefObject<HTMLButtonElement | null>;
+  /** 向上展开时以这个元素的上沿为界，避免浮层盖住它。 */
+  avoidRef?: RefObject<HTMLElement | null>;
 }): {
   triggerRef: React.RefObject<HTMLButtonElement | null>;
   panelRef: React.RefObject<HTMLDivElement | null>;
@@ -65,7 +79,9 @@ export function useAnchoredLayer(opts: {
 } {
   const align = opts.align ?? "start";
   const prefer = opts.prefer ?? "below";
-  const triggerRef = useRef<HTMLButtonElement>(null);
+  const avoidRef = opts.avoidRef;
+  const internalTriggerRef = useRef<HTMLButtonElement>(null);
+  const triggerRef = opts.triggerRef ?? internalTriggerRef;
   const panelRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<LayerPosition>({ top: 0, left: 0, ready: false });
@@ -75,20 +91,24 @@ export function useAnchoredLayer(opts: {
     const panel = panelRef.current;
     if (!trigger || !panel) return;
     const triggerRect = trigger.getBoundingClientRect();
+    const avoidRect = avoidRef?.current?.getBoundingClientRect();
     const next = computeLayerPosition({
-      trigger: {
-        top: triggerRect.top,
-        left: triggerRect.left,
-        width: triggerRect.width,
-        height: triggerRect.height,
-      },
+      trigger: avoidRect
+        ? {
+            // 横向仍对齐触发控件；纵向把整块需要避让的区域当作锚点下方的边界。
+            top: avoidRect.top,
+            left: triggerRect.left,
+            width: triggerRect.width,
+            height: window.innerHeight,
+          }
+        : triggerRect,
       panel: { width: panel.offsetWidth, height: panel.offsetHeight },
       viewport: { width: window.innerWidth, height: window.innerHeight },
       align,
       prefer,
     });
     setPosition({ top: next.top, left: next.left, ready: true });
-  }, [align, prefer]);
+  }, [align, avoidRef, prefer]);
 
   useLayoutEffect(() => {
     if (!open) {
@@ -134,8 +154,9 @@ export function useAnchoredLayer(opts: {
     const observer = new ResizeObserver(() => measure());
     if (panelRef.current) observer.observe(panelRef.current);
     if (triggerRef.current) observer.observe(triggerRef.current);
+    if (avoidRef?.current) observer.observe(avoidRef.current);
     return () => observer.disconnect();
-  }, [measure, open]);
+  }, [avoidRef, measure, open]);
 
   const toggle = useCallback(() => setOpen((value) => !value), []);
 
@@ -167,8 +188,10 @@ export function Menu({
   disabledReason,
   className,
   ariaLabel = "菜单",
+  triggerRef,
 }: MenuProps) {
-  const { triggerRef, panelRef, open, setOpen, toggle, style } = useAnchoredLayer({ align });
+  const layer = useAnchoredLayer({ align, triggerRef });
+  const { panelRef, open, setOpen, toggle, style, triggerRef: resolvedTriggerRef } = layer;
   const wasOpen = useRef(false);
 
   useEffect(() => {
@@ -189,8 +212,8 @@ export function Menu({
     }
     if (!wasOpen.current) return;
     wasOpen.current = false;
-    triggerRef.current?.focus();
-  }, [open, triggerRef]);
+    resolvedTriggerRef.current?.focus();
+  }, [open, resolvedTriggerRef]);
 
   const onPanelKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
@@ -215,7 +238,7 @@ export function Menu({
   return (
     <>
       <button
-        ref={triggerRef}
+        ref={layer.triggerRef}
         type="button"
         disabled={disabled}
         aria-label={ariaLabel}
@@ -245,8 +268,12 @@ export function Menu({
         {trigger}
       </button>
 
-      {open && (
-        <div
+      {/* 面板必须挂到 body：触发器可能长在 backdrop-filter 祖先里（例如输入框外壳 sc-glass），
+          那会把 position:fixed 的定位基准改成那个祖先，面板随即偏移、还会被 overflow 裁掉。
+          浮层一律走 portal，不靠调用点自觉（design-language.md §3.4）。 */}
+      {open &&
+        createPortal(
+          <div
           ref={panelRef}
           role="menu"
           aria-label={ariaLabel}
@@ -308,8 +335,9 @@ export function Menu({
               </span>
             </button>
           ))}
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </>
   );
 }

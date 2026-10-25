@@ -5,4 +5,6 @@ export * from "./events";
 export * from "./domains/acp";
 export * from "./domains/session";
 export * from "./domains/member";
+export * from "./domains/delegate";
 export * from "./domains/settings";
+export * from "./domains/mcp";

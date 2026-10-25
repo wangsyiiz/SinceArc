@@ -26,20 +26,27 @@ const buttonStyles = cva(
   },
 );
 
-export const Button: React.FC<
-  React.ButtonHTMLAttributes<HTMLButtonElement> & {
-    variant?: "primary" | "secondary" | "ghost" | "glass";
-    size?: "sm" | "md";
-    danger?: boolean;
-    loading?: boolean;
-    disabledReason?: string;
-    reasonText?: string;
-  }
-> = ({
+export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: "primary" | "secondary" | "ghost" | "glass";
+  size?: "sm" | "md";
+  danger?: boolean;
+  loading?: boolean;
+  /** loading 时替换的文字；不给就是「加载中…」 */
+  loadingText?: string;
+  disabledReason?: string;
+  reasonText?: string;
+  /** React 19 的函数组件可以直接收 ref：浮层要拿真实元素算位置（useAnchoredLayer）。
+      以前不转发的结果是调用处只能 `as unknown as ComponentType<…>` 硬转一层。 */
+  ref?: React.Ref<HTMLButtonElement>;
+};
+
+export const Button: React.FC<ButtonProps> = ({
+  ref,
   variant = "secondary",
   size = "md",
   danger = false,
   loading = false,
+  loadingText = "加载中…",
   disabledReason,
   reasonText,
   className,
@@ -51,19 +58,32 @@ export const Button: React.FC<
   const button = (
     <button
       {...props}
+      ref={ref}
       type={type ?? "button"}
       title={title ?? disabledReason}
       aria-busy={loading || undefined}
       className={cn(buttonStyles({ variant, size }), danger && "text-danger-1", className)}
     >
-      <span className={cn("inline-flex items-center gap-2", loading && "opacity-0")}>
-        {children}
-      </span>
-      {loading && (
-        <span className="absolute inset-0 grid place-items-center" aria-live="polite">
-          加载中…
+      {/* 两个状态叠在同一格：按钮宽度取两者较大的那个，loading 文字就不会被挤成两行 */}
+      <span className="inline-grid">
+        <span
+          className={cn(
+            "col-start-1 row-start-1 inline-flex items-center gap-2 whitespace-nowrap",
+            loading && "invisible",
+          )}
+        >
+          {children}
         </span>
-      )}
+        {loading && (
+          <span
+            className="col-start-1 row-start-1 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+            aria-live="polite"
+          >
+            <span className="sc-spinner" aria-hidden="true" />
+            {loadingText}
+          </span>
+        )}
+      </span>
     </button>
   );
 

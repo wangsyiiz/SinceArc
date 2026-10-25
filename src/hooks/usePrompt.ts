@@ -1,5 +1,13 @@
 import { useCallback } from "react";
-import { asCmdError, messagesAppend, sessionLoad, sessionPrompt } from "@/lib/ipc";
+import {
+  asCmdError,
+  messagesAppend,
+  sessionLoad,
+  sessionNew,
+  sessionPrompt,
+  type ResumeOutcome,
+} from "@/lib/ipc";
+import type { ModesSnapshot } from "@/lib/ipc/types";
 import { now } from "@/lib/format";
 import { pushSystemNotice } from "@/lib/notices";
 import { clog } from "@/lib/log";
@@ -13,6 +21,7 @@ import type { PatchSession } from "./useSessionState";
 // 定义在 lib/main-agent.ts（无依赖）：这里 import + 再导出，既保持既有 import 路径，
 // 也让本文件内部能直接用这个名字
 import { MAIN_AGENT_ID } from "@/lib/main-agent";
+import { resolveSendTarget } from "@/lib/send-target";
 export { MAIN_AGENT_ID };
 
 export function usePrompt({
@@ -20,21 +29,42 @@ export function usePrompt({
   patchSession,
   activeProfile,
   sessionsByProfile,
+  acpSessionOf,
+  cwdOf,
+  onSessionCreated,
   contextMessages,
   acp,
   profileIdOf,
   ensureConnected,
+  onResume,
 }: {
   lastSessionId: string;
   patchSession: PatchSession;
   activeProfile: AgentProfile | undefined;
   sessionsByProfile: Record<string, string>;
+  /** 这条界面会话自己的 ACP 会话 id；不能拿连接当前会话来代替。 */
+  acpSessionOf: (uiSid: string) => string | null;
+  /** 这条界面会话的 cwd；为空时退回 profile 的 cwd。 */
+  cwdOf: (uiSid: string, profileId: string | null) => string;
+  /**
+   * 新建 ACP 会话后回写界面状态（会话记录 + uiSid → acpSid 映射）。
+   * `modes` 是这条会话建好时 agent 报的模式快照：不带回去，界面就会显示「不支持」，
+   * 而同一个 agent 从连接路径建出来却有模式可选（docs/data-plane.md §3）。
+   */
+  onSessionCreated: (
+    uiSid: string,
+    profileId: string,
+    acpSid: string,
+    modes: ModesSnapshot | null,
+  ) => void;
   contextMessages: number;
   acp: AcpRefs;
   /** 会话归属哪个连接（老会话没记录时返回 null） */
   profileIdOf: (uiSid: string) => string | null;
   /** 无感启动：没连就现连，永不抛异常 */
   ensureConnected: (profileId: string | null | undefined, uiSid?: string) => Promise<EnsureResult>;
+  /** 恢复结果统一交给 App：通知条、诊断与会话头标记都在那里。 */
+  onResume: (uiSid: string, outcome: ResumeOutcome, lastEventSeq: number | null) => void;
 }) {
   const { acpToTurn } = acp;
 
@@ -54,12 +84,16 @@ export function usePrompt({
       // 归属：会话自己的连接优先，老会话（没记 profileId）退回当前选中。
       // @ 了成员时，归属变成那个成员所在的连接。
       const profileId = target?.profileId ?? profileIdOf(sid) ?? activeProfile?.id ?? null;
-      let acpSid = target ? target.acpSessionId : profileId ? sessionsByProfile[profileId] : undefined;
+      // 只认这条界面会话自己的绑定。`sessionsByProfile[profileId]` 是「连接当前会话」，
+      // 拿它给新会话首条消息投递，就是把别人的 agent 上下文借过来用（串台）。
+      let own = target ? null : acpSessionOf(sid);
+      let acpSid = target ? target.acpSessionId : own ?? undefined;
+      let connected = !!profileId && !!sessionsByProfile[profileId];
       /** 要现连：这条消息得先等连接，界面不能因此变成「忙碌」。
        *  @成员时只要那条连接没建立就要连（成员自己的 session 还要单独 load）。 */
       const needConnect = target
         ? !sessionsByProfile[target.profileId]
-        : !acpSid && !!profileId;
+        : !!profileId && !connected;
       const connectNoteId = `conn-note-${Date.now()}`;
 
       // 用户消息先落地，真假链路都一样。
@@ -116,16 +150,58 @@ export function usePrompt({
           pushSystemNotice(patchSession, sid, `连接失败：${r.error!.code} ${r.error!.msg}`);
           return;
         }
-        acpSid = target ? target.acpSessionId : (r.acpSid ?? undefined);
+        if (r.resume) onResume(sid, r.resume, r.lastEventSeq);
+        if (r.resume?.kind === "unavailable") {
+          // 「续不上」只由会话的连接态表达（docs/desktop-ux.md §8）：上面 onResume 已经把它交给
+          // connectProblem，那块居中错误态正在渲染。再往消息流里塞一枚药丸，就是同一件事的两个面孔 ——
+          // 而且那条会落库，重开会话后还留在历史里，看起来像一条假消息。
+          setBusy(sid, false);
+          return;
+        }
+        acpSid = target ? target.acpSessionId : undefined;
+        connected = true;
+        // 连接期间后端可能已经为这条界面会话建好并绑定了 ACP 会话；
+        // 这里重新读 own，绝不把「连接当前会话」当成它的投递目标。
+        own = target ? null : acpSessionOf(sid);
+        if (!target) acpSid = own ?? undefined;
         // 连上了，接下来真要发 prompt
         patchSession(sid, (s) => ({ ...s, busy: true }));
+      }
+
+      const plan = target
+        ? "target"
+        : resolveSendTarget({ own, connected });
+      if (plan === "create" && profileId) {
+        // 新界面会话的第一条消息：在这个已连上的进程里真建一条自己的 ACP 会话。
+        // 失败就是这一条发不出去，给系统提示并落库留痕，不静默重试、也不退回连接当前会话。
+        try {
+          const info = await sessionNew(profileId, cwdOf(sid, profileId), sid);
+          acpSid = info.sessionId;
+          onSessionCreated(sid, profileId, info.sessionId, info.modes ?? null);
+        } catch (e) {
+          const err = asCmdError(e);
+          setBusy(sid, false);
+          pushSystemNotice(patchSession, sid, `新建 ACP 会话失败：${err.code} ${err.msg}`);
+          return;
+        }
       }
 
       if (acpSid && target) {
         // 成员的会话必须在那个进程里「活着」，否则 prompt 只会拿到 not_found。
         // 放在这里而不是连接时做：成员可能来自别的会话，连接阶段并不知道要 load 谁。
         try {
-          await sessionLoad(target.profileId, target.acpSessionId, target.cwd, sid);
+          const loaded = await sessionLoad(target.profileId, target.acpSessionId, target.cwd, sid);
+          onResume(sid, loaded.resume, loaded.lastEventSeq ?? null);
+          if (loaded.resume.kind === "unavailable") {
+            setBusy(sid, false);
+            // 成员会话不属于「这个会话打不开」，主会话是好着的 —— 它是一次真实的发送失败，落库是对的。
+            pushSystemNotice(
+              patchSession,
+              sid,
+              `@ 的成员会话恢复不了，这一条没有发出去：${loaded.resume.reason}`,
+            );
+            return;
+          }
         } catch (e) {
           const err = asCmdError(e);
           setBusy(sid, false);
@@ -199,9 +275,13 @@ export function usePrompt({
       contextMessages,
       activeProfile,
       sessionsByProfile,
+      acpSessionOf,
+      cwdOf,
+      onSessionCreated,
       acp,
       profileIdOf,
       ensureConnected,
+      onResume,
     ],
   );
 

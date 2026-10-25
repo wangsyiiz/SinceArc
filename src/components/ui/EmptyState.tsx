@@ -64,9 +64,7 @@ export function EmptyState(props: {
       }
     >
       {icon}
-      <h2 className={kind === "error" ? "text-title font-medium text-danger-1" : "text-title font-medium text-ink-1"}>
-        {title}
-      </h2>
+      <h2 className={kind === "error" ? "text-title font-medium text-danger-1" : "text-title font-medium text-ink-1"}>{title}</h2>
       {description && (
         <p className="max-w-md text-body text-ink-3">{description}</p>
       )}

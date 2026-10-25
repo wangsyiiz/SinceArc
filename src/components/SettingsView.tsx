@@ -5,14 +5,19 @@ import {
   ChevronDown,
   ChevronRight,
   MessageSquare,
+  Monitor,
+  Moon,
   Palette,
   Plug,
+  PlugZap,
+  Sun,
   Plus,
   Trash2,
   Users,
 } from "lucide-react";
 import type {
   AgentProfile,
+  AutoApproveLevel,
   LaunchKind,
   SshAuth,
   ThemeMode,
@@ -29,12 +34,16 @@ import {
 import {
   agentProbe,
   asCmdError,
+  profileSetDefaultMcp,
+  profilesSave,
+  type AgentCaps,
   type AgentUser,
   type DiscoveryCandidate,
   type DiscoveryHit,
   type DiscoveryOutcome,
   type ModesSnapshot,
   type ProbeOutcome,
+  type ResumeOutcome,
 } from "@/lib/ipc";
 import {
   AGENT_PRESETS,
@@ -46,7 +55,11 @@ import {
 import { ModeSelect } from "@/components/ModeSelect";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { AgentUserDetail, AgentUsersList } from "@/components/AgentUsers";
-import { CAPABILITY_LABEL } from "@/components/AgentCapabilities";
+import { AgentLogo } from "@/components/AgentLogo";
+import { McpCatalogSection } from "@/components/McpCatalogSection";
+import { McpDefaultPicker } from "@/components/McpDefaultPicker";
+import { agentBrand } from "@/lib/agent-brands";
+import { capsRows } from "@/lib/caps-format";
 import { StatusDot } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { EmptyState } from "./ui/EmptyState";
@@ -60,7 +73,10 @@ interface SettingsViewProps {
   profiles: AgentProfile[];
   onUpdateProfile: (next: AgentProfile) => void;
   /** 连接/断开都走 App 里的那一份实现（并发去重、状态回写都在那边） */
-  onConnect: (p: AgentProfile) => Promise<string>;
+  onConnect: (p: AgentProfile) => Promise<{
+    acpSid: string | null;
+    resume: ResumeOutcome | null;
+  }>;
   onDisconnect: (profileId: string) => Promise<void>;
   onAddProfile: (draft?: Partial<AgentProfile>) => string;
   onRemoveProfile: (id: string) => void;
@@ -70,6 +86,10 @@ interface SettingsViewProps {
   modesFor: (profileId: string) => ModesSnapshot | null;
   onChangeContext: (n: number) => void;
   onCycleTheme: (t: ThemeMode) => void;
+  /** 新会话默认自动同意档（客户端应答策略，不是 agent 的审批档） */
+  onChangeAutoApproveDefault: (level: AutoApproveLevel) => void;
+  /** 新建连接默认继承整份 MCP 目录（只影响新连接） */
+  onChangeMcpInheritDefault: (value: boolean) => void;
   /** agent 发现（docs/discovery.md）：缓存结果、是否在扫、手动重扫 */
   discovery?: DiscoveryOutcome | null;
   discoveryScanning?: boolean;
@@ -82,13 +102,28 @@ interface SettingsViewProps {
   ) => Partial<AgentProfile> | undefined;
 }
 
+const THEME_ICONS = {
+  dark: <Moon />,
+  light: <Sun />,
+  system: <Monitor />,
+} as const;
+
 const THEMES: { id: ThemeMode; label: string }[] = [
   { id: "dark", label: "深色" },
   { id: "light", label: "浅色" },
   { id: "system", label: "跟随系统" },
 ];
 
-const THEME_OPTIONS = THEMES.map((theme) => ({ value: theme.id, label: theme.label }));
+const THEME_OPTIONS = THEMES.map((theme) => ({
+  value: theme.id,
+  label: theme.label,
+  icon: THEME_ICONS[theme.id],
+}));
+
+const AUTO_APPROVE_OPTIONS = [
+  { value: "off" as const, label: "关闭" },
+  { value: "edits" as const, label: "编辑类" },
+];
 
 const SSH_AUTH_OPTIONS: { value: SshAuth; label: string }[] = [
   { value: "key", label: "私钥" },
@@ -102,6 +137,7 @@ const ADD_PATH_OPTIONS: { value: AddPath; label: string }[] = [
 
 const SECTIONS = [
   { id: "connection", label: "连接", icon: Plug },
+  { id: "mcp", label: "MCP", icon: PlugZap },
   { id: "members", label: "成员", icon: Users },
   { id: "chat", label: "群聊", icon: MessageSquare },
   { id: "appearance", label: "外观", icon: Palette },
@@ -138,6 +174,13 @@ function connectionTarget(profile: AgentProfile): string {
     return `${profile.distro || "WSL"}${cwd ? ` · ${cwd}` : ""}`;
   }
   return cwd || profile.program || "未配置";
+}
+
+function agentOfProfile(profile: AgentProfile): string {
+  const branded = [profile.agentName, profile.program, profile.name].find(
+    (candidate): candidate is string => !!candidate && agentBrand(candidate) !== null,
+  );
+  return branded || profile.name || profile.program || "";
 }
 
 /** 预设选择：统一走菜单原语，不再自己维护浮层与外部点击关闭。 */
@@ -197,6 +240,8 @@ export function SettingsView({
   modesFor,
   onChangeContext,
   onCycleTheme,
+  onChangeAutoApproveDefault,
+  onChangeMcpInheritDefault,
   discovery = null,
   discoveryScanning = false,
   discoveryError = null,
@@ -280,7 +325,13 @@ export function SettingsView({
     setErrors((prev) => ({ ...prev, [profile.id]: "" }));
     try {
       // 连接、状态回写、会话绑定都在 useAgentConnect 里，这里只负责把错误显示出来
-      await onConnect(profile);
+      const result = await onConnect(profile);
+      if (result.resume?.kind === "unavailable") {
+        throw { code: 50403, msg: result.resume.reason };
+      }
+      if (!result.acpSid) {
+        throw new Error("agent 没有给出会话");
+      }
     } catch (e) {
       const err = asCmdError(e);
       setErrors((prev) => ({ ...prev, [profile.id]: `${err.code} ${err.msg}` }));
@@ -374,11 +425,23 @@ export function SettingsView({
     }
   };
 
-  /** 能力键 → 人话。空数组时什么都不加，避免行尾挂一个空括号 */
-  const describeCaps = (caps: string[]): string => {
-    if (caps.length === 0) return "";
-    return ` · ${caps.map((key) => CAPABILITY_LABEL[key] ?? key).join(" / ")}`;
+  /** 只列支持的能力；最多 3 个，避免探测结果行变成一长串。 */
+  const describeCaps = (caps: AgentCaps): string => {
+    const labels = capsRows(caps)
+      .filter((row) => row.on)
+      .map((row) => row.label);
+    if (labels.length === 0) return "";
+    const head = labels.slice(0, 3).join(" / ");
+    return labels.length > 3
+      ? ` · ${head} 等 ${labels.length - 3} 项`
+      : ` · ${head}`;
   };
+
+  const newConnectionDraft = (id: string): AgentProfile => ({
+    ...createEmptyConnection(id),
+    // 新连接草稿就先呈现全局开关的语义；保存时后端仍会以显式值优先。
+    defaultMcp: settings.mcpInheritDefault ? null : [],
+  });
 
   /** 发现结果的预填值由 App 组装；这里只负责合并默认值。 */
   const discoveredProfile = (
@@ -389,7 +452,7 @@ export function SettingsView({
   ): AgentProfile | null => {
     const partial = onUseDiscovered?.(candidate, hit);
     if (!partial) return null;
-    return { ...(base ?? createEmptyConnection(id)), ...partial, id };
+    return { ...(base ?? newConnectionDraft(id)), ...partial, id };
   };
 
   const closeDraft = useCallback(
@@ -454,7 +517,7 @@ export function SettingsView({
   useEffect(() => {
     if (section === "connection" && !draft) return;
     if (section === "members" && !memberDetail) return;
-    if (section === "chat" || section === "appearance") return;
+    if (section === "chat" || section === "appearance" || section === "mcp") return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       if (document.querySelector('[role="menu"]') || document.querySelector("dialog[open]")) return;
@@ -483,7 +546,7 @@ export function SettingsView({
   const startNewConnection = () => {
     const id = newId("p-draft");
     invalidateProbe(id);
-    setDraft({ profile: createEmptyConnection(id), isNew: true, addPath: "manual" });
+    setDraft({ profile: newConnectionDraft(id), isNew: true, addPath: "manual" });
     setConnectionId(null);
   };
 
@@ -514,13 +577,38 @@ export function SettingsView({
     void handleProbe(profile, false);
   };
 
-  const saveDraft = (profile: AgentProfile) => {
+  const saveDraft = async (profile: AgentProfile) => {
     if (!draft) return;
     const effective = effectiveProfile(profile);
     const gate = canSaveConnection(probeResults[effective.id]?.ok === true, effective);
     if (!gate.ok) return;
-    const id = draft.isNew ? onAddProfile(effective) : effective.id;
-    if (!draft.isNew) onUpdateProfile(effective);
+    const isNew = draft.isNew;
+    // 新连接未显式选名单时，按全局开关决定落库初值；已有连接保持自己的选择。
+    const defaultMcp =
+      isNew && effective.defaultMcp == null
+        ? settings.mcpInheritDefault
+          ? null
+          : []
+        : (effective.defaultMcp ?? null);
+    const saved = isNew ? { ...effective, defaultMcp } : effective;
+    const id = isNew ? onAddProfile(saved) : saved.id;
+    try {
+      // 新连接先落库，profile_set_default_mcp 才能 UPDATE 到这一行。
+      if (isNew) await profilesSave([...profiles, saved]);
+      await profileSetDefaultMcp(id, defaultMcp);
+      if (!isNew) onUpdateProfile(saved);
+    } catch (e) {
+      const err = asCmdError(e);
+      setErrors((prev) => ({
+        ...prev,
+        [id]: `保存默认 MCP 服务器失败：${err.msg}`,
+      }));
+      if (isNew) {
+        setDraft({ profile: { ...effective, id }, isNew: false, addPath: "manual" });
+        setConnectionId(id);
+      }
+      return;
+    }
     setConnectionId(id);
     setConnectionFocus({ id, tick: Date.now() });
     invalidateProbe(id);
@@ -662,7 +750,7 @@ export function SettingsView({
               size="sm"
               disabled={!saveGate.ok}
               title={saveGate.reason}
-              onClick={() => saveDraft(profile)}
+              onClick={() => void saveDraft(profile)}
             >
               保存
             </Button>
@@ -869,9 +957,9 @@ export function SettingsView({
               </p>
               {probe.ok && (
                 <p className="mt-0.5 break-all text-caption text-ink-3">
-                  {probe.outcome.capabilities.length === 0
+                  {capsRows(probe.outcome.caps).every((row) => !row.on)
                     ? "这个 agent 没报任何可选能力"
-                    : describeCaps(probe.outcome.capabilities).replace(" · ", "")}
+                    : describeCaps(probe.outcome.caps).replace(" · ", "")}
                 </p>
               )}
             </>
@@ -943,6 +1031,11 @@ export function SettingsView({
           </p>
         </div>
 
+        <McpDefaultPicker
+          value={profile.defaultMcp ?? null}
+          onChange={(defaultMcp) => patchDraft({ defaultMcp })}
+        />
+
         {errors[profile.id] && (
           <p className="break-all rounded-control bg-danger-1/10 px-2.5 py-2 font-mono text-caption text-danger-1">
             {errors[profile.id]}
@@ -1003,6 +1096,9 @@ export function SettingsView({
                     <ArrowLeft className="size-3.5" />
                     返回
                   </Button>
+                  {section === "connection" && draft && (
+                    <AgentLogo agent={agentOfProfile(draft.profile)} />
+                  )}
                   <h1 className="text-title font-medium text-ink-1">
                     {section === "connection"
                       ? "连接详情"
@@ -1069,6 +1165,7 @@ export function SettingsView({
                             onClick={() => openConnection(profile)}
                             className="flex w-full items-center gap-3 rounded-card border border-line-1/70 bg-surface-1 px-3 py-2.5 text-left transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
                           >
+                            <AgentLogo agent={agentOfProfile(profile)} />
                             <span className="min-w-0 flex-1">
                               <span className="block truncate text-ui font-medium text-ink-1">
                                 {profile.name || profile.program || "未命名连接"}
@@ -1103,6 +1200,13 @@ export function SettingsView({
                       onOpen={(user) => setMemberDetail({ user })}
                     />
                   </div>
+                )}
+
+                {section === "mcp" && (
+                  <McpCatalogSection
+                    inheritDefault={settings.mcpInheritDefault}
+                    onInheritDefaultChange={onChangeMcpInheritDefault}
+                  />
                 )}
 
                 {section === "chat" && (
@@ -1146,6 +1250,21 @@ export function SettingsView({
                             <span>{CONTEXT_MESSAGES_MAX}</span>
                           </div>
                         </div>
+                      </div>
+                      <div className="flex items-center justify-between gap-6 py-4">
+                        <div className="min-w-0">
+                          <div className="text-ui text-ink-1">新会话默认自动同意</div>
+                          <p className="mt-1 text-caption text-ink-3">
+                            agent 发来审批请求时替你答的方式，只管编辑类（改文件 / 删除 / 移动）；
+                            命令与读取始终交给你。agent 自己的审批档已经不问的情况下，这一档不起作用。
+                          </p>
+                        </div>
+                        <Segmented
+                          ariaLabel="新会话默认自动同意"
+                          options={AUTO_APPROVE_OPTIONS}
+                          value={settings.autoApproveDefault}
+                          onChange={onChangeAutoApproveDefault}
+                        />
                       </div>
                       {heavy && (
                         <p className="flex items-start gap-1.5 border-l-2 border-warn-1 py-3 pl-3 text-caption text-warn-1">

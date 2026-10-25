@@ -28,6 +28,9 @@ fn wsl_profile(mode: Option<&str>) -> ProfileDto {
         ssh_key_path: None,
         ssh_password: None,
         default_mode: mode.map(str::to_string),
+        default_mcp: None,
+        caps: None,
+        caps_at: None,
     }
 }
 

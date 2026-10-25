@@ -7,6 +7,7 @@ import {
   type AcpEvent,
   type CmdError,
   type ModesSnapshot,
+  type ResumeOutcome,
 } from "@/lib/ipc";
 import type { AgentProfile } from "@/types";
 
@@ -14,6 +15,16 @@ export interface EnsureResult {
   /** 已有或新建的 ACP 会话 id；null = 没连上 */
   acpSid: string | null;
   error: CmdError | null;
+  /** 这次连接的恢复判定；复用已有映射时为 null（没有重新判定） */
+  resume: ResumeOutcome | null;
+  /** 续上前的本地事件水位 */
+  lastEventSeq: number | null;
+}
+
+export interface ConnectResult {
+  acpSid: string | null;
+  resume: ResumeOutcome;
+  lastEventSeq: number | null;
 }
 
 interface Deps {
@@ -52,10 +63,12 @@ export function useAgentConnect({
   }, [profiles, sessionsByProfile, onUpdateProfile, onAgentEvent, onSession]);
 
   /** 显式连接（设置页按钮）。失败抛 CmdError，由调用方决定怎么显示。 */
-  const connect = useCallback(async (p: AgentProfile, uiSid?: string): Promise<string> => {
+  const connect = useCallback(async (p: AgentProfile, uiSid?: string): Promise<ConnectResult> => {
     const s = stateRef.current;
-    // 先登记处理器、再连接：单通道按 profileId 分发，事件不会因为「还没订阅」而丢
-    await onAgentEvent_(p.id, (e, topic) => s.onAgentEvent(p.id, e, topic));
+    // 先登记处理器、再连接：单通道按 profileId 分发，事件不会因为「还没订阅」而丢。
+    // 回调必须走 stateRef 取最新的：这个处理器在连接生命周期内只会注册这一次，
+    // 直接捕获 onAgentEvent 会把那一刻的状态（例如自动同意档位）冻死在闭包里。
+    await onAgentEvent_(p.id, (e, topic) => stateRef.current.onAgentEvent(p.id, e, topic));
     const out = await connectAgent(p, uiSid);
     s.onUpdateProfile({
       ...p,
@@ -63,27 +76,71 @@ export function useAgentConnect({
       agentName: `${out.agentName} ${out.agentVersion}`,
       protocolVersion: out.protocolVersion,
       // 能力来自这次握手：换了 agent 或升级了版本，这里的值会跟着变
-      capabilities: out.capabilities,
+      caps: out.caps,
+      capsAt: Math.floor(Date.now() / 1000),
     });
-    if (!out.sessionId) {
-      // 握上手但没会话：后端认为连上了，实际没法发消息，必须当失败处理
+    if (!out.sessionId && out.resume.kind !== "unavailable") {
+      // 握上手但没会话：后端认为连上了，实际没法发消息，必须当失败处理。
+      // Unavailable 是显式结果，由调用方展示「续不上」，不能混成通用连接失败。
       throw new Error("agent 没有给出会话");
     }
-    s.onSession(p.id, out.sessionId, out.modes ?? null, uiSid);
-    return out.sessionId;
+    if (out.sessionId) {
+      s.onSession(p.id, out.sessionId, out.modes ?? null, uiSid);
+    }
+    return {
+      acpSid: out.sessionId ?? null,
+      resume: out.resume,
+      lastEventSeq: out.lastEventSeq ?? null,
+    };
   }, []);
 
   /**
    * 没有就连接（无感启动）。永不抛异常：失败以 `error` 返回，调用方写进会话消息流，
    * 因为这条路径是用户点开会话顺手触发的，用模态框打断他不对。
    */
-  const ensureConnected = useCallback(
-    (profileId: string | null | undefined, uiSid?: string): Promise<EnsureResult> => {
-      if (!profileId) return Promise.resolve({ acpSid: null, error: null });
+  const disconnect = useCallback(async (profileId: string): Promise<void> => {
+    await disconnectAgent(profileId);
+    const s = stateRef.current;
+    const profile = s.profiles.find((p) => p.id === profileId);
+    if (profile) {
+      s.onUpdateProfile({ ...profile, connected: false, agentName: null, protocolVersion: null });
+    }
+  }, []);
 
-      // 已经有 ACP 会话：直接复用，不重连
+  const ensureConnected = useCallback(
+    async (
+      profileId: string | null | undefined,
+      uiSid?: string,
+      opts?: { force?: boolean },
+    ): Promise<EnsureResult> => {
+      if (!profileId) {
+        return Promise.resolve({
+          acpSid: null,
+          error: null,
+          resume: null,
+          lastEventSeq: null,
+        });
+      }
+
+      // 已经有 ACP 会话：直接复用，不重连。
+      // force = 用户点「重试」：必须真的重来一次（断开 → 重连），否则复用会让重试看起来毫无反应 ——
+      // 尤其是「续不上」那种：握手是通的，复用就直接返回，判定根本不会重跑。
       const existing = stateRef.current.sessionsByProfile[profileId];
-      if (existing) return Promise.resolve({ acpSid: existing, error: null });
+      if (existing && opts?.force) {
+        await disconnect(profileId);
+        // 等映射真的被清掉（conn.exited 是事件，不是 disconnect 的返回值）：
+        // 不等就 reconnect，后端会回「已连接」，界面反而显示一条假的失败
+        for (let i = 0; i < 30 && stateRef.current.sessionsByProfile[profileId]; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      } else if (existing) {
+        return Promise.resolve({
+          acpSid: existing,
+          error: null,
+          resume: null,
+          lastEventSeq: null,
+        });
+      }
 
       const pending = inflight.current.get(profileId);
       if (pending) return pending;
@@ -93,12 +150,24 @@ export function useAgentConnect({
         return Promise.resolve({
           acpSid: null,
           error: { code: 50100, msg: "这个会话没有可用的连接配置" },
+          resume: null,
+          lastEventSeq: null,
         });
       }
 
       const task = connect(profile, uiSid)
-        .then((acpSid) => ({ acpSid, error: null }))
-        .catch((e): EnsureResult => ({ acpSid: null, error: asCmdError(e) }))
+        .then((r) => ({
+          acpSid: r.acpSid,
+          error: null,
+          resume: r.resume,
+          lastEventSeq: r.lastEventSeq,
+        }))
+        .catch((e): EnsureResult => ({
+          acpSid: null,
+          error: asCmdError(e),
+          resume: null,
+          lastEventSeq: null,
+        }))
         .finally(() => {
           inflight.current.delete(profileId);
         });
@@ -106,17 +175,8 @@ export function useAgentConnect({
       inflight.current.set(profileId, task);
       return task;
     },
-    [connect],
+    [connect, disconnect],
   );
-
-  const disconnect = useCallback(async (profileId: string): Promise<void> => {
-    await disconnectAgent(profileId);
-    const s = stateRef.current;
-    const profile = s.profiles.find((p) => p.id === profileId);
-    if (profile) {
-      s.onUpdateProfile({ ...profile, connected: false, agentName: null, protocolVersion: null });
-    }
-  }, []);
 
   return { connect, ensureConnected, disconnect };
 }

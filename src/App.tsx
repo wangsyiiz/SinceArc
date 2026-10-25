@@ -2,7 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { X } from "lucide-react";
 import { ActivityRail } from "@/components/ActivityRail";
 import { Composer } from "@/components/Composer";
+import { ConnectErrorState } from "@/components/ConnectErrorState";
 import { EmptyState } from "@/components/EmptyState";
+import { EmptyState as LoadingState } from "@/components/ui/EmptyState";
 import { MessageItem } from "@/components/MessageItem";
 import { PermissionDialog } from "@/components/PermissionDialog";
 import { PrView } from "@/components/PrView";
@@ -11,10 +13,18 @@ import { ResizeHandles } from "@/components/ResizeHandles";
 import { SettingsView } from "@/components/SettingsView";
 import { AgentCapabilities } from "@/components/AgentCapabilities";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DelegateDialog } from "@/components/DelegateDialog";
+import { MemberDetailPanel } from "@/components/MemberDetailPanel";
 import { MAIN_AGENT_ID } from "@/hooks/usePrompt";
+import { autoApproveCovered, type AutoApproveLevel } from "@/lib/auto-approve";
+import { settingsKey } from "@/lib/settings-key";
 import { profileLabel } from "@/lib/format";
 import { pushSystemNotice } from "@/lib/notices";
-import { commandLineOf, commandsFor } from "@/extensions/registry";
+import { delegateCancelFailureMessage, type DelegatePhase } from "@/lib/delegate-status";
+import { mergeMessages } from "@/lib/messages-merge";
+import { buildPlayers } from "@/lib/players";
+import { steerGate, type SteerGate } from "@/lib/steer-availability";
+import { resolveAcpSessionId } from "@/lib/session-view";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
 import { StatusBar } from "@/components/StatusBar";
@@ -31,6 +41,7 @@ import type {
   AgentProfile,
   GithubPR,
   GithubRepo,
+  Message,
   PermissionRequest,
   Player,
   SessionSummary,
@@ -40,17 +51,28 @@ import type {
 import { DEFAULT_THREAD_SETTINGS } from "@/types";
 import {
   asCmdError,
+  agentUsersList,
+  delegateCancel,
+  delegateTask,
+  delegateWait,
+  messageFromPayload,
+  messagesLoad,
   mentionResolve,
   settingsLoad,
   settingsSave,
   sessionDelete,
   sessionCancel,
+  sessionMemberRemove,
   sessionMembers,
+  sessionRebind,
+  messagesAppend,
+  sessionSteer,
   sessionUpsert,
   type AgentUser,
   type DiscoveryCandidate,
   type DiscoveryHit,
   type ModesSnapshot,
+  type ResumeOutcome,
 } from "@/lib/ipc";
 import { now } from "@/lib/format";
 import { clog } from "@/lib/log";
@@ -58,7 +80,7 @@ import { newId } from "@/lib/ids";
 import { useAcpEvents } from "@/hooks/useAcpEvents";
 import { usePaneLayout } from "@/hooks/usePaneLayout";
 import { usePermissions } from "@/hooks/usePermissions";
-import { useAgentConnect } from "@/hooks/useAgentConnect";
+import { useAgentConnect, type EnsureResult } from "@/hooks/useAgentConnect";
 import { useDiscovery } from "@/hooks/useDiscovery";
 import { useProfileStore } from "@/hooks/useProfileStore";
 import { usePrompt } from "@/hooks/usePrompt";
@@ -78,12 +100,11 @@ export default function App() {
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const settingsSaveSeq = useRef(0);
   const settingsPendingKey = useRef<string | null>(null);
-  const savedSettings = useRef(
-    JSON.stringify([
-      DEFAULT_THREAD_SETTINGS.contextMessages,
-      DEFAULT_THREAD_SETTINGS.theme,
-    ]),
-  );
+  /**
+   * 只靠"值没变就不写"避免回环。键必须覆盖**所有**会落库的字段 ——
+   * 漏一个的后果是它改了也不保存（写请求根本不发），而且只在重开后才露出来。
+   */
+  const savedSettings = useRef(settingsKey(DEFAULT_THREAD_SETTINGS));
   useTheme(settings.theme);
   useScrollFade();
   const [mode, setMode] = useState<SidebarMode>("sessions");
@@ -93,9 +114,14 @@ export default function App() {
    * 拉取时机：打开面板、切换会话、以及一轮结束时（此时才刚有收尾状态）。
    */
   const [traceTurns, setTraceTurns] = useState<TraceTurnDto[]>([]);
+  /** 派活这类「不改 busy 但改了轨迹」的写入靠它触发重读（后端写完事件敲 session.trace） */
+  const [traceTick, setTraceTick] = useState(0);
   const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
   const [playerFilter, setPlayerFilter] = useState<string | null>(null);
+  const [memberPanel, setMemberPanel] = useState<{ id: string; anchor: HTMLElement } | null>(null);
+  const [delegateTarget, setDelegateTarget] = useState<AgentUser | null>(null);
   const [permOpen, setPermOpen] = useState(false);
+  const [autoApprove, setAutoApprove] = useState<Record<string, AutoApproveLevel>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const scrollAnchorRef = useRef<{
@@ -113,11 +139,14 @@ export default function App() {
   const [composerH, setComposerH] = useState(128);
   /** 已发出取消请求、还在等 promptResult / promptFailed 的界面会话 */
   const [cancelling, setCancelling] = useState<Record<string, boolean>>({});
+  /** handleId → 这次派活的界面阶段；终态后删掉，引用条不显示历史 */
+  const [delegateRunning, setDelegateRunning] = useState<Record<string, DelegatePhase>>({});
+  const [resumeBusy, setResumeBusy] = useState(false);
 
 
   useEffect(() => {
     if (!settingsLoaded) return;
-    const key = JSON.stringify([settings.contextMessages, settings.theme]);
+    const key = settingsKey(settings);
     if (key === savedSettings.current && settingsPendingKey.current === null) return;
     const seq = ++settingsSaveSeq.current;
     settingsPendingKey.current = key;
@@ -143,24 +172,8 @@ export default function App() {
   const discovery = useDiscovery(profiles);
   /** 当前群的成员（docs/group-chat.md §1） */
   const [members, setMembers] = useState<AgentUser[]>([]);
-
-  /**
-   * 玩家列表：只来自群成员（真实的 Agent User）；没有成员时保持空列表。
-   * 之所以直接覆盖 `players` 这个名字：轨迹栏、@ 高亮、头像、权限弹窗全都按它取人，
-   * 一处派生比到处塞 prop 更不容易漏。
-   */
-  const players = useMemo(
-    () =>
-      members.map((u) => ({
-        id: u.id,
-        name: u.name,
-        handle: u.handle,
-        color: u.color,
-        profileId: u.profileId,
-        busy: false,
-      })),
-    [members],
-  );
+  /** 全局 Agent User：当前成员被移出后，历史作者仍能从这里解析回身份。 */
+  const [knownUsers, setKnownUsers] = useState<AgentUser[]>([]);
   /**
    * 主 agent 自己的身份（只用于渲染它说过的话）。
    * 不进左栏：左栏列的是群成员，主 agent 不是成员 —— 但它的回复也该有名字，
@@ -178,6 +191,37 @@ export default function App() {
     };
   }, [activeProfile]);
 
+  const { sessions, setSessions, reload: reloadSessions } = useSessionList();
+  const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab } = useTabs(sessions);
+  const { state, patchSession, initSession, sessionState, hasMore, loadOlder, loadingOlder, opening } =
+    useSessionState(lastSessionId);
+
+  const authorIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const message of state.msgs) {
+      if (message.role === "player" && message.playerId !== MAIN_AGENT_ID) {
+        ids.push(message.playerId);
+      }
+    }
+    for (const activity of state.acts) {
+      if (activity.playerId !== MAIN_AGENT_ID) ids.push(activity.playerId);
+    }
+    return ids;
+  }, [state.msgs, state.acts]);
+
+  /**
+   * 玩家列表 = 当前成员 + 历史里出现过的作者。
+   * 轨迹栏、@ 高亮、头像、权限弹窗全都按它取人，一处派生比到处塞 prop 更不容易漏。
+   */
+  const players = useMemo<Player[]>(
+    () =>
+      buildPlayers({ members, known: knownUsers, authorIds }).map((player) => ({
+        ...player,
+        busy: false,
+      })),
+    [members, knownUsers, authorIds],
+  );
+
   /**
    * 渲染用的完整玩家表 = 群成员 + 主 agent。
    * 消息和思考行都必须用它：思考行的 playerId 对主 agent 是 `MAIN_AGENT_ID`，
@@ -188,13 +232,11 @@ export default function App() {
     [players, mainAgentPlayer],
   );
 
-  const { sessions, setSessions, reload: reloadSessions } = useSessionList();
-  const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, selectTab } = useTabs(sessions);
-  const { state, patchSession, initSession, sessionState, hasMore, loadOlder, loadingOlder } =
-    useSessionState(lastSessionId);
-
   /** 重新读当前群的成员：换群、加入、移出都走它 */
   const reloadMembers = useCallback(() => {
+    agentUsersList()
+      .then(setKnownUsers)
+      .catch((e) => console.warn("[group] load known users failed", e));
     if (!lastSessionId) {
       setMembers([]);
       return;
@@ -208,6 +250,27 @@ export default function App() {
   useEffect(() => {
     reloadMembers();
   }, [reloadMembers]);
+
+  useEffect(() => {
+    setMemberPanel(null);
+    setDelegateTarget(null);
+  }, [lastSessionId]);
+
+  useEffect(() => {
+    if (!memberPanel) return;
+    if (members.some((m) => m.id === memberPanel.id)) return;
+    setMemberPanel(null);
+  }, [memberPanel, members]);
+
+  const removeGroupMember = useCallback(
+    async (member: AgentUser) => {
+      if (!lastSessionId) return;
+      await sessionMemberRemove(lastSessionId, member.id);
+      if (playerFilter === member.id) setPlayerFilter(null);
+      reloadMembers();
+    },
+    [lastSessionId, playerFilter, reloadMembers],
+  );
 
   const { bySid: modesBySid, byProfile: modesByProfile, applyFor, choose, noteAgentSwitch } = useSessionModes();
   const onSessionBound = useCallback(
@@ -231,14 +294,102 @@ export default function App() {
     },
     [patchSession],
   );
-  const permissions = usePermissions({ onHead: onPermHead });
+  const getAutoApprove = useCallback(
+    // 会话内没有显式切过就用设置里的默认档（设置页「新会话默认自动同意」）
+    (uiSid: string): AutoApproveLevel => autoApprove[uiSid] ?? settings.autoApproveDefault,
+    [autoApprove, settings.autoApproveDefault],
+  );
+  const permissionDiagRef = useRef<(text: string) => void>(() => {});
+  const permissionDiag = useCallback((text: string) => permissionDiagRef.current(text), []);
+  const permissions = usePermissions({
+    onHead: onPermHead,
+    getAutoApprove,
+    diag: permissionDiag,
+  });
   const onPermission = useCallback(
-    (args: { uiSid: string; profileId: string; requestId: number; params: unknown }) => {
-      permissions.enqueue(args.uiSid, args.profileId, args.requestId, args.params);
+    (args: {
+      uiSid: string;
+      profileId: string;
+      requestId: number;
+      params: unknown;
+      authorId: string | null;
+    }) => {
+      void permissions.enqueue(
+        args.uiSid,
+        args.profileId,
+        args.requestId,
+        args.params,
+        args.authorId,
+      );
     },
     [permissions.enqueue],
   );
-  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission });
+  const onPermissionsExpired = useCallback(
+    (args: {
+      uiSid?: string;
+      profileId: string;
+      reason: string;
+      cause: "turn-end" | "disconnected";
+    }) => {
+      permissions.expire(args);
+      // 规范的时间边界：连接退出即结束本次授权，重连后回到默认关闭。
+      if (args.cause === "disconnected") {
+        setAutoApprove((prev) => {
+          let changed = false;
+          const next = { ...prev };
+          for (const session of sessions) {
+            if (session.profileId === args.profileId && session.id in next) {
+              delete next[session.id];
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      }
+    },
+    [permissions.expire, sessions],
+  );
+  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, commandsByAcpSession, messageIdByAcpSession, acpByUiSession, acpSessionForUi, noteAcpSession, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired, onTraceChanged: () => setTraceTick((t) => t + 1) });
+
+  useEffect(() => {
+    permissionDiagRef.current = diag;
+  }, [diag]);
+
+  /** 恢复判定只有一个出口：错误态、诊断与会话头标记都从它更新。 */
+  const reportResume = useCallback(
+    (uiSid: string, outcome: ResumeOutcome, lastEventSeq: number | null) => {
+      if (outcome.kind === "fresh") {
+        patchSession(uiSid, (s) => ({ ...s, resume: null }));
+        return;
+      }
+      if (outcome.kind === "resumed") {
+        diag(
+          `RESUME ok ui=${uiSid} acp=${outcome.acpSessionId}${outcome.note ? ` · ${outcome.note}` : ""}`,
+        );
+        patchSession(uiSid, (s) => ({
+          ...s,
+          resume: {
+            kind: "resumed",
+            acpSessionId: outcome.acpSessionId,
+            note: outcome.note || undefined,
+            lastEventSeq,
+          },
+        }));
+        return;
+      }
+      diag(`RESUME unavailable ui=${uiSid} acp=${outcome.acpSessionId} · ${outcome.reason}`);
+      patchSession(uiSid, (s) => ({
+        ...s,
+        resume: {
+          kind: "unavailable",
+          acpSessionId: outcome.acpSessionId,
+          reason: outcome.reason,
+          lastEventSeq,
+        },
+      }));
+    },
+    [diag, patchSession],
+  );
 
   /* 设置读取放在 useAcpEvents 之后：脏值要推进它的事件流（诊断面板）。 */
   useEffect(() => {
@@ -246,10 +397,7 @@ export default function App() {
     settingsLoad()
       .then((report) => {
         if (!alive) return;
-        savedSettings.current = JSON.stringify([
-          report.settings.contextMessages,
-          report.settings.theme,
-        ]);
+        savedSettings.current = settingsKey(report.settings);
         setSettings(report.settings);
         // 脏值不许静默：后端已经写了日志，这里再推进诊断面板，让用户当场看得见
         report.issues.forEach((issue) => diag(issue));
@@ -270,6 +418,31 @@ export default function App() {
   // 归属跟会话走，不再跟一个全局「选中连接」走：全局选中项的唯一入口（左下角列表）
   // 已经移除，靠它就等于靠一个永远空着的值
   const sessionProfile = profiles.find((p) => p.id === activeSession?.profileId) ?? activeProfile;
+  // 命令属于 ACP 会话，不属于 UI 会话：没有 acpSessionId 就不传，块不出现。
+  /**
+   * **唯一的会话解析口**（docs/data-plane.md §2）：界面只持有 uiSessionId，其余 id 由它派生。
+   * 顺序：会话记录 → 事件流学到的映射 → null（不猜「连接当前会话」）。
+   */
+  const acpSessionOf = useCallback(
+    (uiSid: string) =>
+      resolveAcpSessionId(
+        sessions.find((s) => s.id === uiSid)?.acpSessionId,
+        acpSessionForUi(uiSid),
+        acpByUiSession[uiSid],
+      ),
+    [sessions, acpByUiSession, acpSessionForUi],
+  );
+  /**
+   * 活动会话的 ACP 会话 id。状态栏、模式切换、停止、能力面板、命令列表、插话门禁
+   * 全部只认这一个值 —— 少一处读「连接当前会话」就是切换数据面不完整。
+   */
+  const activeAcpSid = acpSessionOf(lastSessionId);
+  const acpCommands = activeAcpSid ? commandsByAcpSession[activeAcpSid] : undefined;
+  /** 插话入口的三态：off=这个 agent 没声明 steer；waiting=声明了但还没见过正文分组；on=可插 */
+  const steerMode: SteerGate = steerGate(
+    acpCommands,
+    activeAcpSid ? !!messageIdByAcpSession[activeAcpSid] : false,
+  );
   const isStopping = !!cancelling[lastSessionId] && state.busy;
 
   /**
@@ -279,6 +452,11 @@ export default function App() {
    */
   const writeHint = useMemo(() => summarizeLocks(state.locks ?? {}), [state.locks]);
   const usageLine = state.usage ? describeUsage(state.usage) : null;
+  const connectProblem: { code?: string; message: string } | null = state.connectError
+    ? { code: state.connectError.code, message: state.connectError.message }
+    : state.resume?.kind === "unavailable"
+      ? { message: state.resume.reason ?? "原因不明" }
+      : null;
 
   useEffect(() => {
     if (state.busy) return;
@@ -299,26 +477,114 @@ export default function App() {
     (uiSid: string) => sessions.find((s) => s.id === uiSid)?.profileId ?? null,
     [sessions],
   );
+  const cwdOf = useCallback(
+    (uiSid: string, profileId: string | null) => {
+      const sessionCwd = sessions.find((s) => s.id === uiSid)?.cwd;
+      if (sessionCwd) return sessionCwd;
+      return profiles.find((p) => p.id === profileId)?.cwd ?? "";
+    },
+    [profiles, sessions],
+  );
+  const onAcpSessionCreated = useCallback(
+    (uiSid: string, profileId: string, acpSid: string, modes: ModesSnapshot | null) => {
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === uiSid ? { ...s, acpSessionId: acpSid, profileId } : s,
+        ),
+      );
+      noteAcpSession(uiSid, acpSid);
+      // 建会话时就带上 agent 报的模式快照：不带，界面这条会话永远显示「不支持」。
+      onSessionBound({
+        profileId,
+        acpSessionId: acpSid,
+        uiSessionId: uiSid,
+        snapshot: modes,
+      });
+    },
+    [noteAcpSession, onSessionBound, setSessions],
+  );
   const { send } = usePrompt({
     lastSessionId,
     patchSession,
     activeProfile: sessionProfile,
     sessionsByProfile,
+    acpSessionOf,
+    cwdOf,
+    onSessionCreated: onAcpSessionCreated,
     contextMessages: settings.contextMessages,
     acp,
     profileIdOf,
     ensureConnected,
+    onResume: reportResume,
   });
   const { sidebarW, setSidebarW, traceW, setTraceW, dragging, setDragging, layoutRef, mainMin, sidebarMax, traceMax } = usePaneLayout(traceOpen);
   const { repoList, addRepo, activeRepo, activePr } = useRepos(activeTab);
 
   const cwd = activeSession?.cwd ?? sessionProfile?.cwd ?? "";
+  const resumeGap = useMemo(() => {
+    const watermark = state.resume?.lastEventSeq;
+    if (watermark == null) return null;
+    let firstAfter: number | null = null;
+    for (const turn of traceTurns) {
+      for (const item of turn.items) {
+        if (item.seq > watermark && (firstAfter == null || item.seq < firstAfter)) {
+          firstAfter = item.seq;
+        }
+      }
+    }
+    if (firstAfter == null) return null;
+    const missing = firstAfter - watermark - 1;
+    return missing > 0 ? missing : null;
+  }, [traceTurns, state.resume?.lastEventSeq]);
+
+  const startFreshSession = useCallback(() => {
+    const sid = lastSessionId;
+    const pid = sessionProfile?.id;
+    if (!sid || !pid) return;
+    setResumeBusy(true);
+    sessionRebind(sid, pid, cwd)
+      .then((info) => {
+        onSession(pid, info.sessionId, null, sid);
+        reportResume(sid, { kind: "fresh" }, null);
+        patchSession(sid, (s) => ({ ...s, connectError: null }));
+        diag(`RESUME new ui=${sid} acp=${info.sessionId}`);
+      })
+      .catch((e) => {
+        const err = asCmdError(e);
+        diag(`RESUME new failed ui=${sid} · ${err.code} ${err.msg}`);
+        pushSystemNotice(patchSession, sid, `新建会话失败：${err.code} ${err.msg}`);
+      })
+      .finally(() => setResumeBusy(false));
+  }, [cwd, diag, lastSessionId, onSession, patchSession, reportResume, sessionProfile?.id]);
+
   const activeModeView = modesBySid[lastSessionId] ?? null;
   const activeDefaultModeLabel = sessionProfile?.defaultMode
     ? ((modesByProfile[sessionProfile.id]?.available ?? activeModeView?.available ?? []).find(
         (m) => m.id === sessionProfile.defaultMode,
       )?.name ?? sessionProfile.defaultMode)
     : null;
+  const activeAutoApprove: AutoApproveLevel = lastSessionId
+    ? (autoApprove[lastSessionId] ?? settings.autoApproveDefault)
+    : settings.autoApproveDefault;
+  const autoApproveCoveredByAgent = autoApproveCovered(activeModeView?.current ?? null);
+  /** 分段控件给的是「选中的档」，不是「切一下」：值没变就不动状态，免得白跑一次渲染 */
+  const setAutoApproveLevel = useCallback(
+    (level: AutoApproveLevel) => {
+      if (!lastSessionId) return;
+      setAutoApprove((prev) =>
+        prev[lastSessionId] === level ? prev : { ...prev, [lastSessionId]: level },
+      );
+    },
+    [lastSessionId],
+  );
+  const clearAutoApprove = useCallback((uiSid: string) => {
+    setAutoApprove((prev) => {
+      if (!(uiSid in prev)) return prev;
+      const next = { ...prev };
+      delete next[uiSid];
+      return next;
+    });
+  }, []);
 
   const requestOlder = useCallback(() => {
     if (!hasMore || loadingOlder) return;
@@ -417,8 +683,47 @@ export default function App() {
   // 无感启动：切到某个会话标签（含从侧栏点开）就把它的 agent 拉起来。
   //
   // 尝试记录记的是「会话 + 当时的连接状态」而不是单纯的会话 id：失败之后状态不变，
-  // 所以不会每次重渲染都重试（否则消息流会被同一条错误刷屏）；而断开一次状态就变了，
+  // 所以不会每次重渲染都重试（否则错误态会被同一个结果反复刷新）；而断开一次状态就变了，
   // 用户再点回来就能重连 —— 断开是「现在别连」，不是「永久别连」（docs/desktop-ux.md §1.5）。
+  /** 无感连接 / 重试在飞：让「打开 → 可用」这一段有完整的过渡，而不是只等历史读回 */
+  const [connectPending, setConnectPending] = useState<Record<string, boolean>>({});
+  const markConnecting = useCallback((sid: string, pending: boolean) => {
+    setConnectPending((prev) => ({ ...prev, [sid]: pending }));
+  }, []);
+
+  const handleConnectResult = useCallback(
+    (sid: string, result: EnsureResult) => {
+      if (result.resume) reportResume(sid, result.resume, result.lastEventSeq);
+      const error = result.error;
+      if (error) {
+        patchSession(sid, (s) => ({
+          ...s,
+          connectError: { code: String(error.code), message: error.msg },
+        }));
+        return;
+      }
+      patchSession(sid, (s) => ({ ...s, connectError: null }));
+    },
+    [patchSession, reportResume],
+  );
+
+  /**
+   * 会话 MCP 减少后的显式重连：先真的断开 agent，再走同一条 ensureConnected。
+   * 不在名单变化时自动做 —— 那会打断正在飞的轮次。
+   */
+  const reconnectMcp = useCallback(
+    async (uiSid: string, profileId: string) => {
+      await disconnect(profileId);
+      const result = await ensureConnected(profileId, uiSid, { force: true });
+      handleConnectResult(uiSid, result);
+      if (result.error) throw result.error;
+      if (!result.acpSid) {
+        throw { code: 50403, msg: "重连后 agent 没有给出会话" };
+      }
+    },
+    [disconnect, ensureConnected, handleConnectResult],
+  );
+
   const autoTried = useRef<Map<string, string>>(new Map());
   useEffect(() => {
     if (activeTab?.kind !== "session" || !activeTab.sessionId) return;
@@ -429,22 +734,81 @@ export default function App() {
     if (autoTried.current.get(sid) === attemptKey) return;
     autoTried.current.set(sid, attemptKey);
     // 带上当前会话：映射要靠它，不能靠「渲染时谁打开着」
-    void ensureConnected(pid, sid).then((r) => {
-      if (!r.error) return;
-      patchSession(sid, (s) => ({
-        ...s,
-        msgs: [
-          ...s.msgs,
-          {
-            id: newId("conn-err"),
-            role: "system",
-            text: `连接失败：${r.error!.code} ${r.error!.msg}`,
-            at: now(),
-          },
-        ],
-      }));
-    });
-  }, [activeTab, ensureConnected, sessions, activeProfile, sessionsByProfile, patchSession]);
+    markConnecting(sid, true);
+    void ensureConnected(pid, sid)
+      .then((r) => handleConnectResult(sid, r))
+      .finally(() => markConnecting(sid, false));
+  }, [
+    activeTab,
+    ensureConnected,
+    sessions,
+    activeProfile,
+    sessionsByProfile,
+    handleConnectResult,
+    markConnecting,
+  ]);
+
+  const [retryBusy, setRetryBusy] = useState(false);
+  const retryConnection = useCallback(() => {
+    const sid = lastSessionId;
+    const pid = sessionProfile?.id;
+    // 不许静默返回：没有可用的连接配置也是一种结果，要写进错误态（以前这里直接 return，
+    // 点了没反应 —— 所有者报的「切换 session 后重试没反应」有一半就死在这条路上）
+    if (!sid || !pid) {
+      if (sid) {
+        patchSession(sid, (s) => ({
+          ...s,
+          connectError: { code: "50100", message: "这个会话没有可用的连接配置" },
+        }));
+      }
+      return;
+    }
+    // 绕过自动连接的「一次就够」记录：手动重试必须真的再连一次
+    autoTried.current.set(sid, `${pid}:${sessionsByProfile[pid] ?? "-"}`);
+    setRetryBusy(true);
+    markConnecting(sid, true);
+    diag(`RETRY ui=${sid} pid=${pid} force=1`);
+    // 复用已有连接时上一次是秒回，界面等于什么都没发生；给一个最短可见时长（250ms），
+    // 让「我点了」这件事一定看得见
+    const flash = new Promise((resolve) => setTimeout(resolve, 250));
+    void Promise.all([ensureConnected(pid, sid, { force: true }), flash])
+      .then(([r]) => {
+        diag(`RETRY done ui=${sid} error=${r.error ? `${r.error.code} ${r.error.msg}` : "none"}`);
+        handleConnectResult(sid, r);
+      })
+      .finally(() => {
+        setRetryBusy(false);
+        markConnecting(sid, false);
+      });
+  }, [
+    ensureConnected,
+    handleConnectResult,
+    lastSessionId,
+    sessionProfile?.id,
+    sessionsByProfile,
+    markConnecting,
+    patchSession,
+    diag,
+  ]);
+
+  /**
+   * 会话打不开时的那块错误态：同一块，两种落点（docs/desktop-ux.md §8）。
+   * 没有历史就占满消息区，有历史就接在最后一条消息之后 —— 视觉只有一份，避免两处走样。
+   */
+  const errorState = connectProblem ? (
+    <ConnectErrorState
+      code={connectProblem.code}
+      message={connectProblem.message}
+      resumeUnavailable={state.resume?.kind === "unavailable"}
+      newSessionBusy={resumeBusy}
+      retrying={retryBusy}
+      onRetry={retryConnection}
+      onNewSession={startFreshSession}
+      onOpenSettings={
+        state.connectError ? () => openTab({ kind: "settings", title: "设置" }) : undefined
+      }
+    />
+  ) : null;
 
   /** 把 PR 作为引用塞进会话：优先复用已打开的会话标签 */
   const quotePr = useCallback(
@@ -474,15 +838,15 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [traceOpen, lastSessionId, state.busy]);
+  }, [traceOpen, lastSessionId, state.busy, state.pendingPerm, traceTick]);
 
   const traceView = useMemo(() => toTraceView(traceTurns), [traceTurns]);
 
-  const decide = useCallback(async (optionId: string | null) => {
+  const decide = useCallback(async (optionId: string | null, note: string | null = null) => {
     const uiSid = lastSessionId;
     try {
       // null 表示用户取消/Esc：由队列按 kind 找拒绝项，不能硬编码 optionId。
-      await permissions.decide(uiSid, optionId);
+      await permissions.decide(uiSid, optionId, note);
       // 成功**不**往消息流里写「权限决定：允许」。
       //
       // 那条通知以前只存在于内存（没有落库），于是同一个气泡有两种位置：
@@ -501,8 +865,11 @@ export default function App() {
     const tab = tabs.find((t) => t.id === id);
     closeTab(id);
     // 标签关掉后这条会话不会再有界面来回答权限请求，队列一并丢弃。
-    if (tab?.kind === "session" && tab.sessionId) permissions.dropSession(tab.sessionId);
-  }, [closeTab, permissions.dropSession, tabs]);
+    if (tab?.kind === "session" && tab.sessionId) {
+      permissions.dropSession(tab.sessionId);
+      clearAutoApprove(tab.sessionId);
+    }
+  }, [clearAutoApprove, closeTab, permissions.dropSession, tabs]);
 
   const removeProfileAndPerms = useCallback((id: string) => {
     removeProfile(id);
@@ -551,8 +918,9 @@ export default function App() {
     try {
       await sessionDelete(target.id);
       setSessions((list) => list.filter((x) => x.id !== target.id));
-      const tab = tabs.find((t) => t.kind === "session" && t.sessionId === target.id);
-      if (tab) closeTab(tab.id);
+      // 按会话 id 关，不查 tabs 快照：对话框是异步的，快照可能已经不新鲜。
+      closeSessionTabs(target.id);
+      clearAutoApprove(target.id);
       setPendingDelete(null);
     } catch (e) {
       const err = asCmdError(e);
@@ -616,6 +984,41 @@ export default function App() {
     [send, lastSessionId, patchSession, refreshTitles],
   );
 
+  const sendSteer = useCallback(
+    async (raw: string) => {
+      const sid = lastSessionId;
+      const acpSid = activeAcpSid;
+      const text = raw.trim();
+      if (!sid || !acpSid || !text) return;
+
+      const aside: Message = {
+        id: newId("aside"),
+        role: "user",
+        text,
+        at: now(),
+        kind: "aside",
+      };
+      // 先上屏：后端回执可能比 IPC 返回值更早到，回执要能找到这一条。
+      patchSession(sid, (s) => ({ ...s, msgs: [...s.msgs, aside] }));
+      try {
+        await sessionSteer(acpSid, sid, text);
+      } catch (e) {
+        patchSession(sid, (s) => ({ ...s, msgs: s.msgs.filter((m) => m.id !== aside.id) }));
+        const err = asCmdError(e);
+        clog("ASIDE-ERR", `ui=${sid} acp=${acpSid} ${err.code} ${err.msg}`);
+        pushSystemNotice(patchSession, sid, `插话没有发出：${err.msg}`);
+        return;
+      }
+
+      await messagesAppend(sid, [
+        { id: aside.id, role: "user", kind: "aside", payload: { ...aside, kind: "aside" } },
+      ]).catch((e: unknown) => {
+        clog("ASIDE-DB-ERR", `ui=${sid} id=${aside.id} ${String(e)}`);
+      });
+    },
+    [activeAcpSid, lastSessionId, patchSession],
+  );
+
   /**
    * 停止按钮必须把取消送到 agent，而不是只关掉本地的「生成中」。
    * 请求送达后继续保持 busy，等 promptResult / promptFailed 给出真正终态。
@@ -641,8 +1044,8 @@ export default function App() {
     const acpSessionId =
       acpFromAct ??
       member?.acpSessionId ??
-      (profileId ? sessionsByProfile[profileId] : undefined) ??
-      activeSession?.acpSessionId;
+      // 绝不退到「连接当前会话」：那可能正是另一条会话的 agent 上下文。
+      activeAcpSid;
 
     if (!profileId || !acpSessionId) {
       patchSession(sid, (s) => ({ ...s, busy: false }));
@@ -661,16 +1064,42 @@ export default function App() {
       pushSystemNotice(patchSession, sid, `停止失败：${err.code} ${err.msg}`);
     }
   }, [
-    activeSession?.acpSessionId,
+    activeAcpSid,
     activeSession?.profileId,
     cancelling,
     lastSessionId,
     members,
     patchSession,
     sessionProfile?.id,
-    sessionsByProfile,
     state.acts,
   ]);
+
+  /** 停一次派活：先进入「正在停止…」，失败必须删 key，否则会一直卡在停止中。 */
+  const cancelDelegate = useCallback(
+    async (handleId: string) => {
+      if (delegateRunning[handleId] !== "running") return;
+      setDelegateRunning((current) => ({ ...current, [handleId]: "cancelling" }));
+      try {
+        await delegateCancel(handleId);
+        // 成功也不删：等 delegateWait 收到子会话终态再退出「正在停止…」。
+      } catch (e) {
+        const err = asCmdError(e);
+        setDelegateRunning((current) => {
+          const next = { ...current };
+          delete next[handleId];
+          return next;
+        });
+        if (lastSessionId) {
+          pushSystemNotice(
+            patchSession,
+            lastSessionId,
+            `停止失败：${delegateCancelFailureMessage(err.code)}`,
+          );
+        }
+      }
+    },
+    [delegateRunning, lastSessionId, patchSession],
+  );
 
   /**
    * 用发现到的命令直接建连接：program / args / 环境 / 工作目录都已经知道，
@@ -689,6 +1118,13 @@ export default function App() {
       cwd: hit.home ?? "",
     };
   };
+
+  const memberPanelMember = memberPanel
+    ? members.find((m) => m.id === memberPanel.id)
+    : undefined;
+  const memberPanelProfile = memberPanelMember
+    ? profiles.find((p) => p.id === memberPanelMember.profileId)
+    : undefined;
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-surface-0 text-ink-1">
@@ -756,6 +1192,7 @@ export default function App() {
           turns={traceView.turns}
           activities={traceView.activities}
           players={players}
+          resumeGap={resumeGap}
           onClose={() => {
             setTraceOpen(false);
             setFocus(null);
@@ -784,14 +1221,17 @@ export default function App() {
               <StatusBar
                 cwd={cwd}
                 profile={sessionProfile}
-                sessionId={sessionProfile ? sessionsByProfile[sessionProfile.id] : undefined}
+                sessionId={activeAcpSid ?? undefined}
                 eventCount={eventCount}
                 lastEvent={lastEvent}
                 eventLog={eventLog}
                 modes={activeModeView}
                 fallbackLabel={activeDefaultModeLabel}
+                resume={state.resume}
+                connectError={state.connectError}
+                connecting={!!connectPending[lastSessionId]}
                 onChooseMode={(modeId) => {
-                  const acpSid = sessionProfile ? sessionsByProfile[sessionProfile.id] : undefined;
+                  const acpSid = activeAcpSid;
                   if (sessionProfile && acpSid) {
                     void choose({
                       profileId: sessionProfile.id,
@@ -811,20 +1251,18 @@ export default function App() {
                 right={
                   <AgentCapabilities
                     profile={sessionProfile}
-                    commands={commandsFor(
-                      sessionProfile?.agentName,
-                      // 只用于按命令行识别 agent，不用于展示；展示由后端 command_preview 生成。
-                      commandLineOf(sessionProfile),
-                    )}
+                    acpCommands={acpCommands}
                   />
                 }
               />
               <div className="flex min-h-0 flex-1">
+                {/* 竖栏是「谁在这个群里」：历史作者（已移出）不出现在这里，
+                    他们的消息与轨迹支线仍然保留身份。 */}
                 <ActivityRail
-                  players={players}
+                  players={players.filter((player) => !player.removed)}
                   activities={state.acts}
                   filter={playerFilter}
-                  onFilter={setPlayerFilter}
+                  onOpenMember={(member, anchor) => setMemberPanel({ id: member.id, anchor })}
                   group={
                     lastSessionId
                       ? {
@@ -843,7 +1281,7 @@ export default function App() {
                     className="h-full overflow-y-auto"
                   >
                     <div
-                      className="sc-selectable mx-auto flex max-w-3xl flex-col gap-3.5 px-4 pt-4"
+                      className="sc-selectable mx-auto flex min-h-full max-w-3xl flex-col gap-3.5 px-4 pt-4"
                       style={{ paddingBottom: composerH + 16 }}
                     >
                       {hasMore && (
@@ -856,14 +1294,27 @@ export default function App() {
                         </button>
                       )}
                       {state.msgs.length === 0 ? (
-                        <div className="py-12">
-                          <EmptyState
-                            cwd={cwd}
-                            onPick={(t) => {
-                              void send(t).then(refreshTitles);
-                            }}
-                          />
-                        </div>
+                        connectProblem ? (
+                          errorState
+                        ) : opening || connectPending[lastSessionId] ? (
+                          /* 打开 → 可用这一段：骨架屏（原语自带 300ms 延迟，快的时候看不到）
+                             + 一行阶段说明 —— 冷启动时连接可能要几秒，光有条在跳说不出在等什么 */
+                          <div className="flex min-h-full flex-col items-center justify-center gap-2">
+                            <LoadingState kind="loading" title="正在打开会话" />
+                            <p className="text-caption text-ink-3">
+                              {opening ? "正在读取会话历史…" : "正在连接 agent…"}
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="py-12">
+                            <EmptyState
+                              cwd={cwd}
+                              onPick={(t) => {
+                                void send(t).then(refreshTitles);
+                              }}
+                            />
+                          </div>
+                        )
                       ) : (
                         <>
                           {state.msgs.map((m) => (
@@ -871,6 +1322,12 @@ export default function App() {
                               key={m.id}
                               message={m}
                               players={renderPlayers}
+                              delegatePhase={
+                                m.role === "user" && m.delegate
+                                  ? delegateRunning[m.delegate.handleId]
+                                  : undefined
+                              }
+                              onCancelDelegate={cancelDelegate}
                             />
                           ))}
                           {state.acts
@@ -890,6 +1347,7 @@ export default function App() {
                                 />
                               );
                             })}
+                          {errorState}
                         </>
                       )}
                     </div>
@@ -951,11 +1409,24 @@ export default function App() {
                         <Composer
                           busy={state.busy}
                           onSend={sendInGroup}
+                          onSteer={sendSteer}
+                          steerGate={steerMode}
+                          commands={acpCommands}
                           onStop={stopGeneration}
                           placeholder={
                             isStopping ? "正在停止…" : "输入消息，@ 玩家提问…"
                           }
-                          players={players}
+                          players={players.filter((player) => !player.removed)}
+                          autoApprove={activeAutoApprove}
+                          autoApproveCovered={autoApproveCoveredByAgent}
+                          onAutoApproveChange={setAutoApproveLevel}
+                          sessionId={lastSessionId}
+                          sessionProfile={sessionProfile}
+                          onReconnectMcp={() =>
+                            lastSessionId && sessionProfile
+                              ? reconnectMcp(lastSessionId, sessionProfile.id)
+                              : Promise.reject({ code: 50300, msg: "缺少会话或连接配置" })
+                          }
                         />
                       </div>
                     </div>
@@ -998,6 +1469,12 @@ export default function App() {
               modesFor={(pid) => modesByProfile[pid] ?? null}
               onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}
               onCycleTheme={(theme) => setSettings((s) => ({ ...s, theme }))}
+              onChangeAutoApproveDefault={(autoApproveDefault) =>
+                setSettings((s) => ({ ...s, autoApproveDefault }))
+              }
+              onChangeMcpInheritDefault={(mcpInheritDefault) =>
+                setSettings((s) => ({ ...s, mcpInheritDefault }))
+              }
             />
           )}
           {activeTab?.kind === "pr" && activePr && activeRepo && (
@@ -1006,13 +1483,89 @@ export default function App() {
         </main>
       </div>
       <ResizeHandles />
+      {memberPanel && memberPanelMember && (
+        <MemberDetailPanel
+          member={memberPanelMember}
+          profile={memberPanelProfile}
+          anchor={memberPanel.anchor}
+          onClose={() => setMemberPanel(null)}
+          onDelegate={() => {
+            setDelegateTarget(memberPanelMember);
+            setMemberPanel(null);
+          }}
+          onFilter={() =>
+            setPlayerFilter((current) =>
+              current === memberPanelMember.id ? null : memberPanelMember.id,
+            )
+          }
+          filtered={playerFilter === memberPanelMember.id}
+          onRemove={() => removeGroupMember(memberPanelMember)}
+        />
+      )}
+      {delegateTarget && lastSessionId && (
+        <DelegateDialog
+          open
+          targetName={delegateTarget.name}
+          profile={profiles.find((p) => p.id === delegateTarget.profileId)}
+          onClose={() => setDelegateTarget(null)}
+          onDelegated={() => setDelegateTarget(null)}
+          onSubmit={async (task) => {
+            const sid = lastSessionId;
+            const handle = await delegateTask(sid, delegateTarget.id, task);
+            setDelegateRunning((current) => ({ ...current, [handle.handleId]: "running" }));
+            void messagesLoad(sid)
+              .then((page) => {
+                const fromDb = page.messages.map((row) => messageFromPayload(row.payload));
+                const seqs: Record<string, number> = {};
+                for (const row of page.messages) seqs[row.id] = row.seq;
+                patchSession(sid, (s) => ({
+                  ...s,
+                  msgs: mergeMessages(s.msgs, fromDb, seqs),
+                }));
+              })
+              .catch((e) => console.warn("[delegate] messages refresh failed", e));
+            // 终态到了才收绳：cancelled 要留在引用条上（答「停没停」），
+            // timed_out 说明还在跑（wait 只是不等了），这两种都不能把「停止」摘掉。
+            let keepPhase = false;
+            void delegateWait(handle.handleId, 120_000)
+              .then((outcome) => {
+                if (outcome.status === "failed") {
+                  pushSystemNotice(
+                    patchSession,
+                    sid,
+                    `这条派活没成功：${outcome.stopReason ?? "原因不明"}`,
+                  );
+                }
+                if (outcome.status === "cancelled") {
+                  keepPhase = true;
+                  setDelegateRunning((current) => ({
+                    ...current,
+                    [handle.handleId]: "cancelled",
+                  }));
+                }
+                if (outcome.status === "timed_out") keepPhase = true;
+              })
+              .catch(() => {
+                // 异常不写消息，轨迹那一步已经写着进行中
+              })
+              .finally(() => {
+                if (keepPhase) return;
+                setDelegateRunning((current) => {
+                  const next = { ...current };
+                  delete next[handle.handleId];
+                  return next;
+                });
+              });
+          }}
+        />
+      )}
       {state.pendingPerm && (
         <PermissionDialog
           request={state.pendingPerm}
           player={players.find((x) => x.id === state.pendingPerm?.playerId)}
           open={permOpen}
-          onDecide={(optionId) => void decide(optionId)}
-          onCancel={() => void decide(null)}
+          onDecide={(optionId, note) => void decide(optionId, note)}
+          onCancel={(note) => void decide(null, note)}
           queued={permQueued}
         />
       )}

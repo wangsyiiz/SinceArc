@@ -3,6 +3,7 @@ pub mod coalesce;
 pub mod commands;
 pub mod db;
 pub mod lock;
+pub mod mcp;
 pub mod mention;
 pub mod state;
 pub mod trace;
@@ -74,8 +75,74 @@ fn init_logging(app_dir: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// 退出兜底：所有还活着的 agent 并发回收，总预算 3 秒。
+///
+/// 不逐个子进程串行等待：一个远端回收就要 2 秒，串行会把退出拖到十几秒。
+/// 超时只记 warn 继续退出 —— 宁可留残留，也不能让用户等一个关不掉的应用。
+fn shutdown_agents(app: &tauri::AppHandle) {
+    use tauri::Manager as _;
+
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let handles = tauri::async_runtime::block_on(state.take_all());
+    if handles.is_empty() {
+        return;
+    }
+    let total = handles.len();
+
+    tauri::async_runtime::block_on(async move {
+        let mut jobs = tokio::task::JoinSet::new();
+        for handle in handles {
+            jobs.spawn(async move {
+                let id = handle.proc.agent_id().to_string();
+                let outcome = handle.proc.kill_tree("exit").await;
+                (id, outcome)
+            });
+        }
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut clean = 0usize;
+        loop {
+            match tokio::time::timeout_at(deadline, jobs.join_next()).await {
+                Ok(Some(Ok((id, outcome)))) => {
+                    if outcome.clean {
+                        clean += 1;
+                    }
+                    tracing::info!(
+                        target: "sincearc::proc",
+                        id = %id,
+                        clean = outcome.clean,
+                        result = %outcome.describe(),
+                        "exit cleanup finished"
+                    );
+                }
+                Ok(Some(Err(e))) => {
+                    tracing::warn!(target: "sincearc::proc", error = %e, "exit cleanup task failed")
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    tracing::warn!(
+                        target: "sincearc::proc",
+                        agents = total,
+                        "exit cleanup budget exceeded (3s); possible residue"
+                    );
+                    jobs.abort_all();
+                    break;
+                }
+            }
+        }
+        tracing::info!(
+            target: "sincearc::proc",
+            agents = total,
+            clean,
+            "exit cleanup summary"
+        );
+    });
+}
+
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|app| {
             use tauri::Manager as _;
             let dir = app.path().app_data_dir()?;
@@ -147,9 +214,19 @@ pub fn run() {
             commands::session_new,
             commands::session_rebind,
             commands::session_prompt,
+            commands::session_steer,
             commands::session_cancel,
+            commands::delegate_task,
+            commands::delegate_wait,
+            commands::delegate_cancel,
             commands::profiles_load,
             commands::profiles_save,
+            commands::mcp_catalog,
+            commands::mcp_upsert,
+            commands::mcp_delete,
+            commands::session_set_mcp_names,
+            commands::profile_set_default_mcp,
+            commands::session_mcp_state,
             commands::settings_load,
             commands::settings_save,
             commands::sessions_list,
@@ -164,6 +241,13 @@ pub fn run() {
             commands::session_usage,
             commands::agent_list_connected,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running SinceArc");
+        .build(tauri::generate_context!())
+        .expect("error while building SinceArc");
+
+    app.run(|app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+            shutdown_agents(app_handle);
+        }
+        _ => {}
+    });
 }

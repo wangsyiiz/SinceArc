@@ -1,8 +1,7 @@
 //! 断连之后远端还留着 agent 进程吗？
 //!
-//! `AgentProcess::kill()` 只杀本地 `ssh.exe` / `wsl.exe`。WSL 里那个是客户端，
-//! 真正跑 agent 的进程在 VM 里 —— 如果它不因 stdin EOF 自行退出，每断一次连接
-//! 就在 WSL 里留一个孤儿。
+//! `kill_tree()` 现在会在 WSL 同一侧按 setsid 进程组回收；这个测试钉住
+//! 真实断连后远端 agent 不残留。
 //!
 //! 判定不靠 `ps | grep 'hermes acp'`：hermes 是 python 入口，argv 里根本没有
 //! 这个子串（实测过，grep 恒空）。改为启动时把远端 shell 的 `$$` 写进 pid 文件，
@@ -30,6 +29,9 @@ fn wsl_profile() -> ProfileDto {
         ssh_key_path: None,
         ssh_password: None,
         default_mode: None,
+        default_mcp: None,
+        caps: None,
+        caps_at: None,
     }
 }
 

@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS profiles (
   default_cwd   TEXT NOT NULL,
   -- 连接的默认编辑审批模式；NULL = 不推
   default_mode  TEXT,
+  -- 这个连接默认注入的 MCP 名单；NULL = 继承目录全部，'[]' = 一个都不要
+  default_mcp_json TEXT,
   -- SSH 凭证：密码不在这张表里（只在内存过一手）
   ssh_host      TEXT,
   ssh_port      INTEGER,
@@ -41,6 +43,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   acp_session_id TEXT,                      -- agent 侧 id；还没连过就是 NULL
   -- 会话覆盖值；NULL = 跟随连接默认
   mode_override  TEXT,
+  -- 本会话的 MCP 名单；NULL = 继承连接默认，'[]' = 一个都不要
+  mcp_names_json TEXT,
   profile_id     TEXT REFERENCES profiles(id) ON DELETE CASCADE,  -- 草稿会话可以为空
   title          TEXT NOT NULL DEFAULT '新会话',
   cwd            TEXT NOT NULL DEFAULT '',
@@ -83,6 +87,15 @@ CREATE TABLE IF NOT EXISTS app_meta (
   value TEXT NOT NULL
 );
 
+-- MCP 目录：全局唯一一份配置。名单只存名字，配置只在这里（docs/mcp.md §3）。
+CREATE TABLE IF NOT EXISTS mcp_servers (
+  name        TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL CHECK (kind IN ('stdio','http','sse')),
+  config_json TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -123,8 +136,8 @@ CREATE TABLE IF NOT EXISTS session_events (
   at           INTEGER NOT NULL,
   -- 谁做的：群成员 id；主 agent 为 NULL
   author_id    TEXT,
-  kind         TEXT NOT NULL CHECK (kind IN (
-                 'thought', 'tool_call', 'tool_call_update', 'permission', 'usage', 'mode')),
+  -- 自由字符串：新增轨迹种类（如 permission_decision）不需要迁移枚举
+  kind         TEXT NOT NULL,
   -- 结构化摘要 + 原始字段；单行上限 64KB，思考正文只留前 8KB（truncated=1 时界面要标注）
   payload_json TEXT NOT NULL,
   -- live = 实时采集；replay = 事后用 session/load 补录（不作实时数据源）
@@ -145,8 +158,11 @@ CREATE TABLE IF NOT EXISTS turns (
   author_id    TEXT,
   started_at   INTEGER NOT NULL,
   ended_at     INTEGER,
-  -- running / finished / failed
-  status       TEXT NOT NULL DEFAULT 'running'
+  -- running / waiting_approval / finished / cancelled / failed
+  -- unknown 只用于「有事件、没有轮次行」的孤儿轮兜底
+  status       TEXT NOT NULL DEFAULT 'running',
+  -- agent 给的原始 stopReason（end_turn / max_tokens / refusal / cancelled …）
+  stop_reason  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, started_at DESC);
@@ -156,6 +172,10 @@ CREATE TABLE IF NOT EXISTS session_bindings (
   session_id     TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   acp_session_id TEXT NOT NULL,
   cwd            TEXT NOT NULL DEFAULT '',
+  -- 上次成功握手/恢复时 agent 自报的名字。恢复时用它判断「还是不是同一个 agent」。
+  agent_name     TEXT,
+  -- 本地 session_events 已写到的最后一个 seq。恢复后拿第一条新事件与它比，判断有没有断档。
+  last_event_seq INTEGER,
   bound_at       INTEGER NOT NULL,
   reason         TEXT NOT NULL CHECK (reason IN ('created', 'loaded', 'replaced')),
   superseded_at  INTEGER

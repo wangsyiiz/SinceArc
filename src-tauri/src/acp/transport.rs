@@ -25,7 +25,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot};
 
-use super::launch::AgentProfile;
+#[cfg(windows)]
+use super::launch::system_tool;
+use super::launch::{AgentProfile, KillTarget, SpawnSpec};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -93,11 +95,68 @@ impl std::error::Error for TransportError {}
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, Value>>>>>;
 
+/// 已写入 stdout、还没等到响应的请求。用于「投递成功就返回、响应后台吃掉」。
+pub struct PendingResponse {
+    id: u64,
+    rx: oneshot::Receiver<Result<Value, Value>>,
+}
+
+/// 一次 kill_tree 的结果。`clean = false` 表示可能有残留，界面要提示。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KillOutcome {
+    /// 日志里的回收方式：taskkill / unix-process-group / wsl / ssh
+    pub method: String,
+    pub clean: bool,
+    /// 是否用到了 SIGKILL / taskkill /F
+    pub escalated: bool,
+    /// 人能读的结论（降级时必须说明为什么可能残留）
+    pub detail: String,
+}
+
+impl KillOutcome {
+    fn clean(method: impl Into<String>, escalated: bool, detail: impl Into<String>) -> Self {
+        Self {
+            method: method.into(),
+            clean: true,
+            escalated,
+            detail: detail.into(),
+        }
+    }
+
+    fn degraded(method: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            method: method.into(),
+            clean: false,
+            escalated: true,
+            detail: format!("可能残留：{}", detail.into()),
+        }
+    }
+
+    pub fn may_leave_residue(&self) -> bool {
+        !self.clean
+    }
+
+    pub fn describe(&self) -> String {
+        let verdict = if self.clean { "clean" } else { "degraded" };
+        format!("{} · {} · {}", self.method, verdict, self.detail)
+    }
+}
+
 pub struct AgentProcess {
     child: tokio::sync::Mutex<Child>,
     writer: Arc<tokio::sync::Mutex<ChildStdin>>,
     pending: Pending,
     next_id: AtomicU64,
+    /// 本次启动的短 uuid；日志与远端 pid 文件同名
+    agent_id: String,
+    /// 回收方式。远端在 spawn 时就把 relay 命令算好了。
+    kill: KillTarget,
+    /// 本机直起时的 pid / 进程组 id（Unix 下 spawn 时 `process_group(0)`）。
+    local_pid: Option<u32>,
+    /// kill_tree 幂等：退出事件可能连续来两次；保留第一次的真实结论，
+    /// 不能让后续调用把「可能残留」覆盖成 clean。
+    last_outcome: tokio::sync::Mutex<Option<KillOutcome>>,
+    kill_lock: tokio::sync::Mutex<()>,
     /// askpass 之类的临时文件；进程对象销毁时删掉，不留密码在磁盘上
     cleanup: Option<std::path::PathBuf>,
     /// 远端 agent 的 pid 文件（WSL / SSH）；本机直起时没有
@@ -112,34 +171,406 @@ impl Drop for AgentProcess {
     }
 }
 
+#[cfg(unix)]
+async fn unix_kill(pid: u32, signal: &str, group: bool) -> bool {
+    let target = if group {
+        format!("-{pid}")
+    } else {
+        pid.to_string()
+    };
+    // 用 /bin/sh 的内建 kill：GUI 启动的进程 PATH 可能不完整，
+    // 而 pid/signal 都是我们自己生成的数字与固定串，不存在注入。
+    tokio::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("kill {signal} {target}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+async fn unix_group_alive(pid: u32) -> bool {
+    unix_kill(pid, "-0", true).await
+}
+
+#[cfg(unix)]
+async fn unix_pid_alive(pid: u32) -> bool {
+    unix_kill(pid, "-0", false).await
+}
+
+#[cfg(windows)]
+async fn taskkill(pid: u32, force: bool) -> std::io::Result<std::process::ExitStatus> {
+    let mut cmd = Command::new(system_tool("taskkill.exe"));
+    cmd.arg("/T");
+    if force {
+        cmd.arg("/F");
+    }
+    cmd.arg("/PID").arg(pid.to_string());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .await
+}
+
+#[cfg(windows)]
+async fn windows_pid_alive(pid: u32) -> bool {
+    let filter = format!("PID eq {pid}");
+    let output = Command::new(system_tool("tasklist.exe"))
+        .args(["/FI", filter.as_str(), "/NH", "/FO", "CSV"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .await;
+    let Ok(output) = output else {
+        return true;
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let needle = pid.to_string();
+    text.lines().any(|line| {
+        line.split(',')
+            .nth(1)
+            .map(|field| field.trim().trim_matches('"') == needle)
+            .unwrap_or(false)
+    })
+}
+
 impl AgentProcess {
     /// 远端 pid 文件路径（没有就是本机直起的进程）
     pub fn remote_pid_file(&self) -> Option<&str> {
         self.pid_file.as_deref()
     }
 
-    /// 结束进程。杀的是本地客户端（wsl.exe / ssh.exe）；远端 agent 是否随之
-    /// 退出由通道断开后的 stdin EOF 决定，`tests/remote_cleanup.rs` 钉这条。
+    /// 本次启动的短 uuid；日志里用它对齐 pid 文件与远端进程。
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+
+    /// 回收整棵进程树。
+    ///
+    /// `why` 只用于日志：cancel / disconnect / exit / replace。
+    /// 本机 Windows 走 taskkill /T（先不带 /F），WSL/SSH 在远端按 pid 组杀；
+    /// 没有 setsid 时明确返回 `clean = false`，绝不假装干净。
+    pub async fn kill_tree(&self, why: &str) -> KillOutcome {
+        let _guard = self.kill_lock.lock().await;
+        if let Some(outcome) = self.last_outcome.lock().await.clone() {
+            tracing::info!(
+                target: "sincearc::proc",
+                id = %self.agent_id,
+                why,
+                method = %outcome.method,
+                clean = outcome.clean,
+                result = %outcome.detail,
+                "agent process tree cleanup already finished"
+            );
+            return outcome;
+        }
+
+        let outcome = match &self.kill {
+            KillTarget::Local => self.kill_local(why).await,
+            KillTarget::Remote { .. } => self.kill_remote(why).await,
+        };
+        *self.last_outcome.lock().await = Some(outcome.clone());
+
+        tracing::info!(
+            target: "sincearc::proc",
+            id = %self.agent_id,
+            why,
+            method = %outcome.method,
+            clean = outcome.clean,
+            escalated = outcome.escalated,
+            result = %outcome.detail,
+            "agent process tree cleanup"
+        );
+        if outcome.may_leave_residue() {
+            tracing::warn!(
+                target: "sincearc::proc",
+                id = %self.agent_id,
+                why,
+                method = %outcome.method,
+                result = %outcome.detail,
+                "agent process tree cleanup degraded"
+            );
+        }
+        outcome
+    }
+
+    /// 兼容旧调用点；真正的实现只有 `kill_tree`，不存在「只杀直接子进程」的旁路。
     pub async fn kill(&self) {
-        let _ = self.child.lock().await.kill().await;
+        let _ = self.kill_tree("disconnect").await;
     }
 
     pub async fn pid(&self) -> Option<u32> {
         self.child.lock().await.id()
     }
+
+    /// 把直接子进程收尸，避免本机测试/退出时留下僵尸。
+    async fn reap(&self) {
+        let mut child = self.child.lock().await;
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        let _ = tokio::time::timeout(Duration::from_millis(500), child.wait()).await;
+    }
+
+    /// 远端回收结束后兜底关掉本地 relay。正常情况它在 agent 退出后已自行结束；
+    /// 降级时远端子孙可能还在，本地 wsl.exe / ssh.exe 没有理由继续留着。
+    async fn stop_relay(&self) {
+        let mut child = self.child.lock().await;
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        let _ = child.start_kill();
+        let _ = tokio::time::timeout(Duration::from_secs(1), child.wait()).await;
+    }
+
+    #[cfg(unix)]
+    async fn kill_local(&self, why: &str) -> KillOutcome {
+        let Some(pid) = self.local_pid else {
+            return KillOutcome::clean("unix-process-group", false, "进程已经退出");
+        };
+        if !unix_group_alive(pid).await && !unix_pid_alive(pid).await {
+            self.reap().await;
+            return KillOutcome::clean("unix-process-group", false, "进程组已经退出");
+        }
+
+        let group_term = unix_kill(pid, "-TERM", true).await;
+        let direct_term = if group_term {
+            false
+        } else {
+            unix_kill(pid, "-TERM", false).await
+        };
+        tracing::info!(
+            target: "sincearc::proc",
+            id = %self.agent_id,
+            why,
+            method = "unix-process-group",
+            attempt = 1,
+            signal = "TERM",
+            group = group_term,
+            direct_fallback = direct_term,
+            "process tree kill attempt"
+        );
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let mut escalated = false;
+        let group_alive = unix_group_alive(pid).await;
+        let direct_alive = unix_pid_alive(pid).await;
+        if group_alive || direct_alive {
+            escalated = true;
+            let group_kill = unix_kill(pid, "-KILL", true).await;
+            let direct_kill = if group_kill {
+                false
+            } else {
+                unix_kill(pid, "-KILL", false).await
+            };
+            tracing::info!(
+                target: "sincearc::proc",
+                id = %self.agent_id,
+                why,
+                method = "unix-process-group",
+                attempt = 2,
+                signal = "KILL",
+                group = group_kill,
+                direct_fallback = direct_kill,
+                "process tree kill attempt"
+            );
+        } else {
+            tracing::info!(
+                target: "sincearc::proc",
+                id = %self.agent_id,
+                why,
+                method = "unix-process-group",
+                attempt = 2,
+                signal = "KILL",
+                skipped = true,
+                "process tree kill attempt"
+            );
+        }
+
+        self.reap().await;
+        let still_group = unix_group_alive(pid).await;
+        let still_direct = unix_pid_alive(pid).await;
+        if still_group || still_direct {
+            KillOutcome::degraded("unix-process-group", "SIGKILL 后进程组仍有成员")
+        } else if !group_term {
+            KillOutcome::degraded(
+                "unix-process-group",
+                "进程组 TERM 失败，已降级为只杀直接子进程",
+            )
+        } else {
+            KillOutcome::clean("unix-process-group", escalated, "进程组已全部退出")
+        }
+    }
+
+    #[cfg(windows)]
+    async fn kill_local(&self, why: &str) -> KillOutcome {
+        let Some(pid) = self.local_pid.or(self.pid().await) else {
+            return KillOutcome::clean("taskkill /T", false, "进程已经退出");
+        };
+        if !windows_pid_alive(pid).await {
+            self.reap().await;
+            return KillOutcome::clean("taskkill /T", false, "进程已经退出");
+        }
+
+        let graceful = taskkill(pid, false).await;
+        tracing::info!(
+            target: "sincearc::proc",
+            id = %self.agent_id,
+            why,
+            method = "taskkill /T",
+            attempt = 1,
+            force = false,
+            ok = graceful.as_ref().map(|s| s.success()).unwrap_or(false),
+            "process tree kill attempt"
+        );
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let mut escalated = false;
+        if windows_pid_alive(pid).await {
+            escalated = true;
+            let forced = taskkill(pid, true).await;
+            tracing::info!(
+                target: "sincearc::proc",
+                id = %self.agent_id,
+                why,
+                method = "taskkill /T /F",
+                attempt = 2,
+                force = true,
+                ok = forced.as_ref().map(|s| s.success()).unwrap_or(false),
+                "process tree kill attempt"
+            );
+        } else {
+            tracing::info!(
+                target: "sincearc::proc",
+                id = %self.agent_id,
+                why,
+                method = "taskkill /T /F",
+                attempt = 2,
+                force = true,
+                skipped = true,
+                "process tree kill attempt"
+            );
+        }
+
+        self.reap().await;
+        if windows_pid_alive(pid).await {
+            KillOutcome::degraded("taskkill /T /F", "taskkill 后进程仍然存在")
+        } else if escalated {
+            KillOutcome::clean("taskkill /T /F", true, "进程树已全部退出")
+        } else {
+            KillOutcome::clean("taskkill /T", false, "进程树在宽限期内已退出")
+        }
+    }
+
+    async fn kill_remote(&self, why: &str) -> KillOutcome {
+        let KillTarget::Remote {
+            kind,
+            program,
+            args,
+            env,
+            id,
+            ..
+        } = &self.kill
+        else {
+            return KillOutcome::degraded("remote", "回收目标不是远端进程");
+        };
+
+        let mut cmd = Command::new(program);
+        cmd.args(args)
+            .envs(env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = tokio::time::timeout(Duration::from_secs(20), cmd.output()).await;
+        self.reap().await;
+        self.stop_relay().await;
+
+        let output = match output {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => {
+                return KillOutcome::degraded(*kind, format!("远端回收命令起不来：{e}"));
+            }
+            Err(_) => {
+                return KillOutcome::degraded(*kind, "远端回收命令 20 秒内没有结束");
+            }
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        for line in stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("SINCEARC_"))
+        {
+            tracing::info!(
+                target: "sincearc::proc",
+                id = %id,
+                why,
+                remote = %kind,
+                step = line,
+                "remote process tree kill step"
+            );
+        }
+
+        let escalated = stdout
+            .lines()
+            .map(str::trim)
+            .any(|line| line.starts_with("SINCEARC_KILL ") && !line.ends_with(" skipped"));
+        if stdout.contains("SINCEARC_KILLED") && output.status.success() {
+            KillOutcome::clean(
+                *kind,
+                escalated,
+                if escalated {
+                    "远端进程组已全部退出"
+                } else {
+                    "远端进程组在宽限期内已退出"
+                },
+            )
+        } else if stdout.contains("SINCEARC_DEGRADED") {
+            KillOutcome::degraded(
+                *kind,
+                "setsid 不存在或进程组 kill 失败，只杀了直接子进程",
+            )
+        } else if stdout.contains("SINCEARC_NO_PID") {
+            KillOutcome::degraded(*kind, "远端 pid 文件不存在，无法确认残留")
+        } else if stdout.contains("SINCEARC_BAD_PID") {
+            KillOutcome::degraded(*kind, "远端 pid 文件内容非法，无法确认残留")
+        } else if stdout.contains("SINCEARC_STILL_ALIVE") {
+            KillOutcome::degraded(*kind, "SIGKILL 后远端进程组仍有成员")
+        } else {
+            let detail = if stderr.trim().is_empty() {
+                format!("远端回收脚本没有返回明确结果（退出码 {}）", output.status)
+            } else {
+                format!(
+                    "远端回收脚本没有返回明确结果（退出码 {}）：{}",
+                    output.status,
+                    stderr.trim()
+                )
+            };
+            KillOutcome::degraded(*kind, detail)
+        }
+    }
 }
 
 impl AgentProcess {
-    /// 发一条请求并等 id 匹配的响应。
-    ///
-    /// 与旧实现的区别：不再独占 `self` —— 内部用 pending 表配对，
-    /// 所以可以并发发多条（`&self`）。通知与 agent 请求走 `incoming`。
-    pub async fn request(
+    /// 发一条请求，写完 stdout 就返回等待句柄；错误在写入阶段原样返回。
+    pub async fn request_detached(
         &self,
         method: &str,
         params: Value,
-        timeout: Duration,
-    ) -> Result<Value, TransportError> {
+    ) -> Result<PendingResponse, TransportError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel::<Result<Value, Value>>();
         self.pending
@@ -153,7 +584,16 @@ impl AgentProcess {
             "method": method,
             "params": params,
         });
-        let mut payload = serde_json::to_string(&msg).map_err(TransportError::Json)?;
+        let mut payload = match serde_json::to_string(&msg) {
+            Ok(payload) => payload,
+            Err(e) => {
+                self.pending
+                    .lock()
+                    .expect("pending map poisoned")
+                    .remove(&id);
+                return Err(TransportError::Json(e));
+            }
+        };
         payload.push('\n');
 
         {
@@ -174,6 +614,17 @@ impl AgentProcess {
             }
         }
 
+        Ok(PendingResponse { id, rx })
+    }
+
+    /// 等一条已发出的请求的响应；超时会从 pending 表摘掉，避免泄漏。
+    pub async fn await_response(
+        &self,
+        pending: PendingResponse,
+        timeout: Duration,
+    ) -> Result<Value, TransportError> {
+        let PendingResponse { id, rx } = pending;
+
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(Ok(v))) => Ok(v),
             Ok(Ok(Err(e))) => Err(TransportError::Agent(e)),
@@ -186,6 +637,20 @@ impl AgentProcess {
                 Err(TransportError::Timeout(timeout.as_secs()))
             }
         }
+    }
+
+    /// 发一条请求并等 id 匹配的响应。
+    ///
+    /// 与旧实现的区别：不再独占 `self` —— 内部用 pending 表配对，
+    /// 所以可以并发发多条（`&self`）。通知与 agent 请求走 `incoming`。
+    pub async fn request(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, TransportError> {
+        let pending = self.request_detached(method, params).await?;
+        self.await_response(pending, timeout).await
     }
 
     /// 回一条响应给 agent（用于 client 侧实现的 `fs/*`、`session/request_permission` 等）。
@@ -239,12 +704,30 @@ pub fn spawn(
     let spec = profile
         .command_line(cwd)
         .map_err(|e| TransportError::Launch(e.to_string()))?;
+    spawn_with_spec(spec)
+}
+
+fn spawn_with_spec(
+    spec: SpawnSpec,
+) -> Result<
+    (
+        AgentProcess,
+        mpsc::Receiver<Incoming>,
+        mpsc::Receiver<String>,
+    ),
+    TransportError,
+> {
     let mut cmd = Command::new(&spec.program);
     cmd.args(&spec.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+
+    // Unix 下让 agent 成为自己进程组的首进程：kill -TERM -<pid> 能带走整棵树。
+    // Windows 不用这个，回收走 taskkill /T。
+    #[cfg(unix)]
+    cmd.process_group(0);
 
     for (k, v) in &spec.env {
         cmd.env(k, v);
@@ -259,6 +742,7 @@ pub fn spawn(
         program: spec.program.clone(),
         source: e,
     })?;
+    let local_pid = child.id();
     let stdin = child.stdin.take().ok_or(TransportError::Closed)?;
     let stdout = child.stdout.take().ok_or(TransportError::Closed)?;
     let stderr = child.stderr.take().ok_or(TransportError::Closed)?;
@@ -374,10 +858,274 @@ pub fn spawn(
             writer: Arc::new(tokio::sync::Mutex::new(stdin)),
             pending,
             next_id: AtomicU64::new(1),
+            agent_id: spec.agent_id,
+            kill: spec.kill,
+            local_pid,
+            last_outcome: tokio::sync::Mutex::new(None),
+            kill_lock: tokio::sync::Mutex::new(()),
             cleanup: spec.cleanup,
             pid_file: spec.pid_file,
         },
         incoming_rx,
         erx,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "sincearc-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_file(path: &std::path::Path) {
+        for _ in 0..150 {
+            if path.exists() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("timed out waiting for {}", path.display());
+    }
+
+    /// 读 pid 文件。**不 panic**：Windows 上 PowerShell 的 Set-Content 还在写时，
+    /// 读取会撞共享冲突（os error 32）。这里把它当成"还没有结果"，交给调用方重试。
+    fn read_pids(path: &std::path::Path) -> Vec<u32> {
+        std::fs::read_to_string(path)
+            .map(|s| {
+                s.lines()
+                    .filter_map(|line| line.trim().parse::<u32>().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    async fn wait_for_pids(path: &std::path::Path, want: usize) -> Vec<u32> {
+        // 30 秒：并行跑整套测试、或机器上同时有别的 agent 进程时，PowerShell 冷启动能拖到十几秒
+        // （实测：跑着 wsl.exe + hermes 探针的同一台机器上，10 秒预算会偶发超时）
+        for _ in 0..1500 {
+            let pids = read_pids(path);
+            if pids.len() >= want {
+                return pids;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Vec::new()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_tree_reaps_forked_child_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = test_dir("kill-tree-unix");
+        let child_file = dir.join("child.pid");
+        let parent_file = dir.join("parent.pid");
+        let script = dir.join("fake-agent.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\n/bin/sleep 300 &\necho $! > \"$1\"\necho $$ > \"$2\"\nwait\n",
+        )
+        .expect("write fake agent");
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let profile = AgentProfile {
+            id: "test-unix".into(),
+            name: "test".into(),
+            launch: super::super::launch::Launch::Local,
+            program: script.to_string_lossy().into_owned(),
+            args: vec![
+                child_file.to_string_lossy().into_owned(),
+                parent_file.to_string_lossy().into_owned(),
+            ],
+            env: std::collections::BTreeMap::new(),
+            default_cwd: dir.clone(),
+        };
+        let (proc, _incoming, _stderr) =
+            spawn(&profile, dir.to_str().unwrap()).expect("spawn fake agent");
+
+        let child = wait_for_pids(&child_file, 1).await[0];
+        let parent = wait_for_pids(&parent_file, 1).await[0];
+        assert!(unix_pid_alive(parent).await, "parent should be alive");
+        assert!(unix_pid_alive(child).await, "forked child should be alive");
+
+        let outcome = proc.kill_tree("test").await;
+        assert!(outcome.clean, "expected clean kill, got {outcome:?}");
+
+        assert!(
+            wait_unix_pid_gone(parent, Duration::from_secs(3)).await,
+            "parent {parent} survived kill_tree"
+        );
+        assert!(
+            wait_unix_pid_gone(child, Duration::from_secs(3)).await,
+            "forked child {child} survived kill_tree"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    async fn wait_unix_pid_gone(pid: u32, budget: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + budget;
+        while tokio::time::Instant::now() < deadline {
+            if !unix_pid_alive(pid).await {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        !unix_pid_alive(pid).await
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_setsid_degrades_to_direct_kill_and_reports_residue() {
+        use crate::acp::launch::{guarded_exec, remote_kill_script};
+
+        let dir = test_dir("kill-tree-degraded");
+        let empty_path = dir.join("empty-path");
+        std::fs::create_dir_all(&empty_path).unwrap();
+        let pid_file = dir.join("agent.pid");
+        let marker_file = dir.join("agent.nosetsid");
+        let child_file = dir.join("child.pid");
+        let inner = format!(
+            "trap '' HUP TERM; /bin/sleep 300 & echo $! > \"{}\"; wait",
+            child_file.display()
+        );
+        let launch_script = guarded_exec(
+            "/bin/sh",
+            &["-c".to_string(), inner],
+            &pid_file.to_string_lossy(),
+            &marker_file.to_string_lossy(),
+        );
+
+        let id = "test-degraded-1".to_string();
+        let kill_script = remote_kill_script(
+            &id,
+            &pid_file.to_string_lossy(),
+            &marker_file.to_string_lossy(),
+        )
+        .expect("build remote kill script");
+        let spec = SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), launch_script],
+            env: std::collections::BTreeMap::from([(
+                "PATH".to_string(),
+                empty_path.to_string_lossy().into_owned(),
+            )]),
+            cleanup: None,
+            pid_file: Some(pid_file.to_string_lossy().into_owned()),
+            agent_id: id.clone(),
+            kill: KillTarget::Remote {
+                kind: "test",
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), kill_script],
+                env: std::collections::BTreeMap::from([(
+                    "PATH".to_string(),
+                    "/usr/bin:/bin".to_string(),
+                )]),
+                id,
+                pid_file: pid_file.to_string_lossy().into_owned(),
+            },
+        };
+        let (proc, _incoming, _stderr) = spawn_with_spec(spec).expect("spawn degraded agent");
+
+        wait_for_file(&pid_file).await;
+        wait_for_file(&marker_file).await;
+        let child = wait_for_pids(&child_file, 1).await[0];
+        assert!(unix_pid_alive(child).await, "forked child should be alive");
+
+        let outcome = proc.kill_tree("test").await;
+        assert!(
+            outcome.may_leave_residue(),
+            "missing setsid must not pretend success: {outcome:?}"
+        );
+        assert!(
+            outcome.detail.contains("可能残留"),
+            "detail should say residue is possible: {outcome:?}"
+        );
+        assert!(
+            unix_pid_alive(child).await,
+            "direct-only fallback should leave the forked child behind"
+        );
+
+        let _ = unix_kill(child, "-KILL", false).await;
+        let _ = wait_unix_pid_gone(child, Duration::from_secs(2)).await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    async fn windows_pid_gone_soon(pid: u32, budget: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + budget;
+        while tokio::time::Instant::now() < deadline {
+            if !windows_pid_alive(pid).await {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        !windows_pid_alive(pid).await
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn kill_tree_reaps_forked_child_on_windows() {
+        let dir = test_dir("kill-tree-windows");
+        let pid_file = dir.join("pids.txt");
+        let script = dir.join("fake-agent.cmd");
+        let pid_path = pid_file.to_string_lossy().replace('\'', "''");
+        let body = format!(
+            "@echo off\r\n\
+             powershell -NoProfile -ExecutionPolicy Bypass -Command \"\
+             $child = Start-Process -FilePath powershell.exe \
+             -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 120' \
+             -PassThru -WindowStyle Hidden; \
+             Set-Content -LiteralPath '{pid_path}' -Value $PID; \
+             Add-Content -LiteralPath '{pid_path}' -Value $child.Id; \
+             Start-Sleep -Seconds 120\"\r\n"
+        );
+        std::fs::write(&script, body).expect("write fake agent");
+
+        let profile = AgentProfile {
+            id: "test-windows".into(),
+            name: "test".into(),
+            launch: super::super::launch::Launch::Local,
+            program: "cmd.exe".into(),
+            args: vec!["/C".into(), script.to_string_lossy().into_owned()],
+            env: std::collections::BTreeMap::new(),
+            default_cwd: dir.clone(),
+        };
+        let (proc, _incoming, _stderr) =
+            spawn(&profile, dir.to_str().unwrap()).expect("spawn fake agent");
+
+        let pids = wait_for_pids(&pid_file, 2).await;
+        if pids.len() < 2 {
+            // 起不来的话别把假进程留在机器上：先回收再失败
+            let _ = proc.kill_tree("test-setup-failed").await;
+            panic!("expected parent and forked child pids, got {pids:?}");
+        }
+        for pid in &pids {
+            assert!(windows_pid_alive(*pid).await, "pid {pid} should be alive");
+        }
+
+        let outcome = proc.kill_tree("test").await;
+        assert!(outcome.clean, "expected clean kill, got {outcome:?}");
+        for pid in pids {
+            assert!(
+                windows_pid_gone_soon(pid, Duration::from_secs(3)).await,
+                "pid {pid} survived kill_tree"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

@@ -12,20 +12,50 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
+
+use crate::acp::AgentCaps;
 use serde::{Deserialize, Serialize};
 
-use crate::commands::{is_valid_theme, AppSettingsDto, ProfileDto, CONTEXT_MESSAGES_MAX};
+use crate::commands::{
+    is_valid_auto_approve, is_valid_theme, AppSettingsDto, ProfileDto, CONTEXT_MESSAGES_MAX,
+};
 
 pub const SCHEMA: &str = include_str!("schema.sql");
 
 const SETTINGS_KEY_CONTEXT_MESSAGES: &str = "contextMessages";
 const SETTINGS_KEY_THEME: &str = "theme";
+const SETTINGS_KEY_AUTO_APPROVE: &str = "autoApproveDefault";
+const SETTINGS_KEY_MCP_INHERIT_DEFAULT: &str = "mcp_inherit_default";
 
 /// 结构版本：与 schema.sql 不符时整表重建（自用工具，会话数据可再生）
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 6;
 
 pub struct Db {
     conn: Mutex<Connection>,
+}
+
+/// 写这一层能明确指认的错误。
+#[derive(Debug)]
+pub enum DbError {
+    Sql(rusqlite::Error),
+    ProfileNotFound(String),
+}
+
+impl std::fmt::Display for DbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql(e) => write!(f, "{e}"),
+            Self::ProfileNotFound(id) => write!(f, "profile 不存在：{id}"),
+        }
+    }
+}
+
+impl std::error::Error for DbError {}
+
+impl From<rusqlite::Error> for DbError {
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Sql(e)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
@@ -91,6 +121,18 @@ pub struct BindingRow {
     pub superseded_at: Option<i64>,
 }
 
+/// 恢复一个界面会话所需的句柄。只有 `superseded_at IS NULL` 的绑定才算数。
+#[derive(Debug, Clone)]
+pub struct ResumeHandle {
+    pub acp_session_id: String,
+    pub cwd: String,
+    /// 老库里的绑定可能还没有这一项。
+    pub agent_name: Option<String>,
+    /// 恢复前本地事件水位；第一条恢复后事件的 seq 与它比较。
+    pub last_event_seq: Option<i64>,
+    pub bound_at: i64,
+}
+
 #[derive(Debug, Default, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
@@ -114,6 +156,8 @@ pub struct TurnRow {
     #[ts(type = "number | null")]
     pub ended_at: Option<i64>,
     pub status: String,
+    /// agent 原始的 stopReason；老库/孤儿轮为 None
+    pub stop_reason: Option<String>,
 }
 
 /// 一条待落库的轨迹事件（已由 `trace` 解析、截断）。
@@ -203,7 +247,7 @@ fn default_kind() -> String {
 }
 
 /// 秒。历史列（profiles/sessions/messages 的 created_at/updated_at）用它，改动代价大于收益。
-fn now() -> i64 {
+pub fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -232,6 +276,115 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, decl: &str) -> ru
     if exists == 0 {
         conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
     }
+    Ok(())
+}
+
+/// 早期 `session_events.kind` 带 CHECK 枚举，新增 `permission_decision` 会被数据库拒绝。
+/// 轨迹是本地可再生产数据，但没必要清空：按原列顺序重建表，内容原样保留。
+fn ensure_event_kind_is_free(conn: &Connection) -> rusqlite::Result<()> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'session_events'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(sql) = sql else { return Ok(()) };
+    if !sql.contains("CHECK (kind IN") {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "BEGIN;
+         CREATE TABLE session_events_new (
+           id           TEXT PRIMARY KEY,
+           session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+           turn_id      TEXT NOT NULL,
+           seq          INTEGER NOT NULL,
+           at           INTEGER NOT NULL,
+           author_id    TEXT,
+           kind         TEXT NOT NULL,
+           payload_json TEXT NOT NULL,
+           source       TEXT NOT NULL DEFAULT 'live' CHECK (source IN ('live', 'replay')),
+           truncated    INTEGER NOT NULL DEFAULT 0
+         );
+         INSERT INTO session_events_new
+           (id, session_id, turn_id, seq, at, author_id, kind, payload_json, source, truncated)
+           SELECT id, session_id, turn_id, seq, at, author_id, kind, payload_json, source, truncated
+             FROM session_events;
+         DROP TABLE session_events;
+         ALTER TABLE session_events_new RENAME TO session_events;
+         CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id, seq);
+         COMMIT;",
+    )?;
+    Ok(())
+}
+
+/// MCP 目录条目本身没有「启用」开关（docs/mcp.md §3）。早期表里有 `enabled`，
+/// 打开旧库时按原列顺序重建，保留目录内容；取舍是丢弃旧的单条启用状态。
+fn ensure_mcp_catalog_has_no_enabled(conn: &Connection) -> rusqlite::Result<()> {
+    let has_table: bool = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'mcp_servers'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? > 0;
+    if !has_table {
+        return Ok(());
+    }
+    let has_enabled: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('mcp_servers') WHERE name = 'enabled'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? > 0;
+    if !has_enabled {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "BEGIN;
+         CREATE TABLE mcp_servers_new (
+           name        TEXT PRIMARY KEY,
+           kind        TEXT NOT NULL CHECK (kind IN ('stdio','http','sse')),
+           config_json TEXT NOT NULL,
+           created_at  INTEGER NOT NULL,
+           updated_at  INTEGER NOT NULL
+         );
+         INSERT INTO mcp_servers_new
+           (name, kind, config_json, created_at, updated_at)
+           SELECT name, kind, config_json, created_at, updated_at
+             FROM mcp_servers;
+         DROP TABLE mcp_servers;
+         ALTER TABLE mcp_servers_new RENAME TO mcp_servers;
+         COMMIT;",
+    )?;
+    Ok(())
+}
+
+/// 轨迹种类清单。schema 不再用 CHECK 约束（新增种类要重建表），改由这里 + `debug_assert` 兜。
+pub const KNOWN_EVENT_KINDS: &[&str] = &[
+    "thought",
+    "tool_call",
+    "tool_call_update",
+    "permission",
+    "permission_decision",
+    "usage",
+    "mode",
+    "delegate",
+    "delegate_result",
+];
+
+/// 事件写入与显式 touch 共用的一条 SQL：只升不降，因此丢失/乱序的 touch 不会让水位倒退。
+fn touch_handle_seq_on(
+    conn: &Connection,
+    session_id: &str,
+    acp_session_id: Option<&str>,
+    seq: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE session_bindings
+            SET last_event_seq = MAX(COALESCE(last_event_seq, 0), ?3)
+          WHERE session_id = ?1 AND superseded_at IS NULL
+            AND (?2 IS NULL OR acp_session_id = ?2)",
+        params![session_id, acp_session_id, seq],
+    )?;
     Ok(())
 }
 
@@ -267,7 +420,15 @@ impl Db {
         }
 
         conn.execute_batch(SCHEMA)?;
+        ensure_event_kind_is_free(&conn)?;
+        ensure_mcp_catalog_has_no_enabled(&conn)?;
         ensure_column(&conn, "profiles", "default_mode", "TEXT")?;
+        // E13.5：MCP 三层名单。NULL 有语义（继承），所以两列都不能给默认值。
+        ensure_column(&conn, "profiles", "default_mcp_json", "TEXT")?;
+        ensure_column(&conn, "sessions", "mcp_names_json", "TEXT")?;
+        // E13.2：握手能力快照。老库补列，不清会话、不动 SCHEMA_VERSION。
+        ensure_column(&conn, "profiles", "caps_json", "TEXT")?;
+        ensure_column(&conn, "profiles", "caps_at", "INTEGER")?;
         ensure_column(&conn, "sessions", "mode_override", "TEXT")?;
         ensure_column(
             &conn,
@@ -277,6 +438,11 @@ impl Db {
         )?;
         // 群聊里的消息要能指认「谁说的」：不加这列，多 agent 群所有回复长得一样（docs/group-chat.md §4）
         ensure_column(&conn, "messages", "author_id", "TEXT")?;
+        // E13.3：轮次终态要能解释「为什么停」。老库这里补列，不能整表重建。
+        ensure_column(&conn, "turns", "stop_reason", "TEXT")?;
+        // E13.7：会话恢复句柄。老库补列；已有 live 绑定保留，字段为 NULL。
+        ensure_column(&conn, "session_bindings", "agent_name", "TEXT")?;
+        ensure_column(&conn, "session_bindings", "last_event_seq", "INTEGER")?;
         // 轨迹时间列早期写成秒，与毫秒级的保留策略混用会把一切判成过期。
         // 一次性换算（< 1e11 一定不是毫秒：那相当于 1973 年之前），幂等。
         conn.execute_batch(
@@ -300,19 +466,52 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT id, name, launch_kind, program, args_json, default_cwd,
                     distro, shell, ssh_host, ssh_port, ssh_user, ssh_auth, ssh_key_path,
-                    default_mode
+                    default_mode, caps_json, caps_at, default_mcp_json
              FROM profiles ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map([], |r| {
+            let id: String = r.get(0)?;
             let args_json: String = r.get(4)?;
+            let caps_json: Option<String> = r.get(14)?;
+            let caps = caps_json.and_then(|raw| match serde_json::from_str::<AgentCaps>(&raw) {
+                Ok(caps) => Some(caps),
+                Err(e) => {
+                    // 脏的旧数据只影响这一条显示，不能让整个配置列表读不出来。
+                    tracing::warn!(
+                        target: "sincearc::db",
+                        profile = %id,
+                        error = %e,
+                        "能力快照无法解析，按未握手处理"
+                    );
+                    None
+                }
+            });
+            let default_mcp = match r.get::<_, Option<String>>(16)? {
+                Some(raw) => match serde_json::from_str::<Vec<String>>(&raw) {
+                    Ok(names) => Some(names),
+                    Err(e) => {
+                        // 坏名单只影响这一条，按「继承目录」处理，不能让配置列表读不出来。
+                        tracing::warn!(
+                            target: "sincearc::db",
+                            profile = %id,
+                            error = %e,
+                            "MCP 默认名单无法解析，按继承目录处理"
+                        );
+                        None
+                    }
+                },
+                None => None,
+            };
             Ok(ProfileDto {
-                id: r.get(0)?,
+                id,
                 name: r.get(1)?,
                 launch: r.get(2)?,
                 program: r.get(3)?,
                 args: serde_json::from_str(&args_json).unwrap_or_default(),
                 cwd: r.get(5)?,
                 default_mode: r.get(13)?,
+                caps,
+                caps_at: r.get(15)?,
                 distro: r.get(6)?,
                 shell: r.get(7)?,
                 ssh_host: r.get(8)?,
@@ -320,6 +519,7 @@ impl Db {
                 ssh_user: r.get(10)?,
                 ssh_auth: r.get(11)?,
                 ssh_key_path: r.get(12)?,
+                default_mcp,
                 // 密码从不落盘：读回来永远是 None
                 ssh_password: None,
             })
@@ -327,20 +527,75 @@ impl Db {
         rows.collect()
     }
 
+    /// 把一次握手的能力快照写进 profile。
+    ///
+    /// 影响 0 行说明 profile 不在库里（例如设置页还没保存的新草稿），
+    /// 这时必须报错让调用方知道「这份能力没记住」，不能静默成功。
+    pub fn save_profile_caps(
+        &self,
+        profile_id: &str,
+        caps_json: &str,
+        at: i64,
+    ) -> Result<(), DbError> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let changed = conn.execute(
+            "UPDATE profiles SET caps_json = ?2, caps_at = ?3 WHERE id = ?1",
+            params![profile_id, caps_json, at],
+        )?;
+        if changed == 0 {
+            return Err(DbError::ProfileNotFound(profile_id.to_string()));
+        }
+        Ok(())
+    }
+
     /// 整表对齐：列表里的 upsert，不在列表里的删掉（会话随外键级联）。
     pub fn save_profiles(&self, list: &[ProfileDto]) -> rusqlite::Result<()> {
         let mut conn = self.conn.lock().expect("db poisoned");
         let tx = conn.transaction()?;
         let ts = now();
+        // 全局开关只决定**新插入**那一行的初值；已有行自己的选择不在这里改。
+        let inherit_default: bool = tx
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![SETTINGS_KEY_MCP_INHERIT_DEFAULT],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|value| value.parse::<bool>().ok())
+            .unwrap_or(true);
 
         for p in list {
             let args = serde_json::to_string(&p.args).unwrap_or_else(|_| "[]".into());
+            let default_mcp = match p.default_mcp.as_ref() {
+                Some(names) => Some(serde_json::to_string(names).unwrap_or_else(|_| "[]".into())),
+                None if inherit_default => None,
+                None => Some("[]".to_string()),
+            };
+            // 决定「这个 agent 会报什么能力」的字段一旦变了，旧快照立刻作废 ——
+            // 否则把命令从 hermes 改成 codex，面板还在用 hermes 的握手结论描述 codex。
+            // 判据与「改了会话字段就退回未测试」同源：只认环境与命令，不认名字/颜色这类身份字段。
+            let stale: bool = tx
+                .query_row(
+                    "SELECT program, args_json, launch_kind, distro, shell, default_cwd
+                       FROM profiles WHERE id = ?1",
+                    params![p.id],
+                    |r| {
+                        Ok(r.get::<_, String>(0)? != p.program
+                            || r.get::<_, String>(1)? != args
+                            || r.get::<_, String>(2)? != p.launch
+                            || r.get::<_, Option<String>>(3)? != p.distro
+                            || r.get::<_, Option<String>>(4)? != p.shell
+                            || r.get::<_, String>(5)? != p.cwd)
+                    },
+                )
+                .optional()?
+                .unwrap_or(false);
             tx.execute(
                 "INSERT INTO profiles
                    (id, name, launch_kind, distro, shell, program, args_json, env_json,
                     default_cwd, default_mode, ssh_host, ssh_port, ssh_user, ssh_auth, ssh_key_path,
-                    created_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,'{}',?8,?9,?10,?11,?12,?13,?14,?15,?15)
+                    default_mcp_json, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'{}',?8,?9,?10,?11,?12,?13,?14,?15,?16,?16)
                  ON CONFLICT(id) DO UPDATE SET
                    name=excluded.name, launch_kind=excluded.launch_kind,
                    distro=excluded.distro, shell=excluded.shell,
@@ -349,6 +604,8 @@ impl Db {
                    ssh_host=excluded.ssh_host,
                    ssh_port=excluded.ssh_port, ssh_user=excluded.ssh_user,
                    ssh_auth=excluded.ssh_auth, ssh_key_path=excluded.ssh_key_path,
+                   caps_json=CASE WHEN ?17 THEN NULL ELSE profiles.caps_json END,
+                   caps_at=CASE WHEN ?17 THEN NULL ELSE profiles.caps_at END,
                    updated_at=excluded.updated_at",
                 params![
                     p.id,
@@ -365,7 +622,9 @@ impl Db {
                     p.ssh_user,
                     p.ssh_auth,
                     p.ssh_key_path,
-                    ts
+                    default_mcp,
+                    ts,
+                    stale
                 ],
             )?;
         }
@@ -440,6 +699,28 @@ impl Db {
                     tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
                     issues.push(note);
                 }
+                SETTINGS_KEY_AUTO_APPROVE if is_valid_auto_approve(&value) => {
+                    settings.auto_approve_default = value
+                }
+                SETTINGS_KEY_AUTO_APPROVE => {
+                    let note = format!(
+                        "设置项 {key} 的值 `{value}` 不认识（应为 off/edits），已用默认值 {}",
+                        settings.auto_approve_default
+                    );
+                    tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
+                    issues.push(note);
+                }
+                SETTINGS_KEY_MCP_INHERIT_DEFAULT => match value.parse::<bool>() {
+                    Ok(next) => settings.mcp_inherit_default = next,
+                    Err(_) => {
+                        let note = format!(
+                            "设置项 {key} 的值 `{value}` 不认识（应为 true/false），已用默认值 {}",
+                            settings.mcp_inherit_default
+                        );
+                        tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
+                        issues.push(note);
+                    }
+                },
                 _ => {}
             }
         }
@@ -462,6 +743,19 @@ impl Db {
             "INSERT INTO settings(key, value) VALUES(?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![SETTINGS_KEY_THEME, settings.theme.as_str()],
+        )?;
+        tx.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![SETTINGS_KEY_AUTO_APPROVE, settings.auto_approve_default.as_str()],
+        )?;
+        tx.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![
+                SETTINGS_KEY_MCP_INHERIT_DEFAULT,
+                settings.mcp_inherit_default.to_string()
+            ],
         )?;
         tx.commit()
     }
@@ -539,6 +833,20 @@ impl Db {
         cwd: &str,
         reason: &str,
     ) -> rusqlite::Result<()> {
+        self.bind_acp_session_with_agent(id, acp_session_id, cwd, reason, None)
+    }
+
+    /// 绑定 ACP 会话，同时记下这次握手的 agent 名（恢复时做等价性检查）。
+    ///
+    /// 同一个 live acp id 重复绑定时不清水位；只有换到新 id 才新开一行。
+    pub fn bind_acp_session_with_agent(
+        &self,
+        id: &str,
+        acp_session_id: &str,
+        cwd: &str,
+        reason: &str,
+        agent_name: Option<&str>,
+    ) -> rusqlite::Result<()> {
         let mut conn = self.conn.lock().expect("db poisoned");
         let tx = conn.transaction()?;
         let bound_at = now_ms();
@@ -560,11 +868,38 @@ impl Db {
             )?;
             tx.execute(
                 "INSERT INTO session_bindings
-                   (session_id, acp_session_id, cwd, bound_at, reason)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, acp_session_id, cwd, bound_at, reason],
+                   (session_id, acp_session_id, cwd, agent_name, bound_at, reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![id, acp_session_id, cwd, agent_name, bound_at, reason],
+            )?;
+        } else {
+            // 前端连接成功后还会幂等绑定一次（不带 agent 名）。
+            // 这次更新不能让已经记下的 agent 名/水位归空。
+            tx.execute(
+                "UPDATE session_bindings
+                    SET cwd = CASE WHEN ?2 <> '' THEN ?2 ELSE cwd END,
+                        agent_name = COALESCE(?3, agent_name)
+                  WHERE session_id = ?1 AND acp_session_id = ?4
+                    AND superseded_at IS NULL",
+                params![id, cwd, agent_name, acp_session_id],
             )?;
         }
+
+        // 同一个 ACP 会话 id 只能挂一条界面会话（sessions.acp_session_id 有唯一索引）。
+        // 旧行还占着它，说明那是上一个进程/上一次用例留下的死绑定：不先腾出来，
+        // 这里就会撞唯一约束，而调用方只记一条 WARN —— 新会话从此「库里没有绑定」，
+        // 界面内存里却一切正常，重启后才发现恢复不了。腾掉再绑。
+        tx.execute(
+            "UPDATE session_bindings SET superseded_at = ?2
+              WHERE superseded_at IS NULL AND acp_session_id = ?1
+                AND session_id <> ?3",
+            params![acp_session_id, bound_at, id],
+        )?;
+        tx.execute(
+            "UPDATE sessions SET acp_session_id = NULL
+              WHERE acp_session_id = ?1 AND id <> ?2",
+            params![acp_session_id, id],
+        )?;
 
         tx.execute(
             "UPDATE sessions SET acp_session_id = ?2, acp_state = 'ok', updated_at = ?3
@@ -572,6 +907,38 @@ impl Db {
             params![id, acp_session_id, now()],
         )?;
         tx.commit()
+    }
+
+    pub fn live_handle(&self, session_id: &str) -> rusqlite::Result<Option<ResumeHandle>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.query_row(
+            "SELECT acp_session_id, cwd, agent_name, last_event_seq, bound_at
+               FROM session_bindings
+              WHERE session_id = ?1 AND superseded_at IS NULL
+              ORDER BY bound_at DESC, id DESC LIMIT 1",
+            params![session_id],
+            |r| {
+                Ok(ResumeHandle {
+                    acp_session_id: r.get(0)?,
+                    cwd: r.get(1)?,
+                    agent_name: r.get(2)?,
+                    last_event_seq: r.get(3)?,
+                    bound_at: r.get(4)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    /// 记本地事件水位。只更新匹配 acp id 的 live 绑定，旧绑定/别的成员不会串。
+    pub fn touch_handle_seq(
+        &self,
+        session_id: &str,
+        acp_session_id: &str,
+        seq: i64,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        touch_handle_seq_on(&conn, session_id, Some(acp_session_id), seq)
     }
 
     pub fn mark_acp_invalid(&self, id: &str) -> rusqlite::Result<()> {
@@ -625,6 +992,111 @@ impl Db {
             "UPDATE sessions SET mode_override = ?2, updated_at = ?3 WHERE id = ?1",
             params![ui_session_id, value, now()],
         )?;
+        Ok(())
+    }
+
+    /* ---------------- MCP 目录与三层名单 ---------------- */
+
+    /// 外层 None = 会话不存在；内层 None = 列值 NULL（继承）。
+    pub fn session_mcp_names_raw(&self, ui_session_id: &str) -> rusqlite::Result<Option<Option<String>>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.query_row(
+            "SELECT mcp_names_json FROM sessions WHERE id = ?1",
+            params![ui_session_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+    }
+
+    pub fn set_session_mcp_names(
+        &self,
+        ui_session_id: &str,
+        value: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "UPDATE sessions SET mcp_names_json = ?2, updated_at = ?3 WHERE id = ?1",
+            params![ui_session_id, value, now()],
+        )?;
+        Ok(())
+    }
+
+    /// 外层 None = 会话不存在；内层 None = 草稿会话还没绑连接。
+    pub fn session_profile_id(&self, ui_session_id: &str) -> rusqlite::Result<Option<Option<String>>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.query_row(
+            "SELECT profile_id FROM sessions WHERE id = ?1",
+            params![ui_session_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+    }
+
+    /// 外层 None = profile 不存在；内层 None = 列值 NULL（继承目录全部）。
+    pub fn profile_default_mcp_raw(&self, profile_id: &str) -> rusqlite::Result<Option<Option<String>>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.query_row(
+            "SELECT default_mcp_json FROM profiles WHERE id = ?1",
+            params![profile_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+    }
+
+    pub fn set_profile_default_mcp(
+        &self,
+        profile_id: &str,
+        value: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "UPDATE profiles SET default_mcp_json = ?2, updated_at = ?3 WHERE id = ?1",
+            params![profile_id, value, now()],
+        )?;
+        Ok(())
+    }
+
+    /// 目录按 rowid 排序：名单顺序不重要，同一份配置永远得到同一份报文。
+    pub fn mcp_catalog_rows(&self) -> rusqlite::Result<Vec<crate::mcp::McpRow>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT name, kind, config_json, rowid
+               FROM mcp_servers ORDER BY rowid ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+            ))
+        })?;
+        rows.collect()
+    }
+
+    pub fn upsert_mcp_server(
+        &self,
+        name: &str,
+        kind: &str,
+        config_json: &str,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let ts = now();
+        conn.execute(
+            "INSERT INTO mcp_servers (name, kind, config_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(name) DO UPDATE SET
+               kind = excluded.kind,
+               config_json = excluded.config_json,
+               updated_at = excluded.updated_at",
+            params![name, kind, config_json, ts],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_mcp_server(&self, name: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute("DELETE FROM mcp_servers WHERE name = ?1", params![name])?;
         Ok(())
     }
 
@@ -792,10 +1264,11 @@ impl Db {
             }
         }
 
-        // 事件被清空的轮次没有展示价值，但**正在跑**的轮次不能动（它还没收尾）
+        // 事件被清空的轮次没有展示价值，但**还没收尾**的轮次不能动：
+        // running 与 waiting_approval 都算活动轮。
         report.turns_deleted += tx.execute(
             "DELETE FROM turns
-              WHERE status != 'running'
+              WHERE status NOT IN ('running', 'waiting_approval')
                 AND NOT EXISTS (SELECT 1 FROM session_events e WHERE e.turn_id = turns.id)",
             [],
         )? as i64;
@@ -826,20 +1299,62 @@ impl Db {
     }
 
     /// 收一轮。`status` 允许 finished / failed / cancelled —— 「是否还在跑」不该由调用方随口决定。
-    pub fn end_turn(&self, turn_id: &str, status: &str) -> rusqlite::Result<()> {
+    /// `stop_reason` 是 agent 返回的原文，不能只留映射后的状态。
+    pub fn end_turn(
+        &self,
+        turn_id: &str,
+        status: &str,
+        stop_reason: Option<&str>,
+    ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().expect("db poisoned");
         conn.execute(
-            "UPDATE turns SET ended_at = ?1, status = ?2 WHERE id = ?3",
-            params![now_ms(), status, turn_id],
+            "UPDATE turns SET ended_at = ?1, status = ?2, stop_reason = ?3 WHERE id = ?4",
+            params![now_ms(), status, stop_reason, turn_id],
         )?;
         Ok(())
+    }
+
+    /// 权限请求到达：只有仍在 running 的轮才进入 waiting_approval。
+    /// 返回受影响行数，0 表示这一轮已经结束或不在等待态。
+    pub fn mark_turn_waiting_approval(&self, turn_id: &str) -> rusqlite::Result<usize> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "UPDATE turns SET status = 'waiting_approval'
+              WHERE id = ?1 AND status = 'running'",
+            params![turn_id],
+        )
+    }
+
+    /// 权限答完：只把仍停在 waiting_approval 的轮恢复成 running。
+    /// 若 agent 已经先一步回了终态，这里不能把 finished / cancelled 盖回去。
+    pub fn resume_turn_after_approval(&self, turn_id: &str) -> rusqlite::Result<usize> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "UPDATE turns SET status = 'running'
+              WHERE id = ?1 AND status = 'waiting_approval'",
+            params![turn_id],
+        )
+    }
+
+    /// 按轮次 id 取它所属的界面会话与作者。权限决定的轨迹挂在同一会话、同一支线下。
+    pub fn turn_context(
+        &self,
+        turn_id: &str,
+    ) -> rusqlite::Result<Option<(String, Option<String>)>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.query_row(
+            "SELECT session_id, author_id FROM turns WHERE id = ?1",
+            params![turn_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
     }
 
     /// 最近几轮（含正文与耗时），倒序。
     pub fn load_turns(&self, session_id: &str, limit: i64) -> rusqlite::Result<Vec<TurnRow>> {
         let conn = self.conn.lock().expect("db poisoned");
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, prompt, author_id, started_at, ended_at, status
+            "SELECT id, session_id, prompt, author_id, started_at, ended_at, status, stop_reason
                FROM turns WHERE session_id = ?1
               -- 同一毫秒内连续开两轮时，只按 started_at 排会不稳定；rowid 兜底保证确定性
               ORDER BY started_at DESC, rowid DESC LIMIT ?2",
@@ -854,6 +1369,7 @@ impl Db {
                     started_at: r.get(4)?,
                     ended_at: r.get(5)?,
                     status: r.get(6)?,
+                    stop_reason: r.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -873,6 +1389,13 @@ impl Db {
         if events.is_empty() {
             return Ok(0);
         }
+        // `session_events.kind` 是自由字符串（早期带 CHECK 枚举，新增种类要重建表，故去掉）。
+        // 代价是写错一个字母不会报错、只会变成轨迹面板上一条空白行 —— 开发期直接断言兜住。
+        debug_assert!(
+            events.iter().all(|e| KNOWN_EVENT_KINDS.contains(&e.kind.as_str())),
+            "未知轨迹种类：{:?}",
+            events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>()
+        );
         let mut conn = self.conn.lock().expect("db poisoned");
         let tx = conn.transaction()?;
         let mut seq: i64 = tx.query_row(
@@ -901,6 +1424,9 @@ impl Db {
                 ],
             )?;
         }
+        // 水位更新与事件写入共用同一个事务：不为每条事件多开一次写事务。
+        // 一次 append 里无论多少条，只更新最终 seq。
+        touch_handle_seq_on(&tx, session_id, None, seq)?;
         tx.commit()?;
         Ok(events.len())
     }
@@ -1258,12 +1784,125 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    /// E13.3 之前建的 turns 表没有 stop_reason；打开旧库后要能补列并正常读写。
+    #[test]
+    fn old_db_gains_turn_stop_reason_without_losing_turns() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "sincearc-db-turn-migrate-{}-{nanos}.db",
+            std::process::id()
+        ));
+
+        {
+            let conn = Connection::open(&path).expect("raw open");
+            conn.execute_batch(
+                "CREATE TABLE profiles (
+                   id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                   launch_kind TEXT NOT NULL CHECK (launch_kind IN ('local','wsl','ssh')),
+                   distro TEXT, shell TEXT, program TEXT NOT NULL,
+                   args_json TEXT NOT NULL DEFAULT '[]', env_json TEXT NOT NULL DEFAULT '{}',
+                   default_cwd TEXT NOT NULL,
+                   ssh_host TEXT, ssh_port INTEGER, ssh_user TEXT, ssh_auth TEXT, ssh_key_path TEXT,
+                   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 CREATE TABLE sessions (
+                   id TEXT PRIMARY KEY, acp_session_id TEXT,
+                   profile_id TEXT REFERENCES profiles(id) ON DELETE CASCADE,
+                   title TEXT NOT NULL DEFAULT '新会话', cwd TEXT NOT NULL DEFAULT '',
+                   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 CREATE TABLE turns (
+                   id TEXT PRIMARY KEY,
+                   session_id TEXT NOT NULL,
+                   prompt TEXT NOT NULL DEFAULT '',
+                   author_id TEXT,
+                   started_at INTEGER NOT NULL,
+                   ended_at INTEGER,
+                   status TEXT NOT NULL DEFAULT 'running');
+                 INSERT INTO sessions (id, acp_session_id, title, cwd, created_at, updated_at)
+                   VALUES ('s-old', 'acp-old', '老会话', '/tmp', 1, 1);
+                 INSERT INTO turns (id, session_id, prompt, started_at, status)
+                   VALUES ('t-old', 's-old', '老问题', 1, 'running');",
+            )
+            .expect("seed old schema");
+        }
+
+        let db = Db::open(&path).expect("迁移后应当能打开");
+        let turns = db.load_turns("s-old", 10).expect("旧轮次不该丢");
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].id, "t-old");
+        assert_eq!(turns[0].stop_reason, None);
+
+        db.end_turn("t-old", "finished", Some("end_turn"))
+            .expect("新列可写");
+        let turns = db.load_turns("s-old", 10).expect("新列可读");
+        assert_eq!(turns[0].status, "finished");
+        assert_eq!(turns[0].stop_reason.as_deref(), Some("end_turn"));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn old_mcp_catalog_drops_enabled_without_losing_rows() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "sincearc-db-mcp-migrate-{}-{nanos}.db",
+            std::process::id()
+        ));
+
+        {
+            let conn = Connection::open(&path).expect("raw open");
+            conn.execute_batch(
+                "CREATE TABLE mcp_servers (
+                   name TEXT PRIMARY KEY,
+                   kind TEXT NOT NULL,
+                   config_json TEXT NOT NULL,
+                   enabled INTEGER NOT NULL DEFAULT 1,
+                   created_at INTEGER NOT NULL,
+                   updated_at INTEGER NOT NULL);
+                 INSERT INTO mcp_servers
+                   (name, kind, config_json, enabled, created_at, updated_at)
+                 VALUES
+                   ('a', 'stdio', '{\"command\":\"a\",\"args\":[],\"env\":[]}', 1, 10, 20),
+                   ('b', 'http', '{\"url\":\"https://b.example\",\"headers\":[]}', 0, 30, 40);",
+            )
+            .expect("seed old mcp table");
+        }
+
+        let db = Db::open(&path).expect("迁移后应当能打开");
+        let rows = db.mcp_catalog_rows().expect("读取迁移后的目录");
+        assert_eq!(rows.len(), 2, "目录条目不能因重建而丢失");
+        assert_eq!(rows[0].0, "a");
+        assert_eq!(rows[1].0, "b");
+        assert_eq!(rows[0].3, 1);
+        assert_eq!(rows[1].3, 2);
+        let has_enabled: i64 = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('mcp_servers') WHERE name = 'enabled'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("check migrated columns");
+        assert_eq!(has_enabled, 0, "重建后的目录不该再有 enabled");
+
+        std::fs::remove_file(&path).ok();
+    }
+
     #[test]
     fn settings_new_db_returns_defaults() {
         let (db, path) = temp_db();
         let settings = db.load_settings().expect("load settings");
         assert_eq!(settings.context_messages, 5);
         assert_eq!(settings.theme, "dark");
+        assert_eq!(settings.auto_approve_default, "off");
+        assert!(settings.mcp_inherit_default);
         std::fs::remove_file(&path).ok();
     }
 
@@ -1273,12 +1912,16 @@ mod tests {
         db.save_settings(&AppSettingsDto {
             context_messages: 17,
             theme: "system".into(),
+            auto_approve_default: "edits".into(),
+            mcp_inherit_default: false,
         })
         .expect("save settings");
 
         let settings = db.load_settings().expect("load settings");
         assert_eq!(settings.context_messages, 17);
         assert_eq!(settings.theme, "system");
+        assert_eq!(settings.auto_approve_default, "edits");
+        assert!(!settings.mcp_inherit_default);
         std::fs::remove_file(&path).ok();
     }
 
@@ -1351,6 +1994,8 @@ mod tests {
         db.save_settings(&AppSettingsDto {
             context_messages: 12,
             theme: "light".into(),
+            auto_approve_default: "off".into(),
+            mcp_inherit_default: true,
         })
         .expect("save settings");
         let loaded = db.load_settings().expect("load settings");
@@ -1396,10 +2041,71 @@ mod tests {
         db.save_settings(&AppSettingsDto {
             context_messages: 7,
             theme: "light".into(),
+            auto_approve_default: "off".into(),
+            mcp_inherit_default: true,
         })
         .expect("save settings");
         let (_, clean) = db.load_settings_report().expect("load report");
         assert!(clean.is_empty(), "合法值不该被报成脏值：{clean:?}");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn new_profile_default_mcp_uses_global_inherit_setting() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("seed profile");
+        assert_eq!(
+            db.profile_default_mcp_raw("p1").expect("read"),
+            Some(None),
+            "默认开启时新连接写 NULL"
+        );
+
+        db.save_settings(&AppSettingsDto {
+            context_messages: 5,
+            theme: "dark".into(),
+            auto_approve_default: "off".into(),
+            mcp_inherit_default: false,
+        })
+        .expect("save settings");
+
+        let mut second = sample();
+        second.id = "p2".into();
+        second.name = "Second".into();
+        db.save_profiles(&[sample(), second])
+            .expect("insert second profile");
+        assert_eq!(
+            db.profile_default_mcp_raw("p1").expect("read p1"),
+            Some(None),
+            "更新已有连接时不能改写它自己的选择"
+        );
+        assert_eq!(
+            db.profile_default_mcp_raw("p2").expect("read p2"),
+            Some(Some("[]".into())),
+            "关闭继承时新连接写空数组"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn explicit_profile_default_mcp_wins_over_global_setting() {
+        let (db, path) = temp_db();
+        db.save_settings(&AppSettingsDto {
+            context_messages: 5,
+            theme: "dark".into(),
+            auto_approve_default: "off".into(),
+            mcp_inherit_default: false,
+        })
+        .expect("save settings");
+
+        let mut explicit = sample();
+        explicit.default_mcp = Some(vec!["a".into(), "b".into()]);
+        db.save_profiles(&[explicit]).expect("save explicit profile");
+        assert_eq!(
+            db.profile_default_mcp_raw("p1").expect("read"),
+            Some(Some(r#"["a","b"]"#.into()))
+        );
+
         std::fs::remove_file(&path).ok();
     }
 
@@ -1508,6 +2214,9 @@ mod tests {
             args: vec!["acp".into()],
             cwd: "/mnt/c/source/sincearc".into(),
             default_mode: None,
+            default_mcp: None,
+            caps: None,
+            caps_at: None,
             distro: Some("fedora".into()),
             shell: Some("zsh".into()),
             ssh_host: None,
@@ -1727,6 +2436,40 @@ mod tests {
         let list = db.list_sessions(None).expect("list");
         assert_eq!(list[0].acp_session_id.as_deref(), Some("acp-b"));
         assert_eq!(acp_state(&db, "s-1").as_deref(), Some("ok"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// 假 agent 每个进程都从 fake-session-1 编号，旧行会一直占着这个 id。
+    /// 不腾出来就是 UNIQUE 冲突 → 只留一条 WARN，新会话库里没有绑定（界面看不出来）。
+    #[test]
+    fn bind_steals_acp_id_from_stale_session_row() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-old", None)).expect("insert old");
+        db.upsert_session(&session("s-new", None)).expect("insert new");
+        db.bind_acp_session_with_agent("s-old", "acp-x", "/work", "created", Some("fake"))
+            .expect("bind old");
+
+        db.bind_acp_session_with_agent("s-new", "acp-x", "/work", "created", Some("fake"))
+            .expect("rebinding the same acp id to a new session must not fail");
+
+        let list = db.list_sessions(None).expect("list");
+        let by_id = |sid: &str| {
+            list.iter()
+                .find(|s| s.id == sid)
+                .expect("row")
+                .acp_session_id
+                .clone()
+        };
+        assert_eq!(by_id("s-new").as_deref(), Some("acp-x"));
+        assert_eq!(by_id("s-old"), None);
+        let old_live = db
+            .bindings("s-old")
+            .expect("bindings")
+            .into_iter()
+            .filter(|b| b.superseded_at.is_none())
+            .count();
+        assert_eq!(old_live, 0, "旧会话的活绑定应当被顶掉");
         std::fs::remove_file(&path).ok();
     }
 
@@ -1964,7 +2707,8 @@ mod tests {
 
         db.start_turn("s-1", "t1", "现在几点", None).expect("start");
         db.start_turn("s-1", "t2", "写个文件", None).expect("start2");
-        db.end_turn("t2", "failed").expect("end");
+        db.end_turn("t2", "failed", Some("timeout: timed out after 120s"))
+            .expect("end");
 
         let turns = db.load_turns("s-1", 10).expect("load");
         assert_eq!(turns.len(), 2);
@@ -2002,16 +2746,99 @@ mod tests {
             }],
         )
         .expect("append partial");
-        db.end_turn("t-cancel", "cancelled").expect("end cancelled");
+        db.end_turn("t-cancel", "cancelled", Some("cancelled"))
+            .expect("end cancelled");
 
         let turns = db.load_turns("s-1", 10).expect("load turns");
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].status, "cancelled");
+        assert_eq!(turns[0].stop_reason.as_deref(), Some("cancelled"));
         assert!(turns[0].ended_at.is_some());
 
         let messages = db.load_messages("s-1", 10).expect("load messages");
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].payload["text"], "写了一半");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn turn_moves_through_waiting_approval_and_records_stop_reason() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+
+        db.start_turn("s-1", "t1", "改个文件", None).expect("start");
+        assert_eq!(
+            db.load_turns("s-1", 1).expect("running")[0].status,
+            "running"
+        );
+
+        assert_eq!(
+            db.mark_turn_waiting_approval("t1").expect("waiting"),
+            1
+        );
+        assert_eq!(
+            db.load_turns("s-1", 1).expect("waiting row")[0].status,
+            "waiting_approval"
+        );
+
+        assert_eq!(
+            db.resume_turn_after_approval("t1").expect("resume"),
+            1
+        );
+        assert_eq!(
+            db.load_turns("s-1", 1).expect("resumed row")[0].status,
+            "running"
+        );
+
+        db.end_turn("t1", "finished", Some("end_turn"))
+            .expect("end finished");
+        let turns = db.load_turns("s-1", 1).expect("finished row");
+        assert_eq!(turns[0].status, "finished");
+        assert_eq!(turns[0].stop_reason.as_deref(), Some("end_turn"));
+        assert!(turns[0].ended_at.is_some());
+
+        // 已结束的轮不能再被权限回包改回 running
+        assert_eq!(
+            db.resume_turn_after_approval("t1").expect("no-op resume"),
+            0
+        );
+        // 也不能被迟到的权限请求重新标成 waiting_approval
+        assert_eq!(
+            db.mark_turn_waiting_approval("t1")
+                .expect("no-op waiting"),
+            0
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn failed_turn_records_non_empty_stop_reason() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+
+        db.start_turn("s-1", "t-fail", "跑一下", None)
+            .expect("start");
+        db.end_turn(
+            "t-fail",
+            "failed",
+            Some("-32603: agent returned error: boom"),
+        )
+        .expect("end failed");
+
+        let turns = db.load_turns("s-1", 1).expect("load");
+        assert_eq!(turns[0].status, "failed");
+        assert!(
+            turns[0]
+                .stop_reason
+                .as_deref()
+                .is_some_and(|reason| !reason.is_empty()),
+            "失败轮必须留下可解释的原因"
+        );
+        assert!(turns[0].ended_at.is_some());
 
         std::fs::remove_file(&path).ok();
     }
@@ -2038,6 +2865,11 @@ mod tests {
         }
         // 一个正在跑的轮次（不收尾）：它的事件清空后，轮次本身不能被删
         db.start_turn("s-1", "t-running", "还在跑", None).expect("turn2");
+        // 等用户批准的轮次同样还没收尾，不能当成「没有事件的历史轮」清掉
+        db.start_turn("s-1", "t-waiting", "等你批准", None)
+            .expect("turn3");
+        db.mark_turn_waiting_approval("t-waiting")
+            .expect("waiting");
 
         let report = db
             .prune_traces(crate::trace::now_ms() - 90 * 24 * 3600 * 1000, 50, false)
@@ -2051,6 +2883,9 @@ mod tests {
         // running 的轮次不许被清理逻辑带走
         let turns = db.load_turns("s-1", 10).expect("turns");
         assert!(turns.iter().any(|t| t.id == "t-running" && t.status == "running"));
+        assert!(turns
+            .iter()
+            .any(|t| t.id == "t-waiting" && t.status == "waiting_approval"));
 
         // 全部事件都过期时，事件与轮次一起清掉
         // cutoff 在未来 = 会清空全部：不带 allow_wipe 时必须被挡下
@@ -2067,6 +2902,240 @@ mod tests {
         assert!(db.load_events("s-1", 500).expect("l3").is_empty());
         // 时间过滤会带走它：一轮 90 天还没收尾，说明那次运行已经死了，留着只会显示「永远在跑」
         assert!(db.load_turns("s-1", 10).expect("t3").is_empty());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ---------- E13.7 可恢复句柄 ----------
+
+    /// 会话行只是外键落点，句柄测试不关心它的语义。
+    fn seed_session(db: &Db, id: &str) {
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions (id, acp_session_id, profile_id, title, cwd, created_at, updated_at)
+                 VALUES (?1, NULL, NULL, 't', '/w', 1, 1)",
+                params![id],
+            )
+            .expect("seed session");
+    }
+
+    #[test]
+    fn permission_decision_lands_in_the_turn_and_reads_back_its_author() {
+        let (db, _path) = temp_db();
+        seed_session(&db, "s-1");
+        db.start_turn("s-1", "t-1", "改个文件", Some("m-7"))
+            .expect("start turn");
+
+        // 轮次上下文：决定要挂在同一会话、同一支线下，作者用来显示「谁的动作」
+        let (ui_sid, author) = db
+            .turn_context("t-1")
+            .expect("turn context")
+            .expect("turn exists");
+        assert_eq!(ui_sid, "s-1");
+        assert_eq!(author.as_deref(), Some("m-7"));
+        assert!(db.turn_context("t-missing").expect("missing").is_none());
+
+        // session_events.kind 已不再是 CHECK 枚举；permission_decision 必须写得进去
+        db.append_events(
+            "s-1",
+            &[EventInput {
+                turn_id: "t-1".to_string(),
+                author_id: Some("m-7".to_string()),
+                kind: "permission_decision".to_string(),
+                payload_json: r#"{"verdict":"allow","optionId":"allow_once"}"#.to_string(),
+                source: "live".to_string(),
+                truncated: false,
+            }],
+        )
+        .expect("append decision");
+    }
+
+    #[test]
+    fn live_handle_roundtrips_and_old_binding_is_superseded() {
+        let (db, path) = temp_db();
+        seed_session(&db, "s-h1");
+
+        db.bind_acp_session_with_agent("s-h1", "acp-1", "/w", "created", Some("hermes"))
+            .expect("bind");
+        let h = db.live_handle("s-h1").expect("read").expect("有句柄");
+        assert_eq!(h.acp_session_id, "acp-1");
+        assert_eq!(h.agent_name.as_deref(), Some("hermes"));
+        assert_eq!(h.last_event_seq, None, "刚绑定还没有事件水位");
+
+        // 水位只升不降：乱序/重放的 touch 不能让它倒退
+        db.touch_handle_seq("s-h1", "acp-1", 7).expect("seq7");
+        db.touch_handle_seq("s-h1", "acp-1", 3).expect("seq3");
+        assert_eq!(db.live_handle("s-h1").unwrap().unwrap().last_event_seq, Some(7));
+
+        // 换 acp id = 新绑定，旧行 superseded；新行不继承旧水位
+        db.bind_acp_session_with_agent("s-h1", "acp-2", "/w", "replaced", Some("hermes"))
+            .expect("rebind");
+        let h2 = db.live_handle("s-h1").unwrap().expect("新句柄");
+        assert_eq!(h2.acp_session_id, "acp-2");
+        assert_eq!(h2.last_event_seq, None);
+        assert_eq!(db.bindings("s-h1").unwrap().len(), 2, "旧绑定留着做审计");
+
+        // 拿已被顶替的 acp id 写水位，不应串到 live 行上
+        db.touch_handle_seq("s-h1", "acp-1", 99).expect("stale touch");
+        assert_eq!(db.live_handle("s-h1").unwrap().unwrap().last_event_seq, None);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn rebinding_same_acp_id_keeps_agent_name_and_watermark() {
+        let (db, path) = temp_db();
+        seed_session(&db, "s-h2");
+        db.bind_acp_session_with_agent("s-h2", "acp-1", "/w", "created", Some("hermes"))
+            .expect("bind");
+        db.touch_handle_seq("s-h2", "acp-1", 12).expect("seq");
+
+        // 前端连接成功后会幂等再绑一次，且不带 agent 名 —— 不能把已有信息洗掉
+        db.bind_acp_session("s-h2", "acp-1", "/w2", "created").expect("rebind");
+        let h = db.live_handle("s-h2").unwrap().unwrap();
+        assert_eq!(h.agent_name.as_deref(), Some("hermes"));
+        assert_eq!(h.last_event_seq, Some(12));
+        assert_eq!(h.cwd, "/w2");
+
+        // 前端 session_bind_acp 只带空 cwd；空串不能把真实工作目录洗掉。
+        db.bind_acp_session("s-h2", "acp-1", "", "replaced").expect("empty cwd");
+        let h = db.live_handle("s-h2").unwrap().unwrap();
+        assert_eq!(h.cwd, "/w2");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn appending_events_advances_the_live_handle_watermark() {
+        let (db, path) = temp_db();
+        seed_session(&db, "s-h3");
+        db.bind_acp_session_with_agent("s-h3", "acp-1", "/w", "created", Some("hermes"))
+            .expect("bind");
+        let ev = |turn: &str| EventInput {
+            turn_id: turn.into(),
+            author_id: None,
+            kind: "thought".into(),
+            payload_json: r#"{"text":"x"}"#.into(),
+            source: "live".into(),
+            truncated: false,
+        };
+
+        // 同一批多写几条也只落最终 seq；不额外开事务。
+        db.append_events("s-h3", &[ev("t1"), ev("t1")]).expect("append");
+        assert_eq!(db.live_handle("s-h3").unwrap().unwrap().last_event_seq, Some(2));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn old_binding_table_gains_handle_columns() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "sincearc-db-handle-mig-{}-{nanos}.db",
+            std::process::id()
+        ));
+        {
+            // E13.7 之前的表：只有 acp id / cwd / reason，没有 agent_name 与水位
+            let conn = Connection::open(&path).expect("old db");
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                   id TEXT PRIMARY KEY, acp_session_id TEXT, profile_id TEXT,
+                   title TEXT NOT NULL DEFAULT '新会话', cwd TEXT NOT NULL DEFAULT '',
+                   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 INSERT INTO sessions (id, acp_session_id, title, cwd, created_at, updated_at)
+                   VALUES ('s-old', 'acp-old', '老会话', '/w', 1, 1);
+                 CREATE TABLE session_bindings (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   session_id TEXT NOT NULL,
+                   acp_session_id TEXT NOT NULL,
+                   cwd TEXT NOT NULL DEFAULT '',
+                   bound_at INTEGER NOT NULL,
+                   reason TEXT NOT NULL,
+                   superseded_at INTEGER);
+                 INSERT INTO session_bindings (session_id, acp_session_id, cwd, bound_at, reason)
+                   VALUES ('s-old', 'acp-old', '/w', 1, 'created');",
+            )
+            .expect("seed old binding table");
+        }
+
+        let db = Db::open(&path).expect("旧库应能打开并补列");
+        let h = db.live_handle("s-old").expect("read").expect("老绑定仍是 live");
+        assert_eq!(h.acp_session_id, "acp-old");
+        assert_eq!(h.agent_name, None, "老数据没有 agent 名，不能凭空编一个");
+        assert_eq!(h.last_event_seq, None);
+        db.touch_handle_seq("s-old", "acp-old", 5).expect("新列可写");
+        assert_eq!(db.live_handle("s-old").unwrap().unwrap().last_event_seq, Some(5));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn save_profile_caps_round_trips() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("seed profile");
+
+        let caps = AgentCaps {
+            load_session: true,
+            prompt_image: true,
+            session_fork: true,
+            ..AgentCaps::default()
+        };
+        let json = serde_json::to_string(&caps).expect("serialize caps");
+
+        db.save_profile_caps("p1", &json, 1_700_000_000)
+            .expect("save caps");
+
+        let rows = db.load_profiles().expect("load profiles");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].caps.as_ref(), Some(&caps));
+        assert_eq!(rows[0].caps_at, Some(1_700_000_000));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn 命令或环境变了就作废旧的能力快照() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("seed profile");
+        let caps = AgentCaps {
+            load_session: true,
+            ..AgentCaps::default()
+        };
+        let json = serde_json::to_string(&caps).expect("serialize");
+        db.save_profile_caps("p1", &json, 100).expect("save caps");
+
+        // 只改名字（身份字段）：握手结论必须留着，否则用户改个名字就得重连一次
+        let mut renamed = sample();
+        renamed.name = "改个名字".into();
+        db.save_profiles(&[renamed]).expect("save renamed");
+        assert!(
+            db.load_profiles().expect("load")[0].caps.is_some(),
+            "改名字不该作废能力快照"
+        );
+
+        // 换命令（会话字段）：旧快照立刻作废，面板不许再拿它描述这条新命令
+        let mut changed = sample();
+        changed.program = "codex".into();
+        db.save_profiles(&[changed]).expect("save changed");
+        let row = db.load_profiles().expect("load");
+        assert!(row[0].caps.is_none(), "换了命令，旧握手结论必须作废");
+        assert!(row[0].caps_at.is_none(), "作废时时间戳一起清");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn save_profile_caps_rejects_unknown_profile() {
+        let (db, path) = temp_db();
+        let err = db
+            .save_profile_caps("missing", "{}", 1)
+            .expect_err("不存在的 profile 不能静默成功");
+        assert!(matches!(err, DbError::ProfileNotFound(id) if id == "missing"));
 
         std::fs::remove_file(&path).ok();
     }

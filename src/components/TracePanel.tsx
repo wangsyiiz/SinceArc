@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlignLeft, FileText, PencilLine, Play, Search, Sparkles, ShieldAlert, Waypoints, X } from "lucide-react";
+import { AlignLeft, FileText, PencilLine, Play, Search, SendHorizontal, Sparkles, ShieldAlert, ShieldCheck, ShieldX, Waypoints, X } from "lucide-react";
 import type { Activity, ActivityKind, Player, TraceTurn } from "@/types";
 import { cn } from "@/lib/utils";
 import { useHoverCard } from "./ui/HoverCard";
+import { RemovedBadge } from "./RemovedBadge";
 
 const ROW = 34;
 const MAIN_X = 13;
@@ -21,9 +22,14 @@ interface TraceRow {
   meta?: string;
   at: string;
   color: string;
-  status?: "ok" | "running" | "error" | "cancelled";
+  status?: "ok" | "running" | "waiting" | "error" | "cancelled";
+  /** 轮次抬头专用：结局文字与悬停原因（活动行不用） */
+  statusLabel?: string;
+  statusTitle?: string;
   activity?: Activity;
   playerName?: string;
+  removed?: boolean;
+  deleted?: boolean;
 }
 
 interface TraceEdge {
@@ -41,6 +47,7 @@ function buildTrace(turns: TraceTurn[], activities: Activity[], players: Player[
 
   for (const t of turns) {
     const p0 = players.find((x) => x.id === t.branches[0]?.playerId);
+    const outcome = turnOutcome(t);
 
     rows.push({
       id: `${t.id}-user`,
@@ -50,6 +57,9 @@ function buildTrace(turns: TraceTurn[], activities: Activity[], players: Player[
       title: t.userText,
       at: t.at,
       color: "var(--i2)",
+      status: outcome.dot,
+      statusLabel: outcome.label,
+      statusTitle: outcome.title,
     });
 
     const branchStart = y + ROW;
@@ -84,6 +94,8 @@ function buildTrace(turns: TraceTurn[], activities: Activity[], players: Player[
           status: a.status,
           activity: a,
           playerName: p?.name,
+          removed: p?.removed,
+          deleted: p?.deleted,
         });
         cursor += ROW;
       }
@@ -101,6 +113,8 @@ function buildTrace(turns: TraceTurn[], activities: Activity[], players: Player[
           color,
           status: "ok",
           playerName: p?.name,
+          removed: p?.removed,
+          deleted: p?.deleted,
         });
         lastY = cursor;
         cursor += ROW;
@@ -149,19 +163,56 @@ const KIND_ICON: Record<ActivityKind, typeof FileText> = {
   search: Search,
   plan: ShieldAlert,
   permission: ShieldAlert,
+  delegate: SendHorizontal,
 };
+
+function activityIcon(activity?: Activity): typeof FileText {
+  if (activity?.kind === "permission" && activity.decision === "allow") return ShieldCheck;
+  if (activity?.kind === "permission" && activity.decision === "reject") return ShieldX;
+  return activity ? KIND_ICON[activity.kind] : Waypoints;
+}
 
 function statusDotClass(status: TraceRow["status"]): string | undefined {
   if (status === "ok") return "bg-ok-1/70";
   if (status === "running") return "animate-pulse bg-accent-1";
+  if (status === "waiting") return "bg-warn-1";
   if (status === "error") return "bg-danger-1";
   if (status === "cancelled") return "bg-ink-3";
   return undefined;
 }
 
+function turnOutcome(turn: TraceTurn): {
+  label: string;
+  dot?: TraceRow["status"];
+  title?: string;
+} {
+  switch (turn.status) {
+    case "running":
+      return { label: "进行中", dot: "running" };
+    case "waiting_approval":
+      return { label: "等你批准", dot: "waiting" };
+    case "cancelled":
+      return { label: "已停止", dot: "cancelled" };
+    case "failed":
+      return { label: "失败", dot: "error", title: turn.stopReason };
+    case "finished":
+      return turn.stopReason && turn.stopReason !== "end_turn"
+        ? { label: `已结束（${turn.stopReason}）`, dot: "ok", title: turn.stopReason }
+        : { label: "已结束", dot: "ok" };
+    default:
+      return { label: "结局未知" };
+  }
+}
+
+function turnStatusTextClass(status: TraceRow["status"]): string {
+  if (status === "waiting") return "text-warn-1";
+  if (status === "error") return "text-danger-1";
+  return "text-ink-3";
+}
+
 function HoverContent({ row }: { row: TraceRow }) {
   const activity = row.activity;
-  const Icon = activity ? KIND_ICON[activity.kind] : Waypoints;
+  const Icon = activityIcon(activity);
 
   /* 抬头是「这是什么」，正文是「内容」—— 两者别混。
      思考条目的 title 在列表里被切成 42 字（列表宽度决定），如果照搬到卡片抬头，
@@ -190,6 +241,7 @@ function HoverContent({ row }: { row: TraceRow }) {
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-micro text-ink-3">
             {row.at && <span className="font-mono">{row.at}</span>}
             {row.playerName && <span style={{ color: row.color }}>{row.playerName}</span>}
+            <RemovedBadge player={row} />
             {row.status && (
               <span
                 aria-hidden="true"
@@ -202,8 +254,14 @@ function HoverContent({ row }: { row: TraceRow }) {
       {body && (
         <div className="mt-2 whitespace-pre-wrap break-words text-caption text-ink-2">{body}</div>
       )}
+      {row.statusTitle && (
+        <div className="mt-2 break-words text-micro text-ink-3">{row.statusTitle}</div>
+      )}
       {activity?.truncated && (
-        <div className="mt-2 text-micro text-ink-3">已截断，仅保留最早 8KB</div>
+        <div className="mt-2 text-micro text-ink-3">
+          {/* 两种上限不一样：思考正文 8KB，工具调用的 rawInput / content 各 16KB（docs/acp-notes.md） */}
+          {activity.kind === "thinking" ? "已截断，仅保留最早 8KB" : "已截断，仅保留前 16KB"}
+        </div>
       )}
     </div>
   );
@@ -212,7 +270,7 @@ function HoverContent({ row }: { row: TraceRow }) {
 function ActivityListRow({ activity, player }: { activity: Activity; player?: Player }) {
   const [el, setEl] = useState<HTMLDivElement | null>(null);
   const hover = useHoverCard();
-  const Icon = KIND_ICON[activity.kind];
+  const Icon = activityIcon(activity);
   const row: TraceRow = {
     id: activity.id,
     x: 0,
@@ -225,6 +283,8 @@ function ActivityListRow({ activity, player }: { activity: Activity; player?: Pl
     status: activity.status,
     activity,
     playerName: player?.name,
+    removed: player?.removed,
+    deleted: player?.deleted,
   };
 
   return (
@@ -380,6 +440,7 @@ function GraphLabelRow({
         }}
         {...hover.triggerProps(el)}
         style={{ height: ROW }}
+        title={r.statusTitle}
         className={cn(
           "flex items-center gap-1.5 rounded-mark pr-2 transition-colors hover:bg-surface-2/50",
           r.id === focusId && "sc-row-fade",
@@ -389,13 +450,28 @@ function GraphLabelRow({
         {r.kind === "user" ? (
           <>
             <span className="shrink-0 font-mono text-micro text-ink-3">{r.at}</span>
-            <span className="truncate text-caption">{r.title}</span>
+            <span className="min-w-0 truncate text-caption">{r.title}</span>
+            {r.statusLabel && (
+              <span
+                className={cn(
+                  "ml-auto flex shrink-0 items-center gap-1 text-micro",
+                  turnStatusTextClass(r.status),
+                )}
+                title={r.statusTitle}
+              >
+                {r.status && (
+                  <span className={cn("size-1.5 shrink-0 rounded-full", statusDotClass(r.status))} />
+                )}
+                <span className="truncate">{r.statusLabel}</span>
+              </span>
+            )}
           </>
         ) : r.kind === "reply" ? (
           <span className="flex min-w-0 items-baseline gap-1.5">
             <span className="shrink-0 text-caption font-medium" style={{ color: r.color }}>
               {r.playerName}
             </span>
+            <RemovedBadge player={r} />
             <span className="truncate text-caption text-ink-2">{r.meta ?? "回复"}</span>
           </span>
         ) : (
@@ -405,6 +481,7 @@ function GraphLabelRow({
             {r.meta && (
               <span className="min-w-0 truncate font-mono text-micro text-ink-3">{r.meta}</span>
             )}
+            <RemovedBadge player={r} />
             {r.status === "running" && (
               <span
                 className="ml-auto size-1 shrink-0 animate-pulse rounded-full"
@@ -426,6 +503,7 @@ interface TracePanelProps {
   turns: TraceTurn[];
   activities: Activity[];
   players: Player[];
+  resumeGap: number | null;
   onClose: () => void;
   width: number;
   animate: boolean;
@@ -438,6 +516,7 @@ export function TracePanel({
   turns,
   activities,
   players,
+  resumeGap,
   onClose,
   width,
   animate,
@@ -456,6 +535,15 @@ export function TracePanel({
   }, [open, focusId, focusTick]);
 
   const actionCount = activities.length;
+  const listGroups = useMemo(() => {
+    return turns.map((turn) => {
+      const ids = new Set(turn.branches.flatMap((branch) => branch.activityIds));
+      return {
+        turn,
+        activities: activities.filter((activity) => ids.has(activity.id)),
+      };
+    });
+  }, [turns, activities]);
 
   return (
     <div
@@ -508,16 +596,44 @@ export function TracePanel({
 
         {view === "list" && (
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1">
-            {activities.length === 0 && (
+            {turns.length === 0 && (
               <div className="py-8 text-center text-caption text-ink-3">没有活动</div>
             )}
-            {activities.map((a) => (
-              <ActivityListRow
-                key={a.id}
-                activity={a}
-                player={players.find((x) => x.id === a.playerId)}
-              />
-            ))}
+            {listGroups.map(({ turn, activities: rows }) => {
+              const outcome = turnOutcome(turn);
+              return (
+                <div key={turn.id} className="mb-1">
+                  <div className="flex items-center gap-1.5 px-1 py-1" title={outcome.title}>
+                    <span className="shrink-0 font-mono text-micro text-ink-3">{turn.at}</span>
+                    <span className="min-w-0 truncate text-caption text-ink-2">{turn.userText}</span>
+                    <span
+                      className={cn(
+                        "ml-auto flex shrink-0 items-center gap-1 text-micro",
+                        turnStatusTextClass(outcome.dot),
+                      )}
+                      title={outcome.title}
+                    >
+                      {outcome.dot && (
+                        <span
+                          className={cn(
+                            "size-1.5 shrink-0 rounded-full",
+                            statusDotClass(outcome.dot),
+                          )}
+                        />
+                      )}
+                      <span className="truncate">{outcome.label}</span>
+                    </span>
+                  </div>
+                  {rows.map((a) => (
+                    <ActivityListRow
+                      key={a.id}
+                      activity={a}
+                      player={players.find((x) => x.id === a.playerId)}
+                    />
+                  ))}
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -581,6 +697,9 @@ export function TracePanel({
         )}
 
         <footer className="shrink-0 border-t border-line-1/60 px-3 py-2 text-micro leading-relaxed text-ink-3">
+          {resumeGap !== null && resumeGap > 0 && (
+            <div className="mb-1 text-warn-1">恢复后可能丢了 {resumeGap} 条事件（事件水位断档）</div>
+          )}
           主干是你的时间轴；一轮里被 @ 的玩家各开一条支线并行跑，答完弯回主干，虚线头表示还在答。
         </footer>
       </div>

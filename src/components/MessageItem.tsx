@@ -1,7 +1,11 @@
-import { FileText, GitPullRequest, CircleDot } from "lucide-react";
+import { useState } from "react";
+import { FileText, GitPullRequest, CircleDot, SendHorizontal, Square } from "lucide-react";
 import type { Message, Player, QuotedRef } from "@/types";
 import { cn } from "@/lib/utils";
+import { delegateActionLabel } from "@/lib/delegate-status";
+import { delegateCapsDetail } from "@/lib/delegate-target";
 import { PlayerAvatar } from "./PlayerAvatar";
+import { RemovedBadge } from "./RemovedBadge";
 
 /**
  * 把 @handle 渲染成该玩家的颜色。
@@ -49,7 +53,19 @@ function QuoteBlock({ quoted }: { quoted: QuotedRef }) {
   );
 }
 
-export function MessageItem({ message, players }: { message: Message; players: Player[] }) {
+export function MessageItem({
+  message,
+  players,
+  delegatePhase,
+  onCancelDelegate,
+}: {
+  message: Message;
+  players: Player[];
+  delegatePhase?: string | null;
+  onCancelDelegate?: (handleId: string) => void | Promise<void>;
+}) {
+  const [delegateExpanded, setDelegateExpanded] = useState(false);
+
   if (message.role === "system") {
     return (
       <div className="flex justify-center py-0.5">
@@ -61,6 +77,64 @@ export function MessageItem({ message, players }: { message: Message; players: P
   }
 
   if (message.role === "user") {
+    if (message.kind === "aside") {
+      return (
+        <div className="flex flex-col gap-0.5 text-caption text-ink-3">
+          <div className="whitespace-pre-wrap">{renderText(message.text, players)}</div>
+          {message.asideReceipt && (
+            <div className="whitespace-pre-wrap">{message.asideReceipt}</div>
+          )}
+        </div>
+      );
+    }
+
+    if (message.delegate) {
+      const handleId = message.delegate.handleId;
+      const action = delegateActionLabel(delegatePhase);
+      return (
+        <div className="flex w-full flex-col gap-1 border-l-2 border-line-1/60 pl-2.5 text-left">
+          <div className="flex items-center gap-1.5 text-micro text-ink-3">
+            <SendHorizontal size={12} className="shrink-0" />
+            <button
+              type="button"
+              aria-expanded={delegateExpanded}
+              onClick={() => setDelegateExpanded((expanded) => !expanded)}
+              className="min-w-0 flex-1 truncate text-left"
+            >
+              派活给 {message.delegate.targetName} ·{" "}
+              {delegateCapsDetail(message.delegate.context, message.delegate.reason)}
+            </button>
+            {action === "停止" ? (
+              <button
+                type="button"
+                aria-label="停止这次派活"
+                onClick={() => void onCancelDelegate?.(handleId)}
+                className="flex shrink-0 items-center gap-1 text-caption text-ink-3 hover:text-ink-1"
+              >
+                <Square size={12} />
+                停止
+              </button>
+            ) : action ? (
+              <span className="shrink-0 text-caption text-ink-3">{action}</span>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            aria-expanded={delegateExpanded}
+            onClick={() => setDelegateExpanded((expanded) => !expanded)}
+            title={message.text}
+            className={cn(
+              // 展开只改「看不看得全」，不改字号 —— 点一下字变大，会像整块内容在跳。
+              "text-left text-small text-ink-2",
+              delegateExpanded ? "whitespace-pre-wrap" : "truncate",
+            )}
+          >
+            {renderText(message.text, players)}
+          </button>
+        </div>
+      );
+    }
+
     return (
       <div className="flex flex-col items-end gap-1.5">
         {message.quoted && <div className="max-w-3/4"><QuoteBlock quoted={message.quoted} /></div>}
@@ -80,6 +154,7 @@ export function MessageItem({ message, players }: { message: Message; players: P
           <span className="text-caption font-medium" style={{ color: p?.color }}>
             {p?.name ?? "agent"}
           </span>
+          <RemovedBadge player={p} />
           <span className="font-mono text-micro text-ink-3">{message.at}</span>
         </div>
         <div
