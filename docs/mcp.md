@@ -302,6 +302,28 @@ hermes 把注入的 server 注册在**进程**的工具面上（`register_mcp_se
 hermes 的 MCP 工具名是 `mcp__editor_<server>_<hash>__<tool>`，其余 agent 也多是 `mcp__` 前缀。
 判据按形状（`mcp__` 开头且中段是目录里的 server 名）而不是按 agent 名 —— 认不出来就只显示「已注入」。
 
+### 11.4 三种形态都端到端跑过（2026-10-25）
+
+一次会话里把目录做成三条（stdio / http / sse 各一），同一个 hermes 全部接上并各自调用成功：
+
+| 条目 | 形态 | hermes 侧工具名 | 返回值 |
+|---|---|---|---|
+| `ping` | stdio | `mcp__editor_ping_1175cf8f__ping` | `{"result":"pong"}` |
+| `pinghttp` | http | `mcp__editor_pinghttp_9cd22200__ping` | `{"result":"pong"}` |
+| `pingsse` | sse | `mcp__editor_pingsse_efafeb80__ping` | `{"result":"pong"}` |
+
+客户端侧先单独验过报文：假 agent 把 `session/new` 收到的名单落盘（`fake-acp-requests.jsonl`），
+三条都在，sse 那条的形状是 `{"type":"sse","name":"pingsse","url":"…","headers":[]}` ——
+说明客户端没有按形态筛选，也没有把 sse 降级成 http。
+
+**一个已记录但不影响功能的偏差**：hermes 自己的日志把 sse 那条记成 `(HTTP)`，
+但 fixture 侧看到的是 `GET /sse` + `POST /messages?sessionId=…`，即真的走了 SSE 传输。
+它把 ACP 的 `McpServerSse` 转成 `{url, headers}` 时丢掉了形态标记，只在日志上反应出来。
+我们这边不改 —— 按 §2 的口径，形态原样发出去，选哪条传输是 agent 的事。
+
+复现方法：fixture 在 `~/.hermes/cache/scratch/mcp-fixtures/`（`ping-stdio.mjs` / `ping-http.mjs` /
+`ping-sse.mjs`，后两个要先起进程：7331 / 7332），目录条目按上表加进去即可。
+
 ## 12. 中继 vs 自建 OAuth：摊平
 
 ```

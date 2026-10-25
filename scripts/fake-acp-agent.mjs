@@ -88,6 +88,24 @@ function requestClient(id, timeoutMs = REQUEST_TIMEOUT_MS) {
   });
 }
 
+/**
+ * 合同测试用：把 session/new / load / fork 收到的 mcpServers 原样落到文件里。
+ * 回显成正文那条会被客户端的「迟到文本」规则在无待答轮次时丢掉，所以要看真实报文
+ * （尤其是 sse 这种界面看不出来的形态）就落盘。默认写到会话 cwd 下，
+ * `FAKE_ACP_DUMP` 可改路径。
+ */
+function dumpLifecycle(method, params) {
+  const target = process.env.FAKE_ACP_DUMP ?? path.join(process.cwd(), "fake-acp-requests.jsonl");
+  try {
+    fs.appendFileSync(
+      target,
+      `${JSON.stringify({ method, mcpServers: params?.mcpServers ?? null })}\n`,
+    );
+  } catch (error) {
+    log(`dump lifecycle failed: ${error.message}`);
+  }
+}
+
 /** 合同测试用：把生命周期请求里收到的 mcpServers 原样回显成一条正文。 */
 function echoMcpServers(params, sessionId) {
   const servers = params?.mcpServers;
@@ -286,6 +304,7 @@ async function handleLine(line) {
     case "session/new":
       log("session/new");
       adoptSessionCwd(message.params);
+      dumpLifecycle("session/new", message.params);
       sessionCounter += 1;
       const sessionId = `fake-session-${sessionCounter}`;
       activeSessionId = sessionId;
@@ -315,6 +334,7 @@ async function handleLine(line) {
     case "session/load": {
       log("session/load");
       adoptSessionCwd(message.params);
+      dumpLifecycle("session/load", message.params);
       const loadedSessionId =
         typeof message.params?.sessionId === "string"
           ? message.params.sessionId
