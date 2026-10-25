@@ -116,26 +116,6 @@ http/sse url 必填且以 http:// 或 https:// 开头；headers 同上限
 `env` / `headers` 的值**明文入库**（与「不做登录态」「轨迹不脱敏」同一条取舍）；
 设置页对 value 默认掩码，点眼睛才显示。不引入系统钥匙串 —— 那是新依赖。
 
-## 9.1 认证：不做 OAuth 客户端，走中继（2026-10-25 定）
-
-需要浏览器授权的远程 MCP server（OAuth），我们**不实现**授权流程：不起回调服务器、不做
-动态客户端注册、不存 refresh token。理由不是做不了，而是做完之后的产物只是一个会过期的
-`Authorization` 头 —— 而 MCP 的连接方是 agent，刷新令牌在我们手里它也拿不到，最后变成
-「每隔一小时要重建会话」的定时炸弹（T3 Code 对这件事的结论相同：*Not included yet: OAuth*）。
-
-需要 OAuth 的服务器，用 stdio 中继挂进来：
-
-```json
-{"name": "linear", "command": "npx", "args": ["-y", "mcp-remote", "https://mcp.linear.app/sse"]}
-```
-
-`mcp-remote` 自己起 loopback 回调（默认 `localhost`、端口按 URL 推导或显式给）、自己开浏览器、
-自己缓存并刷新令牌；没有浏览器的场景还能 `--device-code`。**我们的三种形态里 stdio 一条就把
-OAuth 全盖住了**，一行认证代码都不用写。
-
-也就是说：不是不支持 OAuth，是**支持的方式是「中继」，不是「自己当授权客户端」**。
-界面上对这类 server 的提示就一句：需要浏览器授权的，用 `mcp-remote` 挂成 stdio。
-
 ## 8. 验收
 
 ```
@@ -174,4 +154,61 @@ Rust     McpServerDto（stdio 无 type、http/sse 有 type）+ 校验（§7）
          能力面板：未声明的传输在 MCP 组里标「未声明」，但仍列出已注入的条目
 假 agent 回显收到的 mcpServers（合同测试用）
 文档     docs/acp-notes.md 补「mcpServers 是请求参数」与「注入≠连上」
+```
+
+## 10. 认证：不做 OAuth 客户端，走中继（2026-10-25 定）
+
+需要浏览器授权的远程 MCP server（OAuth），我们**不实现**授权流程：不起回调服务器、不做
+动态客户端注册、不存 refresh token。理由不是做不了，而是做完之后的产物只是一个会过期的
+`Authorization` 头 —— 而 MCP 的连接方是 agent，刷新令牌在我们手里它也拿不到，最后变成
+「每隔一小时要重建会话」的定时炸弹（T3 Code 对这件事的结论相同：*Not included yet: OAuth*）。
+
+需要 OAuth 的服务器，用 stdio 中继挂进来：
+
+```json
+{"name": "linear", "command": "npx", "args": ["-y", "mcp-remote", "https://mcp.linear.app/sse"]}
+```
+
+`mcp-remote` 自己起 loopback 回调（默认 `localhost`、端口按 URL 推导或显式给）、自己开浏览器、
+自己缓存并刷新令牌；没有浏览器的场景还能 `--device-code`。**三种形态里 stdio 一条就把 OAuth
+全盖住了**，一行认证代码都不用写。
+
+也就是说：不是不支持 OAuth，是**支持的方式是「中继」，不是「自己当授权客户端」**。
+
+### 10.1 认证一次就够，跨 agent 复用
+
+令牌由 `mcp-remote` 按**服务器 URL 的哈希**缓存在本机用户目录，不属于任何 agent：
+
+```
+~/.mcp-auth/{server_hash}_tokens.json        access / refresh token
+~/.mcp-auth/{server_hash}_client_info.json   它自己注册的 client 信息
+```
+
+所以第一个 agent 弹一次浏览器授权，令牌落到这个文件；之后任何 agent spawn 中继都直接读它，
+**不再弹窗**，续期也在文件里滚动 —— 换 agent 完全不用重来。这就是「集中配置」在认证上的
+自然结果，虽然实现方式是把它外包给一个进程。
+
+会再认证一次的情形，全都与 agent 无关：
+
+```
+换机器 / 换 OS 用户   令牌在 home 里。profile 可跑在 local / WSL / SSH 三种位置，那就是三份 home，
+                      各认证一次（WSL 的 home 与 Windows 的不是同一份）
+URL 变了              /sse 换成 /mcp、换域名或路径 → 哈希不同 → 算另一台服务器，再来一次
+缓存被清              官方排障手段就是 rm -rf ~/.mcp-auth
+两个 agent 同时首次   都没缓存时会各弹一次，谁先点完就有了；之后无提示
+```
+
+**一条真实局限，必须写下来**：令牌按 URL 哈希存，所以**同一个 URL 只能对应一个账号**。
+想同时登个人与公司两个同类账号，改名没用（名字不参与哈希），两个条目会共用同一份令牌。
+真要两个账号，得让服务器侧给出不同 URL（如带 `?account=` 的地址），或让中继分目录存 ——
+这是中继模式的边界，不是我们的实现问题。
+
+中继 vs 自建 OAuth 的取舍摊平：
+
+```
+中继    一次认证、跨 agent 复用、续期撤销都归它，我们零认证代码
+        代价① 每个 agent 各 spawn 一个中继进程（n 个 agent = n 个常驻 node 进程）
+        代价② 令牌不在我们库里 → 界面只能说「已注入」，无法显示「已授权 / 需重新授权」
+              （要显示就得去读 ~/.mcp-auth，那是别人内部实现的细节，不做）
+自建    token 进我们的库、UI 能显示授权状态，但发现 / DCR / 续期 / 撤销全要自己维护
 ```
