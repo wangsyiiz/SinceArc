@@ -162,7 +162,7 @@ export interface MessageDelegate {
 }
 
 export type Message =
-  | { id: string; role: "user"; text: string; at: string; quoted?: QuotedRef; delegate?: MessageDelegate }
+  | { id: string; role: "user"; text: string; at: string; kind?: "aside"; quoted?: QuotedRef; delegate?: MessageDelegate; asideReceipt?: string }
   | { id: string; role: "player"; playerId: string; text: string; at: string; streaming?: boolean; /** 用户中途点了停止：已生成的部分保留，但要标出来 */ stopped?: boolean }
   | { id: string; role: "system"; text: string; at: string };
 

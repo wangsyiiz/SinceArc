@@ -6,10 +6,18 @@ import { cn } from "@/lib/utils";
 import { Button } from "./ui/Button";
 import { Menu, type MenuItem } from "./ui/Menu";
 import { SessionMcpButton } from "./SessionMcpMenu";
+import { SlashMenu } from "./SlashMenu";
+import { filterCommands, slashQuery, type SlashCommand } from "@/lib/slash-filter";
+import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 
 interface ComposerProps {
   busy: boolean;
   onSend: (text: string) => void;
+  /** 忙碌时发送键切成插话；文本不含 `/steer ` 前缀。 */
+  onSteer?: (text: string) => void | Promise<void>;
+  /** 命令列表与本轮正文是否带过 messageId 都满足时才允许插话。 */
+  steerable?: boolean;
+  commands?: CommandDto[];
   onStop: () => void;
   placeholder?: string;
   players?: Player[];
@@ -27,6 +35,9 @@ interface ComposerProps {
 export function Composer({
   busy,
   onSend,
+  onSteer,
+  steerable = false,
+  commands = [],
   onStop,
   placeholder,
   players = [],
@@ -49,6 +60,8 @@ export function Composer({
     null,
   );
   const [active, setActive] = useState(0);
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashActive, setSlashActive] = useState(0);
 
   const candidates = mention
     ? players.filter((p) => p.handle.toLowerCase().startsWith(mention.query.toLowerCase()))
@@ -98,6 +111,28 @@ export function Composer({
     });
   };
 
+  const syncSlash = (text: string) => {
+    const query = slashQuery(text);
+    const slashAt = text.indexOf("/");
+    const afterSlash = slashAt >= 0 ? text.slice(slashAt + 1) : "";
+    const eligible = query !== null && commands.length > 0 && !/\s/.test(afterSlash);
+    setSlashOpen(eligible);
+    if (eligible) setSlashActive(0);
+  };
+
+  const pickSlash = (command: SlashCommand) => {
+    const next = command.hint ? `/${command.name}` : `/${command.name} `;
+    setValue(next);
+    setSlashOpen(false);
+    setMention(null);
+    requestAnimationFrame(() => {
+      const el = ref.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(next.length, next.length);
+    });
+  };
+
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -106,6 +141,9 @@ export function Composer({
   }, [value]);
 
   const canSend = value.trim().length > 0 && !busy;
+  const slashItems = slashOpen ? filterCommands(value, commands) : [];
+  const slashVisible = slashOpen && slashItems.length > 0;
+  const canSteerSend = busy && steerable && value.trim().length > 0;
 
   /**
    * 档位选择器（docs/desktop-ux.md §10）：
@@ -132,15 +170,33 @@ export function Composer({
   const autoApproveText = autoApprove === "edits" ? "编辑类" : "关";
 
   const submit = () => {
+    if (busy) {
+      if (!canSteerSend) return;
+      void onSteer?.(value.trim());
+      setValue("");
+      setMention(null);
+      setSlashOpen(false);
+      return;
+    }
     if (!canSend) return;
     onSend(value.trim());
     setValue("");
     setMention(null);
+    setSlashOpen(false);
   };
 
   return (
     <>
       <div className="relative">
+      <SlashMenu
+        open={slashVisible}
+        value={value}
+        commands={commands}
+        active={slashActive}
+        onActiveChange={setSlashActive}
+        onPick={pickSlash}
+        onClose={() => setSlashOpen(false)}
+      />
       {mention && (
         <div className="sc-glass absolute bottom-full left-2 z-30 mb-1.5 w-64 rounded-control p-1">
           {candidates.length > 0 ? (
@@ -190,11 +246,35 @@ export function Composer({
         spellCheck={false}
         placeholder={placeholder ?? "输入消息，Enter 发送，Shift+Enter 换行"}
         onChange={(e) => {
-          setValue(e.target.value);
-          syncMention(e.target.value, e.target.selectionStart ?? 0);
+          const next = e.target.value;
+          setValue(next);
+          syncMention(next, e.target.selectionStart ?? 0);
+          syncSlash(next);
         }}
         onClick={(e) => syncMention(value, e.currentTarget.selectionStart ?? 0)}
         onKeyDown={(e) => {
+          if (slashVisible) {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setSlashActive((i) => (i + 1) % slashItems.length);
+              return;
+            }
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setSlashActive((i) => (i - 1 + slashItems.length) % slashItems.length);
+              return;
+            }
+            if ((e.key === "Enter" || e.key === "Tab") && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              pickSlash(slashItems[Math.min(slashActive, slashItems.length - 1)]);
+              return;
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setSlashOpen(false);
+              return;
+            }
+          }
           // 补全列表开着的时候，方向键/回车/Tab 归它用
           if (mention && candidates.length > 0) {
             if (e.key === "ArrowDown") {
@@ -269,17 +349,40 @@ export function Composer({
             }
             items={autoApproveItems}
           />
+          {busy && !steerable && (
+            <span className="mr-1 text-micro text-ink-3">这个 agent 不支持插话</span>
+          )}
           {busy ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={onStop}
-              title="停止"
-              aria-label="停止"
-              className="size-7 gap-0 bg-surface-3/75 p-0 hover:bg-surface-3"
-            >
-              <Square className="size-3 fill-current" />
-            </Button>
+            <>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={onStop}
+                title="停止"
+                aria-label="停止"
+                className="size-7 gap-0 bg-surface-3/75 p-0 hover:bg-surface-3"
+              >
+                <Square className="size-3 fill-current" />
+              </Button>
+              <Button
+                variant="glass"
+                size="sm"
+                onClick={submit}
+                disabled={!canSteerSend}
+                disabledReason={
+                  !steerable
+                    ? "这个 agent 不支持插话"
+                    : !canSteerSend
+                      ? "先输入内容再插话"
+                      : undefined
+                }
+                aria-label="插话"
+                className="h-7 gap-1 px-2 text-caption"
+              >
+                <ArrowUp className="size-3.5" />
+                插话
+              </Button>
+            </>
           ) : (
             <Button
               variant="glass"

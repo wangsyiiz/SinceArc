@@ -69,6 +69,7 @@ export interface SessionUpdate {
   update?: {
     sessionUpdate?: string;
     currentModeId?: string;
+    messageId?: string;
     content?: { type?: string; text?: string };
     [k: string]: unknown;
   };

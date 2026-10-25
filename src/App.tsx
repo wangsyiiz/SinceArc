@@ -23,6 +23,7 @@ import { pushSystemNotice } from "@/lib/notices";
 import { delegateCancelFailureMessage, type DelegatePhase } from "@/lib/delegate-status";
 import { mergeMessages } from "@/lib/messages-merge";
 import { buildPlayers } from "@/lib/players";
+import { canSteer } from "@/lib/steer-availability";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
 import { StatusBar } from "@/components/StatusBar";
@@ -39,6 +40,7 @@ import type {
   AgentProfile,
   GithubPR,
   GithubRepo,
+  Message,
   PermissionRequest,
   Player,
   SessionSummary,
@@ -62,6 +64,8 @@ import {
   sessionMemberRemove,
   sessionMembers,
   sessionRebind,
+  messagesAppend,
+  sessionSteer,
   sessionUpsert,
   type AgentUser,
   type DiscoveryCandidate,
@@ -344,7 +348,7 @@ export default function App() {
     },
     [permissions.expire, sessions],
   );
-  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, commandsByAcpSession, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired, onTraceChanged: () => setTraceTick((t) => t + 1) });
+  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, commandsByAcpSession, messageIdByAcpSession, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired, onTraceChanged: () => setTraceTick((t) => t + 1) });
 
   useEffect(() => {
     permissionDiagRef.current = diag;
@@ -417,6 +421,10 @@ export default function App() {
   const acpCommands = activeSession?.acpSessionId
     ? commandsByAcpSession[activeSession.acpSessionId]
     : undefined;
+  const steerable = canSteer(
+    acpCommands,
+    activeSession?.acpSessionId ? !!messageIdByAcpSession[activeSession.acpSessionId] : false,
+  );
   const isStopping = !!cancelling[lastSessionId] && state.busy;
 
   /**
@@ -929,6 +937,41 @@ export default function App() {
     [send, lastSessionId, patchSession, refreshTitles],
   );
 
+  const sendSteer = useCallback(
+    async (raw: string) => {
+      const sid = lastSessionId;
+      const acpSid = activeSession?.acpSessionId;
+      const text = raw.trim();
+      if (!sid || !acpSid || !text) return;
+
+      const aside: Message = {
+        id: newId("aside"),
+        role: "user",
+        text,
+        at: now(),
+        kind: "aside",
+      };
+      // 先上屏：后端回执可能比 IPC 返回值更早到，回执要能找到这一条。
+      patchSession(sid, (s) => ({ ...s, msgs: [...s.msgs, aside] }));
+      try {
+        await sessionSteer(acpSid, sid, text);
+      } catch (e) {
+        patchSession(sid, (s) => ({ ...s, msgs: s.msgs.filter((m) => m.id !== aside.id) }));
+        const err = asCmdError(e);
+        clog("ASIDE-ERR", `ui=${sid} acp=${acpSid} ${err.code} ${err.msg}`);
+        pushSystemNotice(patchSession, sid, `插话没有发出：${err.msg}`);
+        return;
+      }
+
+      await messagesAppend(sid, [
+        { id: aside.id, role: "user", kind: "aside", payload: { ...aside, kind: "aside" } },
+      ]).catch((e: unknown) => {
+        clog("ASIDE-DB-ERR", `ui=${sid} id=${aside.id} ${String(e)}`);
+      });
+    },
+    [activeSession?.acpSessionId, lastSessionId, patchSession],
+  );
+
   /**
    * 停止按钮必须把取消送到 agent，而不是只关掉本地的「生成中」。
    * 请求送达后继续保持 busy，等 promptResult / promptFailed 给出真正终态。
@@ -1320,6 +1363,9 @@ export default function App() {
                         <Composer
                           busy={state.busy}
                           onSend={sendInGroup}
+                          onSteer={sendSteer}
+                          steerable={steerable}
+                          commands={acpCommands}
                           onStop={stopGeneration}
                           placeholder={
                             isStopping ? "正在停止…" : "输入消息，@ 玩家提问…"

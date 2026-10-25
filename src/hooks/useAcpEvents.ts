@@ -26,6 +26,7 @@ import {
   shouldSettleLate,
 } from "@/lib/late-window";
 import { pushSystemNotice } from "@/lib/notices";
+import { keyOf } from "@/lib/stream-key";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import type { UsageDto } from "@/lib/ipc/types.gen/UsageDto";
 import type { SessionSummary } from "@/types";
@@ -41,7 +42,9 @@ import type { PatchSession } from "./useSessionState";
  * 现在归属由后端的会话记录决定（含群成员身份），前端只做两件事：能投就投，投不了就丢弃并留痕。
  */
 interface StreamState {
+  acpSid: string;
   uiSid: string;
+  messageId: string | null;
   /** 谁说的话：群成员 id；主 agent 为 null */
   authorId: string | null;
   msgId: string;
@@ -108,6 +111,23 @@ function asUsage(event: unknown): UsageDto | null {
 interface AcpCommandsPayload {
   acpSessionId: string;
   commands: CommandDto[];
+}
+
+interface AsidePayload {
+  sessionId: string;
+  uiSessionId: string | null;
+  text: string;
+}
+
+function asAside(event: unknown): AsidePayload | null {
+  if (!event || typeof event !== "object") return null;
+  const value = event as Partial<Record<keyof AsidePayload, unknown>>;
+  if (typeof value.sessionId !== "string" || typeof value.text !== "string") return null;
+  return {
+    sessionId: value.sessionId,
+    uiSessionId: typeof value.uiSessionId === "string" ? value.uiSessionId : null,
+    text: value.text,
+  };
 }
 
 function asCommands(event: unknown): AcpCommandsPayload | null {
@@ -201,6 +221,8 @@ export function useAcpEvents({
   const [commandsByAcpSession, setCommandsByAcpSession] = useState<
     Record<string, CommandDto[]>
   >({});
+  /** ACP 会话 -> 本轮正文是否已经出现过 messageId（插话门禁的一部分）。 */
+  const [messageIdByAcpSession, setMessageIdByAcpSession] = useState<Record<string, boolean>>({});
   const diag = useCallback((text: string) => {
     setEventLog((prev) => [...prev, { at: Date.now(), text: `· ${text}` }].slice(-80));
   }, []);
@@ -235,7 +257,7 @@ export function useAcpEvents({
 
   /** 40ms 合批：chunk 是逐字来的，逐条 setState 会让 React 每字重渲染一次 */
   const flushStream = useCallback(() => {
-    for (const [acpSid, st] of Object.entries(streams.current)) {
+    for (const [streamKey, st] of Object.entries(streams.current)) {
       const text = st.buf;
       st.buf = "";
       if (!text) continue;
@@ -243,7 +265,7 @@ export function useAcpEvents({
       if (flushDiag.current < 12) {
         flushDiag.current += 1;
         diag(`flush -> ${st.uiSid} +${text.length} 字`);
-        clog("FLUSH", `acp=${acpSid} ui=${st.uiSid} +${text.length}`);
+        clog("FLUSH", `acp=${st.acpSid} key=${streamKey} ui=${st.uiSid} +${text.length}`);
       }
       patchSession(st.uiSid, (s) => {
         const last = s.msgs[s.msgs.length - 1];
@@ -262,7 +284,7 @@ export function useAcpEvents({
                 },
               ];
 
-        const turnId = acpToTurn.current[acpSid];
+        const turnId = acpToTurn.current[st.acpSid];
         const turns = turnId
           ? s.turns.map((t) =>
               t.id === turnId
@@ -300,46 +322,50 @@ export function useAcpEvents({
   const settleLateStream = useCallback(
     (acpSid: string, reason: "quiet" | "next-prompt") => {
       clearLateTimer(acpSid);
-      const st = streams.current[acpSid];
-      if (!st?.late) {
+      const lateStreams = Object.entries(streams.current).filter(
+        ([, st]) => st.acpSid === acpSid && st.late,
+      );
+      if (lateStreams.length === 0) {
         if (reason === "next-prompt") delete lateUntil.current[acpSid];
         return;
       }
       flushStream();
-      const full = st.text;
-      delete streams.current[acpSid];
       if (reason === "next-prompt") delete lateUntil.current[acpSid];
-      if (!full) return;
+      for (const [streamKey, st] of lateStreams) {
+        const full = st.text;
+        delete streams.current[streamKey];
+        if (!full) continue;
 
-      patchSession(st.uiSid, (s) => ({
-        ...s,
-        msgs: s.msgs.map((m) =>
-          m.id === st.msgId && m.role === "player" ? { ...m, streaming: false } : m,
-        ),
-      }));
-      messagesAppend(st.uiSid, [
-        {
-          id: st.msgId,
-          role: "player",
-          kind: "text",
-          payload: {
+        patchSession(st.uiSid, (s) => ({
+          ...s,
+          msgs: s.msgs.map((m) =>
+            m.id === st.msgId && m.role === "player" ? { ...m, streaming: false } : m,
+          ),
+        }));
+        messagesAppend(st.uiSid, [
+          {
             id: st.msgId,
             role: "player",
-            playerId: st.authorId ?? MAIN_AGENT_ID,
-            text: full,
-            at: now(),
-            streaming: false,
+            kind: "text",
+            payload: {
+              id: st.msgId,
+              role: "player",
+              playerId: st.authorId ?? MAIN_AGENT_ID,
+              text: full,
+              at: now(),
+              streaming: false,
+            },
           },
-        },
-      ])
-        .then(() =>
-          clog("LATE-DB", `ui=${st.uiSid} id=${st.msgId} len=${full.length} reason=${reason}`),
-        )
-        .catch((e) => {
-          console.warn("[db] append late reply failed", e);
-          clog("DB-ERR", `late ui=${st.uiSid} id=${st.msgId} ${String(e)}`);
-          pushSystemNotice(patchSession, st.uiSid, `这条回答没能写入历史：${String(e)}`);
-        });
+        ])
+          .then(() =>
+            clog("LATE-DB", `ui=${st.uiSid} id=${st.msgId} len=${full.length} reason=${reason}`),
+          )
+          .catch((e) => {
+            console.warn("[db] append late reply failed", e);
+            clog("DB-ERR", `late ui=${st.uiSid} id=${st.msgId} ${String(e)}`);
+            pushSystemNotice(patchSession, st.uiSid, `这条回答没能写入历史：${String(e)}`);
+          });
+      }
     },
     [clearLateTimer, flushStream, patchSession],
   );
@@ -449,6 +475,37 @@ export function useAcpEvents({
         return;
       }
 
+      if (topic === "acp.aside") {
+        const aside = asAside(event);
+        if (!aside?.uiSessionId) {
+          clog("ASIDE-NOUI", `acp=${aside?.sessionId ?? "-"} len=${aside?.text.length ?? 0}`);
+          return;
+        }
+        setEventLog((prev) => [...prev, { at: Date.now(), text: "acp.aside" }].slice(-80));
+        setLastEvent("acp.aside");
+        patchSession(aside.uiSessionId, (s) => {
+          let index = -1;
+          for (let i = s.msgs.length - 1; i >= 0; i -= 1) {
+            const message = s.msgs[i];
+            if (message.role === "user" && message.kind === "aside") {
+              index = i;
+              break;
+            }
+          }
+          if (index < 0) return s;
+          const msgs = [...s.msgs];
+          const target = msgs[index];
+          if (target.role === "user") {
+            msgs[index] = {
+              ...target,
+              asideReceipt: `${target.asideReceipt ?? ""}${aside.text}`,
+            };
+          }
+          return { ...s, msgs };
+        });
+        return;
+      }
+
       // 按 topic 判断，不再靠载荷形状猜
       if (topic === "session.trace") {
         // 派活开始/结束都不改 busy，靠这一下让轨迹面板重读（后端写完事件就敲）
@@ -543,12 +600,26 @@ export function useAcpEvents({
           clog("DROP-REPLAY", `acp=${acpSid} ui=${uiSid} len=${text.length}`);
           return;
         }
+        const messageId =
+          typeof su.update.messageId === "string" && su.update.messageId.trim()
+            ? su.update.messageId.trim()
+            : null;
+        if (messageId) {
+          setMessageIdByAcpSession((prev) =>
+            prev[acpSid] ? prev : { ...prev, [acpSid]: true },
+          );
+        }
         const late = !inFlight;
-        const hadLateStream = streams.current[acpSid]?.late === true;
-        const st = (streams.current[acpSid] ??= {
+        const hadLateStream = Object.values(streams.current).some(
+          (stream) => stream.acpSid === acpSid && stream.late,
+        );
+        const streamKey = keyOf(acpSid, messageId);
+        const st = (streams.current[streamKey] ??= {
+          acpSid,
           uiSid,
+          messageId,
           authorId,
-          msgId: `stream-${acpSid}-${Date.now()}`,
+          msgId: messageId ? streamKey : `stream-${acpSid}-${Date.now()}`,
           text: "",
           buf: "",
           late,
@@ -575,10 +646,20 @@ export function useAcpEvents({
         settleLateStream(acpSid, "next-prompt");
         delete lateUntil.current[acpSid];
         awaiting.current[acpSid] = true;
+        setMessageIdByAcpSession((prev) => {
+          if (!prev[acpSid]) return prev;
+          const next = { ...prev };
+          delete next[acpSid];
+          return next;
+        });
         // 上一轮如果没收到 promptResult（进程崩了、连接断了），文本会留在这里。
         // 新一轮开始时先把它落库，别悄悄丢掉已经显示给用户的内容。
-        const stale = streams.current[acpSid];
-        if (stale && stale.text) {
+        const staleStreams = Object.entries(streams.current).filter(
+          ([, stream]) => stream.acpSid === acpSid,
+        );
+        for (const [streamKey, stale] of staleStreams) {
+          delete streams.current[streamKey];
+          if (!stale.text) continue;
           const id = stale.msgId;
           messagesAppend(stale.uiSid, [
             {
@@ -599,7 +680,6 @@ export function useAcpEvents({
             .catch((e) => console.warn("[db] salvage failed", e));
         }
         // 新一轮：上一轮的状态作废，第一段 chunk 会开一条新消息
-        delete streams.current[acpSid];
         return;
       }
 
@@ -610,7 +690,9 @@ export function useAcpEvents({
           clog("RESULT-NOUI", `acp=${acpSid ?? "-"} kind=${event.kind}`);
           diag(`promptResult 无归属会话（acp=${acpSid ?? "-"}）`);
           if (acpSid) {
-            delete streams.current[acpSid];
+            for (const [streamKey, stream] of Object.entries(streams.current)) {
+              if (stream.acpSid === acpSid) delete streams.current[streamKey];
+            }
             delete awaiting.current[acpSid];
           }
           return;
@@ -622,7 +704,10 @@ export function useAcpEvents({
           reason: event.kind === "promptResult" ? "这一轮已结束" : "这一轮已失败",
           cause: "turn-end",
         });
-        const st = acpSid ? streams.current[acpSid] : undefined;
+        const streamsForTurn = acpSid
+          ? Object.entries(streams.current).filter(([, stream]) => stream.acpSid === acpSid)
+          : [];
+        const streamingIds = new Set(streamsForTurn.map(([, stream]) => stream.msgId));
         const actId = `act-stream-${acpSid ?? "x"}`;
         const turnId = acpSid ? acpToTurn.current[acpSid] : undefined;
         const failed = event.kind === "promptFailed";
@@ -652,7 +737,7 @@ export function useAcpEvents({
             : s.turns,
           msgs: [
             ...s.msgs.map((m) =>
-              st && m.id === st.msgId && m.role === "player"
+              streamingIds.has(m.id) && m.role === "player"
                 ? { ...m, streaming: false, stopped: cancelled || m.stopped }
                 : m,
             ),
@@ -669,10 +754,10 @@ export function useAcpEvents({
           ],
         }));
 
-        const full = st?.text ?? "";
+        const fullLength = streamsForTurn.reduce((sum, [, stream]) => sum + stream.text.length, 0);
         clog(
           "RESULT",
-          `acp=${acpSid ?? "-"} ui=${uiSid} kind=${event.kind} stop=${stopReason ?? "-"} len=${full.length}`,
+          `acp=${acpSid ?? "-"} ui=${uiSid} kind=${event.kind} stop=${stopReason ?? "-"} streams=${streamsForTurn.length} len=${fullLength}`,
         );
         if (failed) {
           console.warn("[acp] prompt failed", event.msg);
@@ -686,32 +771,38 @@ export function useAcpEvents({
             },
           ]).catch((e) => console.warn("[db] append failure notice failed", e));
         }
-        if (full && st) {
-          messagesAppend(uiSid, [
-            {
-              id: st.msgId,
-              role: "player",
-              kind: "text",
-              payload: {
-                id: st.msgId,
-                role: "player",
-                playerId: st.authorId ?? MAIN_AGENT_ID,
-                text: full,
-                at: now(),
-                streaming: false,
-              },
-            },
-          ])
-            .then(() => clog("DB-OK", `ui=${uiSid} id=${st.msgId} len=${full.length}`))
-            .catch((e) => {
+        void (async () => {
+          for (const [, st] of streamsForTurn) {
+            if (!st.text) continue;
+            try {
+              await messagesAppend(st.uiSid, [
+                {
+                  id: st.msgId,
+                  role: "player",
+                  kind: "text",
+                  payload: {
+                    id: st.msgId,
+                    role: "player",
+                    playerId: st.authorId ?? MAIN_AGENT_ID,
+                    text: st.text,
+                    at: now(),
+                    streaming: false,
+                  },
+                },
+              ]);
+              clog("DB-OK", `ui=${st.uiSid} id=${st.msgId} len=${st.text.length}`);
+            } catch (e) {
               console.warn("[db] append reply failed", e);
-              clog("DB-ERR", `ui=${uiSid} id=${st.msgId} ${String(e)}`);
+              clog("DB-ERR", `ui=${st.uiSid} id=${st.msgId} ${String(e)}`);
               // 写不进库必须让用户看见，否则恢复会话时他只会以为回答丢了
-              pushSystemNotice(patchSession, uiSid, `这条回答没能写入历史：${String(e)}`);
-            });
-        }
+              pushSystemNotice(patchSession, st.uiSid, `这条回答没能写入历史：${String(e)}`);
+            }
+          }
+        })();
         if (acpSid) {
-          delete streams.current[acpSid];
+          for (const [streamKey, stream] of streamsForTurn) {
+            if (streams.current[streamKey] === stream) delete streams.current[streamKey];
+          }
           delete awaiting.current[acpSid];
         }
         return;
@@ -775,6 +866,7 @@ export function useAcpEvents({
     diag,
     sessionsByProfile,
     commandsByAcpSession,
+    messageIdByAcpSession,
     flushStream,
     onAgentEvent,
     onSession,

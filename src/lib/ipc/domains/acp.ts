@@ -57,6 +57,15 @@ export function sessionPrompt(
   return invokeCmd<void>("session_prompt", { sessionId, text, uiSessionId });
 }
 
+/** 插话：发 `/steer <text>`，但不开新轮次。 */
+export function sessionSteer(
+  sessionId: string,
+  uiSessionId: string,
+  text: string,
+): Promise<void> {
+  return invokeCmd<void>("session_steer", { sessionId, uiSessionId, text });
+}
+
 /**
  * 请求 agent 取消当前轮。
  *
