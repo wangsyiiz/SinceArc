@@ -21,6 +21,7 @@ fn hermes() -> ProfileDto {
         // 进程启动目录与 session cwd 故意不同，才能分清它认哪个
         cwd: "/home/jerry".into(),
         default_mode: None,
+        default_mcp: None,
         caps: None,
         caps_at: None,
         distro: Some("fedora".into()),

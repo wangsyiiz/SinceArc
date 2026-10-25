@@ -88,6 +88,28 @@ function requestClient(id, timeoutMs = REQUEST_TIMEOUT_MS) {
   });
 }
 
+/** 合同测试用：把生命周期请求里收到的 mcpServers 原样回显成一条正文。 */
+function echoMcpServers(params, sessionId) {
+  const servers = params?.mcpServers;
+  if (!Array.isArray(servers) || servers.length === 0) {
+    return;
+  }
+  send({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: {
+          type: "text",
+          text: `MCP-SERVERS: ${JSON.stringify(servers)}`,
+        },
+      },
+    },
+  });
+}
+
 function checkFromResponse(id, requestedPath, response) {
   if (response.timeout) {
     return {
@@ -288,7 +310,20 @@ async function handleLine(line) {
           },
         });
       }, 100);
+      setTimeout(() => echoMcpServers(message.params, sessionId), 100);
       return;
+    case "session/load": {
+      log("session/load");
+      adoptSessionCwd(message.params);
+      const loadedSessionId =
+        typeof message.params?.sessionId === "string"
+          ? message.params.sessionId
+          : activeSessionId;
+      activeSessionId = loadedSessionId;
+      reply(message.id, { sessionId: loadedSessionId });
+      setTimeout(() => echoMcpServers(message.params, loadedSessionId), 100);
+      return;
+    }
     case "session/prompt":
       if (promptInFlight) {
         replyError(message.id, -32600, "prompt already in flight");

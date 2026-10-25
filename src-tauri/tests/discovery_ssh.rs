@@ -32,6 +32,7 @@ async fn ssh_扫描能找到远端已装的_agent() {
         args: vec!["acp".into()],
         cwd: "/tmp".into(),
         default_mode: None,
+        default_mcp: None,
         caps: None,
         caps_at: None,
         distro: None,

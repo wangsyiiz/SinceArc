@@ -382,6 +382,9 @@ impl Db {
         conn.execute_batch(SCHEMA)?;
         ensure_event_kind_is_free(&conn)?;
         ensure_column(&conn, "profiles", "default_mode", "TEXT")?;
+        // E13.5：MCP 三层名单。NULL 有语义（继承），所以两列都不能给默认值。
+        ensure_column(&conn, "profiles", "default_mcp_json", "TEXT")?;
+        ensure_column(&conn, "sessions", "mcp_names_json", "TEXT")?;
         // E13.2：握手能力快照。老库补列，不清会话、不动 SCHEMA_VERSION。
         ensure_column(&conn, "profiles", "caps_json", "TEXT")?;
         ensure_column(&conn, "profiles", "caps_at", "INTEGER")?;
@@ -422,7 +425,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT id, name, launch_kind, program, args_json, default_cwd,
                     distro, shell, ssh_host, ssh_port, ssh_user, ssh_auth, ssh_key_path,
-                    default_mode, caps_json, caps_at
+                    default_mode, caps_json, caps_at, default_mcp_json
              FROM profiles ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -442,6 +445,22 @@ impl Db {
                     None
                 }
             });
+            let default_mcp = match r.get::<_, Option<String>>(16)? {
+                Some(raw) => match serde_json::from_str::<Vec<String>>(&raw) {
+                    Ok(names) => Some(names),
+                    Err(e) => {
+                        // 坏名单只影响这一条，按「继承目录」处理，不能让配置列表读不出来。
+                        tracing::warn!(
+                            target: "sincearc::db",
+                            profile = %id,
+                            error = %e,
+                            "MCP 默认名单无法解析，按继承目录处理"
+                        );
+                        None
+                    }
+                },
+                None => None,
+            };
             Ok(ProfileDto {
                 id,
                 name: r.get(1)?,
@@ -459,6 +478,7 @@ impl Db {
                 ssh_user: r.get(10)?,
                 ssh_auth: r.get(11)?,
                 ssh_key_path: r.get(12)?,
+                default_mcp,
                 // 密码从不落盘：读回来永远是 None
                 ssh_password: None,
             })
@@ -880,6 +900,114 @@ impl Db {
             "UPDATE sessions SET mode_override = ?2, updated_at = ?3 WHERE id = ?1",
             params![ui_session_id, value, now()],
         )?;
+        Ok(())
+    }
+
+    /* ---------------- MCP 目录与三层名单 ---------------- */
+
+    /// 外层 None = 会话不存在；内层 None = 列值 NULL（继承）。
+    pub fn session_mcp_names_raw(&self, ui_session_id: &str) -> rusqlite::Result<Option<Option<String>>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.query_row(
+            "SELECT mcp_names_json FROM sessions WHERE id = ?1",
+            params![ui_session_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+    }
+
+    pub fn set_session_mcp_names(
+        &self,
+        ui_session_id: &str,
+        value: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "UPDATE sessions SET mcp_names_json = ?2, updated_at = ?3 WHERE id = ?1",
+            params![ui_session_id, value, now()],
+        )?;
+        Ok(())
+    }
+
+    /// 外层 None = 会话不存在；内层 None = 草稿会话还没绑连接。
+    pub fn session_profile_id(&self, ui_session_id: &str) -> rusqlite::Result<Option<Option<String>>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.query_row(
+            "SELECT profile_id FROM sessions WHERE id = ?1",
+            params![ui_session_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+    }
+
+    /// 外层 None = profile 不存在；内层 None = 列值 NULL（继承目录 enabled）。
+    pub fn profile_default_mcp_raw(&self, profile_id: &str) -> rusqlite::Result<Option<Option<String>>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.query_row(
+            "SELECT default_mcp_json FROM profiles WHERE id = ?1",
+            params![profile_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+    }
+
+    pub fn set_profile_default_mcp(
+        &self,
+        profile_id: &str,
+        value: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "UPDATE profiles SET default_mcp_json = ?2, updated_at = ?3 WHERE id = ?1",
+            params![profile_id, value, now()],
+        )?;
+        Ok(())
+    }
+
+    /// 目录按 rowid 排序：名单顺序不重要，同一份配置永远得到同一份报文。
+    pub fn mcp_catalog_rows(&self) -> rusqlite::Result<Vec<crate::mcp::McpRow>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT name, kind, config_json, enabled, rowid
+               FROM mcp_servers ORDER BY rowid ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get::<_, i64>(3)? != 0,
+                r.get(4)?,
+            ))
+        })?;
+        rows.collect()
+    }
+
+    pub fn upsert_mcp_server(
+        &self,
+        name: &str,
+        kind: &str,
+        config_json: &str,
+        enabled: bool,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let ts = now();
+        conn.execute(
+            "INSERT INTO mcp_servers (name, kind, config_json, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             ON CONFLICT(name) DO UPDATE SET
+               kind = excluded.kind,
+               config_json = excluded.config_json,
+               enabled = excluded.enabled,
+               updated_at = excluded.updated_at",
+            params![name, kind, config_json, enabled as i64, ts],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_mcp_server(&self, name: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute("DELETE FROM mcp_servers WHERE name = ?1", params![name])?;
         Ok(())
     }
 
@@ -1881,6 +2009,7 @@ mod tests {
             args: vec!["acp".into()],
             cwd: "/mnt/c/source/sincearc".into(),
             default_mode: None,
+            default_mcp: None,
             caps: None,
             caps_at: None,
             distro: Some("fedora".into()),

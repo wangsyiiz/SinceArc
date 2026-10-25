@@ -11,6 +11,11 @@ export type ProfileDto = { id: string, name: string,
  */
 launch: string, program: string, args: Array<string>, cwd: string, defaultMode: string | null, 
 /**
+ * 这个连接默认注入的 MCP 名单；None = 继承目录 enabled。
+ * 只读：由 `profile_set_default_mcp` 单独写，`profiles_save` 不碰它。
+ */
+defaultMcp: Array<string> | null, 
+/**
  * 上次握手报上来的能力快照；从未握手为 None。
  */
 caps: AgentCaps | null, capsAt: number | null, distro: string | null, shell: string | null, 

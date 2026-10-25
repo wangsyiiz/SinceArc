@@ -3,6 +3,7 @@ pub mod coalesce;
 pub mod commands;
 pub mod db;
 pub mod lock;
+pub mod mcp;
 pub mod mention;
 pub mod state;
 pub mod trace;
@@ -219,6 +220,12 @@ pub fn run() {
             commands::delegate_cancel,
             commands::profiles_load,
             commands::profiles_save,
+            commands::mcp_catalog,
+            commands::mcp_upsert,
+            commands::mcp_delete,
+            commands::session_set_mcp_names,
+            commands::profile_set_default_mcp,
+            commands::session_mcp_state,
             commands::settings_load,
             commands::settings_save,
             commands::sessions_list,

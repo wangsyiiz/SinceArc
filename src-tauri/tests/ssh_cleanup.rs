@@ -27,6 +27,7 @@ fn ssh_profile(password: String) -> ProfileDto {
         ssh_key_path: None,
         ssh_password: Some(password),
         default_mode: None,
+        default_mcp: None,
         caps: None,
         caps_at: None,
     }

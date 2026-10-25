@@ -21,6 +21,7 @@ use crate::acp::launch::{render_command_line, AgentProfile, Launch, SshAuth, Ssh
 use crate::acp::{self, transport};
 use crate::db;
 use crate::lock::SessionLockDto;
+use crate::mcp::{self, McpCatalogEntryDto, McpServerDto, SessionMcpStateDto};
 use crate::state::{
     AgentHandle, AppState, ContextMode, ContextReason, DelegateEntry, DelegateStatus, Delegates,
     SessionRecord,
@@ -227,7 +228,7 @@ pub struct CmdError {
 }
 
 impl CmdError {
-    fn new(code: u32, msg: impl Into<String>) -> Self {
+    pub(crate) fn new(code: u32, msg: impl Into<String>) -> Self {
         Self {
             code,
             msg: msg.into(),
@@ -257,6 +258,10 @@ pub struct ProfileDto {
     pub cwd: String,
     #[serde(default)]
     pub default_mode: Option<String>,
+    /// 这个连接默认注入的 MCP 名单；None = 继承目录 enabled。
+    /// 只读：由 `profile_set_default_mcp` 单独写，`profiles_save` 不碰它。
+    #[serde(default)]
+    pub default_mcp: Option<Vec<String>>,
     /// 上次握手报上来的能力快照；从未握手为 None。
     #[serde(default)]
     pub caps: Option<acp::AgentCaps>,
@@ -662,6 +667,7 @@ pub struct AgentUserTestOutcome {
 /// 既未必与用户输入一致，也判不出「这个 id 能不能恢复」。
 #[tauri::command]
 pub async fn agent_user_test(
+    state: State<'_, AppState>,
     profile: ProfileDto,
     acp_session_id: String,
     cwd: Option<String>,
@@ -689,10 +695,17 @@ pub async fn agent_user_test(
         });
     }
 
+    let mcp_servers = match mcp::profile_mcp_servers(state.inner(), &profile.id).await {
+        Ok(servers) => servers,
+        Err(error) => {
+            let _ = proc.kill_tree("disconnect").await;
+            return Err(error);
+        }
+    };
     let params = serde_json::json!({
         "sessionId": acp_session_id,
         "cwd": cwd,
-        "mcpServers": [],
+        "mcpServers": mcp_servers,
     });
     let res = proc
         .request("session/load", params, Duration::from_secs(120))
@@ -1939,6 +1952,30 @@ async fn attach_session(
         }
         ResumeDecision::CanLoad => {
             let h = resume_handle.expect("CanLoad implies a handle");
+            let mcp_servers = match mcp::target_mcp_servers(
+                state,
+                profile_id,
+                ui_session_id.as_deref(),
+            )
+            .await
+            {
+                Ok(servers) => servers,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "sincearc::ipc", error = %error.msg,
+                        "MCP 清单解析失败，拒绝恢复会话"
+                    );
+                    return (
+                        None,
+                        None,
+                        ResumeOutcome::Unavailable {
+                            acp_session_id: h.acp_session_id.clone(),
+                            reason: error.msg,
+                        },
+                        watermark,
+                    );
+                }
+            };
             let req = ResumeRequest {
                 profile_id,
                 acp_session_id: &h.acp_session_id,
@@ -1946,6 +1983,7 @@ async fn attach_session(
                 ui_session_id: ui_session_id.as_deref(),
                 expected_agent_name: h.agent_name.as_deref(),
                 bind_ui_handle: true,
+                mcp_servers: &mcp_servers,
             };
             let (outcome, modes) = load_resume_handle(state, handle, &req).await;
             let session_id = match &outcome {
@@ -1957,11 +1995,31 @@ async fn attach_session(
         ResumeDecision::Fresh => {}
     }
 
+    let mcp_servers =
+        match mcp::target_mcp_servers(state, profile_id, ui_session_id.as_deref()).await {
+            Ok(servers) => servers,
+            Err(error) => {
+                tracing::warn!(
+                    target: "sincearc::ipc", error = %error.msg,
+                    "MCP 清单解析失败，拒绝新建会话"
+                );
+                return (
+                    None,
+                    None,
+                    ResumeOutcome::Unavailable {
+                        acp_session_id: String::new(),
+                        reason: error.msg,
+                    },
+                    None,
+                );
+            }
+        };
+
     let created = handle
         .proc
         .request(
             "session/new",
-            serde_json::json!({ "cwd": cwd, "mcpServers": [] }),
+            serde_json::json!({ "cwd": cwd, "mcpServers": mcp_servers }),
             Duration::from_secs(120),
         )
         .await;
@@ -2031,6 +2089,8 @@ struct ResumeRequest<'a> {
     /// 是否把这次 load 写回 ui 会话的 live 句柄。
     /// 成员 load 必须为 false：它带的是群 id，重绑会把群的句柄换成成员的。
     bind_ui_handle: bool,
+    /// 调用方已经按「会话级优先、否则连接级」解析好的注入清单。
+    mcp_servers: &'a [serde_json::Value],
 }
 
 async fn load_resume_handle(
@@ -2044,7 +2104,7 @@ async fn load_resume_handle(
     let params = serde_json::json!({
         "sessionId": acp_session_id,
         "cwd": cwd,
-        "mcpServers": [],
+        "mcpServers": req.mcp_servers,
     });
     let v = match handle
         .proc
@@ -2147,6 +2207,77 @@ pub async fn profiles_save(
 }
 
 #[tauri::command]
+pub async fn mcp_catalog(
+    state: State<'_, AppState>,
+) -> Result<Vec<McpCatalogEntryDto>, CmdError> {
+    let rows = state
+        .db
+        .mcp_catalog_rows()
+        .map_err(|e| CmdError::new(50000, format!("读取 MCP 目录失败：{e}")))?;
+    Ok(mcp::catalog_entries(&rows))
+}
+
+#[tauri::command]
+pub async fn mcp_upsert(
+    state: State<'_, AppState>,
+    server: McpServerDto,
+    enabled: bool,
+) -> Result<(), CmdError> {
+    mcp::upsert_server(state.inner(), server, enabled)
+}
+
+#[tauri::command]
+pub async fn mcp_delete(state: State<'_, AppState>, name: String) -> Result<(), CmdError> {
+    mcp::delete_server(state.inner(), &name)
+}
+
+#[tauri::command]
+pub async fn session_set_mcp_names(
+    state: State<'_, AppState>,
+    ui_session_id: String,
+    names: Option<Vec<String>>,
+) -> Result<(), CmdError> {
+    let raw = match names.as_ref() {
+        Some(names) => Some(
+            serde_json::to_string(names)
+                .map_err(|e| CmdError::new(50700, format!("MCP 名单序列化失败：{e}")))?,
+        ),
+        None => None,
+    };
+    state
+        .db
+        .set_session_mcp_names(&ui_session_id, raw.as_deref())
+        .map_err(|e| CmdError::new(50000, format!("保存会话 MCP 名单失败：{e}")))
+}
+
+#[tauri::command]
+pub async fn profile_set_default_mcp(
+    state: State<'_, AppState>,
+    profile_id: String,
+    names: Option<Vec<String>>,
+) -> Result<(), CmdError> {
+    let raw = match names.as_ref() {
+        Some(names) => Some(
+            serde_json::to_string(names)
+                .map_err(|e| CmdError::new(50700, format!("MCP 名单序列化失败：{e}")))?,
+        ),
+        None => None,
+    };
+    state
+        .db
+        .set_profile_default_mcp(&profile_id, raw.as_deref())
+        .map_err(|e| CmdError::new(50000, format!("保存连接 MCP 名单失败：{e}")))
+}
+
+#[tauri::command]
+pub async fn session_mcp_state(
+    state: State<'_, AppState>,
+    ui_session_id: String,
+) -> Result<SessionMcpStateDto, CmdError> {
+    mcp::session_state(state.inner(), &ui_session_id).await
+}
+
+#[tauri::command]
 pub async fn settings_load(state: State<'_, AppState>) -> Result<SettingsReport, CmdError> {
     let (settings, issues) = state
         .db
@@ -2188,11 +2319,13 @@ pub async fn session_new(
         .await
         .ok_or_else(|| CmdError::new(50300, format!("profile 未连接，不能建会话：{profile_id}")))?;
 
+    let mcp_servers =
+        mcp::target_mcp_servers(state.inner(), &profile_id, ui_session_id.as_deref()).await?;
     let result = handle
         .proc
         .request(
             "session/new",
-            serde_json::json!({ "cwd": cwd, "mcpServers": [] }),
+            serde_json::json!({ "cwd": cwd, "mcpServers": mcp_servers }),
             REQUEST_TIMEOUT,
         )
         .await?;
@@ -2255,11 +2388,12 @@ pub async fn session_rebind(
         CmdError::new(50300, format!("profile 未连接，不能重建会话：{profile_id}"))
     })?;
 
+    let mcp_servers = mcp::session_mcp_servers(state.inner(), &ui_session_id).await?;
     let result = handle
         .proc
         .request(
             "session/new",
-            serde_json::json!({ "cwd": cwd, "mcpServers": [] }),
+            serde_json::json!({ "cwd": cwd, "mcpServers": mcp_servers }),
             REQUEST_TIMEOUT,
         )
         .await?;
@@ -2454,12 +2588,16 @@ async fn wait_for_delegate(
     }
 }
 
-async fn new_child_session(handle: &AgentHandle, cwd: &str) -> Result<String, CmdError> {
+async fn new_child_session(
+    handle: &AgentHandle,
+    cwd: &str,
+    mcp_servers: &[serde_json::Value],
+) -> Result<String, CmdError> {
     let result = handle
         .proc
         .request(
             "session/new",
-            serde_json::json!({ "cwd": cwd, "mcpServers": [] }),
+            serde_json::json!({ "cwd": cwd, "mcpServers": mcp_servers }),
             REQUEST_TIMEOUT,
         )
         .await?;
@@ -2480,6 +2618,7 @@ async fn create_delegate_child(
     cwd: &str,
     caps_fork: Option<bool>,
     member_acp_session: Option<&str>,
+    mcp_servers: &[serde_json::Value],
 ) -> Result<(String, ContextMode, ContextReason), CmdError> {
     let mut fork_failed = false;
     if plan_child(caps_fork, false).0 == ContextMode::MemberFork {
@@ -2492,7 +2631,7 @@ async fn create_delegate_child(
                 let params = serde_json::json!({
                     "sessionId": member_acp_session,
                     "cwd": cwd,
-                    "mcpServers": [],
+                    "mcpServers": mcp_servers,
                 });
                 match handle
                     .proc
@@ -2532,13 +2671,13 @@ async fn create_delegate_child(
             None => {
                 // 成员没有可 fork 的常驻会话：fork 压根没发出，
                 // 不能报成 fork_failed —— 那会让用户以为 agent 拒绝过。
-                let child = new_child_session(handle, cwd).await?;
+                let child = new_child_session(handle, cwd, mcp_servers).await?;
                 return Ok((child, ContextMode::TaskOnly, ContextReason::MemberMissing));
             }
         }
     }
 
-    let child = new_child_session(handle, cwd).await?;
+    let child = new_child_session(handle, cwd, mcp_servers).await?;
     let (context, reason) = plan_child(caps_fork, fork_failed);
     Ok((child, context, reason))
 }
@@ -2742,9 +2881,11 @@ pub async fn delegate_task(
 
     guard_delegate_depth(&state.delegates, parent_acp_session.as_deref()).await?;
 
+    // 子任务是替发起派活的用户干的活：MCP 工具面取父 UI 会话的生效清单（docs/mcp.md §5）。
+    let mcp_servers = mcp::session_mcp_servers(state.inner(), &parent_ui_session_id).await?;
     let member_acp_session = forkable_member_session(&member.acp_session_id);
     let (child_acp_session_id, context, reason) =
-        create_delegate_child(&agent, &cwd, caps_fork, member_acp_session).await?;
+        create_delegate_child(&agent, &cwd, caps_fork, member_acp_session, &mcp_servers).await?;
 
     state
         .routes
@@ -3092,6 +3233,8 @@ pub async fn session_load(
         });
     }
 
+    let mcp_servers =
+        mcp::target_mcp_servers(state.inner(), &profile_id, ui_session_id.as_deref()).await?;
     let req = ResumeRequest {
         profile_id: &profile_id,
         acp_session_id: &acp_session_id,
@@ -3100,6 +3243,7 @@ pub async fn session_load(
         expected_agent_name: expected_agent_name.as_deref(),
         // 成员 load 带着群会话 id，但那份 live 句柄属于群本身
         bind_ui_handle: false,
+        mcp_servers: &mcp_servers,
     };
     let (resume, modes) = load_resume_handle(&state, &handle, &req).await;
     Ok(SessionLoadOutcome {
@@ -3873,6 +4017,7 @@ mod launch_input_tests {
             args: vec!["acp".into()],
             cwd: cwd.into(),
             default_mode: None,
+            default_mcp: None,
             caps: None,
             caps_at: None,
             distro: Some("fedora".into()),
