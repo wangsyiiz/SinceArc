@@ -3316,10 +3316,11 @@ pub async fn session_cancel(
         )
         .await
     {
-        // 通知送不到也要继续回收：agent 可能已经半死，正是最需要清理的时候。
+        // 通知送不到就送到这儿：不代 agent 收尾，也不拆连接。
+        // 真要收这条连接，用户走设置页的「断开连接」（那才是连接级动作）。
         tracing::warn!(
             target: "sincearc::ipc", profile = %profile_id, error = %e,
-            "session cancel notify failed; killing tree anyway"
+            "session cancel notify failed"
         );
     }
 
@@ -3340,9 +3341,12 @@ pub async fn session_cancel(
             .emit_json("session.lock", false, meta, &SessionLockDto::unlocked(session_id.clone(), ui_sid));
     }
 
-    // 停止 = 这一轮连同它 fork 出来的工具一起结束。进程树回收后，
-    // 下一轮由前端重新连接（会话句柄还在库里，可 resume）。
-    teardown_profile(state.inner(), &profile_id, "cancel").await;
+    // 到此为止：只发通知，**不收进程树、不拆连接**（docs/orchestration.md §6.1）。
+    // `session/cancel` 是轮次级请求，取消之后那一轮起的子进程归 agent 自己收 —— 我们代它收
+    // 就超出「仅做 ACP 提供的能力」，而且会把一个轮次级动作升级成连接级：
+    // 同一条连接上还有别的成员会话、父会话那一轮、挂着的权限请求，全会被一起端掉。
+    // 进程树只在**我们主动终止连接**时收：agent_disconnect / 换连接 / 进程退出 / 应用退出。
+    // 极端情况（agent 收到 cancel 后既不回终态也不动）由用户在设置页「断开连接」兜住。
     Ok(())
 }
 

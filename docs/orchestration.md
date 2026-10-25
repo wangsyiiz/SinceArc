@@ -141,8 +141,17 @@ author_id       = 目标成员 agent_users.id  ← 轨迹里是那个人的支�
 - 命令：`delegate_cancel(handleId)`。按句柄找到 `DelegateEntry`，向**子会话**发 `session/cancel`
   （发在**目标成员那条连接**上，`sessionId` = 子 ACP 会话）。
 - **只发通知，不 teardown 连接**：子会话跑在成员的连接上，那条连接里还有成员自己的会话和父会话那一轮 ——
-  为一个子任务杀整条连接，等于连带停掉别人的活（主会话的 `session/cancel` 目前是「停一轮 + 收进程树」，
-  两件事的代价不同，别混用；主会话那一侧要不要也收敛成「只停这一轮」另议）。
+  为一个子任务杀整条连接，等于连带停掉别人的活。
+- **这条同样适用于主会话的「停止」**（2026-10-25 定，纠正旧实现）：`session_cancel` 现在也只做
+  「打取消标记 → 发 `session/cancel` → 清写锁」，**不再 `kill_tree`**。理由两条：
+  ① `session/cancel` 是协议给的能力，**取消之后的收尾是 agent 的事** —— 谁起的子进程谁收，
+  我们代它收就超出了「仅做 ACP 提供的能力」这条边界；
+  ② 杀整条进程等于把一个**轮次级**动作做成**连接级**：停一个成员的活动，把同一条连接上
+  其他成员的会话、主会话那一轮甚至挂着的权限请求一起收掉，直接破坏了派活/群聊的语义。
+  我们只在自己**主动终止连接**时收进程树：`agent_disconnect`（设置页「断开连接」）、
+  换连接（replace）、进程自己退出、应用退出 —— 那时收的是「这条连接」，不是「这一轮」。
+  代价：agent 自己不收的残骸会留到下一次断开连接或退出；这也是它原生 UI 里的行为，不额外兜。
+  兜不掉的极端情况（agent 收到 cancel 后既不回终态也不动）用「断开连接」解决，界面上它已经存在（设置 → 连接）。
 - 返回 `status = "cancelling"`（不是 `cancelled`）：送达 ≠ 已停。
 - 终态判定：`promptResult` / `promptFailed` 到达时取走取消标记（`AppState.take_cancel(child)`），
   标记在手 → `status = cancelled`，`stop_reason` 保留 agent 原话；否则照旧 `finished` / `failed`。
