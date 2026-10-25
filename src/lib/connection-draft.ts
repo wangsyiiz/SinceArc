@@ -15,6 +15,7 @@ export function createEmptyConnection(id: string): AgentProfile {
     program: "hermes",
     args: ["acp"],
     cwd: "",
+    defaultMcp: null,
     ssh: { host: "", port: 22, user: "", auth: "key" },
   };
 }
@@ -52,6 +53,7 @@ export function isProfileDirty(a: AgentProfile, b: AgentProfile): boolean {
     distro: p.distro ?? "",
     shell: p.shell ?? "",
     defaultMode: p.defaultMode ?? null,
+    defaultMcp: p.defaultMcp ?? null,
     ssh: p.ssh
       ? {
           host: p.ssh.host ?? "",

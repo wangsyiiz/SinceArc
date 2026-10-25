@@ -40,6 +40,8 @@ export interface MenuProps {
   disabledReason?: string;
   className?: string;
   ariaLabel?: string;
+  /** 多个浮层共用一个触发器时，由调用方传入同一个 ref。 */
+  triggerRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
 interface LayerPosition {
@@ -51,6 +53,7 @@ interface LayerPosition {
 export function useAnchoredLayer(opts: {
   align?: "start" | "end";
   prefer?: Placement;
+  triggerRef?: React.RefObject<HTMLButtonElement | null>;
 }): {
   triggerRef: React.RefObject<HTMLButtonElement | null>;
   panelRef: React.RefObject<HTMLDivElement | null>;
@@ -66,7 +69,8 @@ export function useAnchoredLayer(opts: {
 } {
   const align = opts.align ?? "start";
   const prefer = opts.prefer ?? "below";
-  const triggerRef = useRef<HTMLButtonElement>(null);
+  const internalTriggerRef = useRef<HTMLButtonElement>(null);
+  const triggerRef = opts.triggerRef ?? internalTriggerRef;
   const panelRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<LayerPosition>({ top: 0, left: 0, ready: false });
@@ -168,8 +172,10 @@ export function Menu({
   disabledReason,
   className,
   ariaLabel = "菜单",
+  triggerRef,
 }: MenuProps) {
-  const { triggerRef, panelRef, open, setOpen, toggle, style } = useAnchoredLayer({ align });
+  const layer = useAnchoredLayer({ align, triggerRef });
+  const { panelRef, open, setOpen, toggle, style, triggerRef: resolvedTriggerRef } = layer;
   const wasOpen = useRef(false);
 
   useEffect(() => {
@@ -190,8 +196,8 @@ export function Menu({
     }
     if (!wasOpen.current) return;
     wasOpen.current = false;
-    triggerRef.current?.focus();
-  }, [open, triggerRef]);
+    resolvedTriggerRef.current?.focus();
+  }, [open, resolvedTriggerRef]);
 
   const onPanelKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
@@ -216,7 +222,7 @@ export function Menu({
   return (
     <>
       <button
-        ref={triggerRef}
+        ref={layer.triggerRef}
         type="button"
         disabled={disabled}
         aria-label={ariaLabel}

@@ -31,6 +31,7 @@ export function useProfileStore() {
         program: "hermes",
         args: ["acp"],
         cwd: "",
+        defaultMcp: null,
         ssh: { host: "", port: 22, user: "", auth: "key" },
         // 发现结果可以直接带完整启动配置进来，用户不必再手填 program/args
         ...draft,

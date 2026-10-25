@@ -157,6 +157,9 @@ Rust     McpServerDto（stdio 无 type、http/sse 有 type）+ 校验（§7）
          会话详情 → MCP：跟随连接默认 / 自定义 / 全部不要 + 已注入清单 + 观察到的调用次数
          能力面板：未声明的传输在 MCP 组里标「未声明」，但仍列出已注入的条目
 假 agent 回显收到的 mcpServers（合同测试用）
+前端     类型陷阱：`McpServerDto` 的 serde 是手写的（stdio 无 type），ts-rs 却按默认枚举收成
+         `{ Stdio: {...} }` 这种带外壳的联合，和线上形状不一致。界面一律走
+         `src/lib/mcp-display.ts::serverFields()` 归一化，不要按生成的声明直接读字段。
 文档     docs/acp-notes.md 补「mcpServers 是请求参数」与「注入≠连上」
 ```
 

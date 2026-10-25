@@ -1,0 +1,102 @@
+import { useEffect, useMemo, useState } from "react";
+import { asCmdError, mcpCatalog, type McpCatalogEntryDto } from "@/lib/ipc";
+import { McpServerChecklist } from "./McpChecklist";
+import { Segmented } from "./ui/Segmented";
+
+type DefaultMode = "follow" | "custom";
+
+/**
+ * 连接默认是便捷性层：NULL 跟随目录 enabled，数组是明确集合。
+ * 组件只改草稿，真正的 profile_set_default_mcp 在连接保存时发出。
+ */
+export function McpDefaultPicker({
+  value,
+  onChange,
+}: {
+  value: string[] | null;
+  onChange: (names: string[] | null) => void;
+}) {
+  const [catalog, setCatalog] = useState<McpCatalogEntryDto[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    mcpCatalog()
+      .then((entries) => {
+        if (alive) setCatalog(entries);
+      })
+      .catch((e) => {
+        if (alive) setError(asCmdError(e).msg);
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const enabledNames = useMemo(
+    () => catalog.filter((entry) => entry.enabled).map((entry) => entry.name),
+    [catalog],
+  );
+  const mode: DefaultMode = value === null ? "follow" : "custom";
+  const selected = value ?? [];
+
+  const chooseMode = (next: DefaultMode) => {
+    if (next === mode) return;
+    onChange(next === "follow" ? null : enabledNames);
+  };
+
+  const toggle = (name: string, checked: boolean) => {
+    const next = new Set(selected);
+    if (checked) next.add(name);
+    else next.delete(name);
+    onChange(catalog.filter((entry) => next.has(entry.name)).map((entry) => entry.name));
+  };
+
+  return (
+    <div className="border-t border-line-1/50 pt-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span className="text-ui font-medium text-ink-2">默认 MCP 服务器</span>
+        <Segmented
+          ariaLabel="默认 MCP 服务器"
+          compact
+          options={[
+            { value: "follow", label: "跟随目录默认" },
+            { value: "custom", label: "自定义" },
+          ]}
+          value={mode}
+          disabled={loading || !!error}
+          onChange={chooseMode}
+        />
+      </div>
+
+      <p className="mt-1.5 text-caption text-ink-3">
+        {mode === "follow"
+          ? `跟随目录默认启用（${enabledNames.length} 个）`
+          : `自定义（${selected.length} 个）`}
+      </p>
+
+      {loading ? (
+        <p className="mt-2 text-caption text-ink-3">正在读取 MCP 目录…</p>
+      ) : error ? (
+        <p className="mt-2 break-all text-caption text-danger-1">{`读取 MCP 目录失败：${error}`}</p>
+      ) : mode === "custom" ? (
+        <div className="sc-pane mt-2 p-1">
+          <McpServerChecklist
+            entries={catalog}
+            selected={selected}
+            onToggle={toggle}
+            emptyText="MCP 目录还是空的，先去「设置 → MCP」添加服务器。"
+          />
+        </div>
+      ) : null}
+
+      <p className="mt-1.5 text-caption text-ink-3">
+        这是这个连接新建会话时的默认，单个会话还能再改。
+      </p>
+    </div>
+  );
+}

@@ -24,15 +24,18 @@ export function MoreMenu({
   label = "更多操作",
   className,
   iconSize = 14,
+  triggerRef,
 }: {
   items: MenuItem[];
   label?: string;
   className?: string;
   iconSize?: number;
+  triggerRef?: React.RefObject<HTMLButtonElement | null>;
 }) {
   return (
     <Menu
       ariaLabel={label}
+      triggerRef={triggerRef}
       align="end"
       compact
       triggerVariant="ghost"

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, FolderGit2, MessageSquare, Plus, Settings2, Trash2 } from "lucide-react";
+import { ChevronDown, FolderGit2, MessageSquare, Plus, Settings2 } from "lucide-react";
 import type { AgentProfile, GithubPR, GithubRepo, Player, SessionSummary } from "@/types";
 import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
-import { MoreMenu } from "./MoreMenu";
+import { SessionMoreMenu } from "./SessionMcpMenu";
 import { StatusDot } from "./ui/Badge";
 
 export type SidebarMode = "sessions" | "code";
@@ -24,6 +24,8 @@ interface SidebarProps {
   onOpenSettings: () => void;
   /** 删除会话（App 负责确认与落库；这里只发起） */
   onDeleteSession: (s: SessionSummary) => void;
+  /** 会话级 MCP 减少后的显式重连：先断开，再由 App 调 ensureConnected。 */
+  onReconnectMcp: (sessionId: string, profileId: string) => Promise<void>;
   /** 这一轮还在跑的会话：不允许删（还没有 session/cancel，删了会留下没人看的 agent） */
   isSessionBusy?: (id: string) => boolean;
   onOpenRepo: (repoId: string) => void;
@@ -47,6 +49,7 @@ export function Sidebar({
   onNewWithProfile,
   onOpenSettings,
   onDeleteSession,
+  onReconnectMcp,
   isSessionBusy,
   onOpenRepo,
   onAddRepo,
@@ -176,17 +179,14 @@ export function Sidebar({
                       </button>
                       {/* hover 才出现：删除是低频破坏性操作，不该一直挂在那儿等误点 */}
                       <div className="absolute right-1 top-1.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-                        <MoreMenu
-                          items={[
-                            {
-                              label: "删除会话",
-                              icon: <Trash2 size={12} />,
-                              danger: true,
-                              disabled: busy,
-                              hint: busy ? "这一轮还在跑，等它结束再删" : undefined,
-                              onSelect: () => onDeleteSession(s),
-                            },
-                          ]}
+                        <SessionMoreMenu
+                          sessionId={s.id}
+                          profile={profile}
+                          busy={busy}
+                          onDelete={() => onDeleteSession(s)}
+                          onReconnect={() =>
+                            profile ? onReconnectMcp(s.id, profile.id) : Promise.resolve()
+                          }
                         />
                       </div>
                     </div>

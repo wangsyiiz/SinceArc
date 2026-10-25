@@ -32,6 +32,8 @@ export interface AgentProfile {
   cwd?: string;
   /** 连接的默认编辑审批模式；null/undefined = 不推，跟随 agent 默认 */
   defaultMode?: string | null;
+  /** 这个连接默认注入的 MCP 名单；null = 跟随目录里默认启用的那些。 */
+  defaultMcp?: string[] | null;
   /** 启动命令（如 hermes acp / npx -y @agentclientprotocol/codex-acp） */
   program?: string;
   args?: string[];

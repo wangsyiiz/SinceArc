@@ -9,6 +9,7 @@ import {
   Moon,
   Palette,
   Plug,
+  PlugZap,
   Sun,
   Plus,
   Trash2,
@@ -33,6 +34,8 @@ import {
 import {
   agentProbe,
   asCmdError,
+  profileSetDefaultMcp,
+  profilesSave,
   type AgentCaps,
   type AgentUser,
   type DiscoveryCandidate,
@@ -53,6 +56,8 @@ import { ModeSelect } from "@/components/ModeSelect";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { AgentUserDetail, AgentUsersList } from "@/components/AgentUsers";
 import { AgentLogo } from "@/components/AgentLogo";
+import { McpCatalogSection } from "@/components/McpCatalogSection";
+import { McpDefaultPicker } from "@/components/McpDefaultPicker";
 import { agentBrand } from "@/lib/agent-brands";
 import { capsRows } from "@/lib/caps-format";
 import { StatusDot } from "./ui/Badge";
@@ -66,6 +71,8 @@ interface SettingsViewProps {
   settings: ThreadSettings;
   theme: ThemeMode;
   profiles: AgentProfile[];
+  /** 当前会话所属连接；MCP 目录据此标注 agent 的传输能力。 */
+  selectedProfile?: AgentProfile;
   onUpdateProfile: (next: AgentProfile) => void;
   /** 连接/断开都走 App 里的那一份实现（并发去重、状态回写都在那边） */
   onConnect: (p: AgentProfile) => Promise<{
@@ -130,6 +137,7 @@ const ADD_PATH_OPTIONS: { value: AddPath; label: string }[] = [
 
 const SECTIONS = [
   { id: "connection", label: "连接", icon: Plug },
+  { id: "mcp", label: "MCP", icon: PlugZap },
   { id: "members", label: "成员", icon: Users },
   { id: "chat", label: "群聊", icon: MessageSquare },
   { id: "appearance", label: "外观", icon: Palette },
@@ -223,6 +231,7 @@ export function SettingsView({
   settings,
   theme,
   profiles,
+  selectedProfile,
   onUpdateProfile,
   onConnect,
   onDisconnect,
@@ -502,7 +511,7 @@ export function SettingsView({
   useEffect(() => {
     if (section === "connection" && !draft) return;
     if (section === "members" && !memberDetail) return;
-    if (section === "chat" || section === "appearance") return;
+    if (section === "chat" || section === "appearance" || section === "mcp") return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       if (document.querySelector('[role="menu"]') || document.querySelector("dialog[open]")) return;
@@ -562,13 +571,30 @@ export function SettingsView({
     void handleProbe(profile, false);
   };
 
-  const saveDraft = (profile: AgentProfile) => {
+  const saveDraft = async (profile: AgentProfile) => {
     if (!draft) return;
     const effective = effectiveProfile(profile);
     const gate = canSaveConnection(probeResults[effective.id]?.ok === true, effective);
     if (!gate.ok) return;
-    const id = draft.isNew ? onAddProfile(effective) : effective.id;
-    if (!draft.isNew) onUpdateProfile(effective);
+    const isNew = draft.isNew;
+    const id = isNew ? onAddProfile(effective) : effective.id;
+    try {
+      // 新连接先落库，profile_set_default_mcp 才能 UPDATE 到这一行。
+      if (isNew) await profilesSave([...profiles, effective]);
+      await profileSetDefaultMcp(id, effective.defaultMcp ?? null);
+      if (!isNew) onUpdateProfile(effective);
+    } catch (e) {
+      const err = asCmdError(e);
+      setErrors((prev) => ({
+        ...prev,
+        [id]: `保存默认 MCP 服务器失败：${err.msg}`,
+      }));
+      if (isNew) {
+        setDraft({ profile: { ...effective, id }, isNew: false, addPath: "manual" });
+        setConnectionId(id);
+      }
+      return;
+    }
     setConnectionId(id);
     setConnectionFocus({ id, tick: Date.now() });
     invalidateProbe(id);
@@ -710,7 +736,7 @@ export function SettingsView({
               size="sm"
               disabled={!saveGate.ok}
               title={saveGate.reason}
-              onClick={() => saveDraft(profile)}
+              onClick={() => void saveDraft(profile)}
             >
               保存
             </Button>
@@ -991,6 +1017,11 @@ export function SettingsView({
           </p>
         </div>
 
+        <McpDefaultPicker
+          value={profile.defaultMcp ?? null}
+          onChange={(defaultMcp) => patchDraft({ defaultMcp })}
+        />
+
         {errors[profile.id] && (
           <p className="break-all rounded-control bg-danger-1/10 px-2.5 py-2 font-mono text-caption text-danger-1">
             {errors[profile.id]}
@@ -1155,6 +1186,10 @@ export function SettingsView({
                       onOpen={(user) => setMemberDetail({ user })}
                     />
                   </div>
+                )}
+
+                {section === "mcp" && (
+                  <McpCatalogSection selectedProfile={selectedProfile} />
                 )}
 
                 {section === "chat" && (

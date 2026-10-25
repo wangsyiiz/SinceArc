@@ -655,6 +655,23 @@ export default function App() {
     [patchSession, reportResume],
   );
 
+  /**
+   * 会话 MCP 减少后的显式重连：先真的断开 agent，再走同一条 ensureConnected。
+   * 不在名单变化时自动做 —— 那会打断正在飞的轮次。
+   */
+  const reconnectMcp = useCallback(
+    async (uiSid: string, profileId: string) => {
+      await disconnect(profileId);
+      const result = await ensureConnected(profileId, uiSid, { force: true });
+      handleConnectResult(uiSid, result);
+      if (result.error) throw result.error;
+      if (!result.acpSid) {
+        throw { code: 50403, msg: "重连后 agent 没有给出会话" };
+      }
+    },
+    [disconnect, ensureConnected, handleConnectResult],
+  );
+
   const autoTried = useRef<Map<string, string>>(new Map());
   useEffect(() => {
     if (activeTab?.kind !== "session" || !activeTab.sessionId) return;
@@ -1064,6 +1081,7 @@ export default function App() {
             setDeleteError(null);
             setPendingDelete(x);
           }}
+          onReconnectMcp={reconnectMcp}
           isSessionBusy={(id) => !!sessionState[id]?.busy}
           onOpenRepo={(repoId) => {
             const repo = repoList.find((r) => r.id === repoId);
@@ -1341,6 +1359,11 @@ export default function App() {
             <SettingsView
               settings={settings}
               profiles={profiles}
+              selectedProfile={
+                activeSession?.profileId
+                  ? profiles.find((profile) => profile.id === activeSession.profileId)
+                  : undefined
+              }
               theme={settings.theme}
               onUpdateProfile={updateProfile}
               onAddProfile={(draft) => addProfile(draft)}
