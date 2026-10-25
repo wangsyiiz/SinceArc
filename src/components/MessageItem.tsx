@@ -4,8 +4,22 @@ import type { Message, Player, QuotedRef } from "@/types";
 import { cn } from "@/lib/utils";
 import { delegateActionLabel } from "@/lib/delegate-status";
 import { delegateCapsDetail } from "@/lib/delegate-target";
+import { isChatKind } from "@/lib/chat-kinds";
 import { PlayerAvatar } from "./PlayerAvatar";
 import { RemovedBadge } from "./RemovedBadge";
+
+/**
+ * 老 `Message` 形状 → 新的 kind 名（M0 的过渡投影）。
+ * 认不出来的 message 一律返回 null —— 不进聊天区，等它升级成真正的 atom kind。
+ */
+function chatKindOf(message: Message): string | null {
+  if (message.role === "system") return "notice.system";
+  if (message.role === "player") return "text.agent";
+  if (message.kind === "aside") return "aside";
+  if (message.delegate) return "delegate.card";
+  if (message.role === "user") return "text.user";
+  return null;
+}
 
 /**
  * 把 @handle 渲染成该玩家的颜色。
@@ -65,6 +79,9 @@ export function MessageItem({
   onCancelDelegate?: (handleId: string) => void | Promise<void>;
 }) {
   const [delegateExpanded, setDelegateExpanded] = useState(false);
+
+  const chatKind = chatKindOf(message);
+  if (chatKind === null || !isChatKind(chatKind)) return null;
 
   if (message.role === "system") {
     return (
