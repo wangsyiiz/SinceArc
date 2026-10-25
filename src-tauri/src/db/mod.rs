@@ -434,6 +434,24 @@ fn seal_open_atoms(
     }
 }
 
+/// 未封口只对仍在进行的轮有意义：终态轮与无轮次原子的迟到分片必须直接封口。
+fn open_allowed(conn: &Connection, turn_id: Option<&str>) -> rusqlite::Result<bool> {
+    let Some(turn_id) = turn_id else {
+        return Ok(false);
+    };
+    let status: Option<String> = conn
+        .query_row(
+            "SELECT status FROM turns WHERE id = ?1",
+            params![turn_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(matches!(
+        status.as_deref(),
+        Some("running") | Some("waiting_approval")
+    ))
+}
+
 /// 按字符边界截断，和 `trace::capture` 的口径一致，别切坏中文。
 fn truncate_utf8(text: &str, max_bytes: usize) -> (String, bool) {
     if text.len() <= max_bytes {
@@ -1393,7 +1411,8 @@ impl Db {
             let kind = crate::message_kind::chat_kind_of(&m.role, &m.kind, has_delegate)
                 .map(crate::message_kind::MessageKind::as_str)
                 .unwrap_or(m.kind.as_str());
-            let mergeable = is_chat_stream_message(&m.role, kind, turn_id);
+            let mergeable =
+                is_chat_stream_message(&m.role, kind, turn_id) && open_allowed(&tx, turn_id)?;
             let result: rusqlite::Result<()> = (|| {
                 if mergeable {
                     let open: Option<OpenStreamRow> = tx
@@ -1751,7 +1770,9 @@ impl Db {
         let at = now_ms();
         for e in events {
             seq += 1;
-            let sealed_at = if is_trace_stream_kind(&e.kind) {
+            let sealed_at = if is_trace_stream_kind(&e.kind)
+                && open_allowed(&tx, Some(e.turn_id.as_str()))?
+            {
                 let open: Option<OpenStreamRow> = tx
                     .query_row(
                         "SELECT id, payload_json, truncated, refs_json, ext_json FROM atoms
@@ -2795,6 +2816,24 @@ mod tests {
         }
     }
 
+    /// 原子 id 与 ACP messageId 分开给：同一段迟到回答的多个原子仍共享 messageId。
+    fn chat_stream_with_message_id(
+        atom_id: &str,
+        message_id: &str,
+        text: &str,
+        turn_id: &str,
+    ) -> MessageInput {
+        let mut msg = chat_stream(atom_id, text, turn_id, "text.agent");
+        msg.payload = serde_json::json!({
+            "id": message_id,
+            "role": "player",
+            "text": text,
+            "turnId": turn_id,
+        });
+        msg.refs = Some(serde_json::json!({ "messageId": message_id }));
+        msg
+    }
+
     fn acp_state(db: &Db, id: &str) -> Option<String> {
         let conn = db.conn.lock().expect("db poisoned");
         conn.query_row(
@@ -3385,6 +3424,8 @@ mod tests {
     #[test]
     fn append_events_writes_trace_atoms_visible_through_view() {
         let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
         let ev = |kind: &str, turn: &str| EventInput {
             turn_id: turn.into(),
             author_id: None,
@@ -3490,6 +3531,8 @@ mod tests {
     #[test]
     fn open_stream_fragments_merge_ext_shallowly_and_keep_old_refs() {
         let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
         let mut first = thought("一", "t-1");
         first.refs = Some(serde_json::json!({ "messageId": "m-1" }));
         first.ext = Some(serde_json::json!({ "x.demo.a": 1, "x.demo.keep": "old" }));
@@ -3526,6 +3569,8 @@ mod tests {
     #[test]
     fn five_thought_chunks_merge_into_one_open_atom() {
         let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
         for part in ["一", "二", "三", "四", "五"] {
             db.append_events("s-1", &[thought(part, "t-1")])
                 .expect("append thought chunk");
@@ -3556,6 +3601,8 @@ mod tests {
     #[test]
     fn tool_call_seals_the_thought_stream_and_the_next_thought_opens_a_new_row() {
         let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
         db.append_events("s-1", &[thought("前", "t-1")])
             .expect("thought before");
         db.append_events(
@@ -3607,7 +3654,7 @@ mod tests {
     }
 
     #[test]
-    fn finishing_a_turn_seals_its_open_thought_and_late_chunks_start_a_new_row() {
+    fn finishing_a_turn_seals_its_open_thought_and_late_chunks_stay_sealed() {
         let (db, path) = db_with_session();
         db.start_turn("s-1", "t-1", "问", None, None).expect("start");
         db.append_events("s-1", &[thought("前", "t-1")])
@@ -3627,7 +3674,7 @@ mod tests {
             )
             .expect("thought rows");
         assert_eq!(count, 2, "终态后不能累加回旧行");
-        assert_eq!(sealed_count, 1, "旧行已封口，迟到分片开出的新行仍 open");
+        assert_eq!(sealed_count, 2, "终态后迟到分片也必须直接封口");
         drop(conn);
         std::fs::remove_file(&path).ok();
     }
@@ -3635,6 +3682,8 @@ mod tests {
     #[test]
     fn thought_accumulation_stops_at_eight_kilobytes_and_marks_truncated() {
         let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
         let chunk = "x".repeat(5000);
         for _ in 0..2 {
             db.append_events("s-1", &[thought(&chunk, "t-1")])
@@ -3654,6 +3703,8 @@ mod tests {
     #[test]
     fn reopening_the_db_seals_open_rows_left_by_a_previous_process() {
         let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
         db.append_events("s-1", &[thought("写到一半", "t-1")])
             .expect("open thought");
         drop(db);
@@ -3694,6 +3745,8 @@ mod tests {
     #[test]
     fn chat_agent_text_chunks_merge_and_a_different_message_id_seals_the_previous_row() {
         let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
         db.append_messages("s-1", &[chat_stream("m-1", "你", "t-1", "text.agent")])
             .expect("first fragment");
         db.append_messages("s-1", &[chat_stream("m-1", "好", "t-1", "text.agent")])
@@ -3729,6 +3782,8 @@ mod tests {
     #[test]
     fn chat_non_stream_messages_seal_open_agent_text_and_stay_one_row_each() {
         let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-1", "问", None, None)
+            .expect("start turn");
         db.append_messages("s-1", &[chat_stream("m-1", "答", "t-1", "text")])
             .expect("agent stream");
         let user = MessageInput {
@@ -3758,6 +3813,123 @@ mod tests {
             )
             .expect("open agent");
         assert_eq!(open_agent, 0, "用户消息到达后 agent 正文段必须封口");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn agent_text_arriving_after_finished_turn_is_sealed() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-finished", "问", None, None)
+            .expect("start turn");
+        db.end_turn("t-finished", "finished", Some("end_turn"))
+            .expect("finish turn");
+
+        db.append_messages(
+            "s-1",
+            &[chat_stream("m-late", "迟到正文", "t-finished", "text.agent")],
+        )
+        .expect("late agent text");
+
+        let conn = db.conn.lock().unwrap();
+        let (sealed_at, status): (Option<i64>, String) = conn
+            .query_row(
+                "SELECT a.sealed_at, t.status
+                   FROM atoms a JOIN turns t ON t.id = a.turn_id
+                  WHERE a.id = 'm-late'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("late atom");
+        assert_eq!(status, "finished");
+        assert!(sealed_at.is_some(), "终态轮的迟到正文不能留 open");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn agent_text_fragments_in_running_turn_merge_and_stay_open() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-running", "问", None, None)
+            .expect("start turn");
+
+        db.append_messages(
+            "s-1",
+            &[chat_stream("m-running", "你", "t-running", "text.agent")],
+        )
+        .expect("first fragment");
+        db.append_messages(
+            "s-1",
+            &[chat_stream("m-running", "好", "t-running", "text.agent")],
+        )
+        .expect("second fragment");
+
+        let rows = db.load_messages("s-1", 10).expect("load");
+        assert_eq!(rows.len(), 1, "running 轮的同一段正文仍归并成一行");
+        assert_eq!(rows[0].payload["text"], "你好");
+        let conn = db.conn.lock().unwrap();
+        let open: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM atoms
+                  WHERE session_id = 's-1' AND id = 'm-running' AND sealed_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("open row");
+        assert_eq!(open, 1, "running 轮允许继续归并");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn late_fragments_after_finished_turn_do_not_merge_and_are_all_sealed() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-late", "问", None, None)
+            .expect("start turn");
+        db.end_turn("t-late", "finished", Some("end_turn"))
+            .expect("finish turn");
+
+        let first = chat_stream_with_message_id("late-atom-1", "m-late", "第一片", "t-late");
+        let second = chat_stream_with_message_id("late-atom-2", "m-late", "第二片", "t-late");
+        db.append_messages("s-1", &[first])
+            .expect("first late fragment");
+        db.append_messages("s-1", &[second])
+            .expect("second late fragment");
+
+        let conn = db.conn.lock().unwrap();
+        let (count, sealed_count, open_count): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), SUM(sealed_at IS NOT NULL), SUM(sealed_at IS NULL)
+                   FROM atoms
+                  WHERE session_id = 's-1' AND turn_id = 't-late'
+                    AND json_extract(payload_json, '$.id') = 'm-late'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("late fragment rows");
+        assert_eq!(count, 2, "终态后同一 messageId 的迟到分片不能再归并");
+        assert_eq!(sealed_count, 2, "两条迟到分片都必须封口");
+        assert_eq!(open_count, 0, "终态轮不能留 open 行");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn non_turn_message_is_sealed_immediately() {
+        let (db, path) = db_with_session();
+        db.append_messages("s-1", &[msg("m-non-turn", "非轮次消息", None, true)])
+            .expect("append non-turn message");
+
+        let conn = db.conn.lock().unwrap();
+        let (turn_id, sealed_at): (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT turn_id, sealed_at FROM atoms WHERE id = 'm-non-turn'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("non-turn atom");
+        assert_eq!(turn_id, None);
+        assert!(sealed_at.is_some(), "无轮次消息永远不会有分片续写，必须直接封口");
         drop(conn);
         std::fs::remove_file(&path).ok();
     }
