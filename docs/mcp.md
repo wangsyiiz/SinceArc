@@ -82,6 +82,10 @@ session/fork    派活 / 复制会话
 `load` / `resume` / `fork` 才生效。界面标注一句「改完不影响当前会话，重新连接后生效」，
 不做后台自动重连（那会打断在飞的轮次，副作用比它解决的问题大）。
 
+**这条在 agent 侧还有第二个坎**（见 §11.2）：MCP 工具登记在 agent **进程**的工具面上，
+某个会话登记过之后，同进程里所有会话都看得见，空名单不会注销。所以「减少」要真正生效，
+光重新 `load` 不够 —— 得让 agent 换一个进程。界面上要和「新增」分开讲。
+
 ## 5. 派活子会话：用父会话的生效清单
 
 派活 fork 的是**目标成员自己的会话**（`docs/orchestration.md §3`），但 MCP 清单取
@@ -204,6 +208,52 @@ URL 变了              /sse 换成 /mcp、换域名或路径 → 哈希不同 �
 这是中继模式的边界，不是我们的实现问题。
 
 中继 vs 自建 OAuth 的取舍摊平：
+
+## 11. 实测：agent 侧的三件事（2026-10-25，hermes 真机）
+
+这三条不是推断，是跑出来的，直接决定界面话该怎么说。
+
+### 11.1 「未声明」不等于「不支持」
+
+hermes 的 `mcpCapabilities` 三项（http / sse / acp）都没声明，我们的解析里全是 false。
+但它三种传输都实现了（`acp_adapter/server.py::_register_session_mcp_servers` 收
+`McpServerStdio | McpServerHttp | McpServerSse`）。
+
+实测：目录里同时放 stdio（`ping`）与 http（`pinghttp`），连接默认启用两条 → hermes 两个都连上了，
+轨迹里两次调用：
+
+```
+mcp__editor_ping_5cffc61d__ping         ← stdio
+mcp__editor_pinghttp_fa52a681__ping     ← http（未声明 http 能力，照样连上）
+返回都是 {"result": "pong"}
+http fixture 侧收到 initialize / tools/list / tools/call
+```
+
+⇒ §2 的「只标注、不拦截」不是保守，是**按实测**：按声明拦截会挡掉真实能力。
+
+### 11.2 MCP 登记是进程级的：空名单注销不掉
+
+hermes 把注入的 server 注册在**进程**的工具面上（`register_mcp_servers(configs)` 是进程全局），
+`session/load` 里空名单还被显式当成「保留这个会话原有的服务器」（源码注释：
+*An empty one (load always carries a list) keeps the session's servers*）。
+
+实测，同一进程里：
+
+```
+先让某会话注入 ["ping","pinghttp"]            → 它调得到两个 ping 工具
+再把另一个新会话的名单设成 [] 并发第一条消息   → 仍然回答「有」（工具是进程级的）
+断开连接（杀掉进程）+ 名单 [] + 重发          → 回答「没有」
+```
+
+⇒ 会话级的「**增加**」跟着下一次 `load` / `new` 就生效；「**减少**」要等 agent 换进程。
+我们不替 agent 自动重启（会打断别人的在飞轮次），界面上把两种改动分开说。
+
+### 11.3 工具名形状（给 §6 第 2 条用）
+
+hermes 的 MCP 工具名是 `mcp__editor_<server>_<hash>__<tool>`，其余 agent 也多是 `mcp__` 前缀。
+判据按形状（`mcp__` 开头且中段是目录里的 server 名）而不是按 agent 名 —— 认不出来就只显示「已注入」。
+
+## 12. 中继 vs 自建 OAuth：摊平
 
 ```
 中继    一次认证、跨 agent 复用、续期撤销都归它，我们零认证代码
