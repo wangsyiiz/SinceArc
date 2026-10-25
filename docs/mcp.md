@@ -233,6 +233,22 @@ http fixture 侧收到 initialize / tools/list / tools/call
 
 ### 11.2 MCP 登记是进程级的：空名单注销不掉
 
+**先分清这是不是协议要求 —— 不是。** ACP 只规定 `mcpServers` 是 `session/new|load|resume|fork`
+的请求参数（"A list of MCP servers the Agent should connect to"），并说 "Agents **SHOULD** connect
+to all MCP servers specified by the Client"；**作用域、注销时机、工具面归谁，协议一句都没写**。
+`session/close` 那句「释放与该会话相关的资源」也没把 MCP 单独拎出来。
+
+所以「per-session 隔离」是 agent 的实现选择，不是协议义务。同一个协议位允许两种做法：
+
+```
+按会话隔离   会话结束 / 名单变化就把该会话的 server 摘掉（客户端改名单立刻生效）
+进程级共享   进程里登记一次，所有会话都能用（hermes 现在这样；工具面属于进程，不属于会话）
+```
+
+hermes 属于后者，它不违约。代价才落到我们这边：**我们能保证的只有「发出去的是什么」和「如实显示」**，
+保证不了 agent 按会话隔离 —— 所以界面上「减少」这一档要给「重连以生效」，而不是假装立刻生效。
+
+
 hermes 把注入的 server 注册在**进程**的工具面上（`register_mcp_servers(configs)` 是进程全局），
 `session/load` 里空名单还被显式当成「保留这个会话原有的服务器」（源码注释：
 *An empty one (load always carries a list) keeps the session's servers*）。
