@@ -111,7 +111,10 @@ src/lib/ipc/
 ### 群域（`group`）
 `AgentUser`（身份：profile + acp 会话 + 名字/handle/颜色）、`Membership`（群↔成员）。
 
-### 轨迹域（`session_events` + 聚合视图）
+### 轨迹域（`session_events` 视图 + 聚合视图）
+
+> 存储变更（2026-10-26）：`session_events` 现在是 `atoms(channel='trace')` 上的同名视图；
+> 正文侧 `messages` 同理是 `atoms(channel='chat')` 的视图。协议与字段不变，只有落点在 atoms。
 
 **源数据必须落库，派生图不落库** —— 这是两件事，别混：
 
