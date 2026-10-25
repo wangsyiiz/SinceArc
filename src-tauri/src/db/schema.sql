@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS atoms (
   role         TEXT CHECK (role IN ('user', 'player', 'agent', 'system')),
   author_id    TEXT,                        -- trace：群成员 id；主 agent 为 NULL
   kind         TEXT NOT NULL,
+  schema       INTEGER NOT NULL DEFAULT 1,  -- payload 版本（docs/message-model.md §2.3）
   payload_json TEXT NOT NULL,
   refs_json    TEXT,                        -- 命名键 refs（childSession / parentAtomId…）
   ext_json     TEXT,                        -- x.<domain>.<name> 扩展键

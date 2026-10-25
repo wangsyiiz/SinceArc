@@ -1,6 +1,6 @@
 //! 增量迁移。
 //!
-//! 迁移顺序编号：M1-01…M1-03，M2-01…M2-05。
+//! 迁移顺序编号：M1-01…M1-03，M2-01…M2-06。
 //!
 //! 执行约定：`Db::open` 在 `execute_batch(SCHEMA)` 与既有 `ensure_*` 调用之后调用
 //! `migrations::run(&mut conn)?`。
@@ -24,6 +24,7 @@ pub fn run(conn: &mut Connection) -> rusqlite::Result<()> {
     m2_03_create_views(&tx)?;
     m2_04_atoms_kind_guard(&tx)?;
     m2_05_schema_sync(&tx)?;
+    m2_06_atoms_schema(&tx)?;
     tx.commit()
 }
 
@@ -166,6 +167,12 @@ fn m2_04_atoms_kind_guard(conn: &Connection) -> rusqlite::Result<()> {
 /// 没有额外 SQL。保留编号是为了迁移顺序在文档与代码里一一对应。
 fn m2_05_schema_sync(_conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
+}
+
+/// M2-06：补 payload 版本列。旧行由 SQLite 的列默认值填成 1；写成 NOT NULL
+/// 是刻意的 —— 没有版本号的 atom 读方无法判断该怎么解释 payload。
+fn m2_06_atoms_schema(conn: &Connection) -> rusqlite::Result<()> {
+    super::ensure_column(conn, "atoms", "schema", "INTEGER NOT NULL DEFAULT 1")
 }
 
 fn allowed_kinds_sql() -> String {

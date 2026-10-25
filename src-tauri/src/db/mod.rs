@@ -179,6 +179,12 @@ pub struct EventInput {
     pub author_id: Option<String>,
     pub kind: String,
     pub payload_json: String,
+    /// 命名关联键；None = 不写 refs_json（SQL NULL）。
+    pub refs: Option<serde_json::Value>,
+    /// `x.<domain>.<name>` 扩展键；None = 不写 ext_json（SQL NULL）。
+    pub ext: Option<serde_json::Value>,
+    /// payload 版本；None = 按初版 1 写入。
+    pub schema: Option<i64>,
     pub source: String,
     pub truncated: bool,
 }
@@ -265,6 +271,18 @@ pub struct MessageInput {
     pub kind: String,
     #[ts(type = "unknown")]
     pub payload: serde_json::Value,
+    /// 命名关联键；None = refs_json 为 NULL。
+    #[serde(default)]
+    #[ts(skip)]
+    pub refs: Option<serde_json::Value>,
+    /// `x.<domain>.<name>` 扩展键；None = ext_json 为 NULL。
+    #[serde(default)]
+    #[ts(skip)]
+    pub ext: Option<serde_json::Value>,
+    /// payload 版本；None = 按初版 1 写入。
+    #[serde(default)]
+    #[ts(skip)]
+    pub schema: Option<i64>,
 }
 
 fn default_kind() -> String {
@@ -499,6 +517,38 @@ fn merge_chat_payload(existing_payload: &str, incoming: &serde_json::Value) -> S
     merged.insert("text".to_string(), serde_json::Value::String(text));
     serde_json::Value::Object(merged).to_string()
 }
+
+/// open 行的 refs 合并：新值整体覆盖旧值；新分片没带 refs 时保留旧行。
+fn merge_refs_json(existing: Option<&str>, incoming: Option<&serde_json::Value>) -> Option<String> {
+    incoming
+        .map(serde_json::Value::to_string)
+        .or_else(|| existing.map(str::to_string))
+}
+
+/// open 行的 ext 合并：`x.<domain>.<name>` 浅合并，同名键以新值为准，其余保留。
+fn merge_ext_json(existing: Option<&str>, incoming: Option<&serde_json::Value>) -> Option<String> {
+    let Some(incoming) = incoming else {
+        return existing.map(str::to_string);
+    };
+    let Some(incoming) = incoming.as_object() else {
+        return Some(incoming.to_string());
+    };
+    let mut merged = existing
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    for (key, value) in incoming {
+        merged.insert(key.clone(), value.clone());
+    }
+    Some(serde_json::Value::Object(merged).to_string())
+}
+
+fn json_string(value: &Option<serde_json::Value>) -> Option<String> {
+    value.as_ref().map(serde_json::Value::to_string)
+}
+
+/// M2b open 行：id / payload / truncated / refs_json / ext_json。
+type OpenStreamRow = (String, String, i64, Option<String>, Option<String>);
 
 fn is_trace_stream_kind(kind: &str) -> bool {
     matches!(kind, "thought" | "text.agent")
@@ -1336,23 +1386,45 @@ impl Db {
             let mergeable = is_chat_stream_message(&m.role, &m.kind, turn_id);
             let result: rusqlite::Result<()> = (|| {
                 if mergeable {
-                    let open: Option<(String, String, i64)> = tx
+                    let open: Option<OpenStreamRow> = tx
                         .query_row(
-                            "SELECT id, payload_json, truncated FROM atoms
+                            "SELECT id, payload_json, truncated, refs_json, ext_json FROM atoms
                               WHERE session_id = ?1 AND channel = 'chat'
                                 AND turn_id = ?2 AND kind = ?3 AND sealed_at IS NULL",
                             params![session_id, turn_id, m.kind],
-                            |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)?)),
+                            |r| {
+                                Ok((
+                                    r.get(0)?,
+                                    r.get(1)?,
+                                    r.get::<_, i64>(2)?,
+                                    r.get(3)?,
+                                    r.get(4)?,
+                                ))
+                            },
                         )
                         .optional()?;
-                    if let Some((open_id, payload_json, truncated)) = open {
+                    if let Some((open_id, payload_json, truncated, refs_json, ext_json)) = open {
                         if open_id == m.id {
                             let payload = merge_chat_payload(&payload_json, &m.payload);
+                            let refs_json =
+                                merge_refs_json(refs_json.as_deref(), m.refs.as_ref());
+                            let ext_json = merge_ext_json(ext_json.as_deref(), m.ext.as_ref());
                             tx.execute(
                                 "UPDATE atoms
-                                    SET payload_json = ?1, truncated = ?2, at = ?3, seq = ?4
-                                  WHERE id = ?5",
-                                params![payload, truncated, ts, seq, open_id],
+                                    SET payload_json = ?1, truncated = ?2, at = ?3, seq = ?4,
+                                        refs_json = ?5, ext_json = ?6,
+                                        schema = COALESCE(?7, schema)
+                                  WHERE id = ?8",
+                                params![
+                                    payload,
+                                    truncated,
+                                    ts,
+                                    seq,
+                                    refs_json,
+                                    ext_json,
+                                    m.schema,
+                                    open_id,
+                                ],
                             )?;
                             return Ok(());
                         }
@@ -1368,14 +1440,23 @@ impl Db {
                 tx.execute(
                     "INSERT INTO atoms
                        (id, session_id, channel, turn_id, seq, at, role, author_id,
-                        kind, payload_json, source, truncated, sealed_at)
-                     VALUES (?1, ?2, 'chat', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'live', 0, ?10)
+                        kind, payload_json, refs_json, ext_json, schema,
+                        source, truncated, sealed_at)
+                     VALUES (?1, ?2, 'chat', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                             'live', 0, ?13)
                      ON CONFLICT(id) DO UPDATE SET
                        turn_id = coalesce(excluded.turn_id, atoms.turn_id),
                        payload_json = excluded.payload_json,
                        role = excluded.role,
                        kind = excluded.kind,
-                       author_id = excluded.author_id",
+                       author_id = excluded.author_id,
+                       refs_json = coalesce(excluded.refs_json, atoms.refs_json),
+                       ext_json = CASE
+                         WHEN excluded.ext_json IS NULL THEN atoms.ext_json
+                         WHEN atoms.ext_json IS NULL THEN excluded.ext_json
+                         ELSE json_patch(atoms.ext_json, excluded.ext_json)
+                       END,
+                       schema = excluded.schema",
                     params![
                         m.id,
                         session_id,
@@ -1386,6 +1467,9 @@ impl Db {
                         m.author_id,
                         m.kind,
                         m.payload.to_string(),
+                        json_string(&m.refs),
+                        json_string(&m.ext),
+                        m.schema.unwrap_or(1),
                         sealed_at,
                     ],
                 )?;
@@ -1642,16 +1726,24 @@ impl Db {
         for e in events {
             seq += 1;
             let sealed_at = if is_trace_stream_kind(&e.kind) {
-                let open: Option<(String, String, i64)> = tx
+                let open: Option<OpenStreamRow> = tx
                     .query_row(
-                        "SELECT id, payload_json, truncated FROM atoms
+                        "SELECT id, payload_json, truncated, refs_json, ext_json FROM atoms
                           WHERE session_id = ?1 AND channel = 'trace'
                             AND turn_id = ?2 AND kind = ?3 AND sealed_at IS NULL",
                         params![session_id, e.turn_id, e.kind],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)?)),
+                        |r| {
+                            Ok((
+                                r.get(0)?,
+                                r.get(1)?,
+                                r.get::<_, i64>(2)?,
+                                r.get(3)?,
+                                r.get(4)?,
+                            ))
+                        },
                     )
                     .optional()?;
-                if let Some((open_id, payload_json, truncated)) = open {
+                if let Some((open_id, payload_json, truncated, refs_json, ext_json)) = open {
                     let existing_truncated = truncated != 0;
                     let (payload, truncated) = if e.kind == "thought" {
                         merge_thought_payload(
@@ -1668,12 +1760,25 @@ impl Db {
                             existing_truncated || e.truncated,
                         )
                     };
+                    let refs_json = merge_refs_json(refs_json.as_deref(), e.refs.as_ref());
+                    let ext_json = merge_ext_json(ext_json.as_deref(), e.ext.as_ref());
                     // 同一段流只更新那一行；seq 跟着最新分片走，水位与 MAX(seq) 不脱节。
                     tx.execute(
                         "UPDATE atoms
-                            SET payload_json = ?1, truncated = ?2, at = ?3, seq = ?4
-                          WHERE id = ?5",
-                        params![payload, truncated as i64, at, seq, open_id],
+                            SET payload_json = ?1, truncated = ?2, at = ?3, seq = ?4,
+                                refs_json = ?5, ext_json = ?6,
+                                schema = COALESCE(?7, schema)
+                          WHERE id = ?8",
+                        params![
+                            payload,
+                            truncated as i64,
+                            at,
+                            seq,
+                            refs_json,
+                            ext_json,
+                            e.schema,
+                            open_id,
+                        ],
                     )?;
                     continue;
                 }
@@ -1687,8 +1792,10 @@ impl Db {
             tx.execute(
                 "INSERT INTO atoms
                    (id, session_id, channel, turn_id, seq, at, role, author_id,
-                    kind, payload_json, source, truncated, sealed_at)
-                 VALUES (?1, ?2, 'trace', ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    kind, payload_json, refs_json, ext_json, schema,
+                    source, truncated, sealed_at)
+                 VALUES (?1, ?2, 'trace', ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11,
+                         ?12, ?13, ?14)",
                 params![
                     format!("{session_id}-{seq}"),
                     session_id,
@@ -1698,6 +1805,9 @@ impl Db {
                     e.author_id,
                     e.kind,
                     e.payload_json,
+                    json_string(&e.refs),
+                    json_string(&e.ext),
+                    e.schema.unwrap_or(1),
                     e.source,
                     e.truncated as i64,
                     sealed_at,
@@ -2549,6 +2659,9 @@ mod tests {
                 turn_id: None,
                 non_turn: true,
                 payload: serde_json::json!({"text": "在"}),
+                refs: None,
+                ext: None,
+                schema: None,
                 author_id: Some("u1".into()),
             }],
         )
@@ -2619,6 +2732,9 @@ mod tests {
             role: "user".into(),
             kind: "text".into(),
             payload: serde_json::json!({ "id": id, "text": text }),
+            refs: None,
+            ext: None,
+            schema: None,
         }
     }
 
@@ -2628,6 +2744,9 @@ mod tests {
             author_id: None,
             kind: "thought".into(),
             payload_json: serde_json::json!({ "text": text, "bytes": text.len() }).to_string(),
+            refs: None,
+            ext: None,
+            schema: None,
             source: "live".into(),
             truncated: false,
         }
@@ -2642,6 +2761,9 @@ mod tests {
             role: "player".into(),
             kind: kind.into(),
             payload: serde_json::json!({ "id": id, "role": "player", "text": text }),
+            refs: None,
+            ext: None,
+            schema: None,
         }
     }
 
@@ -2928,6 +3050,9 @@ mod tests {
             role: "user".into(),
             kind: "text".into(),
             payload: serde_json::json!({ "id": id, "text": text }),
+            refs: None,
+            ext: None,
+            schema: None,
         };
         db.append_messages("s-1", &[user("u1", "第一行标题\n第二行不要")])
             .expect("a");
@@ -2961,6 +3086,9 @@ mod tests {
             role: "player".into(),
             kind: "text".into(),
             payload: serde_json::json!({ "id": id, "text": text }),
+            refs: None,
+            ext: None,
+            schema: None,
         };
         db.append_messages("s-1", &[mk("m1", "第一句")]).expect("a");
         db.append_messages("s-1", &[mk("m2", "第二句")]).expect("b");
@@ -3234,6 +3362,9 @@ mod tests {
             author_id: None,
             kind: kind.into(),
             payload_json: r#"{"text":"x"}"#.into(),
+            refs: None,
+            ext: None,
+            schema: None,
             source: "live".into(),
             truncated: false,
         };
@@ -3265,6 +3396,102 @@ mod tests {
         assert_eq!(rows.len(), 1);
         let payload: serde_json::Value = serde_json::from_str(&rows[0].payload_json).unwrap();
         assert_eq!(payload["text"], "xx");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn append_events_persists_refs_ext_and_schema_default() {
+        let (db, path) = db_with_session();
+        let refs = serde_json::json!({ "toolCallId": "c1" });
+        let ext = serde_json::json!({ "x.demo.a": 1 });
+        db.append_events(
+            "s-1",
+            &[EventInput {
+                turn_id: "t-1".into(),
+                author_id: None,
+                kind: "tool_call".into(),
+                payload_json: r#"{"toolCallId":"c1"}"#.into(),
+                refs: Some(refs.clone()),
+                ext: Some(ext.clone()),
+                schema: None,
+                source: "live".into(),
+                truncated: false,
+            }],
+        )
+        .expect("append event");
+
+        let conn = db.conn.lock().unwrap();
+        let (refs_json, ext_json, schema): (String, String, i64) = conn
+            .query_row(
+                "SELECT refs_json, ext_json, schema FROM atoms
+                  WHERE session_id = 's-1' AND kind = 'tool_call'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("refs/ext/schema");
+        assert_eq!(refs_json, refs.to_string(), "refs_json 必须逐字一致");
+        assert_eq!(ext_json, ext.to_string(), "ext_json 必须逐字一致");
+        assert_eq!(schema, 1, "未显式给 schema 时必须写 1");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn append_messages_persists_refs_ext_and_schema_default() {
+        let (db, path) = db_with_session();
+        let mut message = msg("m-1", "正文", None, true);
+        message.refs = Some(serde_json::json!({ "messageId": "m-1" }));
+        message.ext = Some(serde_json::json!({ "x.demo.b": 2 }));
+        db.append_messages("s-1", &[message]).expect("append message");
+
+        let conn = db.conn.lock().unwrap();
+        let (refs_json, ext_json, schema): (String, String, i64) = conn
+            .query_row(
+                "SELECT refs_json, ext_json, schema FROM atoms WHERE id = 'm-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("message refs/ext/schema");
+        assert_eq!(refs_json, r#"{"messageId":"m-1"}"#);
+        assert_eq!(ext_json, r#"{"x.demo.b":2}"#);
+        assert_eq!(schema, 1);
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn open_stream_fragments_merge_ext_shallowly_and_keep_old_refs() {
+        let (db, path) = db_with_session();
+        let mut first = thought("一", "t-1");
+        first.refs = Some(serde_json::json!({ "messageId": "m-1" }));
+        first.ext = Some(serde_json::json!({ "x.demo.a": 1, "x.demo.keep": "old" }));
+        let mut second = thought("二", "t-1");
+        second.refs = None;
+        second.ext = Some(serde_json::json!({ "x.demo.a": 2, "x.demo.b": 3 }));
+        db.append_events("s-1", &[first]).expect("first fragment");
+        db.append_events("s-1", &[second]).expect("second fragment");
+
+        let conn = db.conn.lock().unwrap();
+        let (count, refs_json, ext_json): (i64, String, String) = conn
+            .query_row(
+                "SELECT COUNT(*), refs_json, ext_json FROM atoms
+                  WHERE session_id = 's-1' AND kind = 'thought'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("merged open row");
+        assert_eq!(count, 1, "同一段流只能留一行");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&refs_json).unwrap(),
+            serde_json::json!({ "messageId": "m-1" }),
+            "新分片没带 refs 时保留旧值"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&ext_json).unwrap(),
+            serde_json::json!({ "x.demo.a": 2, "x.demo.keep": "old", "x.demo.b": 3 }),
+            "ext 浅合并：同名键取新值，其余键保留"
+        );
+        drop(conn);
         std::fs::remove_file(&path).ok();
     }
 
@@ -3310,6 +3537,9 @@ mod tests {
                 author_id: None,
                 kind: "tool_call".into(),
                 payload_json: r#"{"toolCallId":"call-1","title":"读文件"}"#.into(),
+                refs: None,
+                ext: None,
+                schema: None,
                 source: "live".into(),
                 truncated: false,
             }],
@@ -3481,6 +3711,9 @@ mod tests {
             role: "user".into(),
             kind: "text".into(),
             payload: serde_json::json!({ "id": "u-1", "role": "user", "text": "问" }),
+            refs: None,
+            ext: None,
+            schema: None,
         };
         db.append_messages("s-1", &[user]).expect("user message");
 
@@ -3559,6 +3792,9 @@ mod tests {
                 role: if i % 2 == 0 { "player" } else { "user" }.into(),
                 kind: "text".into(),
                 payload: serde_json::json!({ "id": format!("m{i}"), "text": format!("第{i}条") }),
+                refs: None,
+                ext: None,
+                schema: None,
             })
             .collect();
         db.append_messages("s-1", &messages).expect("seed");
@@ -3641,6 +3877,9 @@ mod tests {
             author_id: None,
             kind: kind.into(),
             payload_json: r#"{"text":"x"}"#.into(),
+            refs: None,
+            ext: None,
+            schema: None,
             source: "live".into(),
             truncated: false,
         };
@@ -3714,6 +3953,9 @@ mod tests {
                 role: "player".into(),
                 kind: "text".into(),
                 payload: serde_json::json!({ "id": "partial-1", "text": "写了一半" }),
+                refs: None,
+                ext: None,
+                schema: None,
             }],
         )
         .expect("append partial");
@@ -3826,6 +4068,9 @@ mod tests {
             author_id: None,
             kind: kind.into(),
             payload_json: "{}".into(),
+            refs: None,
+            ext: None,
+            schema: None,
             source: "live".into(),
             truncated: false,
         };
@@ -3917,6 +4162,9 @@ mod tests {
                 author_id: Some("m-7".to_string()),
                 kind: "permission_decision".to_string(),
                 payload_json: r#"{"verdict":"allow","optionId":"allow_once"}"#.to_string(),
+                refs: None,
+                ext: None,
+                schema: None,
                 source: "live".to_string(),
                 truncated: false,
             }],
@@ -3990,6 +4238,9 @@ mod tests {
             author_id: None,
             kind: "thought".into(),
             payload_json: r#"{"text":"x"}"#.into(),
+            refs: None,
+            ext: None,
+            schema: None,
             source: "live".into(),
             truncated: false,
         };

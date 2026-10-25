@@ -59,6 +59,27 @@ pub fn refs_of(payload: &Value) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// 协议 update 里的扩展键：以 `x.` 开头的键原样收进 ext。普通字段一律不进。
+fn ext_of(value: &Value) -> Option<Value> {
+    let object = value.as_object()?;
+    let ext: serde_json::Map<String, Value> = object
+        .iter()
+        .filter(|(key, _)| key.starts_with("x."))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    (!ext.is_empty()).then_some(Value::Object(ext))
+}
+
+fn refs_with(entries: &[(&str, Option<&str>)]) -> Option<Value> {
+    let refs: serde_json::Map<String, Value> = entries
+        .iter()
+        .filter_map(|(key, value)| {
+            value.map(|value| (key.to_string(), Value::String(value.to_string())))
+        })
+        .collect();
+    (!refs.is_empty()).then_some(Value::Object(refs))
+}
+
 /// 单条命令只保留协议里对界面有用的三个字段。
 fn command_of(value: &Value) -> Option<Value> {
     let name = value.get("name").and_then(Value::as_str)?;
@@ -121,6 +142,8 @@ fn commands_payload(update: &Value) -> (Value, bool) {
 pub struct Captured {
     pub kind: &'static str,
     pub payload: Value,
+    pub refs: Option<Value>,
+    pub ext: Option<Value>,
     pub truncated: bool,
 }
 
@@ -196,6 +219,16 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
         "session/request_permission" => {
             let tool = params.get("toolCall").cloned().unwrap_or(Value::Null);
             let refs = refs_of(&tool);
+            let request_id = params
+                .get("requestId")
+                .or_else(|| params.get("id"))
+                .and_then(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .or_else(|| value.as_u64().map(|id| id.to_string()))
+                });
+            let tool_call_id = refs.get("toolCallId").map(String::as_str);
             let options: Vec<Value> = params
                 .get("options")
                 .and_then(Value::as_array)
@@ -221,11 +254,17 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
                     },
                     "options": options,
                 }),
+                refs: refs_with(&[
+                    ("requestId", request_id.as_deref()),
+                    ("toolCallId", tool_call_id),
+                ]),
+                ext: ext_of(params),
                 truncated: false,
             })
         }
         "session/update" => {
             let update = params.get("update")?;
+            let ext = ext_of(update);
             // 两种形状都带同一份 availableCommands：session/new 没有 sessionUpdate，
             // session/load 是 available_commands_update。必须在取判别符前接住。
             if update
@@ -236,6 +275,8 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
                 return Some(Captured {
                     kind: "commands",
                     payload,
+                    refs: None,
+                    ext,
                     truncated,
                 });
             }
@@ -247,6 +288,11 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
                     Some(Captured {
                         kind: "thought",
                         payload: json!({ "text": text, "bytes": raw.len() }),
+                        refs: refs_with(&[(
+                            "messageId",
+                            refs_of(update).get("messageId").map(String::as_str),
+                        )]),
+                        ext,
                         truncated,
                     })
                 }
@@ -267,6 +313,11 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
                     Some(Captured {
                         kind: if kind == "tool_call" { "tool_call" } else { "tool_call_update" },
                         payload,
+                        refs: refs_with(&[(
+                            "toolCallId",
+                            refs.get("toolCallId").map(String::as_str),
+                        )]),
+                        ext,
                         truncated,
                     })
                 }
@@ -275,11 +326,15 @@ pub fn parse(method: &str, params: &Value) -> Option<Captured> {
                     payload: json!({
                         "currentModeId": update.get("currentModeId").and_then(Value::as_str),
                     }),
+                    refs: None,
+                    ext,
                     truncated: false,
                 }),
                 "usage_update" => Some(Captured {
                     kind: "usage",
                     payload: update.clone(),
+                    refs: None,
+                    ext,
                     truncated: false,
                 }),
                 // agent_message_chunk / user_message_chunk 是对话正文，走 messages，不进轨迹
@@ -561,14 +616,36 @@ mod tests {
             "update": {
                 "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "写入文件",
                 "kind": "edit", "status": "pending",
-                "locations": [{ "path": "/tmp/a.txt" }]
+                "locations": [{ "path": "/tmp/a.txt" }],
+                "x.demo.a": 1
             }
         });
         let cap = parse("session/update", &params).expect("tool");
         assert_eq!(cap.kind, "tool_call");
         assert_eq!(cap.payload["toolCallId"], "t1");
         assert_eq!(cap.payload["kind"], "edit");
+        assert_eq!(cap.refs, Some(json!({ "toolCallId": "t1" })));
+        assert_eq!(cap.ext, Some(json!({ "x.demo.a": 1 })));
+        assert!(
+            cap.payload.get("x.demo.a").is_none(),
+            "普通 payload 不能混入 ext 键"
+        );
         assert!(!cap.truncated);
+    }
+
+    #[test]
+    fn 思考分片带_message_id_时自动填_refs() {
+        let params = json!({
+            "update": {
+                "sessionUpdate": "agent_thought_chunk",
+                "messageId": "msg-1",
+                "content": { "type": "text", "text": "想一下" }
+            }
+        });
+        let cap = parse("session/update", &params).expect("thought");
+        assert_eq!(cap.kind, "thought");
+        assert_eq!(cap.refs, Some(json!({ "messageId": "msg-1" })));
+        assert_eq!(cap.ext, None);
     }
 
     #[test]
@@ -619,6 +696,7 @@ mod tests {
     #[test]
     fn 权限请求解析出标题与选项() {
         let params = json!({
+            "requestId": "req-1",
             "toolCall": { "toolCallId": "t1", "title": "执行 rm -rf", "kind": "execute" },
             "options": [
                 { "kind": "allow_once", "optionId": "allow_once", "name": "允许一次" },
@@ -629,6 +707,11 @@ mod tests {
         assert_eq!(cap.kind, "permission");
         assert_eq!(cap.payload["toolCall"]["title"], "执行 rm -rf");
         assert_eq!(cap.payload["options"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            cap.refs,
+            Some(json!({ "requestId": "req-1", "toolCallId": "t1" })),
+            "权限请求必须能挂回 requestId 与 toolCallId"
+        );
     }
 
     #[test]
