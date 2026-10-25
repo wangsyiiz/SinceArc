@@ -885,6 +885,22 @@ impl Db {
             )?;
         }
 
+        // 同一个 ACP 会话 id 只能挂一条界面会话（sessions.acp_session_id 有唯一索引）。
+        // 旧行还占着它，说明那是上一个进程/上一次用例留下的死绑定：不先腾出来，
+        // 这里就会撞唯一约束，而调用方只记一条 WARN —— 新会话从此「库里没有绑定」，
+        // 界面内存里却一切正常，重启后才发现恢复不了。腾掉再绑。
+        tx.execute(
+            "UPDATE session_bindings SET superseded_at = ?2
+              WHERE superseded_at IS NULL AND acp_session_id = ?1
+                AND session_id <> ?3",
+            params![acp_session_id, bound_at, id],
+        )?;
+        tx.execute(
+            "UPDATE sessions SET acp_session_id = NULL
+              WHERE acp_session_id = ?1 AND id <> ?2",
+            params![acp_session_id, id],
+        )?;
+
         tx.execute(
             "UPDATE sessions SET acp_session_id = ?2, acp_state = 'ok', updated_at = ?3
              WHERE id = ?1",
@@ -2420,6 +2436,40 @@ mod tests {
         let list = db.list_sessions(None).expect("list");
         assert_eq!(list[0].acp_session_id.as_deref(), Some("acp-b"));
         assert_eq!(acp_state(&db, "s-1").as_deref(), Some("ok"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// 假 agent 每个进程都从 fake-session-1 编号，旧行会一直占着这个 id。
+    /// 不腾出来就是 UNIQUE 冲突 → 只留一条 WARN，新会话库里没有绑定（界面看不出来）。
+    #[test]
+    fn bind_steals_acp_id_from_stale_session_row() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-old", None)).expect("insert old");
+        db.upsert_session(&session("s-new", None)).expect("insert new");
+        db.bind_acp_session_with_agent("s-old", "acp-x", "/work", "created", Some("fake"))
+            .expect("bind old");
+
+        db.bind_acp_session_with_agent("s-new", "acp-x", "/work", "created", Some("fake"))
+            .expect("rebinding the same acp id to a new session must not fail");
+
+        let list = db.list_sessions(None).expect("list");
+        let by_id = |sid: &str| {
+            list.iter()
+                .find(|s| s.id == sid)
+                .expect("row")
+                .acp_session_id
+                .clone()
+        };
+        assert_eq!(by_id("s-new").as_deref(), Some("acp-x"));
+        assert_eq!(by_id("s-old"), None);
+        let old_live = db
+            .bindings("s-old")
+            .expect("bindings")
+            .into_iter()
+            .filter(|b| b.superseded_at.is_none())
+            .count();
+        assert_eq!(old_live, 0, "旧会话的活绑定应当被顶掉");
         std::fs::remove_file(&path).ok();
     }
 

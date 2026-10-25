@@ -135,6 +135,16 @@ function dumpLifecycle(method, params) {
   }
 }
 
+/** 合同测试用：任意请求原样落盘（谁收到了什么，界面看不出来的都靠它）。 */
+function dumpRecord(payload) {
+  const target = process.env.FAKE_ACP_DUMP ?? path.join(process.cwd(), "fake-acp-requests.jsonl");
+  try {
+    fs.appendFileSync(target, `${JSON.stringify(payload)}\n`);
+  } catch (error) {
+    log(`dump record failed: ${error.message}`);
+  }
+}
+
 /** 合同测试用：把生命周期请求里收到的 mcpServers 原样回显成一条正文。 */
 function echoMcpServers(params, sessionId) {
   const servers = params?.mcpServers;
@@ -342,7 +352,18 @@ async function handleLine(line) {
       sessionCounter += 1;
       const sessionId = `fake-session-${sessionCounter}`;
       activeSessionId = sessionId;
-      reply(message.id, { sessionId });
+      // 报一份可选模式：真 agent 里 hermes 不报，模式切换那条路径就没有可点的东西，
+      // 而「切模式会不会推到别的会话」必须能真机验证（docs/data-plane.md §3）。
+      reply(message.id, {
+        sessionId,
+        modes: {
+          currentModeId: "standard",
+          availableModes: [
+            { id: "standard", name: "标准" },
+            { id: "strict", name: "严格" },
+          ],
+        },
+      });
       // 真 agent 在 session/new 之后主动推；稍等客户端完成归属登记，避免测试竞态。
       setTimeout(() => {
         send({
@@ -388,6 +409,14 @@ async function handleLine(line) {
       setTimeout(() => echoMcpServers(message.params, forkedSessionId), 100);
       return;
     }
+    case "session/set_mode":
+      dumpRecord({
+        method: "session/set_mode",
+        sessionId: message.params?.sessionId ?? null,
+        modeId: message.params?.modeId ?? null,
+      });
+      reply(message.id, {});
+      return;
     case "session/prompt":
       if (promptInFlight) {
         replyError(message.id, -32600, "prompt already in flight");
