@@ -41,7 +41,7 @@ function numberOf(value: unknown): number | undefined {
 
 function delegateCapsDetail(payload: Record<string, unknown>): string | undefined {
   const context = stringOf(payload.context);
-  if (context !== "inherited" && context !== "task_only") return undefined;
+  if (context !== "member_fork" && context !== "task_only") return undefined;
   // 档位必须带成因：「只带任务描述 · 这个 agent 没报 fork 能力」——这一步就是用户
   // 事后对得上「为什么这个 agent 带了上下文、那个没带」的地方（orchestration.md §3 落点②）。
   return delegateCapsDetailText(context, stringOf(payload.reason));

@@ -42,7 +42,7 @@ pub struct SessionRecord {
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub enum ContextMode {
-    Inherited,
+    MemberFork,
     TaskOnly,
 }
 
@@ -50,8 +50,8 @@ pub enum ContextMode {
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub enum ContextReason {
-    /// caps 说支持，但父会话没有可用的 ACP 会话可 fork（没连上 / 反查不到）
-    ParentMissing,
+    /// caps 说支持，但成员没有可 fork 的常驻会话
+    MemberMissing,
     Fork,
     ForkUnsupported,
     ForkFailed,

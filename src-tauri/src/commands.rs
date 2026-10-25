@@ -2375,11 +2375,17 @@ async fn guard_delegate_concurrency(
 /// 纯档位判定：caps 缺失不等于支持；fork 失败与能力缺失必须分开。
 fn plan_child(context: Option<bool>, fork_error: bool) -> (ContextMode, ContextReason) {
     match context {
-        Some(true) if !fork_error => (ContextMode::Inherited, ContextReason::Fork),
+        Some(true) if !fork_error => (ContextMode::MemberFork, ContextReason::Fork),
         Some(true) => (ContextMode::TaskOnly, ContextReason::ForkFailed),
         Some(false) => (ContextMode::TaskOnly, ContextReason::ForkUnsupported),
         None => (ContextMode::TaskOnly, ContextReason::CapsUnknown),
     }
+}
+
+/// 成员常驻会话的 fork 判据：绑定 id 去掉首尾空白后仍非空才算有。
+fn forkable_member_session(acp_session_id: &str) -> Option<&str> {
+    let acp_session_id = acp_session_id.trim();
+    (!acp_session_id.is_empty()).then_some(acp_session_id)
 }
 
 fn delegate_elapsed_ms(started_at: i64) -> i64 {
@@ -2463,14 +2469,18 @@ async fn create_delegate_child(
     handle: &AgentHandle,
     cwd: &str,
     caps_fork: Option<bool>,
-    parent_acp_session: Option<&str>,
+    member_acp_session: Option<&str>,
 ) -> Result<(String, ContextMode, ContextReason), CmdError> {
     let mut fork_failed = false;
-    if plan_child(caps_fork, false).0 == ContextMode::Inherited {
-        match parent_acp_session {
-            Some(parent) => {
+    if plan_child(caps_fork, false).0 == ContextMode::MemberFork {
+        let member_acp_session = match member_acp_session {
+            Some(acp_session_id) => forkable_member_session(acp_session_id),
+            None => None,
+        };
+        match member_acp_session {
+            Some(member_acp_session) => {
                 let params = serde_json::json!({
-                    "sessionId": parent,
+                    "sessionId": member_acp_session,
                     "cwd": cwd,
                     "mcpServers": [],
                 });
@@ -2490,7 +2500,13 @@ async fn create_delegate_child(
                                     format!("session/fork 没有返回 sessionId，实际返回：{result}"),
                                 )
                             })?;
-                        return Ok((child, ContextMode::Inherited, ContextReason::Fork));
+                        tracing::info!(
+                            target: "sincearc::ipc",
+                            from_session = %member_acp_session,
+                            child_session = %child,
+                            "session/fork succeeded"
+                        );
+                        return Ok((child, ContextMode::MemberFork, ContextReason::Fork));
                     }
                     Err(transport::TransportError::Agent(e)) => {
                         // 只有 agent 明确拒绝才降级；传输层故障不能伪装成「不支持 fork」。
@@ -2504,10 +2520,10 @@ async fn create_delegate_child(
                 }
             }
             None => {
-                // 父会话没有可 fork 的 ACP 会话（没连上 / 反查不到）：fork 压根没发出，
+                // 成员没有可 fork 的常驻会话：fork 压根没发出，
                 // 不能报成 fork_failed —— 那会让用户以为 agent 拒绝过。
                 let child = new_child_session(handle, cwd).await?;
-                return Ok((child, ContextMode::TaskOnly, ContextReason::ParentMissing));
+                return Ok((child, ContextMode::TaskOnly, ContextReason::MemberMissing));
             }
         }
     }
@@ -2705,7 +2721,7 @@ pub async fn delegate_task(
         .filter(|cwd| !cwd.trim().is_empty())
         .unwrap_or_else(|| agent.profile.default_cwd.to_string_lossy().into_owned());
 
-    // 只认当前仍在 `sessions` 里的主会话；成员支线也有相同 ui_session_id，不能拿来 fork。
+    // 父会话仍用于深度守卫与这一轮的归属；fork 的目标是成员自己的常驻会话。
     let parent_acp_session = match state.routes.by_ui_session(&parent_ui_session_id).await {
         Some((acp_session_id, _)) if state.session(&acp_session_id).await.is_some() => {
             Some(acp_session_id)
@@ -2715,8 +2731,9 @@ pub async fn delegate_task(
 
     guard_delegate_depth(&state.delegates, parent_acp_session.as_deref()).await?;
 
+    let member_acp_session = forkable_member_session(&member.acp_session_id);
     let (child_acp_session_id, context, reason) =
-        create_delegate_child(&agent, &cwd, caps_fork, parent_acp_session.as_deref()).await?;
+        create_delegate_child(&agent, &cwd, caps_fork, member_acp_session).await?;
 
     state
         .routes
@@ -3875,7 +3892,10 @@ mod delegate_tests {
 
     use tokio::sync::Notify;
 
-    use super::{guard_delegate_concurrency, guard_delegate_depth, plan_child, wait_for_delegate};
+    use super::{
+        forkable_member_session, guard_delegate_concurrency, guard_delegate_depth, plan_child,
+        wait_for_delegate,
+    };
     use crate::state::{ContextMode, ContextReason, DelegateEntry, DelegateStatus, Delegates};
 
     fn entry(handle: &str, parent: &str, child: &str) -> DelegateEntry {
@@ -3898,23 +3918,38 @@ mod delegate_tests {
     }
 
     #[test]
-    fn context_plan_keeps_fork_failure_distinct_from_missing_or_unsupported_caps() {
+    fn context_plan_keeps_member_fork_failure_distinct_from_unsupported_or_unknown_caps() {
         assert_eq!(
             plan_child(Some(true), false),
-            (ContextMode::Inherited, ContextReason::Fork)
+            (ContextMode::MemberFork, ContextReason::Fork)
         );
         assert_eq!(
             plan_child(Some(true), true),
             (ContextMode::TaskOnly, ContextReason::ForkFailed)
         );
         assert_eq!(
+            plan_child(Some(false), false),
+            (ContextMode::TaskOnly, ContextReason::ForkUnsupported)
+        );
+        assert_eq!(
+            plan_child(Some(false), true),
+            (ContextMode::TaskOnly, ContextReason::ForkUnsupported)
+        );
+        assert_eq!(
             plan_child(None, false),
             (ContextMode::TaskOnly, ContextReason::CapsUnknown)
         );
         assert_eq!(
-            plan_child(Some(false), false),
-            (ContextMode::TaskOnly, ContextReason::ForkUnsupported)
+            plan_child(None, true),
+            (ContextMode::TaskOnly, ContextReason::CapsUnknown)
         );
+    }
+
+    #[test]
+    fn member_fork_requires_a_non_blank_acp_session() {
+        assert_eq!(forkable_member_session(""), None);
+        assert_eq!(forkable_member_session(" \t\n"), None);
+        assert_eq!(forkable_member_session(" x "), Some("x"));
     }
 
     #[tokio::test]

@@ -35,10 +35,10 @@ test("从没握手 → 档位未知", () => {
   assert.match(delegateCapsNote("unknown"), /按只带任务描述派/);
 });
 
-test("sessionFork 为真 → 带上下文，正常态不写额外说明", () => {
-  assert.equal(delegateTargetCaps({ caps: caps(true) }), "inherited");
-  assert.equal(delegateCapsLabel("inherited"), "带上下文");
-  assert.equal(delegateCapsNote("inherited"), "");
+test("sessionFork 为真 → 带 TA 的上下文，正常态不写额外说明", () => {
+  assert.equal(delegateTargetCaps({ caps: caps(true) }), "member_fork");
+  assert.equal(delegateCapsLabel("member_fork"), "带 TA 的上下文");
+  assert.equal(delegateCapsNote("member_fork"), "");
 });
 
 test("sessionFork 为假 → 只带任务描述", () => {
@@ -55,7 +55,7 @@ test("降级成因逐条说人话，fork 是正常态不返回原因", () => {
   assert.equal(delegateReasonNote("fork_unsupported"), "这个 agent 没报 fork 能力");
   assert.equal(delegateReasonNote("fork_failed"), "fork 失败，已按只带任务描述重跑");
   assert.equal(delegateReasonNote("caps_unknown"), "从没握手，不知道它支不支持");
-  assert.equal(delegateReasonNote("parent_missing"), "父会话没有可 fork 的会话");
+  assert.equal(delegateReasonNote("member_missing"), "这个成员还没有可 fork 的会话");
   assert.equal(delegateReasonNote("未来新增的成因"), "", "不认识的原因不许编一句");
 
   // 轨迹里那一行：档位 + 成因；带上下文时只有档位
@@ -64,7 +64,7 @@ test("降级成因逐条说人话，fork 是正常态不返回原因", () => {
     "只带任务描述 · 这个 agent 没报 fork 能力",
   );
   assert.equal(delegateCapsDetail("task_only", null), "只带任务描述");
-  assert.equal(delegateCapsDetail("inherited", "fork"), "带上下文");
+  assert.equal(delegateCapsDetail("member_fork", "fork"), "带 TA 的上下文");
 });
 
 test("六个错误码都说人话，未列出的码保留码兜底", () => {

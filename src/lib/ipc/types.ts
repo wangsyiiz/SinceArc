@@ -84,7 +84,7 @@ export function messageFromPayload(payload: unknown): Message {
   const delegate = raw.delegate as Record<string, unknown>;
   const context = delegate.context;
   const delegateContext =
-    context === "inherited" || context === "task_only" ? context : null;
+    context === "member_fork" || context === "task_only" ? context : null;
   const handleId = typeof delegate.handleId === "string" ? delegate.handleId : "";
   if (
     typeof delegate.targetMemberId !== "string" ||

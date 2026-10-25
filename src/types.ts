@@ -155,7 +155,7 @@ export interface MessageDelegate {
   handleId: string;
   targetMemberId: string;
   targetName: string;
-  context: "inherited" | "task_only";
+  context: "member_fork" | "task_only";
   reason: string;
 }
 

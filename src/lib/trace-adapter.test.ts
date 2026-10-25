@@ -290,7 +290,7 @@ test("delegate_result 合进原步骤并转终态，不新增第二行", () => {
         payload: {
           handleId: "dlg-1",
           targetName: "Kimi",
-          context: "inherited",
+          context: "member_fork",
           reason: "fork",
         },
         truncated: false,
@@ -314,7 +314,7 @@ test("delegate_result 合进原步骤并转终态，不新增第二行", () => {
   const view = toTraceView([dto]);
   assert.equal(view.activities.length, 1);
   assert.equal(view.activities[0].title, "Kimi 回来了 · 8123ms");
-  assert.equal(view.activities[0].detail, "带上下文");
+  assert.equal(view.activities[0].detail, "带 TA 的上下文");
   assert.equal(view.activities[0].status, "ok");
 });
 
