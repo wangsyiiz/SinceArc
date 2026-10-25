@@ -40,12 +40,20 @@ MCP 配置，加一个 Linear 就要每处重配一遍）。
 token；同一个 agent 在不同会话里干不同的事，依赖的 MCP 也不同。所以是三层，每层只做一件事：
 
 ```
-① 目录（全局，唯一一份）   mcp_servers 表：名字 / 类型 / 命令或 URL / env 或 headers / 默认启用
+① 目录（全局，唯一一份）   mcp_servers 表：名字 / 类型 / 命令或 URL / env 或 headers
                           配置只在这里，别处一律用名字引用，不复制
+                          **目录条目本身没有「启用/禁用」** —— 它是一份清单，不是一个开关面板
 ② 连接默认（便捷性）       profiles.default_mcp_json —— 这个 agent 命令默认用哪几个
                           多数 agent 会想用同一套；但换 agent 也可能换一套（比如某个 agent 不吃 http）
 ③ 会话覆盖                 sessions.mcp_names_json —— 这条会话这次用哪几个
 ```
+
+**唯一的全局开关是「新建连接默认继承这份目录」**（settings 键 `mcp_inherit_default`，默认开）：
+
+- 开：新建连接时 `default_mcp_json = NULL`（= 继承目录全部）；
+- 关：新建连接时 `default_mcp_json = '[]'`（= 一个都不要），用户再自己挑。
+
+它只决定**新建连接那一刻的初值**，改开关不会回头改已有连接 —— 已有连接的名单是它自己的选择。
 
 **三层同一个约定**：`NULL` = 继承上一层，`'[]'` = 明确一个都不要，数组 = 明确集合。
 没有第四种含义，也没有「合并」——「合并」在界面上没法讲清楚：用户删掉一条到底是"这次不要"
@@ -54,7 +62,7 @@ token；同一个 agent 在不同会话里干不同的事，依赖的 MCP 也不
 ```
 会话生效名单 = sessions.mcp_names_json
             ?? profiles.default_mcp_json          （NULL = 继承）
-            ?? 目录里 enabled = 1 的名字          （NULL = 继承）
+            ?? 目录里的全部名字                    （NULL = 继承）
 名字 → 按目录顺序（rowid）取出配置，拼成 mcpServers 数组
 ```
 
@@ -137,11 +145,11 @@ http/sse url 必填且以 http:// 或 https:// 开头；headers 同上限
 ## 9. 落点清单
 
 ```
-DB       mcp_servers 表（目录，全局唯一一份）
+DB       mcp_servers 表（目录，全局唯一一份；**没有 enabled 列**）
            name TEXT PRIMARY KEY, kind TEXT CHECK IN ('stdio','http','sse'),
            config_json TEXT NOT NULL,          -- command/args/env 或 url/headers
-           enabled INTEGER NOT NULL DEFAULT 1, -- 目录级「默认启用」
            created_at / updated_at INTEGER NOT NULL
+         settings 键 mcp_inherit_default（bool，默认 true）—— 新建连接是否继承整份目录
          profiles.default_mcp_json TEXT NULL    -- NULL = 继承目录 enabled；'[]' = 空；数组 = 名字
          sessions.mcp_names_json TEXT NULL      -- NULL = 继承连接默认；'[]' = 空；数组 = 名字
 Rust     McpServerDto（stdio 无 type、http/sse 有 type）+ 校验（§7）
