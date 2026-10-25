@@ -27,7 +27,7 @@ import {
 } from "@/lib/late-window";
 import { pushSystemNotice } from "@/lib/notices";
 import { keyOf } from "@/lib/stream-key";
-import { turnIdForPersist } from "@/lib/turn-id";
+import { replaceTurnId, turnIdForPersist } from "@/lib/turn-id";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import type { UsageDto } from "@/lib/ipc/types.gen/UsageDto";
 import type { SessionSummary } from "@/types";
@@ -48,6 +48,8 @@ interface StreamState {
   messageId: string | null;
   /** 谁说的话：群成员 id；主 agent 为 null */
   authorId: string | null;
+  /** 这条正文属于哪一轮；开流时从 turn 归属表快照，避免下一轮覆盖上一轮 */
+  turnId: string | null;
   msgId: string;
   /** 已经推到界面上的文本 */
   text: string;
@@ -363,7 +365,8 @@ export function useAcpEvents({
             id: st.msgId,
             role: "player",
             kind: "text",
-            turnId: turnIdForPersist(acpToTurn.current[st.acpSid]),
+            turnId: st.turnId ?? undefined,
+            nonTurn: st.turnId == null,
             payload: {
               id: st.msgId,
               role: "player",
@@ -656,6 +659,7 @@ export function useAcpEvents({
           msgId: messageId ? streamKey : `stream-${acpSid}-${Date.now()}`,
           text: "",
           buf: "",
+          turnId: turnIdForPersist(acpToTurn.current[acpSid]),
           late,
         });
         // 同一条 ACP 会话被另一个界面会话接手时，以最新一次投递为准
@@ -676,6 +680,18 @@ export function useAcpEvents({
 
       if (event.kind === "promptStarted") {
         if (!acpSid) return;
+        // 事件里的 turnId 是首选；拿不到时保留本地占位，等 sessionPrompt 回执再替换。
+        const eventTurnId = turnIdForPersist(event.turnId);
+        if (eventTurnId) {
+          const previous = acpToTurn.current[acpSid];
+          acpToTurn.current[acpSid] = eventTurnId;
+          if (uiSid && previous && previous !== eventTurnId) {
+            patchSession(uiSid, (s) => ({
+              ...s,
+              turns: replaceTurnId(s.turns, previous, eventTurnId),
+            }));
+          }
+        }
         // 新的一轮开始：把上一轮迟到窗口里还没收尾的正文先落库。
         settleLateStream(acpSid, "next-prompt");
         delete lateUntil.current[acpSid];
@@ -697,7 +713,8 @@ export function useAcpEvents({
               id,
               role: "player",
               kind: "text",
-              turnId: turnIdForPersist(acpToTurn.current[stale.acpSid]),
+              turnId: stale.turnId ?? undefined,
+              nonTurn: stale.turnId == null,
               payload: {
                 id,
                 role: "player",
@@ -799,8 +816,8 @@ export function useAcpEvents({
               id,
               role: "system",
               kind: "text",
-              turnId: null,
               payload: { id, role: "system", text: `这一轮失败：${event.msg}`, at: now() },
+              nonTurn: true,
             },
           ]).catch((e) => console.warn("[db] append failure notice failed", e));
         }
@@ -813,7 +830,8 @@ export function useAcpEvents({
                   id: st.msgId,
                   role: "player",
                   kind: "text",
-                  turnId: turnIdForPersist(acpToTurn.current[st.acpSid]),
+                  turnId: st.turnId ?? undefined,
+                  nonTurn: st.turnId == null,
                   payload: {
                     id: st.msgId,
                     role: "player",
