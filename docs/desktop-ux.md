@@ -821,3 +821,89 @@ Hint 把它们收进一个「i」入口，让版面只留结论。组件名与�
 3. 说明文字进无障碍树（`aria-controls` 指向的节点可读）；
 4. 迁移前后**同一视图的可见文字行数**对比（真机读数，逐视图记录）；
 5. 迁移清单逐条标注「可迁 / 不许迁 + 理由」，经所有者过目后才动手。
+
+## 18. 代码高亮：只买词法，配色归我们（2026-10-26 定）
+
+### 18.1 选型（实测，不是印象）
+
+60 行 TypeScript、同一台机器、浏览器/Node 双份读数：
+
+| 方案 | 体积 min/gzip | 60 行耗时 | 输出 | 结论 |
+| --- | --- | --- | --- | --- |
+| **prismjs 1.30.0**（core + 语言） | 27 KB / **10 KB**（3 语言） | 热 **0.27–1.4 ms**，冷 9–13 ms | token 树 | **采用** |
+| lowlight + 5 语言（hl.js 引擎） | 43 KB / 16 KB | 5.6 ms | hast | 备选：引擎最主流，代价 +6 KB 与 4× 解析 |
+| shiki core + JS 引擎 | 392 KB / 77 KB | 125.9 ms | token 树 | 否：慢到不可用 |
+| shiki core + oniguruma | 949 KB / 286 KB + wasm 455 KB | 44.5 ms | token 树 | 否：体积与耗时都不值 |
+
+决定性理由不是「Prism 最流行」（它不是，周下载 21.3M 低于 highlight.js 的 24.1M），而是两条：
+① 它原生给 **token 树**，我们全程不碰 `dangerouslySetInnerHTML`；② **设计语言是暗色单色**，
+shiki 的主题保真度我们本来就要推翻，配色必须自己写 —— 那么主题优势抵消，只剩体积与耗时代价。
+
+### 18.2 抽象层（换库只改一个文件）
+
+```
+src/lib/highlight/types.ts    TokenSpan { text, theme } + HighlightTheme（9 档）+ Highlighter 契约
+src/lib/highlight/prism.ts    适配器：Prism token 树 → 语义档位；语言别名表也在这
+```
+
+- 调用方**不许**直接 `import prismjs`；只认 `Highlighter.tokenize(code, lang) → TokenSpan[]`。
+- `HighlightTheme` 只有九档：`plain / comment / keyword / string / number / literal / function / type / operator / punct`。
+  新增档位要改契约，不许在适配器里私造。
+- 配色表在我们这层（映射到 `--ink-1/2/3` 与 accent 令牌），**库的主题一律不用**。
+
+### 18.3 语言集与降级
+
+- 内置：`ts/tsx/js/jsx/json/bash/sh/sql/python/rust/css/html/markdown`（附别名 `py→python`、`postgres/sqlite→sql` 等）。
+- **未标注语言**、或标注了我们不支持的语言 → **纯文本渲染**，不猜、不报错、不显示「不支持」的噪音。
+- 单块 **> 500 行**不自动高亮（渲染纯文本 + 一行 `高亮已省略（N 行）`）：长日志不值得为配色卡住滚动。
+- 同一 `(lang, code)` 的 token 结果做 LRU 缓存（上限 200 条），滚动回来不重算。
+
+### 18.4 验收（真机读数）
+
+1. `dangerouslySetInnerHTML` 全仓 **0 处**（守卫测试）；
+2. 60 行 TS 块 token 数约 4600、热态 ≤ 1.5 ms（冷态 ≤ 15 ms）；
+3. 未标注语言的块与未知语言的块都渲染为纯文本，且**无** token span；
+4. 501 行的块降级为「高亮已省略」；
+5. 同一块滚动出视口再回来，不重复解析（缓存命中计数）。
+
+## 19. 长列表：窗口化 + 三条我们自己必须保住的语义（2026-10-26 定）
+
+### 19.1 选型与目标
+
+- 库：**@tanstack/react-virtual 3.14.23**（33 KB / **10 KB gzip**，MIT，peer 支持 React 19，今日仍在发版）。
+  手写被否：库覆盖了最难的两项（动态测量、窗口计算），手写要重写这些且更容易错。
+- 量级目标：单会话 **2000 条消息** / **5 万条轨迹**；DOM 常驻行数 ≤ 30；滚动帧 p95 ≤ 20 ms、**0 帧 > 33 ms**；
+  首屏可见 ≤ 150 ms。
+
+### 19.2 抽象层（换库只改一个文件）
+
+```
+src/lib/virtual/useVirtualList.ts
+  api: { rows, totalSize, measureRow, scrollToIndex, scrollToEnd, atBottom }
+```
+
+调用方不许 import `@tanstack/*`。
+
+### 19.3 三条语义必须写在抽象层里（spike 实测支撑）
+
+| 语义 | 库是否提供 | 实测 |
+| --- | --- | --- |
+| 贴底跟随（新消息 + **总高变化**） | 否（只认识条数） | 我们自己写后：最后一条 +160px，间隙 0 → 0 |
+| 上翻后不被拉回底部 | 否 | atBottom=false 时增长不劫持（实测成立） |
+| 上方条目变高时保持锚点 | **实测未生效**（scrollTop 未变，位移 200px；显式谓词 `() => true` 也无效） | 必须自己写锚点恢复：记 `{anchorIndex, offsetInViewport}`，变化后摆回 |
+
+锚点恢复的落点：`useVirtualList` 内部（约 30 行）。换库时这三条语义跟着抽象层走，不会丢。
+
+### 19.4 硬约束
+
+- **消息行高度必须由内容决定**（`min-height` 起步），**禁止**把 `height` 写成 `row.size` ——
+  那样会掐死 `measureElement` 的测量通道（spike 第一版就是这么错的，量出来的 200px 位移是假象）。
+- 估算高度按消息类型给初值：纯文本 72 / 带代码块 200 / 带表格 260 / 轨迹行 56；实测后覆盖。
+- 历史分页加载（向上补历史）必须保持当前位置：加载前后用锚点恢复，不许让用户「被拽走」。
+
+### 19.5 验收（真机读数，造数后量）
+
+1. 造数：单会话 2000 条消息、单会话 5 万条轨迹（整批可删；量完删除并核对 atoms 计数回到造数前）；
+2. 首屏可见时间、滚动帧 p50/p95/max、DOM 行数、内存（`performance.memory` 或任务管理器）；
+3. 贴底跟随、上翻不劫持、上方变高锚点恢复、历史加载保位 四项各一条读数；
+4. 轨迹面板同样走同一套 hook（第二个调用方），不许复制一份窗口逻辑。
