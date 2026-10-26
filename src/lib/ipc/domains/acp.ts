@@ -97,6 +97,34 @@ export function agentRespondRequest(
   });
 }
 
+/** 本轮同类全部允许：范围 = 当前 ACP 会话 + 当前轮 + 指定 kind。 */
+export function permissionAllowTurn(
+  profileId: string,
+  acpSessionId: string,
+  turnId: string,
+  kind: string,
+): Promise<void> {
+  return invokeCmd<void>("permission_allow_turn", {
+    profileId,
+    acpSessionId,
+    turnId,
+    kind,
+  });
+}
+
+/** 撤销本轮已放行的全部 kind；返回后端是否真的撤销了。 */
+export function permissionRevokeTurn(
+  profileId: string,
+  acpSessionId: string,
+  turnId: string,
+): Promise<boolean> {
+  return invokeCmd<boolean>("permission_revoke_turn", {
+    profileId,
+    acpSessionId,
+    turnId,
+  });
+}
+
 /** 读回本机存的连接配置 */
 
 export function agentProbe(p: AgentProfile): Promise<ProbeOutcome> {

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Square, Paperclip, ChevronDown } from "lucide-react";
 import type { AgentProfile, Player } from "@/types";
 import type { AutoApproveLevel } from "@/lib/auto-approve";
+import { permissionKindLabel } from "@/lib/permission-kind";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/Button";
 import { Menu, type MenuItem } from "./ui/Menu";
@@ -26,6 +27,9 @@ interface ComposerProps {
   /** agent 档为 accept_edits / dont_ask：客户端这道闸被覆盖 */
   autoApproveCovered?: boolean;
   onAutoApproveChange?: (level: AutoApproveLevel) => void;
+  /** 当前轮已放行的 kind；有值时才显示可撤销 chip */
+  turnPolicyKinds?: string[];
+  onRevokeTurnPolicy?: () => void;
   /** 当前界面会话；没有会话时不渲染 MCP 入口 */
   sessionId?: string | null;
   sessionProfile?: AgentProfile;
@@ -45,6 +49,8 @@ export function Composer({
   autoApprove = "off",
   autoApproveCovered = false,
   onAutoApproveChange,
+  turnPolicyKinds = [],
+  onRevokeTurnPolicy,
   sessionId,
   sessionProfile,
   onReconnectMcp,
@@ -331,6 +337,16 @@ export function Composer({
               onReconnect={onReconnectMcp ?? (() => Promise.resolve())}
               avoidRef={inputBoxRef}
             />
+          )}
+          {turnPolicyKinds.length > 0 && onRevokeTurnPolicy && (
+            <button
+              type="button"
+              title="点击撤销本轮同类放行"
+              className="flex items-center gap-1 rounded-full bg-surface-2 px-2 py-1 text-caption text-ink-2 transition-colors hover:bg-surface-3"
+              onClick={onRevokeTurnPolicy}
+            >
+              本轮 · {turnPolicyKinds.map(permissionKindLabel).join(" / ")} · 已放行
+            </button>
           )}
           <Menu
             ariaLabel="自动同意：agent 发来的权限请求要不要替你答"

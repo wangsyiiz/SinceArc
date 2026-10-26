@@ -12,6 +12,10 @@ interface PermissionDialogProps {
   player?: Player;
   open: boolean;
   onDecide: (optionId: string, note: string | null) => void;
+  /** 先登记「本轮同类」策略，成功后再沿用 onDecide 应答本条。 */
+  onAllowTurn?: () => Promise<void>;
+  /** 当前轮已放行的 kind；命中的请求若没有 allow 项，弹窗要说明为什么没自动答。 */
+  turnPolicyKind?: string | null;
   /** Esc / 关闭：由上层按 kind 找拒绝项，不能在对话框里硬编码 optionId */
   onCancel: (note: string | null) => void;
   /** 队列里还剩多少条（含当前这条） */
@@ -29,20 +33,50 @@ export function PermissionDialog({
   player,
   open,
   onDecide,
+  onAllowTurn,
+  turnPolicyKind = null,
   onCancel,
   queued = 1,
 }: PermissionDialogProps) {
   const hasAlways = request.options.some((option) => option.tone === "always");
   const hasReject = request.options.some((option) => option.tone === "reject");
+  const allowOption = request.options.find(
+    (option) => option.tone === "allow" || option.tone === "always",
+  );
   const expired = request.expiredReason !== undefined;
   const [noteOpen, setNoteOpen] = useState(false);
   const [note, setNote] = useState("");
+  const [allowTurnBusy, setAllowTurnBusy] = useState(false);
+  const [allowTurnError, setAllowTurnError] = useState<string | null>(null);
   const noteForDecision = note.trim().length > 0 ? note.trim() : null;
+  const policyMissed =
+    turnPolicyKind !== null && turnPolicyKind === request.kind && !allowOption && !expired
+      ? "这条没法自动同意"
+      : null;
+  const skippedReason = policyMissed ?? request.autoSkippedReason ?? null;
 
   useEffect(() => {
     setNoteOpen(false);
     setNote("");
+    setAllowTurnBusy(false);
+    setAllowTurnError(null);
   }, [request.id]);
+
+  const allowTurn = async () => {
+    if (!allowOption || !onAllowTurn) return;
+    setAllowTurnBusy(true);
+    setAllowTurnError(null);
+    try {
+      await onAllowTurn();
+      onDecide(allowOption.id, noteForDecision);
+    } catch (e) {
+      const message =
+        (e as { msg?: string })?.msg ?? (e instanceof Error ? e.message : String(e));
+      setAllowTurnError(message);
+    } finally {
+      setAllowTurnBusy(false);
+    }
+  };
 
   return (
     <Dialog
@@ -76,9 +110,9 @@ export function PermissionDialog({
         </div>
       )}
 
-      {request.autoSkippedReason && (
+      {skippedReason && (
         <div className="mb-3 rounded-control border border-line-1 bg-surface-2 px-2.5 py-1.5 text-small text-ink-3">
-          {request.autoSkippedReason}
+          {skippedReason}
         </div>
       )}
 
@@ -109,6 +143,27 @@ export function PermissionDialog({
           );
         })}
       </div>
+
+      {onAllowTurn && request.kind && allowOption && !expired && (
+        <div className="mt-2">
+          <Button
+            variant="secondary"
+            disabled={allowTurnBusy}
+            className="w-full justify-start px-3 text-left"
+            onClick={() => void allowTurn()}
+          >
+            <ShieldCheck className="size-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate">
+              本轮同类全部允许 · {permissionKindLabel(request.kind)}
+            </span>
+          </Button>
+          {allowTurnError && (
+            <div className="mt-1 text-small text-danger-1" role="alert">
+              没能开启本轮放行：{allowTurnError}
+            </div>
+          )}
+        </div>
+      )}
 
       {hasReject && (
         <div className="mt-2">

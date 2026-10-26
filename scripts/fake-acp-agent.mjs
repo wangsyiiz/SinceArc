@@ -18,6 +18,10 @@ function permissionConfig() {
   let options = process.env.FAKE_PERMISSION_OPTIONS ?? "allow_reject";
   // 等人点「允许/拒绝」时把等待放长，免得还没看清就超时
   let timeoutMs = Number(process.env.FAKE_PERMISSION_TIMEOUT_MS ?? REQUEST_TIMEOUT_MS);
+  // 同一轮连发几条权限请求：验「本轮同类全部允许」需要第一条手动答、后面几条自动答。
+  let repeat = Number(process.env.FAKE_PERMISSION_REPEAT ?? 1);
+  // 两条请求之间的停顿：给界面一个观察窗口（验证「本轮同类已放行」chip 是否出现/可撤销）。
+  let gapMs = Number(process.env.FAKE_PERMISSION_GAP_MS ?? 0);
   try {
     const file = path.join(process.cwd(), "fake-permission.json");
     if (fs.existsSync(file)) {
@@ -25,12 +29,14 @@ function permissionConfig() {
       if (typeof parsed.kind === "string") kind = parsed.kind;
       if (typeof parsed.options === "string") options = parsed.options;
       if (typeof parsed.timeoutMs === "number") timeoutMs = parsed.timeoutMs;
+      if (typeof parsed.repeat === "number") repeat = parsed.repeat;
+      if (typeof parsed.gapMs === "number") gapMs = parsed.gapMs;
       log(`permission config from ${file}: kind=${kind} options=${options}`);
     }
   } catch (error) {
     log(`ignore bad fake-permission.json: ${error.message}`);
   }
-  return { kind, options, timeoutMs };
+  return { kind, options, timeoutMs, repeat: Math.max(1, Math.min(5, repeat)), gapMs: Math.max(0, gapMs) };
 }
 
 
@@ -206,6 +212,12 @@ function checkFromResponse(id, requestedPath, response) {
   };
 }
 
+let permissionSeq = 200;
+function nextPermissionId() {
+  permissionSeq += 1;
+  return permissionSeq;
+}
+
 async function askPermission() {
   // 每次提问前现读配置：这样改 fake-permission.json 不用重启客户端，也不依赖 agent 的启动目录
   const { kind: permissionKind, options: permissionOptions, timeoutMs } = permissionConfig();
@@ -220,7 +232,9 @@ async function askPermission() {
     ...allowOptions,
     { optionId: "reject_once", name: "拒绝", kind: "reject_once" },
   ];
-  const id = 200;
+  // 每条请求用新的 JSON-RPC id 与 toolCallId：固定 id 会让第二轮请求撞上第一轮的登记
+  // （客户端按 id 去重，第二条会被当成重复而丢掉）。
+  const id = nextPermissionId();
   const startedAt = Date.now();
   send({
     jsonrpc: "2.0",
@@ -229,7 +243,7 @@ async function askPermission() {
     params: {
       sessionId: activeSessionId,
       toolCall: {
-        toolCallId: "fake-tool-1",
+        toolCallId: `fake-tool-${id}`,
         title: "fake: modify fake.txt",
         kind: permissionKind === "unknown" ? undefined : permissionKind,
         status: "pending",
@@ -271,11 +285,21 @@ async function runPrompt(promptId) {
   );
 
   let permission = null;
-  const wantsPermission = permissionConfig().kind;
+  const permissionCfg = permissionConfig();
+  const wantsPermission = permissionCfg.kind;
   if (wantsPermission) {
-    log(`requesting permission (kind=${wantsPermission})`);
-    permission = await askPermission();
-    log(`permission answered: ${JSON.stringify(permission.outcome)} in ${permission.elapsedMs}ms`);
+    const answers = [];
+    for (let round = 0; round < permissionCfg.repeat; round += 1) {
+      if (round > 0 && permissionCfg.gapMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, permissionCfg.gapMs));
+      }
+      log(`requesting permission #${round + 1}/${permissionCfg.repeat} (kind=${wantsPermission})`);
+      const answered = await askPermission();
+      log(`permission #${round + 1} answered: ${JSON.stringify(answered.outcome)} in ${answered.elapsedMs}ms`);
+      answers.push(answered);
+    }
+    // 单条时保持老形状（permission 是对象），多条时给数组。
+    permission = answers.length === 1 ? answers[0] : answers;
   }
 
   const report = { cwd: process.cwd(), checks, permission };

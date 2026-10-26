@@ -62,6 +62,88 @@ pub struct PermissionDecisionMeta {
     pub via: Option<String>,
 }
 
+/// 已知的 ACP toolCall.kind。界面把它们归成五类文案（delete/move、read/search 各自合并），
+/// 但策略表仍按原始 kind 精确匹配。
+fn is_known_permission_kind(kind: &str) -> bool {
+    matches!(kind, "edit" | "delete" | "move" | "execute" | "read" | "search")
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct AllowOption {
+    id: String,
+    label: Option<String>,
+}
+
+/// 只从请求自带的 options 里挑 allow_once / allow_always；挑不到就不自动答。
+fn pick_allow_option(params: &serde_json::Value) -> Option<AllowOption> {
+    params
+        .get("options")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .find_map(|option| {
+            let option = option.as_object()?;
+            let kind = option.get("kind").and_then(serde_json::Value::as_str)?;
+            if !matches!(kind, "allow_once" | "allow_always") {
+                return None;
+            }
+            let id = normalize_optional(
+                option
+                    .get("optionId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+            )?;
+            let label = normalize_optional(
+                option
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+            );
+            Some(AllowOption { id, label })
+        })
+}
+
+fn turn_policy_decision(option: &AllowOption, actor_member_id: Option<String>) -> PermissionDecisionMeta {
+    PermissionDecisionMeta {
+        verdict: Some("allow".into()),
+        option_id: Some(option.id.clone()),
+        option_label: option.label.clone(),
+        actor_member_id,
+        note: Some("本轮同类自动允许".into()),
+        via: Some("turn-policy".into()),
+    }
+}
+
+struct PermissionTrace<'a> {
+    verdict: &'a str,
+    option_id: Option<&'a str>,
+    option_label: Option<&'a str>,
+    actor_member_id: Option<&'a str>,
+    via: &'a str,
+    note: Option<&'a str>,
+}
+
+fn permission_decision_payload(id: u64, turn_id: &str, trace: PermissionTrace<'_>) -> serde_json::Value {
+    serde_json::json!({
+        "requestId": id,
+        "verdict": trace.verdict,
+        "optionId": trace.option_id,
+        "optionLabel": trace.option_label,
+        "actorMemberId": trace.actor_member_id,
+        "via": trace.via,
+        "note": trace.note,
+        "turnId": turn_id,
+    })
+}
+
+/// `agent_respond_request` 与自动应答共用的写回逻辑。
+///
+/// 调用方负责先从 `PendingRequests` 摘登记；这里只做「写回 + 恢复轮状态 + 写轨迹」。
+/// 写回失败时返回 50502，由调用方决定是否把登记还回去。
+struct PermissionReply {
+    turn_id: Option<String>,
+    decision: PermissionDecisionMeta,
+}
+
 /// 命令参数里的空串/纯空白按缺失处理：轨迹里要写 null，不写 ""。
 fn normalize_optional(value: Option<String>) -> Option<String> {
     value.and_then(|raw| {
@@ -1778,6 +1860,10 @@ async fn teardown_profile(
     for session_id in &dead {
         state.take_cancel(session_id).await;
         state.turns.end(session_id).await;
+        state.turn_approvals.clear_session(session_id).await;
+    }
+    for session_id in state.routes.acp_session_ids_of(profile_id).await {
+        state.turn_approvals.clear_session(&session_id).await;
     }
     state.pending.clear(profile_id).await;
     tracing::info!(
@@ -1838,6 +1924,7 @@ pub async fn agent_connect(
     let db_for_trace = state.db.clone();
     let turns_for_trace = state.turns.clone();
     let replay_for_trace = state.replay.clone();
+    let turn_approvals_for_task = state.turn_approvals.clone();
     let locks = state.locks.clone();
     tokio::spawn(async move {
         /// 从 ACP 原始消息里取 sessionId，再按归属表补上界面会话与作者
@@ -2185,6 +2272,80 @@ pub async fn agent_connect(
                                 .and_then(|(_, author)| author);
                         }
                     }
+                    let request_kind = params
+                        .get("toolCall")
+                        .and_then(|tool| tool.get("kind"))
+                        .and_then(serde_json::Value::as_str);
+                    if let (Some(acp_sid), Some(turn_id), Some(_ui_sid), Some(kind)) = (
+                        session_id.as_deref(),
+                        waiting_turn.as_deref(),
+                        ui_session_id.as_deref(),
+                        request_kind,
+                    ) {
+                        if is_known_permission_kind(kind)
+                            && turn_approvals_for_task
+                                .covers(acp_sid, turn_id, kind)
+                                .await
+                        {
+                            match pick_allow_option(&params) {
+                                Some(allow) => {
+                                    // 先摘登记再写回：自动路径也必须一条请求只答一次。
+                                    let (known, pending_turn) =
+                                        pending.take_with_turn(&profile_for_task, id).await;
+                                    if !known {
+                                        tracing::warn!(
+                                            target: "sincearc::acp", id, acp_session = %acp_sid,
+                                            turn = %turn_id, %kind,
+                                            "turn-policy matched but request was no longer pending; falling back to dialog"
+                                        );
+                                    } else {
+                                        let reply = PermissionReply {
+                                            turn_id: Some(turn_id.to_string()),
+                                            decision: turn_policy_decision(&allow, author_id.clone()),
+                                        };
+                                        match respond_permission(
+                                            &db_for_trace,
+                                            &profile_for_task,
+                                            &proc_for_task,
+                                            id,
+                                            serde_json::json!({
+                                                "outcome": "selected",
+                                                "optionId": allow.id,
+                                            }),
+                                            reply,
+                                        )
+                                        .await
+                                        {
+                                            Ok(()) => {
+                                                tracing::info!(
+                                                    target: "sincearc::acp", id, acp_session = %acp_sid,
+                                                    turn = %turn_id, %kind,
+                                                    "permission auto-answered by turn policy"
+                                                );
+                                                continue;
+                                            }
+                                            Err(e) => {
+                                                // 写不进去就把登记还回去，让用户能在弹窗里重试。
+                                                pending
+                                                    .mark_with_turn(&profile_for_task, id, pending_turn)
+                                                    .await;
+                                                tracing::warn!(
+                                                    target: "sincearc::acp", id, acp_session = %acp_sid,
+                                                    turn = %turn_id, %kind, error = %e.msg,
+                                                    "turn-policy respond failed; falling back to dialog"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                None => tracing::warn!(
+                                    target: "sincearc::acp", id, acp_session = %acp_sid,
+                                    turn = %turn_id, %kind,
+                                    "turn-policy matched but request has no allow option; falling back to dialog"
+                                ),
+                            }
+                        }
+                    }
                     AcpEvent::Request {
                         id,
                         method,
@@ -2245,6 +2406,10 @@ pub async fn agent_connect(
             bus.emit_json(topic, lossless, meta, &payload);
         }
         emit_text(text.flush(), &bus, &profile_for_task);
+        // 连接已经没了：这条连接名下所有 ACP 会话的本轮策略一并作废。
+        for acp_sid in routes.acp_session_ids_of(&profile_for_task).await {
+            turn_approvals_for_task.clear_session(&acp_sid).await;
+        }
         bus.emit_json(
             "conn.exited",
             true,
@@ -3451,6 +3616,7 @@ pub async fn delegate_task(
     let own_turn_for_task = own_turn;
     let author_for_task = Some(member.id.clone());
     let cancels_for_task = state.cancels();
+    let turn_approvals_for_task = state.turn_approvals.clone();
     // ACP 的 session/prompt 终态是这一次 request 的响应，不经过 agent_connect 的入站循环；
     // 因此终态在这里收，正文 chunk 仍由转发 task 先追加进 buffer。
     tokio::spawn(async move {
@@ -3481,6 +3647,11 @@ pub async fn delegate_task(
         // 给一小段宽限再收 buffer，否则摘要会少掉结尾甚至整个为空。
         tokio::time::sleep(std::time::Duration::from_millis(120)).await;
         turns_for_task.end(&child_for_task).await;
+        if let Some(turn_id) = parent_turn_for_task.as_deref() {
+            turn_approvals_for_task
+                .clear_turn(&child_for_task, turn_id)
+                .await;
+        }
         match &result {
             Ok(value) => {
                 bus_for_task.emit_json(
@@ -3589,6 +3760,12 @@ pub async fn delegate_cancel(
 
     // 先打标记再发通知：agent 可能立刻回终态，晚一步就区分不出「取消导致的 failed」。
     state.request_cancel(&entry.child_acp_session_id).await;
+    if let Some(turn_id) = state.turns.current(&entry.child_acp_session_id).await {
+        state
+            .turn_approvals
+            .clear_turn(&entry.child_acp_session_id, &turn_id)
+            .await;
+    }
     if let Err(e) = handle
         .proc
         .notify(
@@ -3758,6 +3935,7 @@ pub async fn session_prompt(
         }
     }
     let turns = state.turns.clone();
+    let turn_approvals = state.turn_approvals.clone();
     let cancels = state.cancels();
     let locks = state.locks.clone();
     let bus = state.bus.clone();
@@ -3805,6 +3983,9 @@ pub async fn session_prompt(
                 tracing::info!(target: "sincearc::ipc", session = %sid, stop = ?result.get("stopReason"), "prompt finished");
                 tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptResult");
                 turns.end(&sid_for_trace).await;
+                turn_approvals
+                    .clear_turn(&sid_for_trace, &turn_id_for_turn)
+                    .await;
                 end_turn_safely(
                     &db_for_turn,
                     &turn_id_for_turn,
@@ -3837,6 +4018,9 @@ pub async fn session_prompt(
                 tracing::warn!(target: "sincearc::ipc", session = %sid, error = %e, "prompt failed");
                 tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptFailed");
                 turns.end(&sid_for_trace).await;
+                turn_approvals
+                    .clear_turn(&sid_for_trace, &turn_id_for_turn)
+                    .await;
                 // 用户按了停止之后 agent 报错，是「取消」不是「出错」：
                 // 轨迹里记成 failed 会让人以为这一轮崩了。
                 let cancelled_by_user = cancels.take(&sid).await;
@@ -3972,6 +4156,13 @@ pub async fn session_cancel(
     );
     // 先打标记再发通知：agent 可能立刻回终态，晚一步就区分不出「取消导致的失败」
     state.request_cancel(&session_id).await;
+    // 停止一旦发出，本轮剩余请求不再自动同意；用户重新点一次才会开启新的策略。
+    if let Some(turn_id) = state.turns.current(&session_id).await {
+        state
+            .turn_approvals
+            .clear_turn(&session_id, &turn_id)
+            .await;
+    }
     if let Err(e) = handle
         .proc
         .notify(
@@ -4014,30 +4205,15 @@ pub async fn session_cancel(
     Ok(())
 }
 
-/// 回答 agent 发来的请求。目前只有 `session/request_permission`。
-///
-/// `outcome` 原样透传 ACP 的 RequestPermissionOutcome：
-/// `{"outcome":"selected","optionId":"..."}` 或 `{"outcome":"cancelled"}`。
-/// 取消语义只属于「用户中止这一轮」；超时自拒要选 reject_* 选项，不能回 cancelled。
-#[tauri::command]
-pub async fn agent_respond_request(
-    state: State<'_, AppState>,
-    profile_id: String,
+async fn respond_permission(
+    db: &db::Db,
+    profile_id: &str,
+    handle: &transport::AgentProcess,
     id: u64,
     outcome: serde_json::Value,
-    decision: Option<PermissionDecisionMeta>,
+    reply: PermissionReply,
 ) -> Result<(), CmdError> {
-    // 先摘登记再写回：同一个请求被点两次（双击、两个窗口）时，第二次必须被挡住，
-    // 否则我们会往一个 agent 已经处理完的 id 上再写一条响应。
-    let (known, turn_id) = state.pending.take_with_turn(&profile_id, id).await;
-    if !known {
-        return Err(CmdError::new(50500, "这个请求已失效或已被回答"));
-    }
-    let handle = state
-        .get(&profile_id)
-        .await
-        .ok_or_else(|| CmdError::new(50501, "连接已断开，无法回答这个请求"))?;
-    let decision = decision.unwrap_or_default();
+    let PermissionReply { turn_id, decision } = reply;
     let option_id = normalize_optional(decision.option_id).or_else(|| {
         outcome
             .get("optionId")
@@ -4049,6 +4225,7 @@ pub async fn agent_respond_request(
     let note = normalize_optional(decision.note);
     let via = match decision.via.as_deref() {
         Some("auto:edits") => "auto:edits",
+        Some("turn-policy") => "turn-policy",
         _ => "user",
     };
     // 裁定由前端按用户实际点的那个选项给出（allow_* / reject_*）。缺省按拒绝 —— 轨迹里
@@ -4058,7 +4235,6 @@ pub async fn agent_respond_request(
         _ => "reject",
     };
     match handle
-        .proc
         .respond(id, Ok(serde_json::json!({ "outcome": outcome })))
         .await
     {
@@ -4066,24 +4242,27 @@ pub async fn agent_respond_request(
             // 只有仍停在 waiting_approval 的轮才恢复 running；
             // agent 若已经先回了终态，这里不能把 finished / cancelled 盖回去。
             if let Some(turn_id) = turn_id.as_deref() {
-                if let Err(e) = state.db.resume_turn_after_approval(turn_id) {
+                if let Err(e) = db.resume_turn_after_approval(turn_id) {
                     tracing::warn!(
                         target: "sincearc::trace", error = %e, turn = %turn_id,
                         "权限答完后恢复轮次状态失败"
                     );
                 }
-                match state.db.turn_context(turn_id) {
+                match db.turn_context(turn_id) {
                     Ok(Some((ui_sid, turn_author))) => {
-                        let payload = serde_json::json!({
-                            "requestId": id,
-                            "verdict": verdict,
-                            "optionId": option_id,
-                            "optionLabel": option_label,
-                            "actorMemberId": actor_member_id.or_else(|| turn_author.clone()),
-                            "via": via,
-                            "note": note,
-                            "turnId": turn_id,
-                        });
+                        let actor_member_id = actor_member_id.or_else(|| turn_author.clone());
+                        let payload = permission_decision_payload(
+                            id,
+                            turn_id,
+                            PermissionTrace {
+                                verdict,
+                                option_id: option_id.as_deref(),
+                                option_label: option_label.as_deref(),
+                                actor_member_id: actor_member_id.as_deref(),
+                                via,
+                                note: note.as_deref(),
+                            },
+                        );
                         let input = db::EventInput {
                             turn_id: turn_id.to_string(),
                             author_id: turn_author,
@@ -4095,7 +4274,7 @@ pub async fn agent_respond_request(
                             source: "live".to_string(),
                             truncated: false,
                         };
-                        if let Err(e) = state.db.append_events(&ui_sid, &[input]) {
+                        if let Err(e) = db.append_events(&ui_sid, &[input]) {
                             tracing::warn!(
                                 target: "sincearc::trace", error = %e, turn = %turn_id,
                                 "权限决定落库失败"
@@ -4124,16 +4303,99 @@ pub async fn agent_respond_request(
             Ok(())
         }
         Err(e) => {
-            // 写不进去就把登记还回去：用户可能想再点一次，别让请求凭空消失。
-            state
-                .pending
-                .mark_with_turn(&profile_id, id, turn_id)
-                .await;
             tracing::warn!(
                 target: "sincearc::ipc", profile = %profile_id, id, error = %e,
                 "respond failed"
             );
             Err(CmdError::new(50502, format!("写回决定失败：{e}")))
+        }
+    }
+}
+
+/// 放行「本轮同类」：范围 = 当前 ACP 会话 + 当前轮 + 指定 kind。
+#[tauri::command]
+pub async fn permission_allow_turn(
+    state: State<'_, AppState>,
+    profile_id: String,
+    acp_session_id: String,
+    turn_id: String,
+    kind: String,
+) -> Result<(), CmdError> {
+    if !is_known_permission_kind(&kind) {
+        return Err(CmdError::new(50100, format!("未知权限类别：{kind}")));
+    }
+    if state.get(&profile_id).await.is_none() {
+        return Err(CmdError::new(50300, "连接已断开，没有本轮可放行"));
+    }
+    let active_turn = state.turns.current(&acp_session_id).await;
+    if active_turn.as_deref() != Some(turn_id.as_str()) {
+        return Err(CmdError::new(50300, "没有本轮可放行"));
+    }
+    state
+        .turn_approvals
+        .allow(&acp_session_id, &turn_id, &kind)
+        .await;
+    tracing::info!(
+        target: "sincearc::ipc", profile = %profile_id, acp_session = %acp_session_id,
+        turn = %turn_id, %kind, "turn approval allowed"
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn permission_revoke_turn(
+    state: State<'_, AppState>,
+    profile_id: String,
+    acp_session_id: String,
+    turn_id: String,
+) -> Result<bool, CmdError> {
+    let removed = state
+        .turn_approvals
+        .revoke(&acp_session_id, &turn_id)
+        .await;
+    tracing::info!(
+        target: "sincearc::ipc", profile = %profile_id, acp_session = %acp_session_id,
+        turn = %turn_id, removed, "turn approval revoked"
+    );
+    Ok(removed)
+}
+
+/// 回答 agent 发来的请求。目前只有 `session/request_permission`。
+///
+/// `outcome` 原样透传 ACP 的 RequestPermissionOutcome：
+/// `{"outcome":"selected","optionId":"..."}` 或 `{"outcome":"cancelled"}`。
+/// 取消语义只属于「用户中止这一轮」；超时自拒要选 reject_* 选项，不能回 cancelled。
+#[tauri::command]
+pub async fn agent_respond_request(
+    state: State<'_, AppState>,
+    profile_id: String,
+    id: u64,
+    outcome: serde_json::Value,
+    decision: Option<PermissionDecisionMeta>,
+) -> Result<(), CmdError> {
+    // 先摘登记再写回：同一个请求被点两次（双击、两个窗口）时，第二次必须被挡住，
+    // 否则我们会往一个 agent 已经处理完的 id 上再写一条响应。
+    let (known, turn_id) = state.pending.take_with_turn(&profile_id, id).await;
+    if !known {
+        return Err(CmdError::new(50500, "这个请求已失效或已被回答"));
+    }
+    let handle = state
+        .get(&profile_id)
+        .await
+        .ok_or_else(|| CmdError::new(50501, "连接已断开，无法回答这个请求"))?;
+    let reply = PermissionReply {
+        turn_id: turn_id.clone(),
+        decision: decision.unwrap_or_default(),
+    };
+    match respond_permission(&state.db, &profile_id, &handle.proc, id, outcome, reply).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // 写不进去就把登记还回去：用户可能想再点一次，别让请求凭空消失。
+            state
+                .pending
+                .mark_with_turn(&profile_id, id, turn_id)
+                .await;
+            Err(e)
         }
     }
 }
@@ -4524,6 +4786,81 @@ pub async fn session_choose_mode(
                 )),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod permission_policy_tests {
+    use super::{
+        is_known_permission_kind, permission_decision_payload, pick_allow_option,
+        turn_policy_decision, AllowOption, PermissionTrace,
+    };
+
+    #[test]
+    fn unknown_kind_is_not_accepted() {
+        for kind in ["edit", "delete", "move", "execute", "read", "search"] {
+            assert!(is_known_permission_kind(kind), "{kind}");
+        }
+        for kind in ["", "unknown", "think", "fetch", "other", "EDIT"] {
+            assert!(!is_known_permission_kind(kind), "{kind}");
+        }
+    }
+
+    #[test]
+    fn only_existing_allow_options_are_picked() {
+        let rejects_only = serde_json::json!({
+            "options": [
+                { "kind": "reject_once", "optionId": "deny", "name": "拒绝" },
+                { "kind": "reject_always", "optionId": "deny-always", "name": "总是拒绝" }
+            ]
+        });
+        assert_eq!(pick_allow_option(&rejects_only), None, "没有 allow 项时不许自己造");
+
+        let with_allow = serde_json::json!({
+            "options": [
+                { "kind": "reject_once", "optionId": "deny", "name": "拒绝" },
+                { "kind": "allow_once", "optionId": "allow_once", "name": "允许一次" }
+            ]
+        });
+        assert_eq!(
+            pick_allow_option(&with_allow),
+            Some(AllowOption {
+                id: "allow_once".into(),
+                label: Some("允许一次".into()),
+            }),
+            "必须用请求自带的 optionId"
+        );
+    }
+
+    #[test]
+    fn turn_policy_decision_writes_via_and_actor() {
+        let allow = AllowOption {
+            id: "allow_once".into(),
+            label: Some("允许一次".into()),
+        };
+        let decision = turn_policy_decision(&allow, Some("member-1".into()));
+        assert_eq!(decision.via.as_deref(), Some("turn-policy"));
+        assert_eq!(decision.actor_member_id.as_deref(), Some("member-1"));
+        assert_eq!(decision.note.as_deref(), Some("本轮同类自动允许"));
+
+        let payload = permission_decision_payload(
+            7,
+            "turn-1",
+            PermissionTrace {
+                verdict: decision.verdict.as_deref().unwrap_or("reject"),
+                option_id: decision.option_id.as_deref(),
+                option_label: decision.option_label.as_deref(),
+                actor_member_id: decision.actor_member_id.as_deref(),
+                via: decision.via.as_deref().unwrap_or("user"),
+                note: decision.note.as_deref(),
+            },
+        );
+        assert_eq!(payload["requestId"], 7);
+        assert_eq!(payload["turnId"], "turn-1");
+        assert_eq!(payload["via"], "turn-policy");
+        assert_eq!(payload["actorMemberId"], "member-1");
+        assert_eq!(payload["optionId"], "allow_once");
+        assert_eq!(payload["note"], "本轮同类自动允许");
     }
 }
 
