@@ -8,4 +8,8 @@ autoApproveDefault: string,
 /**
  * 新建连接时是否默认继承整份 MCP 目录；只影响新连接，不追溯已有连接。
  */
-mcpInheritDefault: boolean, };
+mcpInheritDefault: boolean, 
+/**
+ * 流式回答按到达节奏平滑推进；只影响渲染层。
+ */
+tweenEnabled: boolean, };

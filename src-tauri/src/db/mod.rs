@@ -28,6 +28,7 @@ const SETTINGS_KEY_CONTEXT_MESSAGES: &str = "contextMessages";
 const SETTINGS_KEY_THEME: &str = "theme";
 const SETTINGS_KEY_AUTO_APPROVE: &str = "autoApproveDefault";
 const SETTINGS_KEY_MCP_INHERIT_DEFAULT: &str = "mcp_inherit_default";
+const SETTINGS_KEY_TWEEN: &str = "tween_enabled";
 
 /// 结构版本：与 schema.sql 不符时整表重建（自用工具，会话数据可再生）
 const SCHEMA_VERSION: i64 = 6;
@@ -951,6 +952,17 @@ impl Db {
                         issues.push(note);
                     }
                 },
+                SETTINGS_KEY_TWEEN => match value.parse::<bool>() {
+                    Ok(next) => settings.tween_enabled = next,
+                    Err(_) => {
+                        let note = format!(
+                            "设置项 {key} 的值 `{value}` 不认识（应为 true/false），已用默认值 {}",
+                            settings.tween_enabled
+                        );
+                        tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
+                        issues.push(note);
+                    }
+                },
                 _ => {}
             }
         }
@@ -986,6 +998,11 @@ impl Db {
                 SETTINGS_KEY_MCP_INHERIT_DEFAULT,
                 settings.mcp_inherit_default.to_string()
             ],
+        )?;
+        tx.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![SETTINGS_KEY_TWEEN, settings.tween_enabled.to_string()],
         )?;
         tx.commit()
     }
@@ -2444,6 +2461,7 @@ mod tests {
         assert_eq!(settings.theme, "dark");
         assert_eq!(settings.auto_approve_default, "off");
         assert!(settings.mcp_inherit_default);
+        assert!(settings.tween_enabled);
         std::fs::remove_file(&path).ok();
     }
 
@@ -2455,6 +2473,7 @@ mod tests {
             theme: "system".into(),
             auto_approve_default: "edits".into(),
             mcp_inherit_default: false,
+            tween_enabled: false,
         })
         .expect("save settings");
 
@@ -2463,6 +2482,7 @@ mod tests {
         assert_eq!(settings.theme, "system");
         assert_eq!(settings.auto_approve_default, "edits");
         assert!(!settings.mcp_inherit_default);
+        assert!(!settings.tween_enabled);
         std::fs::remove_file(&path).ok();
     }
 
@@ -2537,6 +2557,7 @@ mod tests {
             theme: "light".into(),
             auto_approve_default: "off".into(),
             mcp_inherit_default: true,
+            tween_enabled: true,
         })
         .expect("save settings");
         let loaded = db.load_settings().expect("load settings");
@@ -2584,6 +2605,7 @@ mod tests {
             theme: "light".into(),
             auto_approve_default: "off".into(),
             mcp_inherit_default: true,
+            tween_enabled: true,
         })
         .expect("save settings");
         let (_, clean) = db.load_settings_report().expect("load report");
@@ -2606,6 +2628,7 @@ mod tests {
             theme: "dark".into(),
             auto_approve_default: "off".into(),
             mcp_inherit_default: false,
+            tween_enabled: false,
         })
         .expect("save settings");
 
@@ -2636,6 +2659,7 @@ mod tests {
             theme: "dark".into(),
             auto_approve_default: "off".into(),
             mcp_inherit_default: false,
+            tween_enabled: false,
         })
         .expect("save settings");
 

@@ -32,6 +32,7 @@ export async function settingsLoad(): Promise<{
       theme: asTheme(report.settings.theme),
       autoApproveDefault: asAutoApprove(report.settings.autoApproveDefault),
       mcpInheritDefault: report.settings.mcpInheritDefault,
+      tweenEnabled: report.settings.tweenEnabled,
     },
     issues: report.issues,
   };

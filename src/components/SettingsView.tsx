@@ -66,6 +66,7 @@ import { EmptyState } from "./ui/EmptyState";
 import { Field, Input } from "./ui/Field";
 import { Menu, type MenuItem } from "./ui/Menu";
 import { Segmented } from "./ui/Segmented";
+import { Switch } from "./ui/Switch";
 
 interface SettingsViewProps {
   settings: ThreadSettings;
@@ -90,6 +91,8 @@ interface SettingsViewProps {
   onChangeAutoApproveDefault: (level: AutoApproveLevel) => void;
   /** 新建连接默认继承整份 MCP 目录（只影响新连接） */
   onChangeMcpInheritDefault: (value: boolean) => void;
+  /** 流式回答是否按到达节奏平滑推进（只影响渲染层） */
+  onChangeTweenEnabled: (value: boolean) => void;
   /** agent 发现（docs/discovery.md）：缓存结果、是否在扫、手动重扫 */
   discovery?: DiscoveryOutcome | null;
   discoveryScanning?: boolean;
@@ -242,6 +245,7 @@ export function SettingsView({
   onCycleTheme,
   onChangeAutoApproveDefault,
   onChangeMcpInheritDefault,
+  onChangeTweenEnabled,
   discovery = null,
   discoveryScanning = false,
   discoveryError = null,
@@ -1292,6 +1296,19 @@ export function SettingsView({
                           options={THEME_OPTIONS}
                           value={theme}
                           onChange={onCycleTheme}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-6 py-4">
+                        <div className="min-w-0">
+                          <div className="text-ui text-ink-1">流式补间</div>
+                          <p className="mt-1 text-caption text-ink-3">
+                            agent 回答按到达节奏平滑推进；关掉后与改前一致。
+                          </p>
+                        </div>
+                        <Switch
+                          checked={settings.tweenEnabled}
+                          label="流式补间"
+                          onChange={onChangeTweenEnabled}
                         />
                       </div>
                     </div>
