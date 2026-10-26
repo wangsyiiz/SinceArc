@@ -30,6 +30,40 @@ pub fn run(conn: &mut Connection) -> rusqlite::Result<()> {
     tx.commit()
 }
 
+/// I1 启动自检：`Db::open` 收尾时只记录不能解释的 open 原子，不自动修复。
+///
+/// 口径见 `docs/message-model.md §15.2`。调用方必须先封口残留 open 行，
+/// 否则旧进程留下的正常残留也会被报成异常。
+pub(super) fn audit_unsealed_atoms(conn: &Connection) -> rusqlite::Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id, a.session_id, a.turn_id, t.status
+           FROM atoms a JOIN turns t ON t.id = a.turn_id
+          WHERE a.sealed_at IS NULL AND t.status NOT IN ('running', 'waiting_approval')",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut hits = 0;
+    for row in rows {
+        let (atom, session, turn, status) = row?;
+        tracing::warn!(
+            target: "sincearc::db",
+            session = %session,
+            turn = %turn,
+            status = %status,
+            atom = %atom,
+            "未封口原子挂在已结束的轮上"
+        );
+        hits += 1;
+    }
+    Ok(hits)
+}
+
 /// M1-01：给旧 `messages` 表补 `turn_id`，并加会话内的轮次索引。
 ///
 /// 新库里 `messages` 已经是视图，不能在视图上建索引；只有对象仍是旧表时才执行。
@@ -131,6 +165,7 @@ fn m2_03_create_views(conn: &Connection) -> rusqlite::Result<()> {
            SELECT id, session_id, turn_id, seq, role,
                   CASE kind WHEN 'text.user' THEN 'text' WHEN 'text.agent' THEN 'text'
                             WHEN 'aside' THEN 'aside' WHEN 'delegate.card' THEN 'delegate'
+                            WHEN 'notice.system' THEN 'text'
                             ELSE 'text' END AS kind,
                   atoms.kind AS atom_kind,
                   payload_json, at AS created_at, author_id
@@ -211,6 +246,7 @@ fn m2_08_chat_atom_kinds(conn: &Connection) -> rusqlite::Result<()> {
            SELECT id, session_id, turn_id, seq, role,
                   CASE kind WHEN 'text.user' THEN 'text' WHEN 'text.agent' THEN 'text'
                             WHEN 'aside' THEN 'aside' WHEN 'delegate.card' THEN 'delegate'
+                            WHEN 'notice.system' THEN 'text'
                             ELSE 'text' END AS kind,
                   atoms.kind AS atom_kind,
                   payload_json, at AS created_at, author_id
