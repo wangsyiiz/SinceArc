@@ -8,3 +8,4 @@ export * from "./domains/member";
 export * from "./domains/delegate";
 export * from "./domains/settings";
 export * from "./domains/mcp";
+export * from "./domains/system";

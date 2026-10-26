@@ -230,6 +230,7 @@ pub fn run() {
             commands::session_mcp_state,
             commands::settings_load,
             commands::settings_save,
+            commands::open_external,
             commands::sessions_list,
             commands::session_upsert,
             commands::session_delete,

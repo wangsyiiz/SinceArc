@@ -258,6 +258,68 @@ impl From<transport::TransportError> for CmdError {
     }
 }
 
+/// 外链打开只放行这三类 scheme。
+///
+/// 前端已经把这些 scheme 之外的东西降级成纯文本了，这里是**第二道闸**：
+/// 渲染层哪天被改坏，也不至于让 `file:` / `javascript:` 之类的串走到命令行。
+/// 另外拒绝含控制字符的 URL —— 换行 / 制表符进命令行会被截断或续成第二条命令。
+pub fn is_openable_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    if trimmed.is_empty() || trimmed.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    let Some((scheme, rest)) = trimmed.split_once(':') else {
+        return false;
+    };
+    if rest.trim().is_empty() {
+        return false;
+    }
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "http" | "https" | "mailto"
+    )
+}
+
+/// 在系统默认浏览器里打开外链。
+///
+/// 起进程是 fire-and-forget：拿不到「浏览器真的开了」这个事实，所以成功时前端不提示，
+/// 只有这里返回错误时前端才说「打不开」。
+#[tauri::command]
+pub async fn open_external(url: String) -> Result<(), CmdError> {
+    if !is_openable_url(&url) {
+        return Err(CmdError::new(50102, "只允许打开 http / https / mailto 链接"));
+    }
+    let target = url.trim().to_string();
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // `start` 的第一个引号参数是**窗口标题**：必须先给一对空引号，再单独引住 URL，
+        // 否则 URL 里的 `&` 会被 cmd 当成命令分隔符（`?a=1&b=2` 会被切成两条命令）。
+        std::process::Command::new(crate::acp::launch::system_tool("cmd.exe"))
+            .args(["/C", "start", "", &target])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| CmdError::new(50705, format!("打不开系统浏览器：{e}")))?;
+    }
+
+    #[cfg(not(windows))]
+    {
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        std::process::Command::new(opener)
+            .arg(&target)
+            .spawn()
+            .map_err(|e| CmdError::new(50705, format!("打不开系统浏览器：{e}")))?;
+    }
+
+    Ok(())
+}
+
 /// 前端传来的 profile。字段与 `AgentProfile` 不同 —— 那是内部结构，
 /// 这里只接 UI 真正会填的那几项。
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
@@ -4651,5 +4713,34 @@ mod steer_tests {
             .expect_err("没有 steer 命令必须被拒");
         assert_eq!(err.code, 50404);
         assert_eq!(err.msg, "这个 agent 没有声明 steer 命令");
+    }
+
+    #[test]
+    fn openable_url_only_allows_http_https_mailto() {
+        for ok in [
+            "https://example.com/a?b=1&c=2",
+            "http://example.com",
+            "HTTPS://EXAMPLE.COM",
+            "mailto:someone@example.com",
+            "  https://example.com/x  ",
+        ] {
+            assert!(is_openable_url(ok), "{ok} 应当放行");
+        }
+        for bad in [
+            "",
+            "   ",
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "file:///C:/Windows/win.ini",
+            "vbscript:msgbox",
+            "//evil.example/x",
+            "/relative/path",
+            "https:",
+            "https://example.com/\nrm -rf /",
+            "https://example.com/\tX",
+        ] {
+            assert!(!is_openable_url(bad), "{bad:?} 应当被拒");
+        }
     }
 }

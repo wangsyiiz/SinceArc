@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement, ReactNode } from "react";
 import type { Block, Inline } from "@/lib/markdown";
 import { parseMarkdown } from "@/lib/markdown";
+import { openExternal } from "@/lib/ipc";
 
 async function copyText(text: string): Promise<void> {
   try {
@@ -20,7 +21,7 @@ async function copyText(text: string): Promise<void> {
 }
 
 function LinkButton({ href, children }: { href: string; children: ReactNode }) {
-  const [copied, setCopied] = useState(false);
+  const [hint, setHint] = useState<"copied" | "failed" | null>(null);
   const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -29,29 +30,50 @@ function LinkButton({ href, children }: { href: string; children: ReactNode }) {
     };
   }, []);
 
-  const copyLink = async () => {
-    await copyText(href);
-    setCopied(true);
+  const flash = (next: "copied" | "failed") => {
+    setHint(next);
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => {
-      setCopied(false);
+      setHint(null);
       timerRef.current = null;
     }, 1200);
+  };
+
+  const copyLink = async () => {
+    await copyText(href);
+    flash("copied");
+  };
+
+  // 成功不提示（fire-and-forget，我们并不知道浏览器真开了）；只有命令报错才说「打不开」。
+  const openLink = async () => {
+    try {
+      await openExternal(href);
+    } catch {
+      flash("failed");
+    }
   };
 
   return (
     <button
       type="button"
       role="link"
-      title={href}
+      title={`${href}\n单击复制 · Ctrl+点击在浏览器打开`}
       onClick={(event) => {
         event.preventDefault();
-        void copyLink();
+        if (event.ctrlKey || event.metaKey) void openLink();
+        else void copyLink();
+      }}
+      onAuxClick={(event) => {
+        // 中键：浏览器里中键=新标签，这里映射成「在系统浏览器打开」。
+        if (event.button !== 1) return;
+        event.preventDefault();
+        void openLink();
       }}
       className="cursor-pointer text-accent-1 underline underline-offset-2 hover:text-ink-1"
     >
       {children}
-      {copied && <span className="text-ink-3"> · 已复制</span>}
+      {hint === "copied" && <span className="text-ink-3"> · 已复制</span>}
+      {hint === "failed" && <span className="text-danger-1"> · 打不开</span>}
     </button>
   );
 }
@@ -182,7 +204,7 @@ function renderBlock(block: Block, key: number, caret = false): ReactNode {
     case "table":
       return (
         <Fragment key={key}>
-          <div className="overflow-x-auto">
+          <div className="sc-table-wrap">
             <table>
               <thead>
                 <tr>
