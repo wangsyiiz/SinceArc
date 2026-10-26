@@ -2561,11 +2561,11 @@ mod tests {
     }
 
     #[test]
-    fn settings_code_theme_defaults_to_github_dark() {
+    fn settings_code_theme_defaults_to_sincearc() {
         let (db, path) = temp_db();
         assert_eq!(
             db.load_settings().expect("load settings").code_theme,
-            "github-dark"
+            DEFAULT_CODE_THEME
         );
         std::fs::remove_file(&path).ok();
     }
@@ -2584,7 +2584,7 @@ mod tests {
         .expect("save settings");
         assert_eq!(
             db.load_settings().expect("load settings").code_theme,
-            "github-dark",
+            DEFAULT_CODE_THEME,
             "非法 id 写库时要先归一"
         );
         std::fs::remove_file(&path).ok();

@@ -457,7 +457,7 @@ pub fn is_valid_theme(theme: &str) -> bool {
 /// 代码配色主题 id 的**唯一来源**；前端 `src/lib/highlight/themes.ts` 必须与它一致（有测试守）。
 pub const CODE_THEME_IDS: [&str; 5] = ["github-dark", "one-dark", "dracula", "nord", "sincearc"];
 
-pub const DEFAULT_CODE_THEME: &str = CODE_THEME_IDS[0];
+pub const DEFAULT_CODE_THEME: &str = "sincearc";
 
 pub fn is_valid_code_theme(theme: &str) -> bool {
     CODE_THEME_IDS.contains(&theme)
@@ -491,7 +491,7 @@ pub struct AppSettingsDto {
     /// 流式回答按到达节奏平滑推进；只影响渲染层。
     #[serde(default = "default_true")]
     pub tween_enabled: bool,
-    /// markdown 代码块配色 id；未知值读回时回落 github-dark。
+    /// markdown 代码块配色 id；未知值读回时回落 sincearc。
     #[serde(default = "default_code_theme")]
     pub code_theme: String,
 }

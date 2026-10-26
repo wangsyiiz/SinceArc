@@ -14,6 +14,6 @@ mcpInheritDefault: boolean,
  */
 tweenEnabled: boolean, 
 /**
- * markdown 代码块配色 id；未知值读回时回落 github-dark。
+ * markdown 代码块配色 id；未知值读回时回落 sincearc。
  */
 codeTheme: string, };
