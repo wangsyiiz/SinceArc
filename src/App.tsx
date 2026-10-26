@@ -66,6 +66,8 @@ import {
   messageFromRow,
   messagesLoad,
   mentionResolve,
+  permissionAllowTurn,
+  permissionRevokeTurn,
   settingsLoad,
   settingsSave,
   sessionDelete,
@@ -104,6 +106,13 @@ import { useTabs } from "@/hooks/useTabs";
 import { useTheme } from "@/hooks/useTheme";
 
 const SETTINGS_SAVE_DEBOUNCE_MS = 300;
+
+interface TurnPolicy {
+  profileId: string;
+  acpSessionId: string;
+  turnId: string;
+  kinds: string[];
+}
 
 export default function App() {
   const [settings, setSettings] = useState<ThreadSettings>(DEFAULT_THREAD_SETTINGS);
@@ -146,6 +155,12 @@ export default function App() {
   const [delegateTarget, setDelegateTarget] = useState<AgentUser | null>(null);
   const [permOpen, setPermOpen] = useState(false);
   const [autoApprove, setAutoApprove] = useState<Record<string, AutoApproveLevel>>({});
+  /** 界面会话 → 当前轮的本轮同类放行策略（内存态，后端是权威来源） */
+  const [turnPolicies, setTurnPolicies] = useState<Record<string, TurnPolicy>>({});
+  const turnPoliciesRef = useRef(turnPolicies);
+  useEffect(() => {
+    turnPoliciesRef.current = turnPolicies;
+  }, [turnPolicies]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const scrollAnchorRef = useRef<{
@@ -349,6 +364,14 @@ export default function App() {
     (uiSid: string): AutoApproveLevel => autoApprove[uiSid] ?? settings.autoApproveDefault,
     [autoApprove, settings.autoApproveDefault],
   );
+  const dropTurnPolicy = useCallback((uiSid: string) => {
+    setTurnPolicies((prev) => {
+      if (!(uiSid in prev)) return prev;
+      const next = { ...prev };
+      delete next[uiSid];
+      return next;
+    });
+  }, []);
   const permissionDiagRef = useRef<(text: string) => void>(() => {});
   const permissionDiag = useCallback((text: string) => permissionDiagRef.current(text), []);
   const permissions = usePermissions({
@@ -396,6 +419,20 @@ export default function App() {
           return changed ? next : prev;
         });
       }
+      setTurnPolicies((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const [uiSid, policy] of Object.entries(prev)) {
+          const hit =
+            args.cause === "disconnected"
+              ? policy.profileId === args.profileId
+              : args.uiSid !== undefined && uiSid === args.uiSid;
+          if (!hit) continue;
+          delete next[uiSid];
+          changed = true;
+        }
+        return changed ? next : prev;
+      });
     },
     [permissions.expire, sessions],
   );
@@ -494,6 +531,87 @@ export default function App() {
     activeAcpSid ? !!messageIdByAcpSession[activeAcpSid] : false,
   );
   const isStopping = !!cancelling[lastSessionId] && state.busy;
+  const activeTurnId = activeAcpSid ? acp.acpToTurn.current[activeAcpSid] ?? null : null;
+  const activeTurnPolicy = (() => {
+    const policy = lastSessionId ? turnPolicies[lastSessionId] : undefined;
+    if (!policy || !state.busy) return undefined;
+    return policy.acpSessionId === activeAcpSid && policy.turnId === activeTurnId
+      ? policy
+      : undefined;
+  })();
+  const pendingTurnPolicyKind =
+    state.pendingPerm?.kind && activeTurnPolicy?.kinds.includes(state.pendingPerm.kind)
+      ? state.pendingPerm.kind
+      : null;
+
+  const allowTurnPolicy = useCallback(async () => {
+    const request = state.pendingPerm;
+    const profileId = activeSession?.profileId ?? sessionProfile?.id;
+    const acpSessionId = activeAcpSid;
+    const turnId = acpSessionId ? acp.acpToTurn.current[acpSessionId] : undefined;
+    if (!request?.kind) throw { code: 50300, msg: "当前请求没有可放行的权限类别" };
+    if (!lastSessionId || !profileId || !acpSessionId || !turnId) {
+      throw { code: 50300, msg: "没有本轮可放行" };
+    }
+    await permissionAllowTurn(profileId, acpSessionId, turnId, request.kind);
+    const kind = request.kind;
+    setTurnPolicies((prev) => {
+      const current = prev[lastSessionId];
+      const sameTurn =
+        current?.acpSessionId === acpSessionId && current.turnId === turnId;
+      const kinds = sameTurn
+        ? Array.from(new Set([...current.kinds, kind]))
+        : [kind];
+      return {
+        ...prev,
+        [lastSessionId]: { profileId, acpSessionId, turnId, kinds },
+      };
+    });
+  }, [acp, activeAcpSid, activeSession?.profileId, lastSessionId, sessionProfile?.id, state.pendingPerm]);
+
+  const revokeTurnPolicy = useCallback(async () => {
+    const policy = lastSessionId ? turnPoliciesRef.current[lastSessionId] : undefined;
+    if (!policy) return;
+    try {
+      const removed = await permissionRevokeTurn(
+        policy.profileId,
+        policy.acpSessionId,
+        policy.turnId,
+      );
+      // false = 后端本来就没有这条策略；界面同样以「不再放行」为准。
+      dropTurnPolicy(lastSessionId);
+      if (!removed) diag(`TURN-POLICY revoke found nothing ui=${lastSessionId}`);
+    } catch (e) {
+      const message = (e as { msg?: string })?.msg ?? String(e);
+      diag(`TURN-POLICY revoke failed ui=${lastSessionId} · ${message}`);
+      clog("TURN-POLICY-REVOKE-ERR", `ui=${lastSessionId} ${message}`);
+    }
+  }, [diag, dropTurnPolicy, lastSessionId]);
+
+  // 换会话即失效：不把上一页的授权带到新页面，也通知后端撤销。
+  const prevPolicyUiRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevPolicyUiRef.current;
+    prevPolicyUiRef.current = lastSessionId || null;
+    if (!prev || prev === lastSessionId) return;
+    const policy = turnPoliciesRef.current[prev];
+    if (!policy) return;
+    dropTurnPolicy(prev);
+    void permissionRevokeTurn(policy.profileId, policy.acpSessionId, policy.turnId).catch((e) => {
+      const message = (e as { msg?: string })?.msg ?? String(e);
+      diag(`TURN-POLICY revoke on switch failed ui=${prev} · ${message}`);
+    });
+  }, [diag, dropTurnPolicy, lastSessionId]);
+
+  // 轮终态/换轮后后端已清；界面必须同步收起 chip，不能在下一轮继续显示。
+  useEffect(() => {
+    if (!lastSessionId) return;
+    const policy = turnPoliciesRef.current[lastSessionId];
+    if (!policy) return;
+    if (!state.busy || policy.acpSessionId !== activeAcpSid || policy.turnId !== activeTurnId) {
+      dropTurnPolicy(lastSessionId);
+    }
+  }, [activeAcpSid, activeTurnId, dropTurnPolicy, lastSessionId, state.busy]);
 
   /**
    * 写提示：群聊里每个成员是独立 ACP 会话，各自可能同时在写。
@@ -1587,6 +1705,8 @@ export default function App() {
                           autoApprove={activeAutoApprove}
                           autoApproveCovered={autoApproveCoveredByAgent}
                           onAutoApproveChange={setAutoApproveLevel}
+                          turnPolicyKinds={activeTurnPolicy?.kinds ?? []}
+                          onRevokeTurnPolicy={() => void revokeTurnPolicy()}
                           sessionId={lastSessionId}
                           sessionProfile={sessionProfile}
                           onReconnectMcp={() =>
@@ -1735,6 +1855,8 @@ export default function App() {
           player={players.find((x) => x.id === state.pendingPerm?.playerId)}
           open={permOpen}
           onDecide={(optionId, note) => void decide(optionId, note)}
+          onAllowTurn={allowTurnPolicy}
+          turnPolicyKind={pendingTurnPolicyKind}
           onCancel={(note) => void decide(null, note)}
           queued={permQueued}
         />

@@ -125,6 +125,56 @@ impl Turns {
     }
 }
 
+/// 「本轮同类全部允许」策略：内存态，不落库。
+///
+/// 键必须同时包含 ACP 会话、轮次和 kind —— 只按会话或只按轮次生效都会把授权
+/// 扩大到规范 §10 明确收窄的范围之外。
+#[derive(Default)]
+pub struct TurnApprovals(Mutex<HashMap<(String, String), HashSet<String>>>);
+
+impl TurnApprovals {
+    pub async fn allow(&self, acp_sid: &str, turn_id: &str, kind: &str) {
+        self.0
+            .lock()
+            .await
+            .entry((acp_sid.to_string(), turn_id.to_string()))
+            .or_default()
+            .insert(kind.to_string());
+    }
+
+    pub async fn covers(&self, acp_sid: &str, turn_id: &str, kind: &str) -> bool {
+        self.0
+            .lock()
+            .await
+            .get(&(acp_sid.to_string(), turn_id.to_string()))
+            .is_some_and(|kinds| kinds.contains(kind))
+    }
+
+    pub async fn revoke(&self, acp_sid: &str, turn_id: &str) -> bool {
+        self.0
+            .lock()
+            .await
+            .remove(&(acp_sid.to_string(), turn_id.to_string()))
+            .is_some()
+    }
+
+    /// 轮结束/取消/断线时清掉该轮
+    pub async fn clear_turn(&self, acp_sid: &str, turn_id: &str) {
+        self.0
+            .lock()
+            .await
+            .remove(&(acp_sid.to_string(), turn_id.to_string()));
+    }
+
+    /// 断线时清掉该连接的全部轮次
+    pub async fn clear_session(&self, acp_sid: &str) {
+        self.0
+            .lock()
+            .await
+            .retain(|(session, _), _| session != acp_sid);
+    }
+}
+
 /// 一次 `session/load` 重放期间捕获到的轨迹事件。
 ///
 /// 重放没有活动轮次，不能直接走 live 落库；先收进内存，等 load 收尾后由补录命令
@@ -344,6 +394,8 @@ pub struct AppState {
     pub pending: PendingRequests,
     /// 每个 ACP 会话当前这一轮的 id（轨迹事件靠它归轮）
     pub turns: Arc<Turns>,
+    /// 「本轮同类全部允许」策略：内存态，轮结束/取消/断线即失效。
+    pub turn_approvals: Arc<TurnApprovals>,
     /// 补录期间按 ACP 会话 id 捕获 `session/load` 重放事件；窗口关闭后缓冲即丢。
     pub replay: Arc<ReplayCapture>,
     /// 客户端拥有的 delegate 句柄；转发 task 与命令层共用。
@@ -411,6 +463,17 @@ impl Routes {
             .filter(|(_, record)| record.ui_session_id.as_deref() == Some(ui_session_id))
             .min_by_key(|(_, record)| record.author_id.is_some() as u8)
             .map(|(acp_session_id, record)| (acp_session_id.clone(), record.clone()))
+    }
+
+    /// 某个连接名下的全部 ACP 会话 id。断线时据此清掉每一条会话的轮次策略。
+    pub async fn acp_session_ids_of(&self, profile_id: &str) -> Vec<String> {
+        self.0
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, record)| record.profile_id == profile_id)
+            .map(|(acp_session_id, _)| acp_session_id.clone())
+            .collect()
     }
 }
 
@@ -484,6 +547,7 @@ impl AppState {
             modes: Mutex::new(HashMap::new()),
             pending: PendingRequests::default(),
             turns: Arc::new(Turns::default()),
+            turn_approvals: Arc::new(TurnApprovals::default()),
             replay: Arc::new(ReplayCapture::default()),
             delegates: Arc::new(Delegates::default()),
             commands: Commands::default(),
@@ -592,6 +656,7 @@ mod tests {
     use super::{
         Cancels, Captured, CommandDto, Commands, ContextMode, ContextReason, DelegateEntry,
         DelegateStatus, Delegates, PendingRequests, ReplayCapture, Routes, SessionRecord,
+        TurnApprovals,
     };
 
     fn command(name: &str) -> CommandDto {
@@ -748,6 +813,45 @@ mod tests {
         assert_eq!(turn_id.as_deref(), Some("turn-1"));
         // 取走即清，下一次不存在
         assert_eq!(pending.take_with_turn("p1", 7).await, (false, None));
+    }
+
+    #[tokio::test]
+    async fn turn_approvals_are_scoped_by_session_turn_and_kind() {
+        let approvals = TurnApprovals::default();
+        approvals.allow("acp-1", "turn-1", "edit").await;
+
+        assert!(approvals.covers("acp-1", "turn-1", "edit").await);
+        assert!(!approvals.covers("acp-1", "turn-2", "edit").await, "换轮不命中");
+        assert!(!approvals.covers("acp-1", "turn-1", "execute").await, "换 kind 不命中");
+        assert!(!approvals.covers("acp-2", "turn-1", "edit").await, "换会话不命中");
+    }
+
+    #[tokio::test]
+    async fn turn_approvals_revoke_clears_the_turn_policy() {
+        let approvals = TurnApprovals::default();
+        approvals.allow("acp-1", "turn-1", "edit").await;
+
+        assert!(approvals.revoke("acp-1", "turn-1").await);
+        assert!(!approvals.covers("acp-1", "turn-1", "edit").await);
+        assert!(!approvals.revoke("acp-1", "turn-1").await, "第二次撤销返回 false");
+    }
+
+    #[tokio::test]
+    async fn turn_approvals_clear_turn_and_session_stop_matching() {
+        let approvals = TurnApprovals::default();
+        approvals.allow("acp-1", "turn-1", "edit").await;
+        approvals.allow("acp-1", "turn-1", "execute").await;
+        approvals.allow("acp-1", "turn-2", "edit").await;
+        approvals.allow("acp-2", "turn-1", "edit").await;
+
+        approvals.clear_turn("acp-1", "turn-1").await;
+        assert!(!approvals.covers("acp-1", "turn-1", "edit").await);
+        assert!(!approvals.covers("acp-1", "turn-1", "execute").await);
+        assert!(approvals.covers("acp-1", "turn-2", "edit").await, "别的轮不受影响");
+
+        approvals.clear_session("acp-1").await;
+        assert!(!approvals.covers("acp-1", "turn-2", "edit").await);
+        assert!(approvals.covers("acp-2", "turn-1", "edit").await, "别的连接不受影响");
     }
 
     #[tokio::test]

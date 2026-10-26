@@ -177,6 +177,8 @@ pub fn run() {
             commands::agent_connect,
             commands::agent_disconnect,
             commands::agent_respond_request,
+            commands::permission_allow_turn,
+            commands::permission_revoke_turn,
             commands::session_new,
             commands::session_rebind,
             commands::session_prompt,
