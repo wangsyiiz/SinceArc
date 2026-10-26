@@ -949,10 +949,27 @@ type CodeTheme = {
 
 - 九档与 §18.2 的 `HighlightTheme` 完全一致，**不新增档位**；
 - 色值只允许 `#rrggbb`（不许 `rgb()` / `hsl()` / 令牌引用）——主题表要能被单测逐条校验；
-- 五套：**github-dark（默认）/ one-dark / dracula / nord**（公开配色，不自创）与 **sincearc**
-  （我们的设计语言映射：底 `--s0` `#292d3e`、正文与字符串 `--i1` `#f6f6f6`、注释 `--i3` `#b2b2b2`、
-  关键字 `--a1` `#dedede`、函数/类型/运算符/标点 `--i2` `#c0c0c0`、数字与字面量 `--warn` 70% + `--i1` 30%
-  = `#ddb562`）。sincearc 是「与界面同一身份」的选项，**不是默认**；默认仍是 github-dark；
+- 五套：**sincearc（默认）**，以及 **github-dark / one-dark / dracula / nord**（公开配色，不自创，原样取用）；
+- **sincearc 是为本站设计的一套**（2026-10-27 所有者定：SinceArc 作默认）—— 不是把界面令牌硬套到代码上，
+  而是以品牌面阶 `--s0` `#292d3e` 为底、冷白文字为基准，语义色按色相分开，
+  **每档与底色对比度 ≥ 5:1**（注释 5.02 最低；普通文本 AA 门槛 4.5）：
+
+  | 档位 | 色值 | 对比度 | 用途说明 |
+  | --- | --- | --- | --- |
+  | plain | `#e6e9f2` | 11.24 | 标识符与标点以外的一切 |
+  | comment | `#949cba` | 5.02 | 刻意压低，读代码时能跳过 |
+  | keyword | `#9db4ff` | 6.76 | 关键字（冷蓝，与品牌同色相） |
+  | string | `#8fd4a8` | 7.89 | 字符串 |
+  | number | `#f0c674` | 8.47 | 数字（暖金，与品牌 `--warn` 同族） |
+  | literal | `#f0a48c` | 6.75 | `null` / `true` / `false` 这类字面量 |
+  | function | `#7fd0e6` | 7.84 | 函数名 |
+  | type | `#c9a0f0` | 6.35 | 类型、类名 |
+  | operator | `#c3cae0` | 8.35 | 运算符（结构记号，压低饱和度） |
+  | punct | `#aab2c8` | 6.44 | 标点（结构记号，压低饱和度） |
+  | 底色 | `#292d3e` | — | 品牌面阶 `--s0` |
+
+- 默认值只有一个来源：Rust `DEFAULT_CODE_THEME` 与 TS `DEFAULT_CODE_THEME_ID` 都必须是 `sincearc`，
+  两边一致有测试守；读库遇到未知 id 一律回落它。
 - 主题**只改颜色，不改 token 化流程**：仍是 Prism 出 token 树、我们逐 span 渲染，全程不碰
   `dangerouslySetInnerHTML`。
 
@@ -995,5 +1012,7 @@ type CodeTheme = {
    `--s3` / `--i1` 那套值；
 8. code block 的 `border-radius` / `padding` / `font-size` / `line-height` / 背景在**各主题间完全相同**
    （只有颜色不同），且 `.sc-prose pre` 的样式声明里**不再出现** `--radius-* / --s0..s3 / --fs-*` 令牌。
+10. 默认值：清空 kv 后读回 `sincearc`；`DEFAULT_CODE_THEME`（Rust）与 `DEFAULT_CODE_THEME_ID`（TS）
+    字符串相等（有测试守），且 `sincearc` 在主题表里排第一、缩略图选中它；
 9. 五套主题的缩略图里，样例代码每档 `data-token` 的 computed color 与该主题表**逐档相等**，
    选中态与 `aria-checked` 同步，方向键可切换；

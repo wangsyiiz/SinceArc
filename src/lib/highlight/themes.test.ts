@@ -73,3 +73,37 @@ test("每套主题在 styles.css 里都有变量块", () => {
     assert.ok(css.includes(`[data-code-theme="${theme.id}"]`), `${theme.id} 缺 CSS 变量块`);
   }
 });
+
+test("默认主题是 sincearc，且排在列表第一位", () => {
+  assert.equal(DEFAULT_CODE_THEME_ID, "sincearc");
+  assert.equal(CODE_THEMES[0]?.id, "sincearc");
+});
+
+test("Rust 的 DEFAULT_CODE_THEME 与 TS 默认一致", () => {
+  const rust = readFileSync(new URL("../../../src-tauri/src/commands.rs", import.meta.url), "utf8");
+  const line = rust.split("\n").find((l) => l.includes("pub const DEFAULT_CODE_THEME: &str"));
+  assert.ok(line, "Rust 里找不到 DEFAULT_CODE_THEME");
+  const value = line.match(/"([a-z0-9-]+)"/)?.[1];
+  assert.equal(value, DEFAULT_CODE_THEME_ID);
+});
+
+test("sincearc 每档与底色对比度 ≥ 4.5（WCAG AA）", () => {
+  const theme = CODE_THEMES.find((t) => t.id === "sincearc");
+  assert.ok(theme, "缺 sincearc");
+  const channel = (v: number) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = (hex: string) => {
+    const h = hex.replace("#", "");
+    const [r, g, b] = [0, 2, 4].map((i) => channel(Number.parseInt(h.slice(i, i + 2), 16)));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a: string, b: string) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  for (const [kind, color] of Object.entries(theme.colors)) {
+    assert.ok(ratio(color, theme.background) >= 4.5, `${kind} 对比度不足 4.5`);
+  }
+});

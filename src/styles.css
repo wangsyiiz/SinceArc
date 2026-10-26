@@ -106,18 +106,18 @@
   --code-border: 1px solid color-mix(in srgb, var(--code-plain) 14%, transparent);
   --code-inline-border: color-mix(in srgb, var(--code-plain) 18%, transparent);
 
-  /* 默认兜底 = github-dark */
-  --code-plain: #e6edf3;
-  --code-comment: #8b949e;
-  --code-keyword: #ff7b72;
-  --code-string: #a5d6ff;
-  --code-number: #79c0ff;
-  --code-literal: #79c0ff;
-  --code-function: #d2a8ff;
-  --code-type: #ffa657;
-  --code-operator: #ff7b72;
-  --code-punct: #e6edf3;
-  --code-bg: #0d1117;
+  /* 默认兜底 = sincearc */
+  --code-plain: #e6e9f2;
+  --code-comment: #949cba;
+  --code-keyword: #9db4ff;
+  --code-string: #8fd4a8;
+  --code-number: #f0c674;
+  --code-literal: #f0a48c;
+  --code-function: #7fd0e6;
+  --code-type: #c9a0f0;
+  --code-operator: #c3cae0;
+  --code-punct: #aab2c8;
+  --code-bg: #292d3e;
 }
 
 [data-code-theme="github-dark"] {
@@ -176,16 +176,16 @@
   --code-bg: #2e3440;
 }
 [data-code-theme="sincearc"] {
-  --code-plain: #f6f6f6;
-  --code-comment: #b2b2b2;
-  --code-keyword: #dedede;
-  --code-string: #f6f6f6;
-  --code-number: #ddb562;
-  --code-literal: #ddb562;
-  --code-function: #c0c0c0;
-  --code-type: #c0c0c0;
-  --code-operator: #c0c0c0;
-  --code-punct: #c0c0c0;
+  --code-plain: #e6e9f2;
+  --code-comment: #949cba;
+  --code-keyword: #9db4ff;
+  --code-string: #8fd4a8;
+  --code-number: #f0c674;
+  --code-literal: #f0a48c;
+  --code-function: #7fd0e6;
+  --code-type: #c9a0f0;
+  --code-operator: #c3cae0;
+  --code-punct: #aab2c8;
   --code-bg: #292d3e;
 }
 
