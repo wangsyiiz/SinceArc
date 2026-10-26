@@ -180,7 +180,7 @@ function renderBlock(block: Block, key: number, caret = false): ReactNode {
                 {label}
               </span>
             )}
-            <pre>
+            <pre data-code-tokens>
               <code>{content}</code>
             </pre>
           </div>

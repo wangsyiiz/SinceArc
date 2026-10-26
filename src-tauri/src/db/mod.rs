@@ -1004,7 +1004,8 @@ impl Db {
                 SETTINGS_KEY_CODE_THEME => {
                     settings.code_theme = DEFAULT_CODE_THEME.into();
                     let note = format!(
-                        "设置项 {key} 的值 `{value}` 不认识（应为 github-dark/one-dark/dracula/nord），已用默认值 {}",
+                        "设置项 {key} 的值 `{value}` 不认识（应为 {}），已用默认值 {}",
+                        crate::commands::CODE_THEME_IDS.join("/"),
                         settings.code_theme
                     );
                     tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");

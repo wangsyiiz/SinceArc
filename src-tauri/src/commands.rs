@@ -454,20 +454,22 @@ pub fn is_valid_theme(theme: &str) -> bool {
     matches!(theme, "dark" | "light" | "system")
 }
 
-pub const DEFAULT_CODE_THEME: &str = "github-dark";
+/// 代码配色主题 id 的**唯一来源**；前端 `src/lib/highlight/themes.ts` 必须与它一致（有测试守）。
+pub const CODE_THEME_IDS: [&str; 5] = ["github-dark", "one-dark", "dracula", "nord", "sincearc"];
+
+pub const DEFAULT_CODE_THEME: &str = CODE_THEME_IDS[0];
 
 pub fn is_valid_code_theme(theme: &str) -> bool {
-    matches!(theme, "github-dark" | "one-dark" | "dracula" | "nord")
+    CODE_THEME_IDS.contains(&theme)
 }
 
 /// 未知/空 id 一律回落默认；写库与读库都走这里。
 pub fn normalize_code_theme(theme: &str) -> &'static str {
-    match theme {
-        "one-dark" => "one-dark",
-        "dracula" => "dracula",
-        "nord" => "nord",
-        _ => DEFAULT_CODE_THEME,
-    }
+    CODE_THEME_IDS
+        .iter()
+        .copied()
+        .find(|id| *id == theme)
+        .unwrap_or(DEFAULT_CODE_THEME)
 }
 
 /// 自动同意的默认档（新会话的初始态）。`off` = 不替用户答；`edits` = 编辑类自动答。

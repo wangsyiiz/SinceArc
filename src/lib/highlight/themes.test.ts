@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -21,8 +22,8 @@ const TOKEN_KINDS: readonly TokenKind[] = [
   "punct",
 ];
 
-test("四套主题都覆盖九档且色值合法", () => {
-  assert.equal(CODE_THEMES.length, 4);
+test("每套主题都覆盖九档且色值合法", () => {
+  assert.equal(CODE_THEMES.length, 5);
   for (const theme of CODE_THEMES) {
     assert.deepEqual(
       Object.keys(theme.colors).sort(),
@@ -36,7 +37,7 @@ test("四套主题都覆盖九档且色值合法", () => {
   }
 });
 
-test("四套主题的 background 互不相同且均合法", () => {
+test("各主题的 background 互不相同且均合法", () => {
   const backgrounds = CODE_THEMES.map((theme) => theme.background);
   assert.equal(new Set(backgrounds).size, CODE_THEMES.length);
 });
@@ -52,5 +53,23 @@ test("normalizeCodeThemeId 非法值回落默认，合法值原样返回", () =>
   }
   for (const theme of CODE_THEMES) {
     assert.equal(normalizeCodeThemeId(theme.id), theme.id);
+  }
+});
+
+test("主题 id 与 Rust 端 CODE_THEME_IDS 完全一致（防两边漂移）", () => {
+  const rust = readFileSync(new URL("../../../src-tauri/src/commands.rs", import.meta.url), "utf8");
+  const line = rust.split("\n").find((l) => l.includes("pub const CODE_THEME_IDS"));
+  assert.ok(line, "Rust 里找不到 CODE_THEME_IDS");
+  const rustIds = [...line.matchAll(/"([a-z0-9-]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(
+    [...rustIds].sort(),
+    CODE_THEMES.map((theme) => theme.id).sort(),
+  );
+});
+
+test("每套主题在 styles.css 里都有变量块", () => {
+  const css = readFileSync(new URL("../../styles.css", import.meta.url), "utf8");
+  for (const theme of CODE_THEMES) {
+    assert.ok(css.includes(`[data-code-theme="${theme.id}"]`), `${theme.id} 缺 CSS 变量块`);
   }
 });

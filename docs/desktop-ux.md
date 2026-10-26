@@ -949,7 +949,10 @@ type CodeTheme = {
 
 - 九档与 §18.2 的 `HighlightTheme` 完全一致，**不新增档位**；
 - 色值只允许 `#rrggbb`（不许 `rgb()` / `hsl()` / 令牌引用）——主题表要能被单测逐条校验；
-- 首批四套（取自公开配色，不自创）：**github-dark（默认）/ one-dark / dracula / nord**；
+- 五套：**github-dark（默认）/ one-dark / dracula / nord**（公开配色，不自创）与 **sincearc**
+  （我们的设计语言映射：底 `--s0` `#292d3e`、正文与字符串 `--i1` `#f6f6f6`、注释 `--i3` `#b2b2b2`、
+  关键字 `--a1` `#dedede`、函数/类型/运算符/标点 `--i2` `#c0c0c0`、数字与字面量 `--warn` 70% + `--i1` 30%
+  = `#ddb562`）。sincearc 是「与界面同一身份」的选项，**不是默认**；默认仍是 github-dark；
 - 主题**只改颜色，不改 token 化流程**：仍是 Prism 出 token 树、我们逐 span 渲染，全程不碰
   `dangerouslySetInnerHTML`。
 
@@ -963,7 +966,12 @@ type CodeTheme = {
 - 行内 `code`：`color: var(--code-plain)`、`background: var(--code-bg)`、`border: 1px solid
   var(--code-inline-border)`（`--code-inline-border` 由主题前景色派生，如
   `color-mix(in srgb, var(--code-plain) 18%, transparent)`），圆角取 `--code-radius`；不再用 `--s3`/`--l1`。
-- 设置页「外观」分区加一行：四选一（分段控件），**切换即时生效**，不要求重开会话或重启。
+- 设置页「外观」分区用**缩略图选择器**（不是分段控件）：每套主题一张卡，卡内用该主题的**真实配色**
+  渲染同一段样例代码（容器带 `data-code-theme="<id>"` 与 `data-code-tokens`，样例 tokens 走 `data-token`），
+  卡下是主题名；选中态 = 1px 强描边 + `aria-checked="true"`；
+  `role="radiogroup"`，Tab 进组、方向键移动并选中、空格/回车确认；
+  **切换即时生效**，不要求重开会话或重启。
+- 缩略图不冒充真实代码块：不带语言标签、不带复制按钮、不参与滚动测量，字号与行高按缩略图自己定。
 - 代码块底色取 `--code-bg`；圆角、内边距、字号/行高取代码块自己的变量（§20.1 最后一条），**不再**引用
   `--radius-card` / `--fs-small` / 间距档。
 
@@ -985,5 +993,7 @@ type CodeTheme = {
 6. `dangerouslySetInnerHTML` 全仓仍 0 处；
 7. 行内 code 的 computed color 等于当前主题 `plain`、底色等于当前主题 `background`，且**不再等于**
    `--s3` / `--i1` 那套值；
-8. code block 的 `border-radius` / `padding` / `font-size` / `line-height` / 背景在四套主题间**完全相同**
+8. code block 的 `border-radius` / `padding` / `font-size` / `line-height` / 背景在**各主题间完全相同**
    （只有颜色不同），且 `.sc-prose pre` 的样式声明里**不再出现** `--radius-* / --s0..s3 / --fs-*` 令牌。
+9. 五套主题的缩略图里，样例代码每档 `data-token` 的 computed color 与该主题表**逐档相等**，
+   选中态与 `aria-checked` 同步，方向键可切换；

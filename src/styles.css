@@ -175,6 +175,20 @@
   --code-punct: #eceff4;
   --code-bg: #2e3440;
 }
+[data-code-theme="sincearc"] {
+  --code-plain: #f6f6f6;
+  --code-comment: #b2b2b2;
+  --code-keyword: #dedede;
+  --code-string: #f6f6f6;
+  --code-number: #ddb562;
+  --code-literal: #ddb562;
+  --code-function: #c0c0c0;
+  --code-type: #c0c0c0;
+  --code-operator: #c0c0c0;
+  --code-punct: #c0c0c0;
+  --code-bg: #292d3e;
+}
+
 
 :root[data-theme="light"] {
   color-scheme: light;
@@ -446,16 +460,43 @@ dialog.sc-dialog[open] {
   line-height: var(--code-line-height);
 }
 /* 代码高亮只认语义档位（§18/§20）：颜色全部取代码主题变量。 */
-.sc-prose [data-token="plain"] { color: var(--code-plain); }
-.sc-prose [data-token="comment"] { color: var(--code-comment); }
-.sc-prose [data-token="keyword"] { color: var(--code-keyword); }
-.sc-prose [data-token="string"] { color: var(--code-string); }
-.sc-prose [data-token="number"] { color: var(--code-number); }
-.sc-prose [data-token="literal"] { color: var(--code-literal); }
-.sc-prose [data-token="function"] { color: var(--code-function); }
-.sc-prose [data-token="type"] { color: var(--code-type); }
-.sc-prose [data-token="operator"] { color: var(--code-operator); }
-.sc-prose [data-token="punct"] { color: var(--code-punct); }
+/* ---------- 代码配色选择器（§20.3）：卡片 + 缩略图 ----------
+   卡片外壳是界面控件（走设计语言令牌）；卡内缩略图是代码（走代码主题变量）。 */
+.sc-theme-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--l1);
+  background: var(--s1);
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.sc-theme-card:hover { background: var(--s2); }
+.sc-theme-card:focus-visible { outline: 2px solid var(--a1); outline-offset: 2px; }
+.sc-theme-card-selected { border-color: var(--l2); background: var(--s2); }
+
+.sc-code-thumb {
+  display: block;
+  border-radius: var(--radius);
+  background: var(--code-bg);
+  padding: 6px 8px;
+  font-family: var(--code-font-family);
+  font-size: 10px;
+  line-height: 1.5;
+  overflow: hidden;
+}
+
+[data-code-tokens] [data-token="plain"] { color: var(--code-plain); }
+[data-code-tokens] [data-token="comment"] { color: var(--code-comment); }
+[data-code-tokens] [data-token="keyword"] { color: var(--code-keyword); }
+[data-code-tokens] [data-token="string"] { color: var(--code-string); }
+[data-code-tokens] [data-token="number"] { color: var(--code-number); }
+[data-code-tokens] [data-token="literal"] { color: var(--code-literal); }
+[data-code-tokens] [data-token="function"] { color: var(--code-function); }
+[data-code-tokens] [data-token="type"] { color: var(--code-type); }
+[data-code-tokens] [data-token="operator"] { color: var(--code-operator); }
+[data-code-tokens] [data-token="punct"] { color: var(--code-punct); }
 .sc-prose ul, .sc-prose ol { margin: 4px 0 8px; padding-left: 20px; }
 .sc-prose li { margin: 2px 0; }
 .sc-prose a { color: var(--a1); text-decoration: underline; text-underline-offset: 2px; }
