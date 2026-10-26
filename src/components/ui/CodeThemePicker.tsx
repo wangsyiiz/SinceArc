@@ -14,27 +14,33 @@ import { CODE_THEMES, type CodeThemeId, type TokenKind } from "../../lib/highlig
 type SampleLine = readonly (readonly [TokenKind, string])[];
 
 const SAMPLE: readonly SampleLine[] = [
+  // 四行都控制在 21 字符内：卡片缩到 160px 宽时也不会横向被裁（真机量过 scrollWidth）。
   [
     ["keyword", "const"],
-    ["plain", " greet"],
+    ["plain", " n"],
     ["operator", " ="],
-    ["plain", " ("],
-    ["type", "name"],
-    ["punct", ": string) =>"],
-  ],
-  [
-    ["comment", "  // 你好，代码"],
-  ],
-  [
-    ["plain", "  "],
-    ["keyword", "return"],
-    ["string", " `hi, ${name}`"],
+    ["plain", " "],
+    ["number", "42"],
     ["punct", ";"],
   ],
   [
-    ["plain", "// "],
-    ["number", "42"],
-    ["plain", " 行已省略"],
+    ["function", "greet"],
+    ["punct", "("],
+    ["plain", "who"],
+    ["punct", ": "],
+    ["type", "User"],
+    ["punct", ")"],
+  ],
+  [
+    ["comment", "// 你好，代码"],
+  ],
+  [
+    ["keyword", "return"],
+    ["plain", " "],
+    ["string", "\"hi\""],
+    ["operator", " ||"],
+    ["plain", " "],
+    ["literal", "null"],
   ],
 ];
 
