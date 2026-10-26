@@ -520,12 +520,53 @@ SELECT a.id, a.session_id, a.turn_id, t.status
 
 ### 13.1 补录（backfill）
 
-- 命令 `session_trace_backfill(profileId, acpSessionId)`：调 `session/load` 拿重放事件，把**轨迹类**原子
+- 命令 `session_trace_backfill(profileId, acpSessionId, uiSessionId)`：调 `session/load` 拿重放事件，把**轨迹类**原子
   （工具调用、状态变更、思考）落库，`source='replay'`。
 - 适用场景只有一个：**本地缺这一段轨迹**（例如曾经断线、或这段是别处产生的会话）。它不是实时数据源 ——
-  实时数据永远来自 live 事件。
+  实时数据永远来自 live 事件。**不自动触发**，只有用户显式点「补录」才跑。
 - 幂等：按「会话 + 事件身份」去重，重复补录不产生重复行；**不覆盖已有 live 行**（live 是事实的第一手来源）。
 - 正文（chat 通道）不从 replay 落库：§12.1 的判据优先，重放只补轨迹。
+
+#### 13.1.1 重放怎么捕获（实现口径）
+
+- 现状是 `record_trace` 明确把「没有活动轮次」的事件丢掉 —— 重放正好没有活动轮次，所以现在的行为是**全丢**。
+  补录要在 `AppState` 里加一个按 ACP 会话 id 的**捕获窗口**：`record_trace` 先看该 id 有没有捕获器，
+  有就把事件推进内存缓冲并 return（不写库、不当 live）；窗口关闭后缓冲即丢。
+- 窗口边界：发起 `session/load` 前开、`load` 响应后再静默 2 秒关；整体硬上限 120 秒（超时按已捕获的落库并回 `timedOut`）。
+- 捕获期间 chat 正文照旧丢弃（不落库），所以补录不会改动正文行数。
+
+#### 13.1.2 没有轮次怎么办：合成一条「补录轮」
+
+轨迹按轮展示，而重放事件不带轮次。捕获非空时建**一条**合成轮：
+
+```
+turns.id          turn-replay-<uiSessionId>-<runStamp>
+started_at/ended_at 捕获事件的 min(at) / max(at)
+status            finished，stop_reason 用 end_turn
+prompt / prompt_atom_id  空
+```
+
+`stop_reason` 必须用 `end_turn`：前端 `TracePanel` 把非 `end_turn` 的 stopReason 当异常渲染，用 `replay`
+会显示成失败。provenance 不靠轮次表达，靠原子行：`source='replay'` + `ext` 里的 `{"x.replay": true}`。
+
+原子 id 与去重：
+
+```
+id = "rp-" + FNV-1a 64 的 16 位十六进制(uiSessionId | kind | 规范化 payload | at)
+     （不用 sha1：仓里没有哈希依赖，FNV-1a 十行内实现且跨版本稳定；这里只求确定性，不求抗碰撞）
+写入 INSERT ... ON CONFLICT(id) DO NOTHING
+```
+
+- 重放同一段两次 → 第二次全部命中去重（`added=0`、`skipped=N`），行数不变。
+- 已有 live 行即使撞 id 也不会被覆盖（DO NOTHING，不是 DO UPDATE）。
+- 返回 `{ captured, added, skipped, timedOut }`，前端只把这些数说人话，不做二次判断。
+
+#### 13.1.3 不做
+
+- 不自动补录（不开后台任务、不在打开会话时偷偷跑）。
+- 不从 replay 写正文、不合并到已有轮次里（宁可多一条「补录轮」，也不猜归属）。
+- 不删任何行。
+
 
 ### 13.2 容量提示：只统计，不删除
 
