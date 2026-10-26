@@ -2,9 +2,14 @@
 
 import type { ProfileDto, SessionRowDto, SessionUpsert, TraceTurnDto } from "../types";
 import type { MessagePage } from "../types.gen/MessagePage";
+import type { StorageStatsDto } from "../types.gen/StorageStatsDto";
+import type { TraceBackfillDto } from "../types.gen/TraceBackfillDto";
 import type { UsageDto } from "../types.gen/UsageDto";
 import type { AgentProfile, SshAuth, SshConfig } from "@/types";
 import { invokeCmd } from "../client";
+
+export type { StorageStatsDto };
+export type { TraceBackfillDto };
 
 export function toDto(p: AgentProfile) {
   return {
@@ -132,6 +137,11 @@ export function sessionUsage(sessionId: string): Promise<UsageDto | null> {
   return invokeCmd<UsageDto | null>("session_usage", { sessionId });
 }
 
+/** 会话存储读数：只统计，不删除；气泡阈值与计数都以后端返回为准。 */
+export function sessionStorageStats(uiSessionId: string): Promise<StorageStatsDto> {
+  return invokeCmd<StorageStatsDto>("session_storage_stats", { uiSessionId });
+}
+
 /* ---------- session/update 的解析 ---------- */
 
 /**
@@ -141,4 +151,19 @@ export function sessionUsage(sessionId: string): Promise<UsageDto | null> {
  */
 export function sessionTrace(sessionId: string, limit = 50): Promise<TraceTurnDto[]> {
   return invokeCmd("session_trace", { sessionId, limit });
+}
+
+/** 显式触发一次 session/load 重放，把轨迹补成本地 source='replay' 的原子。 */
+export function sessionTraceBackfill(
+  profileId: string,
+  acpSessionId: string,
+  uiSessionId: string,
+  cwd: string,
+): Promise<TraceBackfillDto> {
+  return invokeCmd<TraceBackfillDto>("session_trace_backfill", {
+    profileId,
+    acpSessionId,
+    uiSessionId,
+    cwd,
+  });
 }

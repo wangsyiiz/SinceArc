@@ -152,43 +152,6 @@ pub fn run() {
             let db = db::Db::open(&dir.join("sincearc.db"))?;
             tracing::info!(target: "sincearc::ipc", path = %dir.join("sincearc.db").display(), "db ready");
             app.manage(AppState::new(db));
-
-            // 轨迹保留：启动时清一次，之后每天一次。
-            // 界面上写着「轨迹保留 90 天（最多 5 万条），超出会自动清理」——
-            // 承诺了就得真的执行，否则那句话就是谎话（design-language §11）。
-            {
-                use tauri::Manager as _;
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
-                    loop {
-                        ticker.tick().await;
-                        let Some(state) = handle.try_state::<AppState>() else {
-                            return;
-                        };
-                        let cutoff = crate::trace::now_ms()
-                            - commands::TRACE_RETENTION_DAYS * 24 * 3600 * 1000;
-                        match state
-                            .db
-                            // 自动清理永远不允许「一次清空」：那是单位/时钟错误的典型表征
-                            .prune_traces(cutoff, commands::TRACE_MAX_EVENTS_PER_SESSION, false)
-                        {
-                            Ok(r) if r.events_deleted > 0 || r.turns_deleted > 0 => {
-                                tracing::info!(
-                                    target: "sincearc::trace",
-                                    events = r.events_deleted,
-                                    turns = r.turns_deleted,
-                                    "轨迹清理完成"
-                                );
-                            }
-                            Ok(_) => {}
-                            Err(e) => {
-                                tracing::warn!(target: "sincearc::trace", error = %e, "轨迹清理失败")
-                            }
-                        }
-                    }
-                });
-            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -209,6 +172,8 @@ pub fn run() {
             commands::session_load,
             commands::ipc_subscribe,
             commands::session_trace,
+            commands::session_trace_backfill,
+            commands::session_storage_stats,
             commands::agent_connect,
             commands::agent_disconnect,
             commands::agent_respond_request,

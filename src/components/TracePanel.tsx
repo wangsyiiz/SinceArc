@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlignLeft, FileText, PencilLine, Play, Search, SendHorizontal, Sparkles, ShieldAlert, ShieldCheck, ShieldX, Waypoints, X } from "lucide-react";
 import type { Activity, ActivityKind, Player, TraceTurn } from "@/types";
+import type { TraceBackfillDto } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { isTurnCancelled } from "@/lib/turn-status";
 import { turnHeading, turnLabel } from "@/lib/turn-summary";
@@ -220,6 +221,19 @@ function turnStatusTextClass(status: TraceRow["status"]): string {
   if (status === "waiting") return "text-warn-1";
   if (status === "error") return "text-danger-1";
   return "text-ink-3";
+}
+
+function backfillResultText(result: TraceBackfillDto): string {
+  let text =
+    result.captured === 0
+      ? "agent 没有重放出轨迹事件。"
+      : result.added === 0 && result.skipped > 0
+        ? `没有新轨迹（${result.skipped} 条重复已跳过）。`
+        : `已补录 ${result.added} 条轨迹，跳过重复 ${result.skipped} 条。`;
+  if (result.timedOut) {
+    text += "（重放超时，已按收到的部分补录）";
+  }
+  return text;
 }
 
 function HoverContent({ row }: { row: TraceRow }) {
@@ -571,6 +585,14 @@ interface TracePanelProps {
   onClose: () => void;
   width: number;
   animate: boolean;
+  backfill?: {
+    canRun: boolean;
+    running: boolean;
+    result: TraceBackfillDto | null;
+    /** 命令失败原因（50300 = 连接已断）；有它就代替结果行显示 */
+    error: string | null;
+    onRun: () => void;
+  };
 }
 
 export function TracePanel({
@@ -588,6 +610,7 @@ export function TracePanel({
   onClose,
   width,
   animate,
+  backfill,
 }: TracePanelProps) {
   const [view, setView] = useState<"graph" | "list">("graph");
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
@@ -661,6 +684,17 @@ export function TracePanel({
               <AlignLeft className="size-3" />
             </button>
           </div>
+          {backfill && (
+            <button
+              type="button"
+              onClick={backfill.onRun}
+              disabled={!backfill.canRun || backfill.running}
+              title="从 agent 重放补全本会话轨迹（只补轨迹，不动正文）"
+              className="ml-1 shrink-0 rounded-mark px-1.5 py-1 text-caption text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-1 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              补录
+            </button>
+          )}
           <button
             onClick={onClose}
             className="ml-1 grid size-6 place-items-center rounded-mark text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-1"
@@ -671,8 +705,20 @@ export function TracePanel({
 
         {/* design-language §11：主动截断/清理的数据必须在界面上讲清楚，否则看起来像 bug */}
         <div className="shrink-0 border-b border-line-1/40 px-3 py-1 text-micro leading-relaxed text-ink-3">
-          思考过程只保留开头 8KB；轨迹保留 90 天（最多 5 万条），超出会自动清理。
+          思考过程只保留开头 8KB；轨迹超过 5 万条或 90 天会在消息流末尾提示，不会自动删除。
         </div>
+
+        {backfill?.error && (
+          <div className="shrink-0 border-b border-line-1/40 px-3 py-1 text-caption text-danger-1">
+            {backfill.error}
+          </div>
+        )}
+
+        {backfill?.result && (
+          <div className="shrink-0 border-b border-line-1/40 px-3 py-1 text-caption text-ink-3">
+            {backfillResultText(backfill.result)}
+          </div>
+        )}
 
         {view === "list" && (
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1">

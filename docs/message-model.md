@@ -511,3 +511,95 @@ SELECT a.id, a.session_id, a.turn_id, t.status
 `db/schema.sql` 里 `messages` 视图的 `CASE kind WHEN …` 分支，与 `message_kind.rs` 的 chat kind
 集合作逐项比对（手法同前端注册表镜像守卫）：少一个 → 该 kind 的 chat 原子会走 `ELSE` 被当成正文，
 静默错类。测试直接读两个文件比对，不查库。
+
+---
+
+## 13. 轨迹补录与容量提示（2026-10-26 所有者拍板）
+
+这一节替换掉 E10.3 卡上原来写的「超过阈值直接删除、不归档」。**所有者口径：只统计，不清理。**
+
+### 13.1 补录（backfill）
+
+- 命令 `session_trace_backfill(profileId, acpSessionId, uiSessionId)`：调 `session/load` 拿重放事件，把**轨迹类**原子
+  （工具调用、状态变更、思考）落库，`source='replay'`。
+- 适用场景只有一个：**本地缺这一段轨迹**（例如曾经断线、或这段是别处产生的会话）。它不是实时数据源 ——
+  实时数据永远来自 live 事件。**不自动触发**，只有用户显式点「补录」才跑。
+- 幂等：按「会话 + 事件身份」去重，重复补录不产生重复行；**不覆盖已有 live 行**（live 是事实的第一手来源）。
+- 正文（chat 通道）不从 replay 落库：§12.1 的判据优先，重放只补轨迹。
+
+#### 13.1.1 重放怎么捕获（实现口径）
+
+- 现状是 `record_trace` 明确把「没有活动轮次」的事件丢掉 —— 重放正好没有活动轮次，所以现在的行为是**全丢**。
+  补录要在 `AppState` 里加一个按 ACP 会话 id 的**捕获窗口**：`record_trace` 先看该 id 有没有捕获器，
+  有就把事件推进内存缓冲并 return（不写库、不当 live）；窗口关闭后缓冲即丢。
+- 窗口边界：发起 `session/load` 前开、`load` 响应后再静默 2 秒关；整体硬上限 120 秒（超时按已捕获的落库并回 `timedOut`）。
+- 捕获期间 chat 正文照旧丢弃（不落库），所以补录不会改动正文行数。
+
+#### 13.1.2 没有轮次怎么办：合成一条「补录轮」
+
+轨迹按轮展示，而重放事件不带轮次。捕获非空时建**一条**合成轮：
+
+```
+turns.id          turn-replay-<uiSessionId>-<runStamp>
+started_at/ended_at 捕获事件的 min(at) / max(at)
+status            finished，stop_reason 用 end_turn
+prompt / prompt_atom_id  空
+```
+
+`stop_reason` 必须用 `end_turn`：前端 `TracePanel` 把非 `end_turn` 的 stopReason 当异常渲染，用 `replay`
+会显示成失败。provenance 不靠轮次表达，靠原子行：`source='replay'` + `ext` 里的 `{"x.replay": true}`。
+
+原子 id 与去重**按批次**算（2026-10-26 真机修正）：
+
+```
+batch = FNV-1a 64(按捕获顺序拼起来的 "kind | payload_json" 序列)   // 16 位十六进制
+轮 id  = "turn-replay-" + uiSessionId + "-" + batch
+原子 id = "rp-" + batch + "-" + 序号
+写入    INSERT ... ON CONFLICT(id) DO NOTHING
+```
+
+- **不能把 `at` 放进 id**：ACP 的 `session/update` 不带时间戳，`at` 只能取「捕获时刻」，
+  同一段重放两次会得到两套不同的值 —— 真机上实测第二遍多写了 7 行（179→186→193），这就是错的。
+- 批次是幂等的单位：同一次重放两次 → `batch` 相同 → 轮 id 相同 → **整批跳过**，
+  返回 `{captured, added:0, skipped:captured}`，行数不变。
+- 批次内用序号保序，所以同一批里两条内容完全相同的事件（例如两次同 payload 的状态更新）不会被压成一条。
+- 已有 live 行即使撞 id 也不会被覆盖（DO NOTHING，不是 DO UPDATE）。
+- 返回 `{ captured, added, skipped, timedOut }`，前端只把这些数说人话，不做二次判断。
+
+#### 13.1.3 不做
+
+- 不自动补录（不开后台任务、不在打开会话时偷偷跑）。
+- 不从 replay 写正文、不合并到已有轮次里（宁可多一条「补录轮」，也不猜归属）。
+- 不删任何行。
+
+
+### 13.2 容量提示：只统计，不删除
+
+- 阈值：单会话原子数 **> 50 000**，或最早原子 **> 90 天**。
+- 后端只提供统计，`session_storage_stats(uiSessionId)` 返回
+  `{ atomCount, chatCount, traceCount, bytes, oldestAt, thresholds: { count, days }, over, reasons }`。
+  **它不删任何行**，也不写任何表。
+- 前端在**消息流末尾**渲染一条提示气泡。它不是 atom、不进库、不写 `session_events`：
+  重开会话时由重新统计产生，关闭状态只活在本进程内存里。
+- 文案按 `design-language.md` §10（讲事实与后果 + 数值来源），例如：
+  「本会话已积累 52,318 条轨迹，超过提示阈值 50,000 条。这些数据不会被自动删除。」
+  —— 计数与阈值都来自 `session_storage_stats` 的返回，不在前端写死。
+- **不做**：自动删除、归档、压缩、按年龄清理、一键清空。
+
+### 13.3 为什么只提示（写清代价）
+
+删除轨迹是不可逆操作。按所有者对不可逆操作的立场：**程序不替用户决定处置数据，必须显式授权**；
+也不做「快照/宽限期/回收站」这类兜底。所以客户端能做的是把事实摆出来，处置权留给用户。
+
+代价明写：库会随使用增长，5 万条 / 90 天只是**提示线**，不是硬上限，也不会自动回收空间。
+真要提供清理入口，是**另一张卡**，且要求：预检清单可扩展（以后加检查项不改协议）+ 由用户显式确认。
+
+### 13.4 验收（读数，不看形容词）
+
+```
+超阈值      构造 50 001 条 atom → 打开会话，气泡出现，计数与阈值与后端返回一致
+不落库      气泡出现前后 atoms / session_events 行数不变；重启应用后气泡是重新统计出来的
+未超阈值    无气泡
+补录        补录一次轨迹完整、source='replay'；重复补录行数不变；live 行不被覆盖
+无删除路径  代码里不存在按年龄/条数 DELETE 的语句（评审时搜索确认）
+```

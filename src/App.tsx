@@ -28,11 +28,19 @@ import { resolveAcpSessionId } from "@/lib/session-view";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
 import { StatusBar } from "@/components/StatusBar";
+import { StorageNotice } from "@/components/StorageNotice";
 import { TabStrip } from "@/components/TabStrip";
 import { ThinkingRow } from "@/components/ThinkingRow";
 import { TitleBar } from "@/components/TitleBar";
 import { TracePanel } from "@/components/TracePanel";
-import { sessionTrace, type TraceTurnDto } from "@/lib/ipc";
+import {
+  sessionStorageStats,
+  sessionTrace,
+  sessionTraceBackfill,
+  type StorageStatsDto,
+  type TraceBackfillDto,
+  type TraceTurnDto,
+} from "@/lib/ipc";
 import { toTraceView } from "@/lib/trace-adapter";
 import { summarizeLocks } from "@/lib/locks";
 import { describeUsage } from "@/lib/usage-format";
@@ -117,8 +125,18 @@ export default function App() {
    * 拉取时机：打开面板、切换会话、以及一轮结束时（此时才刚有收尾状态）。
    */
   const [traceTurns, setTraceTurns] = useState<TraceTurnDto[]>([]);
+  /** 当前会话的容量读数；气泡是否需要出现由后端 `over` 决定。 */
+  const [storageStats, setStorageStats] = useState<StorageStatsDto | null>(null);
+  const storageStatsSessionRef = useRef<string | null>(null);
   /** 派活这类「不改 busy 但改了轨迹」的写入靠它触发重读（后端写完事件敲 session.trace） */
   const [traceTick, setTraceTick] = useState(0);
+  const [traceBackfill, setTraceBackfill] = useState<{
+    sessionId: string | null;
+    running: boolean;
+    result: TraceBackfillDto | null;
+    /** 命令失败时说人话的原因（50300 表示连接已断） */
+    error: string | null;
+  }>({ sessionId: null, running: false, result: null, error: null });
   const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
   const [traceLocate, setTraceLocate] = useState<{ turnId: string; tick: number } | null>(null);
   const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
@@ -201,6 +219,32 @@ export default function App() {
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab } = useTabs(sessions);
   const { state, patchSession, initSession, sessionState, hasMore, loadOlder, loadingOlder, opening } =
     useSessionState(lastSessionId);
+
+  // 打开会话时读一次；每轮结束（busy 收起、流式标记也已清掉）后再读一次。
+  // 只读统计，不轮询、不写库。
+  useEffect(() => {
+    const sid = lastSessionId;
+    if (!sid) {
+      storageStatsSessionRef.current = null;
+      setStorageStats(null);
+      return;
+    }
+    if (storageStatsSessionRef.current !== sid) {
+      storageStatsSessionRef.current = sid;
+      setStorageStats(null);
+    }
+    if (state.busy || state.msgs.some((m) => m.role === "player" && m.streaming === true)) return;
+
+    let alive = true;
+    void sessionStorageStats(sid)
+      .then((stats) => {
+        if (alive && storageStatsSessionRef.current === sid) setStorageStats(stats);
+      })
+      .catch((e) => clog("STORAGE-STATS-ERR", String(e)));
+    return () => {
+      alive = false;
+    };
+  }, [lastSessionId, state.busy]);
 
   const authorIds = useMemo(() => {
     const ids: string[] = [];
@@ -848,6 +892,45 @@ export default function App() {
 
   const traceView = useMemo(() => toTraceView(traceTurns), [traceTurns]);
 
+  const backfillProfileId = activeSession?.profileId ?? sessionProfile?.id ?? null;
+  // 连接态不在这里判断：`sessionsByProfile` 的语义是「这条连接当前的会话」，拿它当展示/投递数据源
+  // 违反 data-plane.md §2（守卫测试会红）。没连接时命令返回 50300，界面把码翻成人话即可。
+  const canRunTraceBackfill =
+    !!backfillProfileId && !!activeAcpSid && !!cwd && !state.busy && !traceBackfill.running;
+
+  const runTraceBackfill = useCallback(async () => {
+    const targetSessionId = lastSessionId;
+    const profileId = activeSession?.profileId ?? sessionProfile?.id;
+    if (!profileId || !activeAcpSid || !cwd) return;
+    setTraceBackfill({ sessionId: targetSessionId, running: true, result: null, error: null });
+    try {
+      const result = await sessionTraceBackfill(
+        profileId,
+        activeAcpSid,
+        targetSessionId,
+        cwd,
+      );
+      setTraceBackfill({ sessionId: targetSessionId, running: false, result, error: null });
+      setTraceTick((tick) => tick + 1);
+    } catch (e) {
+      const message = String((e as { msg?: string })?.msg ?? e);
+      setTraceBackfill((current) =>
+        current.sessionId === targetSessionId
+          ? { ...current, running: false, error: message }
+          : current,
+      );
+      diag(`TRACE-BACKFILL-ERR ui=${targetSessionId} ${message}`);
+      clog("TRACE-BACKFILL-ERR", message);
+    }
+  }, [
+    activeAcpSid,
+    activeSession?.profileId,
+    cwd,
+    diag,
+    lastSessionId,
+    sessionProfile?.id,
+  ]);
+
   /** 轨迹 → 正文：滚到该轮第一条消息，并短暂用 accent 环标一下。 */
   const locateMessage = useCallback((messageId: string) => {
     const root = scrollRef.current;
@@ -1249,6 +1332,16 @@ export default function App() {
           activities={traceView.activities}
           players={players}
           resumeGap={resumeGap}
+          backfill={{
+            canRun: canRunTraceBackfill,
+            running: traceBackfill.running,
+            result:
+              traceBackfill.sessionId === lastSessionId ? traceBackfill.result : null,
+            error: traceBackfill.sessionId === lastSessionId ? traceBackfill.error : null,
+            onRun: () => {
+              void runTraceBackfill();
+            },
+          }}
           onClose={() => {
             setTraceOpen(false);
             setFocus(null);
@@ -1423,6 +1516,7 @@ export default function App() {
                           {errorState}
                         </>
                       )}
+                      <StorageNotice key={lastSessionId} stats={storageStats} />
                     </div>
                   </div>
                   <div

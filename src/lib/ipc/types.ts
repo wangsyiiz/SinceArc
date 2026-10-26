@@ -24,7 +24,6 @@ export type {
   ModeOption,
   ProbeOutcome,
   ProfileDto,
-  PruneReport,
   ResumeOutcome,
   SessionInfo,
   SessionLoadOutcome,

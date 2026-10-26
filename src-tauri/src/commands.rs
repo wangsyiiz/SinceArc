@@ -23,8 +23,8 @@ use crate::db;
 use crate::lock::SessionLockDto;
 use crate::mcp::{self, McpCatalogEntryDto, McpServerDto, SessionMcpStateDto};
 use crate::state::{
-    AgentHandle, AppState, ContextMode, ContextReason, DelegateEntry, DelegateStatus, Delegates,
-    SessionRecord,
+    AgentHandle, AppState, Captured, ContextMode, ContextReason, DelegateEntry, DelegateStatus,
+    Delegates, ReplayCapture, SessionRecord,
 };
 use crate::wire::{Meta, WireEvent};
 
@@ -181,7 +181,6 @@ impl UsageDto {
         }
     }
 }
-
 /// agent 通过 `session/update.availableCommands` 报上来的一项命令。
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
@@ -1289,21 +1288,83 @@ fn prompt_failure_outcome(
     }
 }
 
-/// 轨迹视图：最近 N 轮 + 每轮的活动（tool_call 与它的增量更新已合并）。
-///
-/// 只读、只聚合，不做业务判断 —— 谁能看哪一轮由 `uiSessionId` 决定（调用方只传自己的会话）。
-/// 轨迹保留策略的执行体：90 天 / 单会话 5 万条，超出直接删除。
-pub const TRACE_RETENTION_DAYS: i64 = 90;
-pub const TRACE_MAX_EVENTS_PER_SESSION: i64 = 50_000;
+/// 容量提示阈值（docs/message-model.md §13.2）：只用于判断是否提示，不参与任何删除。
+pub const STORAGE_HINT_MAX_EVENTS: i64 = 50_000;
+pub const STORAGE_HINT_MAX_DAYS: i64 = 90;
 
-/// 手动触发一次清理（也用于验证「界面上承诺的清理是否真的发生」）。
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct StorageStatsDto {
+    #[ts(type = "number")]
+    pub atom_count: i64,
+    #[ts(type = "number")]
+    pub chat_count: i64,
+    #[ts(type = "number")]
+    pub trace_count: i64,
+    #[ts(type = "number")]
+    pub bytes: i64,
+    #[ts(type = "number | null")]
+    pub oldest_at: Option<i64>,
+    #[ts(type = "number")]
+    pub threshold_count: i64,
+    #[ts(type = "number")]
+    pub threshold_days: i64,
+    pub over: bool,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct TraceBackfillDto {
+    #[ts(type = "number")]
+    pub captured: i64,
+    #[ts(type = "number")]
+    pub added: i64,
+    #[ts(type = "number")]
+    pub skipped: i64,
+    pub timed_out: bool,
+}
+
+/// 只给标记，文案由前端按原因映射。顺序固定：先条数、后年龄。
+pub(crate) fn storage_hint_reasons(
+    stats: &db::StorageStatsSnapshot,
+    now_ms: i64,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if stats.trace_count > STORAGE_HINT_MAX_EVENTS {
+        reasons.push("count".to_string());
+    }
+    let oldest_cutoff = now_ms - STORAGE_HINT_MAX_DAYS * 24 * 3600 * 1000;
+    if stats.oldest_at.is_some_and(|at| at < oldest_cutoff) {
+        reasons.push("age".to_string());
+    }
+    reasons
+}
+
+/// 读一个会话的存储统计。只读 atoms：不写表、不改行，也不删除任何数据。
 #[tauri::command]
-pub async fn trace_prune(state: State<'_, AppState>) -> Result<db::PruneReport, CmdError> {
-    let cutoff = crate::trace::now_ms() - TRACE_RETENTION_DAYS * 24 * 3600 * 1000;
-    state
+pub async fn session_storage_stats(
+    state: State<'_, AppState>,
+    ui_session_id: String,
+) -> Result<StorageStatsDto, CmdError> {
+    let stats = state
         .db
-        .prune_traces(cutoff, TRACE_MAX_EVENTS_PER_SESSION, true)
-        .map_err(|e| CmdError::new(50000, format!("清理轨迹失败：{e}")))
+        .storage_stats(&ui_session_id)
+        .map_err(|e| CmdError::new(50000, format!("读取存储统计失败：{e}")))?;
+    let reasons = storage_hint_reasons(&stats, crate::trace::now_ms());
+    Ok(StorageStatsDto {
+        atom_count: stats.atom_count,
+        chat_count: stats.chat_count,
+        trace_count: stats.trace_count,
+        bytes: stats.bytes,
+        oldest_at: stats.oldest_at,
+        threshold_count: STORAGE_HINT_MAX_EVENTS,
+        threshold_days: STORAGE_HINT_MAX_DAYS,
+        over: !reasons.is_empty(),
+        reasons,
+    })
 }
 
 #[tauri::command]
@@ -1325,6 +1386,180 @@ pub async fn session_trace(
     let turns = crate::trace::with_orphan_turns(turns, &session_id, &events);
     // 轮次上的 prompt 字段保留给老数据作历史兼容；正文权威在 atoms（chat / text.user）。
     Ok(crate::trace::aggregate(turns, events))
+}
+
+const REPLAY_LOAD_TIMEOUT: Duration = Duration::from_secs(120);
+const REPLAY_SETTLE_DELAY: Duration = Duration::from_secs(2);
+
+/// 捕获窗口的 RAII 守卫：命令里任何提前 return（含 `?`）都会在 drop 时关窗。
+/// 不关窗的后果是所有后续 live 轨迹继续被吞进内存，而不是只影响一次补录。
+struct ReplayWindow {
+    capture: Arc<ReplayCapture>,
+    acp_sid: String,
+    closed: bool,
+}
+
+impl ReplayWindow {
+    fn open(capture: Arc<ReplayCapture>, acp_sid: String) -> Self {
+        capture.open(&acp_sid);
+        Self {
+            capture,
+            acp_sid,
+            closed: false,
+        }
+    }
+
+    fn close(&mut self) -> Vec<Captured> {
+        if self.closed {
+            return Vec::new();
+        }
+        self.closed = true;
+        self.capture.close(&self.acp_sid)
+    }
+}
+
+impl Drop for ReplayWindow {
+    fn drop(&mut self) {
+        if !self.closed {
+            self.capture.close(&self.acp_sid);
+        }
+    }
+}
+
+/// FNV-1a 64 位，输出 `rp-` + 16 位小写十六进制。
+/// 输入里的 payload 用捕获时保存的规范化字符串，不重新序列化 JSON。
+fn replay_batch_hash(ui_session_id: &str, items: &[crate::state::Captured]) -> String {
+    // FNV-1a 64：只求确定性，不求抗碰撞。输入是「整批事件的有序 (kind, payload) 序列」。
+    // 刻意**不含 at**：ACP 的 session/update 不带时间戳，at 只能取捕获时刻，
+    // 同一段重放两次会得到不同值 —— 真机上实测过第二遍多写 14 行（§13.1.2 记录了这次修正）。
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    eat(ui_session_id.as_bytes());
+    for item in items {
+        eat(b"\x1f");
+        eat(item.kind.as_bytes());
+        eat(b"\x1f");
+        eat(item.payload_json.as_bytes());
+    }
+    format!("{hash:016x}")
+}
+
+fn replay_atom_id(batch: &str, index: usize) -> String {
+    format!("rp-{batch}-{index}")
+}
+
+/// 显式补录：打开捕获窗口，`session/load` 触发 agent 重放轨迹，收尾后落成
+/// `source='replay'` 原子。只写 trace 通道，不动正文；不自动触发。
+#[tauri::command]
+pub async fn session_trace_backfill(
+    state: State<'_, AppState>,
+    profile_id: String,
+    acp_session_id: String,
+    ui_session_id: String,
+    cwd: String,
+) -> Result<TraceBackfillDto, CmdError> {
+    let handle = state.get(&profile_id).await.ok_or_else(|| {
+        CmdError::new(50300, "目标连接已断开，补录需要在连接态下进行")
+    })?;
+
+    let mut window = ReplayWindow::open(state.replay.clone(), acp_session_id.clone());
+    let mcp_servers =
+        mcp::target_mcp_servers(state.inner(), &profile_id, Some(&ui_session_id)).await?;
+    let params = serde_json::json!({
+        "sessionId": acp_session_id,
+        "cwd": cwd,
+        "mcpServers": mcp_servers,
+    });
+    let load_and_settle = async {
+        handle
+            .proc
+            .request("session/load", params, REPLAY_LOAD_TIMEOUT)
+            .await?;
+        tokio::time::sleep(REPLAY_SETTLE_DELAY).await;
+        Ok::<(), transport::TransportError>(())
+    };
+    let timed_out = match tokio::time::timeout(REPLAY_LOAD_TIMEOUT, load_and_settle).await {
+        Ok(Ok(())) => false,
+        // request 自身的超时与整体硬上限同值，谁先触发都按「超时收尾」处理，
+        // 保留已经捕获的部分；明确的 agent/IO 错误才是失败。
+        Ok(Err(transport::TransportError::Timeout(_))) => true,
+        Ok(Err(e)) => {
+            window.close();
+            return Err(CmdError::new(
+                50200,
+                format!("session/load 失败：{e}"),
+            ));
+        }
+        Err(_) => true,
+    };
+    let captured = window.close();
+    if captured.is_empty() {
+        return Ok(TraceBackfillDto {
+            captured: 0,
+            added: 0,
+            skipped: 0,
+            timed_out: false,
+        });
+    }
+
+    let captured_count = captured.len() as i64;
+    let batch = replay_batch_hash(&ui_session_id, &captured);
+    let turn_id = format!("turn-replay-{ui_session_id}-{batch}");
+    // 批次是幂等单位：同一段重放两次，batch 相同 → 轮已存在 → 整批跳过，一条都不再写。
+    let already = state
+        .db
+        .replay_turn_exists(&ui_session_id, &turn_id)
+        .map_err(|e| CmdError::new(50000, format!("查询补录轮失败：{e}")))?;
+    if already {
+        return Ok(TraceBackfillDto {
+            captured: captured_count,
+            added: 0,
+            skipped: captured_count,
+            timed_out,
+        });
+    }
+    let min_at = captured
+        .iter()
+        .map(|item| item.at)
+        .min()
+        .unwrap_or_default();
+    let max_at = captured
+        .iter()
+        .map(|item| item.at)
+        .max()
+        .unwrap_or_default();
+    state
+        .db
+        .insert_replay_turn(&ui_session_id, &turn_id, min_at, max_at)
+        .map_err(|e| CmdError::new(50000, format!("记录补录轮失败：{e}")))?;
+    let atoms: Vec<db::ReplayAtom> = captured
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| db::ReplayAtom {
+            id: replay_atom_id(&batch, index),
+            at: item.at,
+            kind: item.kind,
+            payload_json: item.payload_json,
+            refs: item.refs,
+            ext: item.ext,
+            truncated: item.truncated,
+        })
+        .collect();
+    let (added, skipped) = state
+        .db
+        .append_replay_atoms(&ui_session_id, &turn_id, &atoms)
+        .map_err(|e| CmdError::new(50000, format!("写入补录轨迹失败：{e}")))?;
+    Ok(TraceBackfillDto {
+        captured: captured_count,
+        added,
+        skipped,
+        timed_out,
+    })
 }
 
 #[tauri::command]
@@ -1407,23 +1642,47 @@ fn event_author(e: &AcpEvent) -> Option<String> {
 ///
 /// 三个「不落」的条件都是有意的：
 /// 1. 不是轨迹类消息（`agent_message_chunk` 是对话正文，走 messages）；
-/// 2. 当前没有活动轮次 —— 那是 `session/load` 的重放，不是这一轮的历史；
+/// 2. 当前没有活动轮次且不在补录捕获窗口 —— 那是没人认领的重放，不是这一轮的历史；
 /// 3. 没有界面会话归属 —— 落下去就是孤儿行，谁也没法看。
 ///
+/// 补录窗口打开时，事件先收进 `ReplayCapture` 并直接返回：不写 live、不当孤儿。
 /// 命令列表不走这里：它只进内存并按 ACP 会话 id 覆盖，不属于任何一轮轨迹。
 async fn record_trace(
     db: &Arc<db::Db>,
     routes: &crate::state::Routes,
     turns: &crate::state::Turns,
+    replay: &Arc<crate::state::ReplayCapture>,
     method: &str,
     params: &serde_json::Value,
 ) {
-    let Some(captured) = crate::trace::parse(method, params) else {
+    let Some(mut captured) = crate::trace::parse(method, params) else {
         return;
     };
     let Some(acp_sid) = params.get("sessionId").and_then(serde_json::Value::as_str) else {
         return;
     };
+    // 捕获窗口优先：session/load 的重放没有活动轮次，先收进内存而不是当孤儿丢掉。
+    // 这里挪到归属检查之前：窗口只按 ACP 会话 id 辨认，捕获结果由补录命令统一落库。
+    let mut payload_json = captured.payload.to_string();
+    if replay.is_open(acp_sid) {
+        let item = crate::state::Captured {
+            at: crate::trace::now_ms(),
+            kind: captured.kind.to_string(),
+            payload_json: payload_json.clone(),
+            refs: captured.refs,
+            ext: captured.ext,
+            truncated: captured.truncated,
+        };
+        if replay.push(acp_sid, item) {
+            return;
+        }
+        // 检查窗口与写入之间刚被关闭：重新解析，继续按 live 走。
+        let Some(fresh) = crate::trace::parse(method, params) else {
+            return;
+        };
+        captured = fresh;
+        payload_json = captured.payload.to_string();
+    }
     let Some(record) = routes.get(acp_sid).await else {
         return;
     };
@@ -1437,7 +1696,7 @@ async fn record_trace(
         turn_id,
         author_id: record.author_id.clone(),
         kind: captured.kind.to_string(),
-        payload_json: captured.payload.to_string(),
+        payload_json,
         refs: captured.refs,
         ext: captured.ext,
         schema: None,
@@ -1578,6 +1837,7 @@ pub async fn agent_connect(
     // 轨迹采集：事件落地需要库和「这一轮是谁」——两者都在 task 外面，clone 进去
     let db_for_trace = state.db.clone();
     let turns_for_trace = state.turns.clone();
+    let replay_for_trace = state.replay.clone();
     let locks = state.locks.clone();
     tokio::spawn(async move {
         /// 从 ACP 原始消息里取 sessionId，再按归属表补上界面会话与作者
@@ -1664,6 +1924,7 @@ pub async fn agent_connect(
                             &db_for_trace,
                             &routes,
                             &turns_for_trace,
+                            &replay_for_trace,
                             &method,
                             &params,
                         )
@@ -1885,6 +2146,7 @@ pub async fn agent_connect(
                         &db_for_trace,
                         &routes,
                         &turns_for_trace,
+                        &replay_for_trace,
                         &method,
                         &trace_params,
                     )
@@ -4315,9 +4577,11 @@ mod launch_input_tests {
 #[cfg(test)]
 mod turn_state_tests {
     use super::{
-        prompt_failure_outcome, prompt_failure_reason, prompt_success_outcome, truncate_chars,
+        prompt_failure_outcome, prompt_failure_reason, prompt_success_outcome, replay_atom_id,
+        replay_batch_hash, truncate_chars, ReplayWindow,
     };
     use crate::acp::transport::TransportError;
+    use crate::state::ReplayCapture;
 
     #[test]
     fn failed_prompt_reason_has_code_and_bounded_summary() {
@@ -4365,6 +4629,62 @@ mod turn_state_tests {
             prompt_failure_outcome(false, &TransportError::Timeout(120));
         assert_eq!(status, "failed");
         assert!(reason.as_deref().is_some_and(|s| !s.is_empty()));
+    }
+
+    fn captured(kind: &str, payload: &str, at: i64) -> crate::state::Captured {
+        crate::state::Captured {
+            at,
+            kind: kind.to_string(),
+            payload_json: payload.to_string(),
+            refs: None,
+            ext: None,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn replay_batch_hash_ignores_capture_time_but_tracks_content() {
+        // 同一段重放两次：at 不同（捕获时刻），内容相同 → 批次必须相同（否则会重复落库）。
+        let run_a = vec![captured("thought", r#"{"text":"a"}"#, 1000)];
+        let run_b = vec![captured("thought", r#"{"text":"a"}"#, 9999)];
+        assert_eq!(
+            replay_batch_hash("ui-1", &run_a),
+            replay_batch_hash("ui-1", &run_b),
+            "at 是捕获时刻，不能参与批次身份"
+        );
+
+        // 内容或顺序变了 → 必须是另一批。
+        let run_c = vec![captured("thought", r#"{"text":"b"}"#, 1000)];
+        assert_ne!(
+            replay_batch_hash("ui-1", &run_a),
+            replay_batch_hash("ui-1", &run_c)
+        );
+        let two = vec![
+            captured("thought", r#"{"text":"a"}"#, 1000),
+            captured("thought", r#"{"text":"a"}"#, 1001),
+        ];
+        assert_ne!(
+            replay_batch_hash("ui-1", &run_a),
+            replay_batch_hash("ui-1", &two),
+            "同内容两条不能被当成一条"
+        );
+    }
+
+    #[test]
+    fn replay_atom_id_is_batch_scoped_and_ordered() {
+        let batch = "0123456789abcdef";
+        assert_eq!(replay_atom_id(batch, 0), "rp-0123456789abcdef-0");
+        assert_ne!(replay_atom_id(batch, 0), replay_atom_id(batch, 1));
+    }
+
+    #[test]
+    fn replay_window_closes_capture_on_drop() {
+        let capture = std::sync::Arc::new(ReplayCapture::default());
+        {
+            let _window = ReplayWindow::open(capture.clone(), "acp-1".into());
+            assert!(capture.is_open("acp-1"));
+        }
+        assert!(!capture.is_open("acp-1"), "drop 必须关窗，不能吞掉后续 live");
     }
 }
 
@@ -4742,5 +5062,54 @@ mod steer_tests {
         ] {
             assert!(!is_openable_url(bad), "{bad:?} 应当被拒");
         }
+    }
+}
+
+#[cfg(test)]
+mod storage_guard_tests {
+    use super::*;
+
+    const SOURCES: [(&str, &str); 3] = [
+        ("src/lib.rs", include_str!("lib.rs")),
+        ("src/commands.rs", include_str!("commands.rs")),
+        ("src/db/mod.rs", include_str!("db/mod.rs")),
+    ];
+
+    #[test]
+    fn trace_storage_has_no_age_or_count_delete() {
+        let atoms_delete = concat!("DELETE ", "FROM atoms");
+        let turns_delete = concat!("DELETE ", "FROM turns");
+        for (path, source) in SOURCES {
+            assert!(
+                !source.contains(atoms_delete),
+                "{path} 含 {atoms_delete}；口径：轨迹只统计不删除（§13.2）"
+            );
+            assert!(
+                !source.contains(turns_delete),
+                "{path} 含 {turns_delete}；口径：轨迹只统计不删除（§13.2）"
+            );
+        }
+    }
+
+    #[test]
+    fn count_and_age_reasons_are_independent() {
+        let now = 200 * 24 * 3600 * 1000;
+        let mut stats = db::StorageStatsSnapshot {
+            atom_count: STORAGE_HINT_MAX_EVENTS + 1,
+            chat_count: 0,
+            trace_count: STORAGE_HINT_MAX_EVENTS + 1,
+            bytes: 0,
+            oldest_at: Some(now - (STORAGE_HINT_MAX_DAYS + 1) * 24 * 3600 * 1000),
+        };
+        assert_eq!(
+            storage_hint_reasons(&stats, now),
+            vec!["count".to_string(), "age".to_string()]
+        );
+
+        stats.trace_count = 1;
+        assert_eq!(
+            storage_hint_reasons(&stats, now),
+            vec!["age".to_string()]
+        );
     }
 }

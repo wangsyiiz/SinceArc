@@ -147,16 +147,6 @@ pub struct ResumeHandle {
     pub bound_at: i64,
 }
 
-#[derive(Debug, Default, Clone, Serialize, ts_rs::TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
-pub struct PruneReport {
-    #[ts(type = "number")]
-    pub events_deleted: i64,
-    #[ts(type = "number")]
-    pub turns_deleted: i64,
-}
-
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
@@ -190,6 +180,17 @@ pub struct EventInput {
     pub truncated: bool,
 }
 
+/// 一条待补录的重放轨迹。`id` / `at` 由命令层确定，DB 不重新生成。
+pub struct ReplayAtom {
+    pub id: String,
+    pub at: i64,
+    pub kind: String,
+    pub payload_json: String,
+    pub refs: Option<serde_json::Value>,
+    pub ext: Option<serde_json::Value>,
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventRow {
@@ -202,6 +203,16 @@ pub struct EventRow {
     pub payload_json: String,
     pub source: String,
     pub truncated: bool,
+}
+
+/// 一个会话的存储读数。只读取 atoms，不删除、不修改任何行。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StorageStatsSnapshot {
+    pub atom_count: i64,
+    pub chat_count: i64,
+    pub trace_count: i64,
+    pub bytes: i64,
+    pub oldest_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
@@ -593,6 +604,16 @@ fn json_string(value: &Option<serde_json::Value>) -> Option<String> {
     value.as_ref().map(serde_json::Value::to_string)
 }
 
+/// 补录原子统一带 provenance 标记；捕获事件自己的 ext 键原样保留。
+fn replay_ext_json(captured: Option<&serde_json::Value>) -> String {
+    let mut object = captured
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    object.insert("x.replay".to_string(), serde_json::Value::Bool(true));
+    serde_json::Value::Object(object).to_string()
+}
+
 /// M2b open 行：id / payload / truncated / refs_json / ext_json。
 type OpenStreamRow = (String, String, i64, Option<String>, Option<String>);
 
@@ -663,7 +684,7 @@ impl Db {
         // E13.7：会话恢复句柄。老库补列；已有 live 绑定保留，字段为 NULL。
         ensure_column(&conn, "session_bindings", "agent_name", "TEXT")?;
         ensure_column(&conn, "session_bindings", "last_event_seq", "INTEGER")?;
-        // 轨迹时间列早期写成秒，与毫秒级的保留策略混用会把一切判成过期。
+        // 时间列早期写成秒，与毫秒级的容量提示判断混用会把一切判成过期。
         // session_events 的旧行在 M2 直接丢弃，无需换算；turns 骨架保留，仍需一次性换算。
         // （< 1e11 一定不是毫秒：那相当于 1973 年之前，幂等。）
         conn.execute_batch(
@@ -671,6 +692,18 @@ impl Db {
                WHERE started_at > 0 AND started_at < 100000000000;
              UPDATE turns SET ended_at = ended_at * 1000
                WHERE ended_at IS NOT NULL AND ended_at > 0 AND ended_at < 100000000000;",
+        )?;
+        // atoms.at 的语义是毫秒；早期正文写入复用了秒级 `now()`。
+        // 只换算明显是秒的历史行（< 1e11），对已经是毫秒的行幂等。
+        conn.execute_batch(
+            "UPDATE atoms
+                SET at = at * 1000,
+                    sealed_at = CASE
+                      WHEN sealed_at IS NOT NULL AND sealed_at < 100000000000
+                        THEN sealed_at * 1000
+                      ELSE sealed_at
+                    END
+              WHERE channel = 'chat' AND at > 0 AND at < 100000000000;",
         )?;
         // 编号迁移最后执行：此时 SCHEMA 与所有 ensure_* 已将旧表补到可用形状，
         // M1 的 messages.turn_id / 索引 / 第三态 / kind 触发器只在这里落地。
@@ -1443,6 +1476,8 @@ impl Db {
             params![session_id],
             |r| r.get(0),
         )?;
+        // atoms.at 用毫秒；sessions.updated_at 仍是秒，两个时间不要混用。
+        let at = now_ms();
         let ts = now();
         for (i, m) in msgs.iter().enumerate() {
             let seq = base + i as i64 + 1;
@@ -1490,7 +1525,7 @@ impl Db {
                                 params![
                                     payload,
                                     truncated,
-                                    ts,
+                                    at,
                                     seq,
                                     refs_json,
                                     ext_json,
@@ -1501,14 +1536,14 @@ impl Db {
                             return Ok(());
                         }
                         // 同轮同 kind 但 id 变了 = 新的一段正文；先结束上一段。
-                        seal_open_atoms(&tx, session_id, turn_id, ts)?;
+                        seal_open_atoms(&tx, session_id, turn_id, at)?;
                     }
                 } else {
                     // 非流式事实（用户消息 / 通知 / aside…）出现，本轮不再有分片。
-                    seal_open_atoms(&tx, session_id, turn_id, ts)?;
+                    seal_open_atoms(&tx, session_id, turn_id, at)?;
                 }
 
-                let sealed_at = if mergeable { None } else { Some(ts) };
+                let sealed_at = if mergeable { None } else { Some(at) };
                 tx.execute(
                     "INSERT INTO atoms
                        (id, session_id, channel, turn_id, seq, at, role, author_id,
@@ -1534,7 +1569,7 @@ impl Db {
                         session_id,
                         turn_id,
                         seq,
-                        ts,
+                        at,
                         m.role,
                         m.author_id,
                         kind,
@@ -1581,93 +1616,31 @@ impl Db {
         Ok(tx.commit()?)
     }
 
-    /* ---------------- 轨迹保留策略 ---------------- */
-
-    /// 清理超出保留期的轨迹。所有者拍板：**超出直接删除**，不归档。
-    ///
-    /// 两个维度同时生效：
-    /// - 时间：`at` 早于 `cutoff_ms` 的事件，以及结束于其前的轮次；
-    /// - 体量：单会话只保留最近 `max_events_per_session` 条事件。
-    ///
-    /// 返回删了多少，便于日志与「清理是否真的发生」的核对 —— 界面上写着会自动清理，
-    /// 那就必须真的清理，否则就是一句谎话。
-    pub fn prune_traces(
-        &self,
-        cutoff_ms: i64,
-        max_events_per_session: i64,
-        allow_wipe: bool,
-    ) -> rusqlite::Result<PruneReport> {
-        let mut conn = self.conn.lock().expect("db poisoned");
-        let tx = conn.transaction()?;
-        let mut report = PruneReport::default();
-
-        // 防呆：时间过滤若会删掉**全部**事件，先当成单位/时钟错误挡下来。
-        // 真出过事：events.at 用秒、cutoff 用毫秒，一上线就把所有轨迹判成过期。
-        let total: i64 = tx.query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0))?;
-        let expired: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM session_events WHERE at < ?1",
-            params![cutoff_ms],
-            |r| r.get(0),
-        )?;
-        let wipe_all = total > 0 && expired == total;
-        if wipe_all && !allow_wipe {
-            tracing::warn!(
-                target: "sincearc::trace",
-                total, cutoff_ms,
-                "时间过滤会清空全部轨迹，疑似时间单位不一致，已跳过（要真删请显式 allow_wipe）"
-            );
-        } else {
-            report.events_deleted += tx.execute(
-                "DELETE FROM atoms WHERE channel = 'trace' AND at < ?1",
-                params![cutoff_ms],
-            )? as i64;
-        }
-        // 轮次的时间过滤与事件**同时**受防呆保护：只挡事件、放行轮次的话，
-        // 单位错了仍然会把轮次清空（测试里就撞到过这个只挡一半的版本）。
-        if !(wipe_all && !allow_wipe) {
-            report.turns_deleted += tx.execute(
-                "DELETE FROM turns WHERE COALESCE(ended_at, started_at) < ?1",
-                params![cutoff_ms],
-            )? as i64;
-        }
-
-        // 单会话体量上限：先找出该保留的最小 seq，再删更早的
-        let mut sessions: Vec<String> = {
-            let mut stmt = tx.prepare("SELECT DISTINCT session_id FROM session_events")?;
-            let list = stmt
-                .query_map([], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            list
-        };
-        for sid in sessions.drain(..) {
-            let cutoff_seq: Option<i64> = tx
-                .query_row(
-                    "SELECT seq FROM session_events WHERE session_id = ?1
-                      ORDER BY seq DESC LIMIT 1 OFFSET ?2",
-                    params![sid, (max_events_per_session - 1).max(0)],
-                    |r| r.get(0),
-                )
-                .ok();
-            if let Some(seq) = cutoff_seq {
-                report.events_deleted += tx.execute(
-                    "DELETE FROM atoms
-                      WHERE channel = 'trace' AND session_id = ?1 AND seq < ?2",
-                    params![sid, seq],
-                )? as i64;
-            }
-        }
-
-        // 事件被清空的轮次没有展示价值，但**还没收尾**的轮次不能动：
-        // running 与 waiting_approval 都算活动轮。
-        report.turns_deleted += tx.execute(
-            "DELETE FROM turns
-              WHERE status NOT IN ('running', 'waiting_approval')
-                AND NOT EXISTS (SELECT 1 FROM session_events e WHERE e.turn_id = turns.id)",
-            [],
-        )? as i64;
-
-        tx.commit()?;
-        Ok(report)
+    /// 读一个会话的存储统计。按 `atoms.session_id` 过滤，正文与轨迹一起计入；
+    /// 条数、字节数与最早时间都来自同一次只读查询。
+    pub fn storage_stats(&self, session_id: &str) -> rusqlite::Result<StorageStatsSnapshot> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN channel = 'chat' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN channel = 'trace' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(length(payload_json)
+                                 + length(coalesce(refs_json, ''))
+                                 + length(coalesce(ext_json, ''))), 0),
+                    MIN(at)
+               FROM atoms
+              WHERE session_id = ?1",
+            params![session_id],
+            |r| {
+                Ok(StorageStatsSnapshot {
+                    atom_count: r.get(0)?,
+                    chat_count: r.get(1)?,
+                    trace_count: r.get(2)?,
+                    bytes: r.get(3)?,
+                    oldest_at: r.get(4)?,
+                })
+            },
+        )
     }
 
     /* ---------------- turns（轨迹的轮次） ---------------- */
@@ -1914,6 +1887,104 @@ impl Db {
         touch_handle_seq_on(&tx, session_id, None, seq)?;
         tx.commit()?;
         Ok(events.len())
+    }
+
+    /// 该补录批次是否已经落过（批次哈希 = 轮 id 的后缀）。
+    pub fn replay_turn_exists(&self, session_id: &str, turn_id: &str) -> rusqlite::Result<bool> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM turns WHERE session_id = ?1 AND id = ?2",
+            params![session_id, turn_id],
+            |r| r.get(0),
+        )?;
+        Ok(exists > 0)
+    }
+
+    /// 合成一条补录轮。重放没有真实轮次，但轨迹必须挂在轮下；
+    /// 同 id 已存在时直接跳过（重复补录不报错，也不改已有轮）。
+    pub fn insert_replay_turn(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        started_at: i64,
+        ended_at: i64,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "INSERT OR IGNORE INTO turns
+               (id, session_id, prompt, prompt_atom_id, author_id,
+                started_at, ended_at, status, stop_reason)
+             VALUES (?1, ?2, '', NULL, NULL, ?3, ?4, 'finished', 'end_turn')",
+            params![turn_id, session_id, started_at, ended_at],
+        )?;
+        Ok(())
+    }
+
+    /// 逐条写入补录轨迹。`seq` 在同一个写锁/事务里接在本会话轨迹最大 seq 之后；
+    /// `ON CONFLICT(id) DO NOTHING` 保证已有 live 行绝不会被 replay 覆盖。
+    /// 返回 `(added, skipped)`。
+    pub fn append_replay_atoms(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        atoms: &[ReplayAtom],
+    ) -> rusqlite::Result<(i64, i64)> {
+        if atoms.is_empty() {
+            return Ok((0, 0));
+        }
+        debug_assert!(
+            atoms.iter().all(|a| KNOWN_EVENT_KINDS.contains(&a.kind.as_str())),
+            "未知轨迹种类：{:?}",
+            atoms.iter().map(|a| a.kind.as_str()).collect::<Vec<_>>()
+        );
+        let mut conn = self.conn.lock().expect("db poisoned");
+        let tx = conn.transaction()?;
+        let mut seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM atoms
+              WHERE session_id = ?1 AND channel = 'trace'",
+            params![session_id],
+            |r| r.get(0),
+        )?;
+        let mut added = 0i64;
+        let mut skipped = 0i64;
+        let mut last_added_seq = None;
+        for atom in atoms {
+            seq += 1;
+            let ext_json = replay_ext_json(atom.ext.as_ref());
+            let changed = tx.execute(
+                "INSERT INTO atoms
+                   (id, session_id, channel, turn_id, seq, at, role, author_id,
+                    kind, payload_json, refs_json, ext_json, schema,
+                    source, truncated, sealed_at)
+                 VALUES (?1, ?2, 'trace', ?3, ?4, ?5, NULL, NULL, ?6, ?7, ?8, ?9, 1,
+                         'replay', ?10, ?11)
+                 ON CONFLICT(id) DO NOTHING",
+                params![
+                    atom.id,
+                    session_id,
+                    turn_id,
+                    seq,
+                    atom.at,
+                    atom.kind,
+                    atom.payload_json,
+                    json_string(&atom.refs),
+                    ext_json,
+                    atom.truncated as i64,
+                    atom.at,
+                ],
+            )?;
+            if changed > 0 {
+                added += 1;
+                last_added_seq = Some(seq);
+            } else {
+                skipped += 1;
+            }
+        }
+        if let Some(seq) = last_added_seq {
+            touch_handle_seq_on(&tx, session_id, None, seq)?;
+        }
+        tx.commit()?;
+        Ok((added, skipped))
     }
 
     pub fn load_events(&self, session_id: &str, limit: i64) -> rusqlite::Result<Vec<EventRow>> {
@@ -3632,6 +3703,145 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    fn replay_atom(id: &str, at: i64, payload_json: &str) -> ReplayAtom {
+        ReplayAtom {
+            id: id.into(),
+            at,
+            kind: "tool_call".into(),
+            payload_json: payload_json.into(),
+            refs: Some(serde_json::json!({ "toolCallId": id })),
+            ext: Some(serde_json::json!({ "x.demo.keep": 1 })),
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn append_replay_atoms_is_idempotent() {
+        let (db, path) = db_with_session();
+        db.insert_replay_turn("s-1", "turn-replay-s-1-100", 100, 200)
+            .expect("insert replay turn");
+        let atoms = vec![
+            replay_atom("rp-a", 100, r#"{"toolCallId":"a"}"#),
+            replay_atom("rp-b", 200, r#"{"toolCallId":"b"}"#),
+        ];
+
+        assert_eq!(
+            db.append_replay_atoms("s-1", "turn-replay-s-1-100", &atoms)
+                .expect("first replay"),
+            (2, 0)
+        );
+        assert_eq!(
+            db.append_replay_atoms("s-1", "turn-replay-s-1-100", &atoms)
+                .expect("second replay"),
+            (0, 2)
+        );
+
+        let conn = db.conn.lock().unwrap();
+        let (count, source, sealed_at, ext_json): (i64, String, i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), source, sealed_at, ext_json FROM atoms
+                  WHERE session_id = 's-1' AND id = 'rp-a'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("replay row");
+        assert_eq!(count, 1, "重复补录不能新增行");
+        assert_eq!(source, "replay");
+        assert_eq!(sealed_at, 100, "补录原子写完即封口");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&ext_json).unwrap(),
+            serde_json::json!({ "x.demo.keep": 1, "x.replay": true }),
+            "捕获 ext 与 provenance 合并"
+        );
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn append_replay_atoms_never_overwrites_a_live_row() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-live", "", None, None)
+            .expect("start live turn");
+        db.append_events(
+            "s-1",
+            &[EventInput {
+                turn_id: "t-live".into(),
+                author_id: None,
+                kind: "tool_call".into(),
+                payload_json: r#"{"toolCallId":"live","title":"A"}"#.into(),
+                refs: None,
+                ext: None,
+                schema: None,
+                source: "live".into(),
+                truncated: false,
+            }],
+        )
+        .expect("append live");
+        let live_id = db.load_events("s-1", 10).expect("load live")[0].id.clone();
+
+        db.insert_replay_turn("s-1", "turn-replay-s-1-100", 100, 100)
+            .expect("insert replay turn");
+        let replay = replay_atom(&live_id, 100, r#"{"toolCallId":"replay","title":"B"}"#);
+        assert_eq!(
+            db.append_replay_atoms("s-1", "turn-replay-s-1-100", &[replay])
+                .expect("replay over live id"),
+            (0, 1)
+        );
+
+        let conn = db.conn.lock().unwrap();
+        let (payload_json, source): (String, String) = conn
+            .query_row(
+                "SELECT payload_json, source FROM atoms WHERE id = ?1",
+                params![live_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("live row");
+        assert_eq!(payload_json, r#"{"toolCallId":"live","title":"A"}"#);
+        assert_eq!(source, "live");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn insert_replay_turn_uses_captured_bounds_and_finished_status() {
+        let (db, path) = db_with_session();
+        db.insert_replay_turn("s-1", "turn-replay-s-1-100", 100, 250)
+            .expect("insert replay turn");
+
+        let conn = db.conn.lock().unwrap();
+        let (started_at, ended_at, status, stop_reason, prompt, prompt_atom_id): (
+            i64,
+            i64,
+            String,
+            String,
+            String,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT started_at, ended_at, status, stop_reason, prompt, prompt_atom_id
+                   FROM turns WHERE id = 'turn-replay-s-1-100'",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )
+            .expect("replay turn");
+        assert_eq!((started_at, ended_at), (100, 250));
+        assert_eq!(status, "finished");
+        assert_eq!(stop_reason, "end_turn");
+        assert_eq!(prompt, "");
+        assert_eq!(prompt_atom_id, None);
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
     #[test]
     fn append_messages_persists_refs_ext_and_schema_default() {
         let (db, path) = db_with_session();
@@ -4838,67 +5048,63 @@ mod tests {
 
 
     #[test]
-    fn prune_drops_old_and_over_cap_traces_but_keeps_running_turns() {
-        let (db, path) = temp_db();
-        db.save_profiles(&[sample()]).expect("save");
-        db.upsert_session(&session("s-1", None)).expect("insert");
+    fn storage_stats_counts_atoms_and_never_deletes() {
+        let (db, path) = db_with_session();
+        db.append_messages(
+            "s-1",
+            &[
+                msg("m1", "一", None, true),
+                msg("m2", "二", None, true),
+                msg("m3", "三", None, true),
+            ],
+        )
+        .expect("3 条正文");
+        db.append_events("s-1", &[tool_call("t-1"), tool_call("t-2")])
+            .expect("2 条轨迹");
 
-        let ev = |kind: &str, turn: &str| EventInput {
-            turn_id: turn.into(),
-            author_id: None,
-            kind: kind.into(),
-            payload_json: "{}".into(),
-            refs: None,
-            ext: None,
-            schema: None,
-            source: "live".into(),
-            truncated: false,
+        let atom_rows = |db: &Db| -> i64 {
+            db.conn
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM atoms WHERE session_id = 's-1'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("atoms count")
         };
-        // 60 条：验证「单会话只留最近 N 条」
-        db.start_turn("s-1", "t-new", "新的一轮", None, None).expect("turn");
-        for _ in 0..60 {
-            // tool_call 是非归并类事件，每条独立成行；这里验证的是保留策略，不是流归并。
-            db.append_events("s-1", &[ev("tool_call", "t-new")]).expect("e");
-        }
-        // 一个正在跑的轮次（不收尾）：它的事件清空后，轮次本身不能被删
-        db.start_turn("s-1", "t-running", "还在跑", None, None).expect("turn2");
-        // 等用户批准的轮次同样还没收尾，不能当成「没有事件的历史轮」清掉
-        db.start_turn("s-1", "t-waiting", "等你批准", None, None)
-            .expect("turn3");
-        db.mark_turn_waiting_approval("t-waiting")
-            .expect("waiting");
 
-        let report = db
-            .prune_traces(crate::trace::now_ms() - 90 * 24 * 3600 * 1000, 50, false)
-            .expect("prune");
-        assert_eq!(report.events_deleted, 10, "60 条里只该删掉最早的 10 条");
-        let left = db.load_events("s-1", 500).expect("load");
-        assert_eq!(left.len(), 50);
-        // 最老的 seq 已被删掉
-        assert_eq!(left.iter().map(|e| e.seq).min(), Some(11));
+        let before = atom_rows(&db);
+        let stats = db.storage_stats("s-1").expect("stats");
+        assert_eq!(stats.atom_count, 5);
+        assert_eq!(stats.chat_count, 3);
+        assert_eq!(stats.trace_count, 2);
+        assert!(stats.bytes > 0, "bytes 应来自 payload/refs/ext 的长度");
+        assert!(stats.oldest_at.is_some());
+        let reasons = crate::commands::storage_hint_reasons(&stats, crate::trace::now_ms());
+        let over = !reasons.is_empty();
+        assert!(reasons.is_empty(), "未超阈值时不应提示：{reasons:?}");
+        assert!(!over, "未超阈值时 over 必须为 false");
+        assert_eq!(atom_rows(&db), before, "统计必须只读");
 
-        // running 的轮次不许被清理逻辑带走
-        let turns = db.load_turns("s-1", 10).expect("turns");
-        assert!(turns.iter().any(|t| t.id == "t-running" && t.status == "running"));
-        assert!(turns
-            .iter()
-            .any(|t| t.id == "t-waiting" && t.status == "waiting_approval"));
-
-        // 全部事件都过期时，事件与轮次一起清掉
-        // cutoff 在未来 = 会清空全部：不带 allow_wipe 时必须被挡下
-        let blocked = db
-            .prune_traces(crate::trace::now_ms() + 1000, 50, false)
-            .expect("blocked");
-        assert_eq!(blocked.events_deleted, 0, "一次性清空必须先被防呆挡住");
-        assert_eq!(db.load_events("s-1", 500).expect("still").len(), 50);
-        let report2 = db
-            .prune_traces(crate::trace::now_ms() + 1000, 50, true)
-            .expect("prune2");
-        assert_eq!(report2.events_deleted, 50);
-        assert!(report2.turns_deleted >= 1);
-        assert!(db.load_events("s-1", 500).expect("l3").is_empty());
-        // 时间过滤会带走它：一轮 90 天还没收尾，说明那次运行已经死了，留着只会显示「永远在跑」
-        assert!(db.load_turns("s-1", 10).expect("t3").is_empty());
+        let old = crate::trace::now_ms() - 100 * 24 * 3600 * 1000;
+        db.conn
+            .lock()
+            .unwrap()
+            .execute("UPDATE atoms SET at = ?1 WHERE id = 'm1'", params![old])
+            .expect("backdate oldest atom");
+        let old_stats = db.storage_stats("s-1").expect("stats after backdate");
+        assert_eq!(old_stats.oldest_at, Some(old));
+        let reasons =
+            crate::commands::storage_hint_reasons(&old_stats, crate::trace::now_ms());
+        let over = !reasons.is_empty();
+        assert!(over, "100 天前必须让 over 为 true");
+        assert_eq!(
+            reasons,
+            vec!["age".to_string()],
+            "100 天前必须触发 age 提示"
+        );
+        assert_eq!(atom_rows(&db), before, "统计必须只读，不能删行");
 
         std::fs::remove_file(&path).ok();
     }
