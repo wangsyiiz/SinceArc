@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { AlertTriangle, ChevronDown } from "lucide-react";
 import type { ModeOption } from "@/lib/ipc";
+import { useHoverCard } from "./ui/HoverCard";
 import { Menu, type MenuItem } from "./ui/Menu";
 
 interface ModeSelectProps {
@@ -42,6 +44,8 @@ export function ModeSelect({
   const unsupported = available.length === 0;
   const locked = disabled || unsupported;
   const currentLabel = (available.find((mode) => mode.id === current)?.name ?? current) || "未上报";
+  const [warningEl, setWarningEl] = useState<HTMLSpanElement | null>(null);
+  const warningHover = useHoverCard({ disabled: !warning || locked });
 
   const items: MenuItem[] = [
     {
@@ -74,32 +78,43 @@ export function ModeSelect({
   ];
 
   return (
-    <Menu
-      ariaLabel="文件编辑审批模式"
-      align="end"
-      compact={compact}
-      triggerVariant="ghost"
-      className="max-w-60"
-      disabled={locked}
-      disabledReason={
-        unsupported ? "该连接没有报上来可选模式" : disabled ? "当前不可选择模式" : undefined
-      }
-      section={variant === "session" ? "文件编辑审批" : undefined}
-      description={
-        variant === "session" ? "只管文件编辑；命令是否询问由 agent 自己的审批策略决定" : undefined
-      }
-      items={items}
-      trigger={
-        <span className="flex min-w-0 items-center gap-1.5" title={warning ?? undefined}>
-          <span className="truncate">{unsupported ? "不支持" : currentLabel}</span>
-          {following && !unsupported && (
-            <span className="shrink-0 rounded-mark border border-line-1 px-1 text-caption text-ink-3">
-              跟随
-            </span>
-          )}
-          <ChevronDown className="size-3 shrink-0 text-ink-3" aria-hidden="true" />
-        </span>
-      }
-    />
+    <>
+      <Menu
+        ariaLabel="文件编辑审批模式"
+        align="end"
+        compact={compact}
+        triggerVariant="ghost"
+        className="max-w-60"
+        disabled={locked}
+        disabledReason={
+          unsupported ? "该连接没有报上来可选模式" : disabled ? "当前不可选择模式" : undefined
+        }
+        section={variant === "session" ? "文件编辑审批" : undefined}
+        description={
+          variant === "session"
+            ? "只管文件编辑；命令是否询问由 agent 自己的审批策略决定"
+            : undefined
+        }
+        items={items}
+        trigger={
+          <span
+            ref={setWarningEl}
+            {...warningHover.triggerProps(warningEl)}
+            className="flex min-w-0 items-center gap-1.5"
+          >
+            <span className="truncate">{unsupported ? "不支持" : currentLabel}</span>
+            {following && !unsupported && (
+              <span className="shrink-0 rounded-mark border border-line-1 px-1 text-caption text-ink-3">
+                跟随
+              </span>
+            )}
+            <ChevronDown className="size-3 shrink-0 text-ink-3" aria-hidden="true" />
+          </span>
+        }
+      />
+      {warningHover.card(
+        <span className="break-words text-caption text-ink-2">{warning}</span>,
+      )}
+    </>
   );
 }

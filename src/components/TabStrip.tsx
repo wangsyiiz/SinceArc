@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { FolderGit2, GitPullRequest, MessageSquare, Settings2, X } from "lucide-react";
 import type { Tab } from "@/types";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/Button";
+import { useHoverCard } from "./ui/HoverCard";
 import { Tooltip } from "./ui/Tooltip";
 
 const ICON = {
@@ -38,10 +40,9 @@ export function TabStrip({ tabs, activeId, badgeOf, onSelect, onClose }: TabStri
                 ? "sc-row-active text-ink-1"
                 : "text-ink-3 hover:bg-surface-3 hover:text-ink-1",
             )}
-            title={t.subtitle}
           >
             <Icon className={cn("size-3 shrink-0", active ? "text-ink-2" : "text-ink-3")} />
-            <span className="truncate">{t.title}</span>
+            <TabTitle title={t.title} subtitle={t.subtitle} />
             {badgeOf?.(t) && (
               <span
                 className={cn("size-1.5 shrink-0 rounded-full", activeId !== t.id && "animate-pulse")}
@@ -71,5 +72,18 @@ export function TabStrip({ tabs, activeId, badgeOf, onSelect, onClose }: TabStri
         );
       })}
     </div>
+  );
+}
+
+function TabTitle({ title, subtitle }: { title: string; subtitle?: string }) {
+  const [el, setEl] = useState<HTMLSpanElement | null>(null);
+  const hover = useHoverCard({ disabled: !subtitle });
+  return (
+    <>
+      <span ref={setEl} {...hover.triggerProps(el)} className="truncate">
+        {title}
+      </span>
+      {hover.card(<span className="break-words">{subtitle}</span>)}
+    </>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, ChevronDown, Plus, Trash2 } from "lucide-react";
 import { newId } from "@/lib/ids";
 import type { AgentProfile } from "@/types";
@@ -19,8 +19,10 @@ import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { EmptyState } from "./ui/EmptyState";
 import { Field, Input } from "./ui/Field";
+import { useHoverCard } from "./ui/HoverCard";
 import { Menu } from "./ui/Menu";
 import { Segmented } from "./ui/Segmented";
+import { Tooltip } from "./ui/Tooltip";
 
 /**
  * Agent Users：群里能 @ 到的「玩家」（docs/group-chat.md §2）。
@@ -37,6 +39,29 @@ const SESSION_SOURCE_OPTIONS: { value: "new" | "existing"; label: string }[] = [
   { value: "new", label: "新建会话" },
   { value: "existing", label: "已有会话" },
 ];
+
+function LongTextHover({
+  text,
+  disabled = false,
+  className,
+  children,
+}: {
+  text: string;
+  disabled?: boolean;
+  className?: string;
+  children?: ReactNode;
+}) {
+  const [el, setEl] = useState<HTMLSpanElement | null>(null);
+  const hover = useHoverCard({ disabled });
+  return (
+    <>
+      <span ref={setEl} {...hover.triggerProps(el)} className={className}>
+        {children ?? text}
+      </span>
+      {hover.card(<span className="break-all font-mono">{text}</span>)}
+    </>
+  );
+}
 
 type TestState =
   | { state: "untested" }
@@ -169,6 +194,19 @@ export function AgentUsersList({
         <div className="mt-4 divide-y divide-line-1/50">
           {users.map((u) => {
             const profile = profiles.find((p) => p.id === u.profileId);
+            const deleteLabel = `删除 ${u.name}`;
+            const deleteButton = (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="size-7 p-0"
+                aria-label={deleteLabel}
+                disabled={busy === u.id}
+                onClick={() => void remove(u)}
+              >
+                <Trash2 className="size-3" />
+              </Button>
+            );
             return (
               <div key={u.id} className="flex items-center gap-2 py-2">
                 <button
@@ -205,16 +243,11 @@ export function AgentUsersList({
                     label={profile?.connected ? "已连接" : "未连接"}
                   />
                 </button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="size-7 p-0"
-                  title={`删除 ${u.name}`}
-                  disabled={busy === u.id}
-                  onClick={() => void remove(u)}
-                >
-                  <Trash2 className="size-3" />
-                </Button>
+                {busy === u.id ? (
+                  deleteButton
+                ) : (
+                  <Tooltip label={deleteLabel}>{deleteButton}</Tooltip>
+                )}
               </div>
             );
           })}
@@ -436,11 +469,15 @@ export function AgentUserDetail({
         draft.acpSessionId.trim().length > 0 && (
           <p className="text-caption text-ink-3">
             会话 id{" "}
-            <span className="font-mono text-ink-2" title={draft.acpSessionId}>
+            <LongTextHover
+              text={draft.acpSessionId}
+              disabled={draft.acpSessionId.length <= 28}
+              className="font-mono text-ink-2"
+            >
               {draft.acpSessionId.length > 28
                 ? `${draft.acpSessionId.slice(0, 28)}…`
                 : draft.acpSessionId}
-            </span>
+            </LongTextHover>
           </p>
         )
       )}
@@ -464,17 +501,18 @@ export function AgentUserDetail({
       <div className="flex items-center gap-2">
         <span className="text-caption text-ink-3">颜色</span>
         {COLORS.map((color, index) => (
-          <button
-            key={color}
-            type="button"
-            onClick={() => setDraft({ ...draft, color })}
-            className={cn(
-              "size-4 rounded-full border transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1",
-              draft.color === color ? "border-ink-1" : "border-transparent",
-            )}
-            style={{ backgroundColor: color }}
-            title={`颜色 ${index + 1}`}
-          />
+          <Tooltip key={color} label={`颜色 ${index + 1}`}>
+            <button
+              type="button"
+              aria-label={`颜色 ${index + 1}`}
+              onClick={() => setDraft({ ...draft, color })}
+              className={cn(
+                "size-4 rounded-full border transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1",
+                draft.color === color ? "border-ink-1" : "border-transparent",
+              )}
+              style={{ backgroundColor: color }}
+            />
+          </Tooltip>
         ))}
       </div>
 

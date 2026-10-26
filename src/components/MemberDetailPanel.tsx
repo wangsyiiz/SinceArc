@@ -24,6 +24,7 @@ import { profileLabel } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { AgentProfile } from "@/types";
 import { AgentLogo } from "./AgentLogo";
+import { Tooltip } from "./ui/Tooltip";
 
 const ANCHOR_GAP = 8;
 const VIEWPORT_MARGIN = 8;
@@ -52,7 +53,6 @@ function DetailRow({
           "flex min-w-0 flex-1 items-start justify-end gap-1.5 text-right text-caption text-ink-2",
           mono && "font-mono",
         )}
-        title={value}
       >
         {before}
         <span className="min-w-0 break-all">{value}</span>
@@ -172,9 +172,9 @@ export function MemberDetailPanel({
         visibility: pos ? "visible" : "hidden",
       }}
     >
-      <div className="min-w-0 truncate pr-1 text-ui text-ink-1" title={member.name}>
-        {member.name}
-      </div>
+      <Tooltip label={member.name}>
+        <div className="min-w-0 truncate pr-1 text-ui text-ink-1">{member.name}</div>
+      </Tooltip>
 
       {/* 分割线用 1px 色块，不用 border：浮层里手写边框会多套一圈（见 design-language） */}
       <div className="my-2 h-px bg-line-1/60" />

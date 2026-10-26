@@ -5,6 +5,8 @@ import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
 import { SessionMoreMenu } from "./SessionMcpMenu";
 import { StatusDot } from "./ui/Badge";
+import { useHoverCard } from "./ui/HoverCard";
+import { Tooltip } from "./ui/Tooltip";
 
 export type SidebarMode = "sessions" | "code";
 
@@ -149,12 +151,12 @@ export function Sidebar({
                         {s.playerIds.slice(0, 3).map((pid) => {
                           const pl = players.find((x) => x.id === pid);
                           return pl ? (
-                            <span
-                              key={pid}
-                              className="size-1.5 rounded-full"
-                              style={{ background: pl.color }}
-                              title={pl.name}
-                            />
+                            <Tooltip key={pid} label={pl.name}>
+                              <span
+                                className="size-1.5 rounded-full"
+                                style={{ background: pl.color }}
+                              />
+                            </Tooltip>
                           ) : null;
                         })}
                         <span className="min-w-0 truncate font-mono text-micro text-ink-3">
@@ -162,7 +164,6 @@ export function Sidebar({
                         </span>
                         {profile && (
                           <span
-                            title={`归属：${profileLabel(profile)}`}
                             className={cn(
                               // 这里只说「这个会话属于谁」，不做连接状态着色 ——
                               // 状态属于当前那个会话，在标题栏里显示，列在这里会变成一堆绿灰点。
@@ -201,27 +202,7 @@ export function Sidebar({
             )}
             {repos.map((r) => {
               const count = (prsByRepo[r.id] ?? []).length;
-              return (
-                <button
-                  key={r.id}
-                  onClick={() => onOpenRepo(r.id)}
-                  title={r.path}
-                  className="group mb-0.5 flex w-full flex-col gap-0.5 rounded-mark px-2.5 py-2 text-left transition-colors hover:bg-surface-3"
-                >
-                  <span className="flex items-center gap-1.5">
-                    <StatusDot status={r.connected ? "connected" : "untested"} />
-                    <span className="transition-colors duration-150 truncate text-small text-ink-2 group-hover:text-ink-1">
-                      {r.name}
-                    </span>
-                    {count > 0 && (
-                      <span className="ml-auto shrink-0 font-mono text-micro text-ink-3">
-                        {count}
-                      </span>
-                    )}
-                  </span>
-                  <span className="truncate pl-3 font-mono text-micro text-ink-3">{r.slug}</span>
-                </button>
-              );
+              return <RepoButton key={r.id} repo={r} count={count} onOpen={onOpenRepo} />;
             })}
 
             {adding ? (
@@ -265,6 +246,41 @@ export function Sidebar({
         </button>
       </div>
     </aside>
+  );
+}
+
+function RepoButton({
+  repo,
+  count,
+  onOpen,
+}: {
+  repo: GithubRepo;
+  count: number;
+  onOpen: (id: string) => void;
+}) {
+  const [el, setEl] = useState<HTMLButtonElement | null>(null);
+  const hover = useHoverCard();
+  return (
+    <>
+      <button
+        ref={setEl}
+        {...hover.triggerProps(el)}
+        onClick={() => onOpen(repo.id)}
+        className="group mb-0.5 flex w-full flex-col gap-0.5 rounded-mark px-2.5 py-2 text-left transition-colors hover:bg-surface-3"
+      >
+        <span className="flex items-center gap-1.5">
+          <StatusDot status={repo.connected ? "connected" : "untested"} />
+          <span className="transition-colors duration-150 truncate text-small text-ink-2 group-hover:text-ink-1">
+            {repo.name}
+          </span>
+          {count > 0 && (
+            <span className="ml-auto shrink-0 font-mono text-micro text-ink-3">{count}</span>
+          )}
+        </span>
+        <span className="truncate pl-3 font-mono text-micro text-ink-3">{repo.slug}</span>
+      </button>
+      {hover.card(<span className="break-all font-mono">{repo.path}</span>)}
+    </>
   );
 }
 

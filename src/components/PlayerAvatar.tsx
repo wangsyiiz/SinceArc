@@ -12,7 +12,6 @@ export function PlayerAvatar({
 }) {
   return (
     <span
-      title={player.name}
       style={{
         width: size,
         height: size,

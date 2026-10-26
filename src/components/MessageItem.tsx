@@ -146,7 +146,6 @@ export function MessageItem({
             type="button"
             aria-expanded={delegateExpanded}
             onClick={() => setDelegateExpanded((expanded) => !expanded)}
-            title={message.text}
             className={cn(
               // 展开只改「看不看得全」，不改字号 —— 点一下字变大，会像整块内容在跳。
               "text-left text-small text-ink-2",

@@ -3,6 +3,7 @@ import type { AgentCaps } from "@/lib/ipc";
 import type { McpCatalogEntryDto } from "@/lib/ipc";
 import { entryKind, transportSupportNote } from "@/lib/mcp-display";
 import { cn } from "@/lib/utils";
+import { Tooltip } from "./ui/Tooltip";
 
 export function McpCheck({
   checked,
@@ -52,6 +53,9 @@ export function McpServerChecklist({
         const checked = selected.includes(entry.name);
         const kind = entryKind(entry);
         const note = transportSupportNote(kind, caps);
+        const name = (
+          <span className="min-w-0 flex-1 truncate text-ui-tight text-ink-1">{entry.name}</span>
+        );
         return (
           <button
             key={entry.name}
@@ -67,12 +71,11 @@ export function McpServerChecklist({
             )}
           >
             <McpCheck checked={checked} disabled={disabled} />
-            <span
-              className="min-w-0 flex-1 truncate text-ui-tight text-ink-1"
-              title={entry.name.length > 24 ? entry.name : undefined}
-            >
-              {entry.name}
-            </span>
+            {entry.name.length > 24 && !disabled ? (
+              <Tooltip label={entry.name}>{name}</Tooltip>
+            ) : (
+              name
+            )}
             <span className="shrink-0 font-mono text-micro text-ink-3">{kind}</span>
             {note && <span className="shrink-0 text-micro text-warn-1">{note}</span>}
           </button>

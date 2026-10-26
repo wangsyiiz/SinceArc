@@ -3,6 +3,7 @@ import type { ReactElement, ReactNode } from "react";
 import type { Block, Inline } from "@/lib/markdown";
 import { parseMarkdown } from "@/lib/markdown";
 import { openExternal } from "@/lib/ipc";
+import { Tooltip } from "./ui/Tooltip";
 
 async function copyText(text: string): Promise<void> {
   try {
@@ -54,27 +55,28 @@ function LinkButton({ href, children }: { href: string; children: ReactNode }) {
   };
 
   return (
-    <button
-      type="button"
-      role="link"
-      title={`${href}\n单击复制 · Ctrl+点击在浏览器打开`}
-      onClick={(event) => {
-        event.preventDefault();
-        if (event.ctrlKey || event.metaKey) void openLink();
-        else void copyLink();
-      }}
-      onAuxClick={(event) => {
-        // 中键：浏览器里中键=新标签，这里映射成「在系统浏览器打开」。
-        if (event.button !== 1) return;
-        event.preventDefault();
-        void openLink();
-      }}
-      className="cursor-pointer text-accent-1 underline underline-offset-2 hover:text-ink-1"
-    >
-      {children}
-      {hint === "copied" && <span className="text-ink-3"> · 已复制</span>}
-      {hint === "failed" && <span className="text-danger-1"> · 打不开</span>}
-    </button>
+    <Tooltip label="单击复制 · Ctrl+点击打开浏览器">
+      <button
+        type="button"
+        role="link"
+        onClick={(event) => {
+          event.preventDefault();
+          if (event.ctrlKey || event.metaKey) void openLink();
+          else void copyLink();
+        }}
+        onAuxClick={(event) => {
+          // 中键：浏览器里中键=新标签，这里映射成「在系统浏览器打开」。
+          if (event.button !== 1) return;
+          event.preventDefault();
+          void openLink();
+        }}
+        className="cursor-pointer text-accent-1 underline underline-offset-2 hover:text-ink-1"
+      >
+        {children}
+        {hint === "copied" && <span className="text-ink-3"> · 已复制</span>}
+        {hint === "failed" && <span className="text-danger-1"> · 打不开</span>}
+      </button>
+    </Tooltip>
   );
 }
 

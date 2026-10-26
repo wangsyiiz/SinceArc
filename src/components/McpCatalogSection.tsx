@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useReducer, useState, type ReactNode } from "react";
 import { Eye, EyeOff, Pencil, Plus, Trash2, X } from "lucide-react";
 import {
   asCmdError,
@@ -26,7 +26,9 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { Button } from "./ui/Button";
 import { EmptyState } from "./ui/EmptyState";
 import { Field, Input, Textarea } from "./ui/Field";
+import { useHoverCard } from "./ui/HoverCard";
 import { Segmented } from "./ui/Segmented";
+import { Tooltip } from "./ui/Tooltip";
 
 const KIND_OPTIONS: { value: McpKind; label: string }[] = [
   { value: "stdio", label: "stdio" },
@@ -35,6 +37,29 @@ const KIND_OPTIONS: { value: McpKind; label: string }[] = [
 ];
 
 const DELETE_MCP_HEADING = "删除 MCP 服务器";
+
+function LongTextHover({
+  text,
+  disabled = false,
+  className,
+  children,
+}: {
+  text: string;
+  disabled?: boolean;
+  className?: string;
+  children?: ReactNode;
+}) {
+  const [el, setEl] = useState<HTMLSpanElement | null>(null);
+  const hover = useHoverCard({ disabled });
+  return (
+    <>
+      <span ref={setEl} {...hover.triggerProps(el)} className={className}>
+        {children ?? text}
+      </span>
+      {hover.card(<span className="break-all font-mono">{text}</span>)}
+    </>
+  );
+}
 
 interface PairRow extends McpKeyValueDto {
   id: string;
@@ -462,21 +487,27 @@ export function McpCatalogSection({
                 className="sc-pane flex flex-wrap items-center gap-2 px-3 py-2"
               >
                 <div className="flex min-w-0 flex-1 items-center gap-2">
-                  <span
-                    className="max-w-40 shrink-0 truncate text-ui font-medium text-ink-1"
-                    title={entry.name.length > 24 ? entry.name : undefined}
-                  >
-                    {entry.name}
-                  </span>
+                  {entry.name.length > 24 ? (
+                    <Tooltip label={entry.name}>
+                      <span className="max-w-40 shrink-0 truncate text-ui font-medium text-ink-1">
+                        {entry.name}
+                      </span>
+                    </Tooltip>
+                  ) : (
+                    <span className="max-w-40 shrink-0 truncate text-ui font-medium text-ink-1">
+                      {entry.name}
+                    </span>
+                  )}
                   <span className="shrink-0 rounded-mark bg-surface-3/45 px-1.5 py-0.5 font-mono text-micro text-ink-3">
                     {kind}
                   </span>
-                  <span
+                  <LongTextHover
+                    text={fullSummary}
+                    disabled={summary === fullSummary}
                     className="min-w-0 flex-1 truncate font-mono text-caption text-ink-3"
-                    title={summary !== fullSummary ? fullSummary : undefined}
                   >
                     {summary}
-                  </span>
+                  </LongTextHover>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
                   <Button

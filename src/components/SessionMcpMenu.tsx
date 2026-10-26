@@ -18,6 +18,7 @@ import { MoreMenu } from "./MoreMenu";
 import { Button } from "./ui/Button";
 import { useAnchoredLayer } from "./ui/Menu";
 import { Segmented } from "./ui/Segmented";
+import { Tooltip } from "./ui/Tooltip";
 
 type SessionMode = "follow" | "custom" | "none";
 
@@ -313,14 +314,18 @@ function SessionMcpPanel({
                 {effective.map((entry) => {
                   const kind = entryKind(entry);
                   const note = transportSupportNote(kind, profile?.caps ?? null);
+                  const name = (
+                    <span className="min-w-0 flex-1 truncate text-ui-tight text-ink-1">
+                      {entry.name}
+                    </span>
+                  );
                   return (
                     <div key={entry.name} className="flex items-center gap-1.5 px-1 py-0.5">
-                      <span
-                        className="min-w-0 flex-1 truncate text-ui-tight text-ink-1"
-                        title={entry.name.length > 24 ? entry.name : undefined}
-                      >
-                        {entry.name}
-                      </span>
+                      {entry.name.length > 24 ? (
+                        <Tooltip label={entry.name}>{name}</Tooltip>
+                      ) : (
+                        name
+                      )}
                       <span className="text-micro text-ink-3">·</span>
                       <span className="shrink-0 font-mono text-micro text-ink-3">{kind}</span>
                       {note && <span className="shrink-0 text-micro text-warn-1">{note}</span>}
