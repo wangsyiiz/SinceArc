@@ -1,4 +1,5 @@
 import type { AgentCaps } from "@/lib/ipc/types.gen/AgentCaps";
+import { DEFAULT_CODE_THEME_ID, type CodeThemeId } from "./lib/highlight/themes.ts";
 
 export type ThemeMode = "dark" | "light" | "system";
 
@@ -291,6 +292,8 @@ export interface ThreadSettings {
   mcpInheritDefault: boolean;
   /** 流式回答按到达节奏平滑推进；只影响渲染层 */
   tweenEnabled: boolean;
+  /** markdown 代码块配色；与界面主题正交 */
+  codeTheme: CodeThemeId;
 }
 
 export const CONTEXT_MESSAGES_MAX = 20;
@@ -301,4 +304,5 @@ export const DEFAULT_THREAD_SETTINGS: ThreadSettings = {
   autoApproveDefault: "off",
   mcpInheritDefault: true,
   tweenEnabled: true,
+  codeTheme: DEFAULT_CODE_THEME_ID,
 };

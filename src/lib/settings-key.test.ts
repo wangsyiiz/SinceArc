@@ -13,6 +13,7 @@ test("settingsKey 覆盖 ThreadSettings 的每个字段", () => {
     autoApproveDefault: DEFAULT_THREAD_SETTINGS.autoApproveDefault === "off" ? "edits" : "off",
     mcpInheritDefault: !DEFAULT_THREAD_SETTINGS.mcpInheritDefault,
     tweenEnabled: !DEFAULT_THREAD_SETTINGS.tweenEnabled,
+    codeTheme: DEFAULT_THREAD_SETTINGS.codeTheme === "github-dark" ? "nord" : "github-dark",
   };
   for (const [field, value] of Object.entries(variants)) {
     const next = { ...DEFAULT_THREAD_SETTINGS, [field]: value } as ThreadSettings;

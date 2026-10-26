@@ -12,4 +12,8 @@ mcpInheritDefault: boolean,
 /**
  * 流式回答按到达节奏平滑推进；只影响渲染层。
  */
-tweenEnabled: boolean, };
+tweenEnabled: boolean, 
+/**
+ * markdown 代码块配色 id；未知值读回时回落 github-dark。
+ */
+codeTheme: string, };

@@ -95,6 +95,85 @@
   --lh-body: 22px;
   --lh-lead: 24px;
   --lh-title: 28px;
+
+  /* 代码块整块豁免设计语言：几何与配色都用代码块自己的变量（§20）。 */
+  --code-radius: 12px;
+  --code-font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, monospace;
+  --code-pad-x: 16px;
+  --code-pad-y: 12px;
+  --code-font-size: 12.5px;
+  --code-line-height: 1.55;
+  --code-border: 1px solid color-mix(in srgb, var(--code-plain) 14%, transparent);
+  --code-inline-border: color-mix(in srgb, var(--code-plain) 18%, transparent);
+
+  /* 默认兜底 = github-dark */
+  --code-plain: #e6edf3;
+  --code-comment: #8b949e;
+  --code-keyword: #ff7b72;
+  --code-string: #a5d6ff;
+  --code-number: #79c0ff;
+  --code-literal: #79c0ff;
+  --code-function: #d2a8ff;
+  --code-type: #ffa657;
+  --code-operator: #ff7b72;
+  --code-punct: #e6edf3;
+  --code-bg: #0d1117;
+}
+
+[data-code-theme="github-dark"] {
+  --code-plain: #e6edf3;
+  --code-comment: #8b949e;
+  --code-keyword: #ff7b72;
+  --code-string: #a5d6ff;
+  --code-number: #79c0ff;
+  --code-literal: #79c0ff;
+  --code-function: #d2a8ff;
+  --code-type: #ffa657;
+  --code-operator: #ff7b72;
+  --code-punct: #e6edf3;
+  --code-bg: #0d1117;
+}
+
+[data-code-theme="one-dark"] {
+  --code-plain: #abb2bf;
+  --code-comment: #5c6370;
+  --code-keyword: #c678dd;
+  --code-string: #98c379;
+  --code-number: #d19a66;
+  --code-literal: #56b6c2;
+  --code-function: #61afef;
+  --code-type: #e5c07b;
+  --code-operator: #56b6c2;
+  --code-punct: #abb2bf;
+  --code-bg: #282c34;
+}
+
+[data-code-theme="dracula"] {
+  --code-plain: #f8f8f2;
+  --code-comment: #6272a4;
+  --code-keyword: #ff79c6;
+  --code-string: #f1fa8c;
+  --code-number: #bd93f9;
+  --code-literal: #bd93f9;
+  --code-function: #50fa7b;
+  --code-type: #8be9fd;
+  --code-operator: #ff79c6;
+  --code-punct: #f8f8f2;
+  --code-bg: #282a36;
+}
+
+[data-code-theme="nord"] {
+  --code-plain: #d8dee9;
+  --code-comment: #616e88;
+  --code-keyword: #81a1c1;
+  --code-string: #a3be8c;
+  --code-number: #b48ead;
+  --code-literal: #b48ead;
+  --code-function: #88c0d0;
+  --code-type: #8fbcbb;
+  --code-operator: #81a1c1;
+  --code-punct: #eceff4;
+  --code-bg: #2e3440;
 }
 
 :root[data-theme="light"] {
@@ -342,19 +421,20 @@ dialog.sc-dialog[open] {
 .sc-prose > :first-child { margin-top: 0; }
 .sc-prose > :last-child { margin-bottom: 0; }
 .sc-prose code {
-  font-family: var(--font-mono);
+  font-family: var(--code-font-family);
   font-size: 0.9em;
-  background: var(--s3);
-  border: 1px solid var(--l1);
-  border-radius: var(--radius-mark);
+  color: var(--code-plain);
+  background: var(--code-bg);
+  border: 1px solid var(--code-inline-border);
+  border-radius: var(--code-radius);
   padding: 1px 6px;
 }
 .sc-prose pre {
   margin: 8px 0;
-  background: var(--s0);
-  border: 1px solid var(--l1);
-  border-radius: var(--radius-card);
-  padding: 12px 16px;
+  background: var(--code-bg);
+  border: var(--code-border);
+  border-radius: var(--code-radius);
+  padding: var(--code-pad-y) var(--code-pad-x);
   overflow-x: auto;
 }
 .sc-prose pre code {
@@ -362,23 +442,20 @@ dialog.sc-dialog[open] {
   border: none;
   border-radius: 0;
   padding: 0;
-  font-size: var(--fs-small);
-  line-height: 1.65;
+  font-size: var(--code-font-size);
+  line-height: var(--code-line-height);
 }
-/* 代码高亮只认语义档位（§18）：颜色全部取现有令牌，不写色值、不另起字号。
-   数字/字面量用 warn 混 ink-1 —— 暗色偏亮黄，浅色自动压深，同时保持 warn 色相。 */
-.sc-prose [data-token="keyword"] { color: var(--a1); }
-.sc-prose [data-token="string"] { color: var(--i1); }
-.sc-prose [data-token="comment"] { color: var(--i3); }
-.sc-prose [data-token="number"],
-.sc-prose [data-token="literal"] {
-  color: color-mix(in srgb, var(--warn) 70%, var(--i1));
-}
-.sc-prose [data-token="function"],
-.sc-prose [data-token="type"] { color: var(--i2); }
-.sc-prose [data-token="operator"],
-.sc-prose [data-token="punct"] { color: var(--i2); }
-.sc-prose [data-token="plain"] { color: inherit; }
+/* 代码高亮只认语义档位（§18/§20）：颜色全部取代码主题变量。 */
+.sc-prose [data-token="plain"] { color: var(--code-plain); }
+.sc-prose [data-token="comment"] { color: var(--code-comment); }
+.sc-prose [data-token="keyword"] { color: var(--code-keyword); }
+.sc-prose [data-token="string"] { color: var(--code-string); }
+.sc-prose [data-token="number"] { color: var(--code-number); }
+.sc-prose [data-token="literal"] { color: var(--code-literal); }
+.sc-prose [data-token="function"] { color: var(--code-function); }
+.sc-prose [data-token="type"] { color: var(--code-type); }
+.sc-prose [data-token="operator"] { color: var(--code-operator); }
+.sc-prose [data-token="punct"] { color: var(--code-punct); }
 .sc-prose ul, .sc-prose ol { margin: 4px 0 8px; padding-left: 20px; }
 .sc-prose li { margin: 2px 0; }
 .sc-prose a { color: var(--a1); text-decoration: underline; text-underline-offset: 2px; }

@@ -454,6 +454,22 @@ pub fn is_valid_theme(theme: &str) -> bool {
     matches!(theme, "dark" | "light" | "system")
 }
 
+pub const DEFAULT_CODE_THEME: &str = "github-dark";
+
+pub fn is_valid_code_theme(theme: &str) -> bool {
+    matches!(theme, "github-dark" | "one-dark" | "dracula" | "nord")
+}
+
+/// 未知/空 id 一律回落默认；写库与读库都走这里。
+pub fn normalize_code_theme(theme: &str) -> &'static str {
+    match theme {
+        "one-dark" => "one-dark",
+        "dracula" => "dracula",
+        "nord" => "nord",
+        _ => DEFAULT_CODE_THEME,
+    }
+}
+
 /// 自动同意的默认档（新会话的初始态）。`off` = 不替用户答；`edits` = 编辑类自动答。
 pub fn is_valid_auto_approve(level: &str) -> bool {
     matches!(level, "off" | "edits")
@@ -473,10 +489,17 @@ pub struct AppSettingsDto {
     /// 流式回答按到达节奏平滑推进；只影响渲染层。
     #[serde(default = "default_true")]
     pub tween_enabled: bool,
+    /// markdown 代码块配色 id；未知值读回时回落 github-dark。
+    #[serde(default = "default_code_theme")]
+    pub code_theme: String,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_code_theme() -> String {
+    DEFAULT_CODE_THEME.into()
 }
 
 impl Default for AppSettingsDto {
@@ -487,6 +510,7 @@ impl Default for AppSettingsDto {
             auto_approve_default: "off".into(),
             mcp_inherit_default: true,
             tween_enabled: true,
+            code_theme: DEFAULT_CODE_THEME.into(),
         }
     }
 }
@@ -5223,6 +5247,7 @@ mod usage_tests {
 #[cfg(test)]
 mod settings_tests {
     use super::AppSettingsDto;
+    use super::DEFAULT_CODE_THEME;
 
     #[test]
     fn settings_reject_context_over_max_with_50001() {
@@ -5232,6 +5257,7 @@ mod settings_tests {
             auto_approve_default: "off".into(),
             mcp_inherit_default: true,
             tween_enabled: true,
+            code_theme: DEFAULT_CODE_THEME.into(),
         };
         let err = settings.validate().expect_err("99 必须被拒");
         assert_eq!(err.code, 50001);
@@ -5246,6 +5272,7 @@ mod settings_tests {
             auto_approve_default: "off".into(),
             mcp_inherit_default: true,
             tween_enabled: true,
+            code_theme: DEFAULT_CODE_THEME.into(),
         };
         let err = settings.validate().expect_err("未知主题必须被拒");
         assert_eq!(err.code, 50001);
