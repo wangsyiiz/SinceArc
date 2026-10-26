@@ -34,6 +34,8 @@ const KIND_OPTIONS: { value: McpKind; label: string }[] = [
   { value: "sse", label: "sse" },
 ];
 
+const DELETE_MCP_HEADING = "删除 MCP 服务器";
+
 interface PairRow extends McpKeyValueDto {
   id: string;
   reveal: boolean;
@@ -431,7 +433,7 @@ export function McpCatalogSection({
         <div className="mt-4">
           <EmptyState
             compact
-            title="还没有 MCP 服务器"
+            heading="还没有 MCP 服务器"
             description="这里配置的 MCP 服务器对所有 agent 生效。"
             action={
               <Button variant="secondary" size="sm" onClick={startAdd}>
@@ -505,7 +507,7 @@ export function McpCatalogSection({
 
       <ConfirmDialog
         open={deleteTarget !== null}
-        title="删除 MCP 服务器"
+        title={DELETE_MCP_HEADING}
         body={
           <ul className="list-disc space-y-0.5 pl-4">
             <li>

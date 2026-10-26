@@ -34,7 +34,7 @@ export function ConnectErrorState({
       className="flex flex-1 flex-col justify-center py-12 [&_p]:max-h-24 [&_p]:overflow-y-auto [&_p]:break-words [&_p]:font-mono"
     >
       <EmptyState
-        title="连不上这个会话"
+        heading="连不上这个会话"
         description={detail}
         icon={
           <div className="grid size-12 place-items-center rounded-card border border-line-1 bg-surface-1 text-accent-1">

@@ -22,7 +22,7 @@ export function Field(props: {
       <label htmlFor={htmlFor} className="text-caption font-medium text-ink-2">
         {label}
         {required && (
-          <span aria-hidden="true" title="必填" className="ml-0.5 text-danger-1">
+          <span aria-hidden="true" className="ml-0.5 text-danger-1">
             *
           </span>
         )}

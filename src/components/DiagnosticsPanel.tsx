@@ -3,6 +3,7 @@ import { Activity, Check, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/Button";
 import { useAnchoredLayer } from "./ui/Menu";
+import { Tooltip } from "./ui/Tooltip";
 
 export function DiagnosticsPanel({
   eventLog,
@@ -42,24 +43,25 @@ export function DiagnosticsPanel({
 
   return (
     <>
-      <Button
-        ref={triggerRef}
-        variant="ghost"
-        size="sm"
-        aria-label="诊断"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        title="诊断"
-        onClick={toggle}
-        className={cn(
-          "size-7 shrink-0 gap-0 rounded-mark p-0",
-          open
-            ? "bg-surface-3 text-ink-1"
-            : "text-ink-2 hover:bg-surface-3 hover:text-ink-1",
-        )}
-      >
-        <Activity className="size-3.5" />
-      </Button>
+      <Tooltip label="诊断">
+        <Button
+          ref={triggerRef}
+          variant="ghost"
+          size="sm"
+          aria-label="诊断"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          onClick={toggle}
+          className={cn(
+            "size-7 shrink-0 gap-0 rounded-mark p-0",
+            open
+              ? "bg-surface-3 text-ink-1"
+              : "text-ink-2 hover:bg-surface-3 hover:text-ink-1",
+          )}
+        >
+          <Activity className="size-3.5" />
+        </Button>
+      </Tooltip>
 
       {open && (
         <div

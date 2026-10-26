@@ -8,6 +8,7 @@ import { turnHeading, turnLabel } from "@/lib/turn-summary";
 import type { LocateTarget } from "@/lib/turn-anchors";
 import { Button } from "./ui/Button";
 import { useHoverCard } from "./ui/HoverCard";
+import { Tooltip } from "./ui/Tooltip";
 import { RemovedBadge } from "./RemovedBadge";
 
 const ROW = 34;
@@ -613,8 +614,10 @@ export function TracePanel({
   backfill,
 }: TracePanelProps) {
   const [view, setView] = useState<"graph" | "list">("graph");
+  const [backfillEl, setBackfillEl] = useState<HTMLButtonElement | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const turnRefs = useRef(new Map<string, HTMLDivElement>());
+  const backfillHover = useHoverCard({ disabled: !backfill?.canRun || backfill.running });
   const { rows, edges, height, width: svgWidth } = useMemo(
     () => buildTrace(turns, activities, players),
     [turns, activities, players],
@@ -663,33 +666,40 @@ export function TracePanel({
             {turns.length} 轮 · {actionCount} 动作
           </span>
           <div className="ml-auto flex items-center gap-0.5 rounded-mark bg-surface-3/35 p-0.5">
-            <button
-              onClick={() => setView("graph")}
-              title="图形"
-              className={cn(
-                "grid size-5 place-items-center rounded-mark transition-colors",
-                view === "graph" ? "bg-surface-3/85 text-ink-1" : "text-ink-3 hover:text-ink-2",
-              )}
-            >
-              <Waypoints className="size-3" />
-            </button>
-            <button
-              onClick={() => setView("list")}
-              title="列表"
-              className={cn(
-                "grid size-5 place-items-center rounded-mark transition-colors",
-                view === "list" ? "bg-surface-3/85 text-ink-1" : "text-ink-3 hover:text-ink-2",
-              )}
-            >
-              <AlignLeft className="size-3" />
-            </button>
+            <Tooltip label="图形">
+              <button
+                type="button"
+                aria-label="图形"
+                onClick={() => setView("graph")}
+                className={cn(
+                  "grid size-5 place-items-center rounded-mark transition-colors",
+                  view === "graph" ? "bg-surface-3/85 text-ink-1" : "text-ink-3 hover:text-ink-2",
+                )}
+              >
+                <Waypoints className="size-3" />
+              </button>
+            </Tooltip>
+            <Tooltip label="列表">
+              <button
+                type="button"
+                aria-label="列表"
+                onClick={() => setView("list")}
+                className={cn(
+                  "grid size-5 place-items-center rounded-mark transition-colors",
+                  view === "list" ? "bg-surface-3/85 text-ink-1" : "text-ink-3 hover:text-ink-2",
+                )}
+              >
+                <AlignLeft className="size-3" />
+              </button>
+            </Tooltip>
           </div>
           {backfill && (
             <button
+              ref={setBackfillEl}
+              {...backfillHover.triggerProps(backfillEl)}
               type="button"
               onClick={backfill.onRun}
               disabled={!backfill.canRun || backfill.running}
-              title="从 agent 重放补全本会话轨迹（只补轨迹，不动正文）"
               className="ml-1 shrink-0 rounded-mark px-1.5 py-1 text-caption text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-1 disabled:cursor-not-allowed disabled:opacity-45"
             >
               补录
@@ -836,6 +846,14 @@ export function TracePanel({
           </div>
         </div>
         )}
+
+        {backfill &&
+          backfillHover.card(
+            <div className="space-y-1">
+              <p className="text-caption font-medium text-ink-1">补录轨迹</p>
+              <p>从 agent 重放补全本会话轨迹。只补轨迹，不动正文。</p>
+            </div>,
+          )}
 
         <footer className="shrink-0 border-t border-line-1/60 px-3 py-2 text-micro leading-relaxed text-ink-3">
           {resumeGap !== null && resumeGap > 0 && (

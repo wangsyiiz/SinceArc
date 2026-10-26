@@ -12,7 +12,7 @@ const SUGGESTIONS = [
 export function EmptyState({ cwd, onPick }: { cwd: string; onPick: (text: string) => void }) {
   return (
     <PrimitiveEmptyState
-      title="SinceArc"
+      heading="SinceArc"
       description={`一个 ACP 桌面客户端。选择左侧的 agent，在 ${cwd} 里开始对话。`}
       icon={
         <div className="grid size-12 place-items-center rounded-card border border-line-1 bg-surface-1 text-accent-1">
