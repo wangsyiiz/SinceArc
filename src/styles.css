@@ -365,6 +365,20 @@ dialog.sc-dialog[open] {
   font-size: var(--fs-small);
   line-height: 1.65;
 }
+/* 代码高亮只认语义档位（§18）：颜色全部取现有令牌，不写色值、不另起字号。
+   数字/字面量用 warn 混 ink-1 —— 暗色偏亮黄，浅色自动压深，同时保持 warn 色相。 */
+.sc-prose [data-token="keyword"] { color: var(--a1); }
+.sc-prose [data-token="string"] { color: var(--i1); }
+.sc-prose [data-token="comment"] { color: var(--i3); }
+.sc-prose [data-token="number"],
+.sc-prose [data-token="literal"] {
+  color: color-mix(in srgb, var(--warn) 70%, var(--i1));
+}
+.sc-prose [data-token="function"],
+.sc-prose [data-token="type"] { color: var(--i2); }
+.sc-prose [data-token="operator"],
+.sc-prose [data-token="punct"] { color: var(--i2); }
+.sc-prose [data-token="plain"] { color: inherit; }
 .sc-prose ul, .sc-prose ol { margin: 4px 0 8px; padding-left: 20px; }
 .sc-prose li { margin: 2px 0; }
 .sc-prose a { color: var(--a1); text-decoration: underline; text-underline-offset: 2px; }
