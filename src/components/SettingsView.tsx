@@ -123,6 +123,9 @@ const THEME_OPTIONS = THEMES.map((theme) => ({
   icon: THEME_ICONS[theme.id],
 }));
 
+const DISCARD_UNSAVED_HEADING = "放弃未保存的修改";
+const DELETE_CONNECTION_HEADING = "删除连接";
+
 const AUTO_APPROVE_OPTIONS = [
   { value: "off" as const, label: "关闭" },
   { value: "edits" as const, label: "编辑类" },
@@ -661,7 +664,7 @@ export function SettingsView({
           <EmptyState
             compact
             kind="empty"
-            title="没找到能跑 ACP 的 agent"
+            heading="没找到能跑 ACP 的 agent"
             description="也可以手动填写启动命令"
           />
         ) : (
@@ -1147,7 +1150,7 @@ export function SettingsView({
                       <div className="mt-4">
                         <EmptyState
                           compact
-                          title="还没有连接配置"
+                          heading="还没有连接配置"
                           description="新建一个连接，填好 agent 命令与工作目录。"
                           action={
                             <Button variant="secondary" size="sm" onClick={startNewConnection}>
@@ -1321,7 +1324,7 @@ export function SettingsView({
       </div>
       <ConfirmDialog
         open={discardOpen}
-        title="放弃未保存的修改"
+        title={DISCARD_UNSAVED_HEADING}
         body={<p>这些改动没有保存，放弃后就没了。</p>}
         confirmLabel="放弃"
         cancelLabel="继续编辑"
@@ -1338,7 +1341,7 @@ export function SettingsView({
       />
       <ConfirmDialog
         open={confirmDeleteId !== null}
-        title="删除连接"
+        title={DELETE_CONNECTION_HEADING}
         body={
           <ul className="list-disc space-y-0.5 pl-4">
             <li>只删这一条连接配置，<span className="text-ink-1">不会</span>删除任何会话与历史消息；</li>

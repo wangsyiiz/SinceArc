@@ -57,7 +57,7 @@ interface Draft {
 /** 必填记号：颜色点一下，别让用户靠「保存按钮为什么灰着」反推哪些是必填 */
 function Req() {
   return (
-    <span className="ml-0.5 text-danger-1" aria-hidden title="必填">
+    <span className="ml-0.5 text-danger-1" aria-hidden>
       *
     </span>
   );
@@ -161,7 +161,7 @@ export function AgentUsersList({
         <div className="mt-4">
           <EmptyState
             compact
-            title="还没有成员"
+            heading="还没有成员"
             description="先在「连接」里配一条连接，再回来创建成员。"
           />
         </div>

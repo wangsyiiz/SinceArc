@@ -8,6 +8,7 @@ import { Button } from "./ui/Button";
 import { Menu, type MenuItem } from "./ui/Menu";
 import { SessionMcpButton } from "./SessionMcpMenu";
 import { SlashMenu } from "./SlashMenu";
+import { Tooltip } from "./ui/Tooltip";
 import { filterCommands, slashQuery, type SlashCommand } from "@/lib/slash-filter";
 import { steerUnavailableReason, type SteerGate } from "@/lib/steer-availability";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
@@ -316,15 +317,16 @@ export function Composer({
         className="sc-selectable max-h-50 w-full resize-none bg-transparent px-3.5 pt-3 pb-0.5 text-ui leading-relaxed text-ink-1 focus-visible:outline-0 placeholder:text-ink-3"
       />
       <div className="flex items-center gap-1 px-2 pb-1.5">
-        <Button
-          variant="ghost"
-          size="sm"
-          title="添加附件（未接线）"
-          aria-label="添加附件（未接线）"
-          className="size-7 gap-0 p-0"
-        >
-          <Paperclip className="size-3.5" />
-        </Button>
+        <Tooltip label="添加附件（未接线）">
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="添加附件（未接线）"
+            className="size-7 gap-0 p-0"
+          >
+            <Paperclip className="size-3.5" />
+          </Button>
+        </Tooltip>
         <span className="ml-0.5 font-mono text-micro text-ink-3">
           {busy ? "agent 正在输出" : "ACP · stdio"}
         </span>
@@ -339,14 +341,15 @@ export function Composer({
             />
           )}
           {turnPolicyKinds.length > 0 && onRevokeTurnPolicy && (
-            <button
-              type="button"
-              title="点击撤销本轮同类放行"
-              className="flex items-center gap-1 rounded-full bg-surface-2 px-2 py-1 text-caption text-ink-2 transition-colors hover:bg-surface-3"
-              onClick={onRevokeTurnPolicy}
-            >
-              本轮 · {turnPolicyKinds.map(permissionKindLabel).join(" / ")} · 已放行
-            </button>
+            <Tooltip label="点击撤销本轮同类放行">
+              <button
+                type="button"
+                className="flex items-center gap-1 rounded-full bg-surface-2 px-2 py-1 text-caption text-ink-2 transition-colors hover:bg-surface-3"
+                onClick={onRevokeTurnPolicy}
+              >
+                本轮 · {turnPolicyKinds.map(permissionKindLabel).join(" / ")} · 已放行
+              </button>
+            </Tooltip>
           )}
           <Menu
             ariaLabel="自动同意：agent 发来的权限请求要不要替你答"
@@ -372,16 +375,17 @@ export function Composer({
           )}
           {busy ? (
             <>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={onStop}
-                title="停止"
-                aria-label="停止"
-                className="size-7 gap-0 bg-surface-3/75 p-0 hover:bg-surface-3"
-              >
-                <Square className="size-3 fill-current" />
-              </Button>
+              <Tooltip label="停止">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={onStop}
+                  aria-label="停止"
+                  className="size-7 gap-0 bg-surface-3/75 p-0 hover:bg-surface-3"
+                >
+                  <Square className="size-3 fill-current" />
+                </Button>
+              </Tooltip>
               <Button
                 variant="glass"
                 size="sm"

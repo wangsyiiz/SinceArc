@@ -33,6 +33,7 @@ import { TabStrip } from "@/components/TabStrip";
 import { ThinkingRow } from "@/components/ThinkingRow";
 import { TitleBar } from "@/components/TitleBar";
 import { TracePanel } from "@/components/TracePanel";
+import { Tooltip } from "@/components/ui/Tooltip";
 import {
   sessionStorageStats,
   sessionTrace,
@@ -1389,15 +1390,16 @@ export default function App() {
           className="sc-glass mx-1 mb-1 flex items-center gap-2 rounded-card px-3 py-1.5 text-caption text-danger-1"
         >
           <span className="min-w-0 flex-1 break-words">{settingsError}</span>
-          <button
-            type="button"
-            aria-label="关闭"
-            title="关闭"
-            onClick={() => setSettingsError(null)}
-            className="shrink-0 rounded-mark p-1 text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
-          >
-            <X className="size-3.5" />
-          </button>
+          <Tooltip label="关闭">
+            <button
+              type="button"
+              aria-label="关闭"
+              onClick={() => setSettingsError(null)}
+              className="shrink-0 rounded-mark p-1 text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+            >
+              <X className="size-3.5" />
+            </button>
+          </Tooltip>
         </div>
       )}
 
@@ -1571,7 +1573,7 @@ export default function App() {
                           /* 打开 → 可用这一段：骨架屏（原语自带 300ms 延迟，快的时候看不到）
                              + 一行阶段说明 —— 冷启动时连接可能要几秒，光有条在跳说不出在等什么 */
                           <div className="flex min-h-full flex-col items-center justify-center gap-2">
-                            <LoadingState kind="loading" title="正在打开会话" />
+                            <LoadingState kind="loading" heading="正在打开会话" />
                             <p className="text-caption text-ink-3">
                               {opening ? "正在读取会话历史…" : "正在连接 agent…"}
                             </p>

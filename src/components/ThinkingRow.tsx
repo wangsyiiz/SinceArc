@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import type { Activity, Player } from "@/types";
 import { PlayerAvatar } from "./PlayerAvatar";
 import { Button } from "./ui/Button";
+import { Tooltip } from "./ui/Tooltip";
 
 interface ThinkingRowProps {
   player: Player;
@@ -37,17 +38,18 @@ export function ThinkingRow({ player, activity, onOpenTrace, queued }: ThinkingR
             <span className="min-w-0 truncate font-mono text-micro text-ink-3">{activity.detail}</span>
           )}
 
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onOpenTrace}
-            className="ml-auto h-auto shrink-0 gap-1 rounded-mark px-1.5 py-1 text-caption"
-            style={{ color: player.color }}
-            title="在轨迹里定位这个动作"
-          >
-            <Waypoints className="size-3" />
-            轨迹
-          </Button>
+          <Tooltip label="在轨迹里定位这个动作">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onOpenTrace}
+              className="ml-auto h-auto shrink-0 gap-1 rounded-mark px-1.5 py-1 text-caption"
+              style={{ color: player.color }}
+            >
+              <Waypoints className="size-3" />
+              轨迹
+            </Button>
+          </Tooltip>
         </div>
       </div>
     </div>

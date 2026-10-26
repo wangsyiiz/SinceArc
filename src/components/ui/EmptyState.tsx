@@ -3,7 +3,7 @@ import { Button } from "./Button";
 
 export function EmptyState(props: {
   kind?: "empty" | "loading" | "error";
-  title: string;
+  heading: string;
   description?: string;
   action?: ReactNode;
   retryLabel?: string;
@@ -13,7 +13,7 @@ export function EmptyState(props: {
 }) {
   const {
     kind = "empty",
-    title,
+    heading,
     description,
     action,
     retryLabel = "重试",
@@ -37,7 +37,7 @@ export function EmptyState(props: {
     return (
       <div
         role="status"
-        aria-label={title}
+        aria-label={heading}
         className={
           compact
             ? "flex flex-col items-center gap-2 py-4"
@@ -64,7 +64,7 @@ export function EmptyState(props: {
       }
     >
       {icon}
-      <h2 className={kind === "error" ? "text-title font-medium text-danger-1" : "text-title font-medium text-ink-1"}>{title}</h2>
+      <h2 className={kind === "error" ? "text-title font-medium text-danger-1" : "text-title font-medium text-ink-1"}>{heading}</h2>
       {description && (
         <p className="max-w-md text-body text-ink-3">{description}</p>
       )}

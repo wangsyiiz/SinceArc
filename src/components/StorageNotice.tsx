@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { X } from "lucide-react";
 import type { StorageStatsDto } from "@/lib/ipc";
+import { Tooltip } from "./ui/Tooltip";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -39,15 +40,16 @@ export function StorageNotice({ stats }: { stats: StorageStatsDto | null }) {
           {/* 两个原因同时命中时这句只说一次 —— 重复两遍像复读机，也把气泡撑高。 */}
           <p>这些数据不会被自动删除。</p>
         </div>
-        <button
-          type="button"
-          aria-label="关闭存储提示"
-          title="关闭存储提示"
-          onClick={() => setDismissed(true)}
-          className="shrink-0 rounded-mark p-1 text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
-        >
-          <X className="size-3.5" />
-        </button>
+        <Tooltip label="关闭存储提示">
+          <button
+            type="button"
+            aria-label="关闭存储提示"
+            onClick={() => setDismissed(true)}
+            className="shrink-0 rounded-mark p-1 text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+          >
+            <X className="size-3.5" />
+          </button>
+        </Tooltip>
       </div>
     </aside>
   );

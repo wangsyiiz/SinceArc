@@ -2,6 +2,7 @@ import { FolderGit2, GitPullRequest, MessageSquare, Settings2, X } from "lucide-
 import type { Tab } from "@/types";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/Button";
+import { Tooltip } from "./ui/Tooltip";
 
 const ICON = {
   session: MessageSquare,
@@ -47,24 +48,25 @@ export function TabStrip({ tabs, activeId, badgeOf, onSelect, onClose }: TabStri
                 style={{ background: badgeOf(t) ?? undefined }}
               />
             )}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={(e) => {
-                e.stopPropagation();
-                onClose(t.id);
-              }}
-              aria-label="关闭"
-              title="关闭"
-              className={cn(
-                "ml-0.5 size-4 shrink-0 gap-0 rounded-mark p-0",
-                active
-                  ? "opacity-60 hover:opacity-100"
-                  : "opacity-0 group-hover:opacity-60 hover:opacity-100",
-              )}
-            >
-              <X className="size-2.5" />
-            </Button>
+            <Tooltip label="关闭">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose(t.id);
+                }}
+                aria-label="关闭"
+                className={cn(
+                  "ml-0.5 size-4 shrink-0 gap-0 rounded-mark p-0",
+                  active
+                    ? "opacity-60 hover:opacity-100"
+                    : "opacity-0 group-hover:opacity-60 hover:opacity-100",
+                )}
+              >
+                <X className="size-2.5" />
+              </Button>
+            </Tooltip>
           </button>
         );
       })}

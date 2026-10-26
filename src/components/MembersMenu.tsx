@@ -10,6 +10,7 @@ import {
 } from "@/lib/ipc";
 import { profileLabel } from "@/lib/format";
 import type { AgentProfile } from "@/types";
+import { Tooltip } from "./ui/Tooltip";
 
 /**
  * 群成员入口：把 Agent User 拉进当前会话（docs/group-chat.md §1）。
@@ -109,19 +110,21 @@ export function MembersMenu({
 
   return (
     <div ref={ref} className="relative">
-      <button
-        ref={btnRef}
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        title="群成员：拉人进这个会话"
-        className={cn(
-          "grid size-7 place-items-center rounded-full border border-dashed border-line-1/70 text-ink-3 transition-colors",
-          "hover:border-line-1 hover:text-ink-1",
-          open && "border-solid text-ink-1",
-        )}
-      >
-        <Plus size={13} />
-      </button>
+      <Tooltip label="群成员：拉人进这个会话">
+        <button
+          ref={btnRef}
+          type="button"
+          aria-label="群成员：拉人进这个会话"
+          onClick={() => setOpen((v) => !v)}
+          className={cn(
+            "grid size-7 place-items-center rounded-full border border-dashed border-line-1/70 text-ink-3 transition-colors",
+            "hover:border-line-1 hover:text-ink-1",
+            open && "border-solid text-ink-1",
+          )}
+        >
+          <Plus size={13} />
+        </button>
+      </Tooltip>
 
       {open && (
         <div

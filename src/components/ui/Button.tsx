@@ -60,7 +60,7 @@ export const Button: React.FC<ButtonProps> = ({
       {...props}
       ref={ref}
       type={type ?? "button"}
-      title={title ?? disabledReason}
+      title={title}
       aria-busy={loading || undefined}
       className={cn(buttonStyles({ variant, size }), danger && "text-danger-1", className)}
     >

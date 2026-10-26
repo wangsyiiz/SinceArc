@@ -10,7 +10,7 @@ interface WorkspaceEmptyProps {
 export function WorkspaceEmpty({ onNewSession }: WorkspaceEmptyProps) {
   return (
     <EmptyState
-      title="没有打开的标签"
+      heading="没有打开的标签"
       icon={
         <div className="relative grid size-32 place-items-center">
           <div className="sc-orbit absolute inset-0 rounded-full border border-dashed border-line-1/40" />
