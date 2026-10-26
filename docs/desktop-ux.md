@@ -694,6 +694,8 @@ MessageItem                  text.agent 分支改 <Markdown source={displayed} /
 - **链接**：色 `--a1` + 下划线（§1.4 指定 `a1` = 链接），hover 只在令牌内变化，不放大、不改色相；
 - **禁止**：任何十六进制 / `rgb()` / `hsl()` 字面量与任意值（`border-radius: 10px`、
   `padding: 14px` 这种散值一律换成 `var(--radius-*)` 或档位内的值）。
+- **例外**：**代码块整体**不受本节约束 —— 底色、边框、圆角、内边距、字族/字号/行高与 token 配色
+  都归代码主题（§20），本节关于代码块的那一条已作废。行内代码**不**在豁免范围。
 
 ### 15.5 已知行为（查过了，不是我们代码的缺陷）
 
@@ -836,8 +838,11 @@ Hint 把它们收进一个「i」入口，让版面只留结论。组件名与�
 | shiki core + oniguruma | 949 KB / 286 KB + wasm 455 KB | 44.5 ms | token 树 | 否：体积与耗时都不值 |
 
 决定性理由不是「Prism 最流行」（它不是，周下载 21.3M 低于 highlight.js 的 24.1M），而是两条：
-① 它原生给 **token 树**，我们全程不碰 `dangerouslySetInnerHTML`；② **设计语言是暗色单色**，
-shiki 的主题保真度我们本来就要推翻，配色必须自己写 —— 那么主题优势抵消，只剩体积与耗时代价。
+① 它原生给 **token 树**，我们全程不碰 `dangerouslySetInnerHTML`；② 体积与耗时最省
+（shiki 的 JS 引擎 126 ms、oniguruma 44 ms + 455 KB wasm，都不可接受）。
+
+> 2026-10-26 修正：当时还写了「设计语言是暗色单色、配色必须自己写」—— **该理由已作废**。
+> 代码块配色现在走成熟代码主题并**豁免**单色设计语言，见 §20。
 
 ### 18.2 抽象层（换库只改一个文件）
 
@@ -849,7 +854,8 @@ src/lib/highlight/prism.ts    适配器：Prism token 树 → 语义档位；语
 - 调用方**不许**直接 `import prismjs`；只认 `Highlighter.tokenize(code, lang) → TokenSpan[]`。
 - `HighlightTheme` 只有九档：`plain / comment / keyword / string / number / literal / function / type / operator / punct`。
   新增档位要改契约，不许在适配器里私造。
-- 配色表在我们这层（映射到 `--ink-1/2/3` 与 accent 令牌），**库的主题一律不用**。
+- 配色表在我们这层：`src/lib/highlight/themes.ts` 提供多套代码主题（见 §20），
+  **不套用库自带的主题对象**，也**不受单色设计语言约束**。
 
 ### 18.3 语言集与降级
 
@@ -907,3 +913,77 @@ src/lib/virtual/useVirtualList.ts
 2. 首屏可见时间、滚动帧 p50/p95/max、DOM 行数、内存（`performance.memory` 或任务管理器）；
 3. 贴底跟随、上翻不劫持、上方变高锚点恢复、历史加载保位 四项各一条读数；
 4. 轨迹面板同样走同一套 hook（第二个调用方），不许复制一份窗口逻辑。
+
+## 20. 代码配色主题：markdown 代码块豁免单色设计语言（2026-10-26 所有者拍板）
+
+### 20.1 为什么豁免
+
+代码块是**阅读界面**，不是产品的视觉资产：配色只要影响「能否一眼分出关键字 / 字符串 / 注释 / 数字」。
+市面上的成熟主题经过大量真实代码验证，我们自造的灰阶映射反而把可读性做没了（实测字符串与正文
+同色 `#f6f6f6`，九档里只有注释和数字能看出差别）。所以：
+
+- **整个 markdown 代码块豁免设计语言**：容器背景、边框与圆角、内边距、字族 / 字号 / 行高，
+  以及九档 token 配色，全部由代码块自己的样式与代码主题决定，**不再引用 `--radius-*` / `--s*` /
+  `--fs-*` 这些令牌**（`docs/design-language.md` §1.12 记例外）；
+- 例外的**边界是「代码」本身**：围栏代码块 + 行内 code 之外的任何元素（正文、表格、引用、链接、
+  按钮…）仍只用设计语言令牌；
+- **行内 `code` 也走代码主题**（2026-10-26 所有者口径）：前景用主题的 `plain` 色，底色用主题的
+  代码底色，边线由主题前景色派生（不做 token 化 —— 行内片段脱离上下文猜语言只会错）。
+  一句话口径：**凡「是代码」的地方都用代码主题配色；不是代码的地方一律走设计语言**；
+- 几何（圆角 / 内边距 / 字号 / 行高）在四套主题之间**保持一致**：主题只负责配色，避免同一产品里
+  换个配色块形状就跳变。几何值集中写在 `src/styles.css` 的代码块变量里（`--code-radius` /
+  `--code-pad-x` / `--code-pad-y` / `--code-font-size` / `--code-line-height`），不挂设计语言令牌。
+
+### 20.2 契约
+
+```ts
+// src/lib/highlight/themes.ts
+type CodeThemeId = "github-dark" | "one-dark" | "dracula" | "nord";
+type CodeTheme = {
+  id: CodeThemeId;
+  label: string;            // 设置页显示名
+  background: string;       // 代码块底色，只允许 #rrggbb
+  colors: Record<TokenKind, string>;  // 九档全部要给，缺一档即视为非法
+};
+```
+
+- 九档与 §18.2 的 `HighlightTheme` 完全一致，**不新增档位**；
+- 色值只允许 `#rrggbb`（不许 `rgb()` / `hsl()` / 令牌引用）——主题表要能被单测逐条校验；
+- 首批四套（取自公开配色，不自创）：**github-dark（默认）/ one-dark / dracula / nord**；
+- 主题**只改颜色，不改 token 化流程**：仍是 Prism 出 token 树、我们逐 span 渲染，全程不碰
+  `dangerouslySetInnerHTML`。
+
+### 20.3 落地点
+
+- 根节点属性 `data-code-theme="<id>"`；`src/styles.css` 在 `[data-code-theme="…"]` 下定义
+  `--code-plain/--code-comment/--code-keyword/--code-string/--code-number/--code-literal/
+  --code-function/--code-type/--code-operator/--code-punct/--code-bg`；
+  `.sc-prose [data-token="…"]` 只引用变量，**组件里不出现色值**。
+- 设置项 `code_theme`（字符串 id）走既有 settings kv；未知 id 或读不到 → 回落 `github-dark`（默认）。
+- 行内 `code`：`color: var(--code-plain)`、`background: var(--code-bg)`、`border: 1px solid
+  var(--code-inline-border)`（`--code-inline-border` 由主题前景色派生，如
+  `color-mix(in srgb, var(--code-plain) 18%, transparent)`），圆角取 `--code-radius`；不再用 `--s3`/`--l1`。
+- 设置页「外观」分区加一行：四选一（分段控件），**切换即时生效**，不要求重开会话或重启。
+- 代码块底色取 `--code-bg`；圆角、内边距、字号/行高取代码块自己的变量（§20.1 最后一条），**不再**引用
+  `--radius-card` / `--fs-small` / 间距档。
+
+### 20.4 边界
+
+- 未标注语言 / 未知语言 / > 500 行降级的块：仍渲染纯文本，颜色用 `--code-plain`（不保留上一块的颜色）；
+- 浅色应用主题下代码块**不自动换主题**（用户选的是代码配色，与 app 主题正交）；代码块底色由主题自己给，
+  因此浅色主题下深色代码块是预期形态；
+- 主题不参与「视觉身份」评审：新增第五套只加一个 `CodeTheme` 对象 + 一行 CSS 变量，
+  除非改动 `TokenKind` 档位，否则不需要改规范。
+
+### 20.5 验收（DOM 数值，不看图）
+
+1. 四套主题各自切换后，同一 TS 块九档 token 的 computed color 与主题表**逐条相等**（列表比对，允许差 0）；
+2. 切换主题前后抽样比对**代码块之外**的元素（正文段落、表格、行内 code、按钮）computed color：**无变化**；
+3. 未标注语言的块无 token span，颜色 = 该主题 `plain`；
+4. 设置持久化：切换 → 重启应用 → 仍是上次选的主题；把 kv 写成未知 id → 回落 `github-dark`；
+5. 单测：四套主题都覆盖九档、色值合法（`^#[0-9a-f]{6}$`）、id 唯一；缺档位时构造即失败；
+6. `dangerouslySetInnerHTML` 全仓仍 0 处；
+7. 行内 code 的 computed color 等于当前主题 `plain`、底色等于当前主题 `background`，且**不再等于**
+   `--s3` / `--i1` 那套值；
+8. code block 的 `border-radius` / `padding` / `font-size` / `line-height` / 背景在四套主题间**完全相同**
+   （只有颜色不同），且 `.sc-prose pre` 的样式声明里**不再出现** `--radius-* / --s0..s3 / --fs-*` 令牌。

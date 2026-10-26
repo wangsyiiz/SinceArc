@@ -2,6 +2,7 @@ import type { SettingsReport as SettingsReportDto } from "../types.gen";
 import type { AutoApproveLevel } from "@/lib/auto-approve";
 import type { ThemeMode, ThreadSettings } from "@/types";
 import { invokeCmd } from "../client";
+import { normalizeCodeThemeId } from "@/lib/highlight/themes";
 
 const THEMES: readonly string[] = ["dark", "light", "system"];
 
@@ -33,6 +34,7 @@ export async function settingsLoad(): Promise<{
       autoApproveDefault: asAutoApprove(report.settings.autoApproveDefault),
       mcpInheritDefault: report.settings.mcpInheritDefault,
       tweenEnabled: report.settings.tweenEnabled,
+      codeTheme: normalizeCodeThemeId(report.settings.codeTheme),
     },
     issues: report.issues,
   };

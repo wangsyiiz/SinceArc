@@ -18,6 +18,7 @@ import { MemberDetailPanel } from "@/components/MemberDetailPanel";
 import { MAIN_AGENT_ID } from "@/hooks/usePrompt";
 import { autoApproveCovered, type AutoApproveLevel } from "@/lib/auto-approve";
 import { settingsKey } from "@/lib/settings-key";
+import { normalizeCodeThemeId } from "@/lib/highlight/themes";
 import { profileLabel } from "@/lib/format";
 import { pushSystemNotice } from "@/lib/notices";
 import { delegateCancelFailureMessage, type DelegatePhase } from "@/lib/delegate-status";
@@ -129,6 +130,9 @@ export default function App() {
    */
   const savedSettings = useRef(settingsKey(DEFAULT_THREAD_SETTINGS));
   useTheme(settings.theme);
+  useEffect(() => {
+    document.documentElement.dataset.codeTheme = normalizeCodeThemeId(settings.codeTheme);
+  }, [settings.codeTheme]);
   useScrollFade();
   const [mode, setMode] = useState<SidebarMode>("sessions");
   const [traceOpen, setTraceOpen] = useState(false);
@@ -1809,6 +1813,9 @@ export default function App() {
               }
               onChangeTweenEnabled={(tweenEnabled) =>
                 setSettings((s) => ({ ...s, tweenEnabled }))
+              }
+              onChangeCodeTheme={(codeTheme) =>
+                setSettings((s) => ({ ...s, codeTheme }))
               }
             />
           )}

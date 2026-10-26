@@ -26,6 +26,7 @@ import type {
 import { CONTEXT_MESSAGES_DEFAULT, CONTEXT_MESSAGES_MAX } from "@/types";
 import { cn } from "@/lib/utils";
 import { newId } from "@/lib/ids";
+import { CODE_THEMES, type CodeThemeId } from "@/lib/highlight/themes";
 import {
   canSaveConnection,
   createEmptyConnection,
@@ -95,6 +96,8 @@ interface SettingsViewProps {
   onChangeMcpInheritDefault: (value: boolean) => void;
   /** 流式回答是否按到达节奏平滑推进（只影响渲染层） */
   onChangeTweenEnabled: (value: boolean) => void;
+  /** markdown 代码块配色（独立于界面主题） */
+  onChangeCodeTheme: (value: CodeThemeId) => void;
   /** agent 发现（docs/discovery.md）：缓存结果、是否在扫、手动重扫 */
   discovery?: DiscoveryOutcome | null;
   discoveryScanning?: boolean;
@@ -123,6 +126,11 @@ const THEME_OPTIONS = THEMES.map((theme) => ({
   value: theme.id,
   label: theme.label,
   icon: THEME_ICONS[theme.id],
+}));
+
+const CODE_THEME_OPTIONS = CODE_THEMES.map((theme) => ({
+  value: theme.id,
+  label: theme.label,
 }));
 
 const DISCARD_UNSAVED_HEADING = "放弃未保存的修改";
@@ -274,6 +282,7 @@ export function SettingsView({
   onChangeAutoApproveDefault,
   onChangeMcpInheritDefault,
   onChangeTweenEnabled,
+  onChangeCodeTheme,
   discovery = null,
   discoveryScanning = false,
   discoveryError = null,
@@ -1331,6 +1340,20 @@ export function SettingsView({
                           options={THEME_OPTIONS}
                           value={theme}
                           onChange={onCycleTheme}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-6 py-4">
+                        <div className="min-w-0">
+                          <span className="text-ui text-ink-1">代码配色</span>
+                          <p className="mt-1 text-caption text-ink-3">
+                            代码配色独立于界面主题；只作用于代码（代码块与行内 code）
+                          </p>
+                        </div>
+                        <Segmented
+                          ariaLabel="代码配色"
+                          options={CODE_THEME_OPTIONS}
+                          value={settings.codeTheme}
+                          onChange={onChangeCodeTheme}
                         />
                       </div>
                       <div className="flex items-center justify-between gap-6 py-4">

@@ -17,7 +17,8 @@ use crate::acp::AgentCaps;
 use serde::{Deserialize, Serialize};
 
 use crate::commands::{
-    is_valid_auto_approve, is_valid_theme, AppSettingsDto, ProfileDto, CONTEXT_MESSAGES_MAX,
+    is_valid_auto_approve, is_valid_code_theme, is_valid_theme, normalize_code_theme,
+    AppSettingsDto, ProfileDto, CONTEXT_MESSAGES_MAX, DEFAULT_CODE_THEME,
 };
 
 mod migrations;
@@ -29,6 +30,7 @@ const SETTINGS_KEY_THEME: &str = "theme";
 const SETTINGS_KEY_AUTO_APPROVE: &str = "autoApproveDefault";
 const SETTINGS_KEY_MCP_INHERIT_DEFAULT: &str = "mcp_inherit_default";
 const SETTINGS_KEY_TWEEN: &str = "tween_enabled";
+const SETTINGS_KEY_CODE_THEME: &str = "code_theme";
 
 /// 结构版本：与 schema.sql 不符时整表重建（自用工具，会话数据可再生）
 const SCHEMA_VERSION: i64 = 6;
@@ -996,6 +998,18 @@ impl Db {
                         issues.push(note);
                     }
                 },
+                SETTINGS_KEY_CODE_THEME if is_valid_code_theme(&value) => {
+                    settings.code_theme = value
+                }
+                SETTINGS_KEY_CODE_THEME => {
+                    settings.code_theme = DEFAULT_CODE_THEME.into();
+                    let note = format!(
+                        "设置项 {key} 的值 `{value}` 不认识（应为 github-dark/one-dark/dracula/nord），已用默认值 {}",
+                        settings.code_theme
+                    );
+                    tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
+                    issues.push(note);
+                }
                 _ => {}
             }
         }
@@ -1036,6 +1050,14 @@ impl Db {
             "INSERT INTO settings(key, value) VALUES(?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![SETTINGS_KEY_TWEEN, settings.tween_enabled.to_string()],
+        )?;
+        tx.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![
+                SETTINGS_KEY_CODE_THEME,
+                normalize_code_theme(&settings.code_theme)
+            ],
         )?;
         tx.commit()
     }
@@ -2533,6 +2555,37 @@ mod tests {
         assert_eq!(settings.auto_approve_default, "off");
         assert!(settings.mcp_inherit_default);
         assert!(settings.tween_enabled);
+        assert_eq!(settings.code_theme, DEFAULT_CODE_THEME);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn settings_code_theme_defaults_to_github_dark() {
+        let (db, path) = temp_db();
+        assert_eq!(
+            db.load_settings().expect("load settings").code_theme,
+            "github-dark"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn settings_invalid_code_theme_reads_back_as_default() {
+        let (db, path) = temp_db();
+        db.save_settings(&AppSettingsDto {
+            context_messages: 5,
+            theme: "dark".into(),
+            auto_approve_default: "off".into(),
+            mcp_inherit_default: true,
+            tween_enabled: true,
+            code_theme: "solarized".into(),
+        })
+        .expect("save settings");
+        assert_eq!(
+            db.load_settings().expect("load settings").code_theme,
+            "github-dark",
+            "非法 id 写库时要先归一"
+        );
         std::fs::remove_file(&path).ok();
     }
 
@@ -2545,6 +2598,7 @@ mod tests {
             auto_approve_default: "edits".into(),
             mcp_inherit_default: false,
             tween_enabled: false,
+            code_theme: "github-dark".into(),
         })
         .expect("save settings");
 
@@ -2629,6 +2683,7 @@ mod tests {
             auto_approve_default: "off".into(),
             mcp_inherit_default: true,
             tween_enabled: true,
+            code_theme: "github-dark".into(),
         })
         .expect("save settings");
         let loaded = db.load_settings().expect("load settings");
@@ -2677,6 +2732,7 @@ mod tests {
             auto_approve_default: "off".into(),
             mcp_inherit_default: true,
             tween_enabled: true,
+            code_theme: "github-dark".into(),
         })
         .expect("save settings");
         let (_, clean) = db.load_settings_report().expect("load report");
@@ -2700,6 +2756,7 @@ mod tests {
             auto_approve_default: "off".into(),
             mcp_inherit_default: false,
             tween_enabled: false,
+            code_theme: "github-dark".into(),
         })
         .expect("save settings");
 
@@ -2731,6 +2788,7 @@ mod tests {
             auto_approve_default: "off".into(),
             mcp_inherit_default: false,
             tween_enabled: false,
+            code_theme: "github-dark".into(),
         })
         .expect("save settings");
 
