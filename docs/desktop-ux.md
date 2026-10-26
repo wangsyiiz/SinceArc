@@ -743,7 +743,7 @@ MessageItem                  text.agent 分支改 <Markdown source={displayed} /
 | 触屏 | `pointerType === "touch"` 不开 | 触屏没有 hover，弹出来就是挡内容 |
 | 定位 | 默认在锚点**上方**（间距 6px），放不下翻下方，水平夹进视口 | 与 HoverCard 相反：tip 是短提示，优先不挡被说明的控件下方内容 |
 | 挂载 | `position: fixed` + `createPortal(document.body)` | 面板里有 `backdrop-filter` 与 `overflow-hidden`，不 portal 会被裁/糊 |
-| 外观 | `.sc-glass` + `radius-mark`(6) + `text-caption`；内边距 6/8；最大宽 **280px**，可换行 | 圆角比卡片小一档：tip 不是卡片 |
+| 外观 | **平铺**：`--s2` 实心面 + 1px `--l1` 边框（**不用** `.sc-glass`、无内边缘高光、无外投影）+ `radius-mark`(6) + `text-caption`；内边距 6/8；最大宽 **280px**，可换行 | 圆角比卡片小一档：tip 不是卡片；提示要「被看见」，所以在暗色下破例给边框（§1.8 已记） |
 | 无障碍 | `role="tooltip"`、`aria-describedby` 指向浮层 id | 读屏能读到；同时**不许**再挂 `title` 兜底（两套提示同时出现是最难看的状态） |
 
 ### 16.2 内容边界（决定用哪个原语）

@@ -203,7 +203,7 @@ export function useTooltip({ label }: { label: string }): {
           ref={tooltipRef}
           id={tooltipId}
           role="tooltip"
-          className="sc-tooltip sc-glass text-caption text-ink-2"
+          className="sc-tooltip text-caption text-ink-2"
           style={{
             position: "fixed",
             top: position?.top ?? 0,

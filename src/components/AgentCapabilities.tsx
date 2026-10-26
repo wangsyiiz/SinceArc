@@ -4,7 +4,6 @@ import { capsRows, type CapsGroup } from "@/lib/caps-format";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import { cn } from "@/lib/utils";
 import { useAnchoredLayer } from "./ui/Menu";
-import { Tooltip } from "./ui/Tooltip";
 
 interface AgentCapabilitiesProps {
   profile: AgentProfile | undefined;
@@ -61,7 +60,7 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
 
   return (
     <div className="relative">
-      {profile?.agentName ? <Tooltip label={profile.agentName}>{trigger}</Tooltip> : trigger}
+      {trigger}
 
       {open && (
         <div
