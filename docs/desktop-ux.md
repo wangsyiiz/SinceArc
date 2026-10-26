@@ -659,4 +659,9 @@ MessageItem                  text.agent 分支改 <Markdown source={displayed} /
 ### 15.3 不做 / 待定
 
 - 不做：语法规格高亮、脚注、数学公式、图片外链自动加载、内嵌 HTML。
-- 待所有者拍：要不要装 `tauri-plugin-opener` 让外链真能在系统浏览器打开（当前是「点击复制」）。
+- 待所有者拍：外链打开方式（当前「点击复制」；`Ctrl+点击` 走系统浏览器需要一条打开通道，见下）。
+- **后续安排 · @handle 高亮**：markdown 接管正文渲染后，`text.agent` 分支不再对 `@短名` 着色
+  （`renderText` 只保留在用户 / 系统 / 派活卡等纯文本分支）。要做的话落点是 markdown 的内联层：
+  在处理 `text` token 时按已知短名拼 alternation 再切分成多个内联片段（长名优先，避免
+  `@hermes-测试2` 被 `@hermes-测试` 抢先匹配），而不是回到整段字符串替换。**不在本批范围**，
+  等正文里真的经常出现 @ 再排。
