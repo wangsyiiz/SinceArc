@@ -16,6 +16,7 @@ import { normaliseTurnId } from "@/lib/turn-align";
 import { useTweenedText } from "@/hooks/useTweenedText";
 import { PlayerAvatar } from "./PlayerAvatar";
 import { RemovedBadge } from "./RemovedBadge";
+import { Markdown } from "./Markdown";
 
 /**
  * 把 @handle 渲染成该玩家的颜色。
@@ -196,13 +197,8 @@ export function MessageItem({
             </button>
           )}
         </div>
-        <div
-          className={cn(
-            "sc-prose whitespace-pre-wrap text-ui text-ink-1",
-            message.streaming && "sc-caret",
-          )}
-        >
-          {renderText(displayed, players)}
+        <div className="text-ui text-ink-1">
+          <Markdown source={displayed} caret={message.streaming === true} />
         </div>
         {/* 中途停下要留痕：否则用户只看到「回答没了后半段」，不知道是停了还是断了 */}
         {message.stopped && (
