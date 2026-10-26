@@ -991,9 +991,9 @@ type CodeTheme = {
 4. 设置持久化：切换 → 重启应用 → 仍是上次选的主题；把 kv 写成未知 id → 回落 `github-dark`；
 5. 单测：四套主题都覆盖九档、色值合法（`^#[0-9a-f]{6}$`）、id 唯一；缺档位时构造即失败；
 6. `dangerouslySetInnerHTML` 全仓仍 0 处；
-9. 五套主题的缩略图里，样例代码每档 `data-token` 的 computed color 与该主题表**逐档相等**，
-   选中态与 `aria-checked` 同步，方向键可切换；
 7. 行内 code 的 computed color 等于当前主题 `plain`、底色等于当前主题 `background`，且**不再等于**
    `--s3` / `--i1` 那套值；
-8. code block 的 `border-radius` / `padding` / `font-size` / `line-height` / 背景在四套主题间**完全相同**
+8. code block 的 `border-radius` / `padding` / `font-size` / `line-height` / 背景在**各主题间完全相同**
    （只有颜色不同），且 `.sc-prose pre` 的样式声明里**不再出现** `--radius-* / --s0..s3 / --fs-*` 令牌。
+9. 五套主题的缩略图里，样例代码每档 `data-token` 的 computed color 与该主题表**逐档相等**，
+   选中态与 `aria-checked` 同步，方向键可切换；
