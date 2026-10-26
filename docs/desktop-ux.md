@@ -925,8 +925,11 @@ src/lib/virtual/useVirtualList.ts
 - **整个 markdown 代码块豁免设计语言**：容器背景、边框与圆角、内边距、字族 / 字号 / 行高，
   以及九档 token 配色，全部由代码块自己的样式与代码主题决定，**不再引用 `--radius-*` / `--s*` /
   `--fs-*` 这些令牌**（`docs/design-language.md` §1.12 记例外）；
-- 例外的**边界只到代码块**：代码块之外的任何元素（正文、表格、引用、链接、按钮…）仍只用设计语言令牌；
-- 行内 `code` **不**在豁免范围：仍只给底色与圆角，不套 token 色（否则正文里的零碎词会花掉）；
+- 例外的**边界是「代码」本身**：围栏代码块 + 行内 code 之外的任何元素（正文、表格、引用、链接、
+  按钮…）仍只用设计语言令牌；
+- **行内 `code` 也走代码主题**（2026-10-26 所有者口径）：前景用主题的 `plain` 色，底色用主题的
+  代码底色，边线由主题前景色派生（不做 token 化 —— 行内片段脱离上下文猜语言只会错）。
+  一句话口径：**凡「是代码」的地方都用代码主题配色；不是代码的地方一律走设计语言**；
 - 几何（圆角 / 内边距 / 字号 / 行高）在四套主题之间**保持一致**：主题只负责配色，避免同一产品里
   换个配色块形状就跳变。几何值集中写在 `src/styles.css` 的代码块变量里（`--code-radius` /
   `--code-pad-x` / `--code-pad-y` / `--code-font-size` / `--code-line-height`），不挂设计语言令牌。
@@ -957,6 +960,9 @@ type CodeTheme = {
   --code-function/--code-type/--code-operator/--code-punct/--code-bg`；
   `.sc-prose [data-token="…"]` 只引用变量，**组件里不出现色值**。
 - 设置项 `code_theme`（字符串 id）走既有 settings kv；未知 id 或读不到 → 回落 `github-dark`（默认）。
+- 行内 `code`：`color: var(--code-plain)`、`background: var(--code-bg)`、`border: 1px solid
+  var(--code-inline-border)`（`--code-inline-border` 由主题前景色派生，如
+  `color-mix(in srgb, var(--code-plain) 18%, transparent)`），圆角取 `--code-radius`；不再用 `--s3`/`--l1`。
 - 设置页「外观」分区加一行：四选一（分段控件），**切换即时生效**，不要求重开会话或重启。
 - 代码块底色取 `--code-bg`；圆角、内边距、字号/行高取代码块自己的变量（§20.1 最后一条），**不再**引用
   `--radius-card` / `--fs-small` / 间距档。
@@ -977,5 +983,7 @@ type CodeTheme = {
 4. 设置持久化：切换 → 重启应用 → 仍是上次选的主题；把 kv 写成未知 id → 回落 `github-dark`；
 5. 单测：四套主题都覆盖九档、色值合法（`^#[0-9a-f]{6}$`）、id 唯一；缺档位时构造即失败；
 6. `dangerouslySetInnerHTML` 全仓仍 0 处；
-7. code block 的 `border-radius` / `padding` / `font-size` / `line-height` / 背景在四套主题间**完全相同**
+7. 行内 code 的 computed color 等于当前主题 `plain`、底色等于当前主题 `background`，且**不再等于**
+   `--s3` / `--i1` 那套值；
+8. code block 的 `border-radius` / `padding` / `font-size` / `line-height` / 背景在四套主题间**完全相同**
    （只有颜色不同），且 `.sc-prose pre` 的样式声明里**不再出现** `--radius-* / --s0..s3 / --fs-*` 令牌。
