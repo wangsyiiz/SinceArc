@@ -172,6 +172,7 @@ pub fn run() {
             commands::session_load,
             commands::ipc_subscribe,
             commands::session_trace,
+            commands::session_trace_backfill,
             commands::session_storage_stats,
             commands::agent_connect,
             commands::agent_disconnect,

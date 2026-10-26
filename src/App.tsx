@@ -36,7 +36,9 @@ import { TracePanel } from "@/components/TracePanel";
 import {
   sessionStorageStats,
   sessionTrace,
+  sessionTraceBackfill,
   type StorageStatsDto,
+  type TraceBackfillDto,
   type TraceTurnDto,
 } from "@/lib/ipc";
 import { toTraceView } from "@/lib/trace-adapter";
@@ -128,6 +130,13 @@ export default function App() {
   const storageStatsSessionRef = useRef<string | null>(null);
   /** 派活这类「不改 busy 但改了轨迹」的写入靠它触发重读（后端写完事件敲 session.trace） */
   const [traceTick, setTraceTick] = useState(0);
+  const [traceBackfill, setTraceBackfill] = useState<{
+    sessionId: string | null;
+    running: boolean;
+    result: TraceBackfillDto | null;
+    /** 命令失败时说人话的原因（50300 表示连接已断） */
+    error: string | null;
+  }>({ sessionId: null, running: false, result: null, error: null });
   const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
   const [traceLocate, setTraceLocate] = useState<{ turnId: string; tick: number } | null>(null);
   const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
@@ -883,6 +892,45 @@ export default function App() {
 
   const traceView = useMemo(() => toTraceView(traceTurns), [traceTurns]);
 
+  const backfillProfileId = activeSession?.profileId ?? sessionProfile?.id ?? null;
+  // 连接态不在这里判断：`sessionsByProfile` 的语义是「这条连接当前的会话」，拿它当展示/投递数据源
+  // 违反 data-plane.md §2（守卫测试会红）。没连接时命令返回 50300，界面把码翻成人话即可。
+  const canRunTraceBackfill =
+    !!backfillProfileId && !!activeAcpSid && !!cwd && !state.busy && !traceBackfill.running;
+
+  const runTraceBackfill = useCallback(async () => {
+    const targetSessionId = lastSessionId;
+    const profileId = activeSession?.profileId ?? sessionProfile?.id;
+    if (!profileId || !activeAcpSid || !cwd) return;
+    setTraceBackfill({ sessionId: targetSessionId, running: true, result: null, error: null });
+    try {
+      const result = await sessionTraceBackfill(
+        profileId,
+        activeAcpSid,
+        targetSessionId,
+        cwd,
+      );
+      setTraceBackfill({ sessionId: targetSessionId, running: false, result, error: null });
+      setTraceTick((tick) => tick + 1);
+    } catch (e) {
+      const message = String((e as { msg?: string })?.msg ?? e);
+      setTraceBackfill((current) =>
+        current.sessionId === targetSessionId
+          ? { ...current, running: false, error: message }
+          : current,
+      );
+      diag(`TRACE-BACKFILL-ERR ui=${targetSessionId} ${message}`);
+      clog("TRACE-BACKFILL-ERR", message);
+    }
+  }, [
+    activeAcpSid,
+    activeSession?.profileId,
+    cwd,
+    diag,
+    lastSessionId,
+    sessionProfile?.id,
+  ]);
+
   /** 轨迹 → 正文：滚到该轮第一条消息，并短暂用 accent 环标一下。 */
   const locateMessage = useCallback((messageId: string) => {
     const root = scrollRef.current;
@@ -1284,6 +1332,16 @@ export default function App() {
           activities={traceView.activities}
           players={players}
           resumeGap={resumeGap}
+          backfill={{
+            canRun: canRunTraceBackfill,
+            running: traceBackfill.running,
+            result:
+              traceBackfill.sessionId === lastSessionId ? traceBackfill.result : null,
+            error: traceBackfill.sessionId === lastSessionId ? traceBackfill.error : null,
+            onRun: () => {
+              void runTraceBackfill();
+            },
+          }}
           onClose={() => {
             setTraceOpen(false);
             setFocus(null);

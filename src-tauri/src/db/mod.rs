@@ -180,6 +180,17 @@ pub struct EventInput {
     pub truncated: bool,
 }
 
+/// 一条待补录的重放轨迹。`id` / `at` 由命令层确定，DB 不重新生成。
+pub struct ReplayAtom {
+    pub id: String,
+    pub at: i64,
+    pub kind: String,
+    pub payload_json: String,
+    pub refs: Option<serde_json::Value>,
+    pub ext: Option<serde_json::Value>,
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventRow {
@@ -591,6 +602,16 @@ fn merge_ext_json(existing: Option<&str>, incoming: Option<&serde_json::Value>) 
 
 fn json_string(value: &Option<serde_json::Value>) -> Option<String> {
     value.as_ref().map(serde_json::Value::to_string)
+}
+
+/// 补录原子统一带 provenance 标记；捕获事件自己的 ext 键原样保留。
+fn replay_ext_json(captured: Option<&serde_json::Value>) -> String {
+    let mut object = captured
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    object.insert("x.replay".to_string(), serde_json::Value::Bool(true));
+    serde_json::Value::Object(object).to_string()
 }
 
 /// M2b open 行：id / payload / truncated / refs_json / ext_json。
@@ -1866,6 +1887,104 @@ impl Db {
         touch_handle_seq_on(&tx, session_id, None, seq)?;
         tx.commit()?;
         Ok(events.len())
+    }
+
+    /// 该补录批次是否已经落过（批次哈希 = 轮 id 的后缀）。
+    pub fn replay_turn_exists(&self, session_id: &str, turn_id: &str) -> rusqlite::Result<bool> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM turns WHERE session_id = ?1 AND id = ?2",
+            params![session_id, turn_id],
+            |r| r.get(0),
+        )?;
+        Ok(exists > 0)
+    }
+
+    /// 合成一条补录轮。重放没有真实轮次，但轨迹必须挂在轮下；
+    /// 同 id 已存在时直接跳过（重复补录不报错，也不改已有轮）。
+    pub fn insert_replay_turn(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        started_at: i64,
+        ended_at: i64,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "INSERT OR IGNORE INTO turns
+               (id, session_id, prompt, prompt_atom_id, author_id,
+                started_at, ended_at, status, stop_reason)
+             VALUES (?1, ?2, '', NULL, NULL, ?3, ?4, 'finished', 'end_turn')",
+            params![turn_id, session_id, started_at, ended_at],
+        )?;
+        Ok(())
+    }
+
+    /// 逐条写入补录轨迹。`seq` 在同一个写锁/事务里接在本会话轨迹最大 seq 之后；
+    /// `ON CONFLICT(id) DO NOTHING` 保证已有 live 行绝不会被 replay 覆盖。
+    /// 返回 `(added, skipped)`。
+    pub fn append_replay_atoms(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        atoms: &[ReplayAtom],
+    ) -> rusqlite::Result<(i64, i64)> {
+        if atoms.is_empty() {
+            return Ok((0, 0));
+        }
+        debug_assert!(
+            atoms.iter().all(|a| KNOWN_EVENT_KINDS.contains(&a.kind.as_str())),
+            "未知轨迹种类：{:?}",
+            atoms.iter().map(|a| a.kind.as_str()).collect::<Vec<_>>()
+        );
+        let mut conn = self.conn.lock().expect("db poisoned");
+        let tx = conn.transaction()?;
+        let mut seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM atoms
+              WHERE session_id = ?1 AND channel = 'trace'",
+            params![session_id],
+            |r| r.get(0),
+        )?;
+        let mut added = 0i64;
+        let mut skipped = 0i64;
+        let mut last_added_seq = None;
+        for atom in atoms {
+            seq += 1;
+            let ext_json = replay_ext_json(atom.ext.as_ref());
+            let changed = tx.execute(
+                "INSERT INTO atoms
+                   (id, session_id, channel, turn_id, seq, at, role, author_id,
+                    kind, payload_json, refs_json, ext_json, schema,
+                    source, truncated, sealed_at)
+                 VALUES (?1, ?2, 'trace', ?3, ?4, ?5, NULL, NULL, ?6, ?7, ?8, ?9, 1,
+                         'replay', ?10, ?11)
+                 ON CONFLICT(id) DO NOTHING",
+                params![
+                    atom.id,
+                    session_id,
+                    turn_id,
+                    seq,
+                    atom.at,
+                    atom.kind,
+                    atom.payload_json,
+                    json_string(&atom.refs),
+                    ext_json,
+                    atom.truncated as i64,
+                    atom.at,
+                ],
+            )?;
+            if changed > 0 {
+                added += 1;
+                last_added_seq = Some(seq);
+            } else {
+                skipped += 1;
+            }
+        }
+        if let Some(seq) = last_added_seq {
+            touch_handle_seq_on(&tx, session_id, None, seq)?;
+        }
+        tx.commit()?;
+        Ok((added, skipped))
     }
 
     pub fn load_events(&self, session_id: &str, limit: i64) -> rusqlite::Result<Vec<EventRow>> {
@@ -3580,6 +3699,145 @@ mod tests {
         assert_eq!(refs_json, refs.to_string(), "refs_json 必须逐字一致");
         assert_eq!(ext_json, ext.to_string(), "ext_json 必须逐字一致");
         assert_eq!(schema, 1, "未显式给 schema 时必须写 1");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    fn replay_atom(id: &str, at: i64, payload_json: &str) -> ReplayAtom {
+        ReplayAtom {
+            id: id.into(),
+            at,
+            kind: "tool_call".into(),
+            payload_json: payload_json.into(),
+            refs: Some(serde_json::json!({ "toolCallId": id })),
+            ext: Some(serde_json::json!({ "x.demo.keep": 1 })),
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn append_replay_atoms_is_idempotent() {
+        let (db, path) = db_with_session();
+        db.insert_replay_turn("s-1", "turn-replay-s-1-100", 100, 200)
+            .expect("insert replay turn");
+        let atoms = vec![
+            replay_atom("rp-a", 100, r#"{"toolCallId":"a"}"#),
+            replay_atom("rp-b", 200, r#"{"toolCallId":"b"}"#),
+        ];
+
+        assert_eq!(
+            db.append_replay_atoms("s-1", "turn-replay-s-1-100", &atoms)
+                .expect("first replay"),
+            (2, 0)
+        );
+        assert_eq!(
+            db.append_replay_atoms("s-1", "turn-replay-s-1-100", &atoms)
+                .expect("second replay"),
+            (0, 2)
+        );
+
+        let conn = db.conn.lock().unwrap();
+        let (count, source, sealed_at, ext_json): (i64, String, i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), source, sealed_at, ext_json FROM atoms
+                  WHERE session_id = 's-1' AND id = 'rp-a'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("replay row");
+        assert_eq!(count, 1, "重复补录不能新增行");
+        assert_eq!(source, "replay");
+        assert_eq!(sealed_at, 100, "补录原子写完即封口");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&ext_json).unwrap(),
+            serde_json::json!({ "x.demo.keep": 1, "x.replay": true }),
+            "捕获 ext 与 provenance 合并"
+        );
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn append_replay_atoms_never_overwrites_a_live_row() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-live", "", None, None)
+            .expect("start live turn");
+        db.append_events(
+            "s-1",
+            &[EventInput {
+                turn_id: "t-live".into(),
+                author_id: None,
+                kind: "tool_call".into(),
+                payload_json: r#"{"toolCallId":"live","title":"A"}"#.into(),
+                refs: None,
+                ext: None,
+                schema: None,
+                source: "live".into(),
+                truncated: false,
+            }],
+        )
+        .expect("append live");
+        let live_id = db.load_events("s-1", 10).expect("load live")[0].id.clone();
+
+        db.insert_replay_turn("s-1", "turn-replay-s-1-100", 100, 100)
+            .expect("insert replay turn");
+        let replay = replay_atom(&live_id, 100, r#"{"toolCallId":"replay","title":"B"}"#);
+        assert_eq!(
+            db.append_replay_atoms("s-1", "turn-replay-s-1-100", &[replay])
+                .expect("replay over live id"),
+            (0, 1)
+        );
+
+        let conn = db.conn.lock().unwrap();
+        let (payload_json, source): (String, String) = conn
+            .query_row(
+                "SELECT payload_json, source FROM atoms WHERE id = ?1",
+                params![live_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("live row");
+        assert_eq!(payload_json, r#"{"toolCallId":"live","title":"A"}"#);
+        assert_eq!(source, "live");
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn insert_replay_turn_uses_captured_bounds_and_finished_status() {
+        let (db, path) = db_with_session();
+        db.insert_replay_turn("s-1", "turn-replay-s-1-100", 100, 250)
+            .expect("insert replay turn");
+
+        let conn = db.conn.lock().unwrap();
+        let (started_at, ended_at, status, stop_reason, prompt, prompt_atom_id): (
+            i64,
+            i64,
+            String,
+            String,
+            String,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT started_at, ended_at, status, stop_reason, prompt, prompt_atom_id
+                   FROM turns WHERE id = 'turn-replay-s-1-100'",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )
+            .expect("replay turn");
+        assert_eq!((started_at, ended_at), (100, 250));
+        assert_eq!(status, "finished");
+        assert_eq!(stop_reason, "end_turn");
+        assert_eq!(prompt, "");
+        assert_eq!(prompt_atom_id, None);
         drop(conn);
         std::fs::remove_file(&path).ok();
     }

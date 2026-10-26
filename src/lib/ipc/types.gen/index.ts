@@ -29,6 +29,7 @@ export type { SessionPromptResult } from "./SessionPromptResult";
 export type { SessionRow } from "./SessionRow";
 export type { SessionUpsert } from "./SessionUpsert";
 export type { SettingsReport } from "./SettingsReport";
+export type { TraceBackfillDto } from "./TraceBackfillDto";
 export type { TraceItem } from "./TraceItem";
 export type { TraceTurn } from "./TraceTurn";
 export type { TurnRow } from "./TurnRow";

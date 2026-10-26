@@ -4,7 +4,7 @@
 //! 一个 profile 可以连多个 session，两者的生命周期不同。
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use tokio::sync::Mutex;
 
@@ -122,6 +122,65 @@ impl Turns {
 
     pub async fn end(&self, acp_session_id: &str) {
         self.inner.lock().await.remove(acp_session_id);
+    }
+}
+
+/// 一次 `session/load` 重放期间捕获到的轨迹事件。
+///
+/// 重放没有活动轮次，不能直接走 live 落库；先收进内存，等 load 收尾后由补录命令
+/// 统一写成 `source='replay'` 的原子。`payload_json` 保持解析时的字符串，补录 id
+/// 直接用它算摘要，避免重新序列化导致键序变化。
+#[derive(Debug, Clone)]
+pub struct Captured {
+    pub at: i64,
+    pub kind: String,
+    pub payload_json: String,
+    pub refs: Option<serde_json::Value>,
+    pub ext: Option<serde_json::Value>,
+    pub truncated: bool,
+}
+
+/// 按 ACP 会话 id 打开的补录捕获窗口。
+///
+/// 窗口只在显式补录命令执行期间存在；`record_trace` 看到窗口就把事件推进缓冲并
+/// 返回，既不写 live，也不因「没有活动轮次」被当成孤儿。窗口关闭后缓冲即丢。
+#[derive(Default)]
+pub struct ReplayCapture {
+    inner: StdMutex<HashMap<String, Vec<Captured>>>,
+}
+
+impl ReplayCapture {
+    /// 打开窗口。同一会话重复打开时重置为新窗口，避免上一轮残留混进本次结果。
+    pub fn open(&self, acp_sid: &str) {
+        self.inner
+            .lock()
+            .expect("replay capture poisoned")
+            .insert(acp_sid.to_string(), Vec::new());
+    }
+
+    pub fn is_open(&self, acp_sid: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("replay capture poisoned")
+            .contains_key(acp_sid)
+    }
+
+    /// 捕获成功返回 true；没开窗口返回 false。
+    pub fn push(&self, acp_sid: &str, item: Captured) -> bool {
+        let mut all = self.inner.lock().expect("replay capture poisoned");
+        let Some(items) = all.get_mut(acp_sid) else {
+            return false;
+        };
+        items.push(item);
+        true
+    }
+
+    pub fn close(&self, acp_sid: &str) -> Vec<Captured> {
+        self.inner
+            .lock()
+            .expect("replay capture poisoned")
+            .remove(acp_sid)
+            .unwrap_or_default()
     }
 }
 
@@ -285,6 +344,8 @@ pub struct AppState {
     pub pending: PendingRequests,
     /// 每个 ACP 会话当前这一轮的 id（轨迹事件靠它归轮）
     pub turns: Arc<Turns>,
+    /// 补录期间按 ACP 会话 id 捕获 `session/load` 重放事件；窗口关闭后缓冲即丢。
+    pub replay: Arc<ReplayCapture>,
     /// 客户端拥有的 delegate 句柄；转发 task 与命令层共用。
     pub delegates: Arc<Delegates>,
     /// ACP 会话 id → 最近一次 `availableCommands`（会话状态，不落库）。
@@ -423,6 +484,7 @@ impl AppState {
             modes: Mutex::new(HashMap::new()),
             pending: PendingRequests::default(),
             turns: Arc::new(Turns::default()),
+            replay: Arc::new(ReplayCapture::default()),
             delegates: Arc::new(Delegates::default()),
             commands: Commands::default(),
             asides: Asides::default(),
@@ -528,8 +590,8 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::{
-        Cancels, CommandDto, Commands, ContextMode, ContextReason, DelegateEntry, DelegateStatus,
-        Delegates, PendingRequests, Routes, SessionRecord,
+        Cancels, Captured, CommandDto, Commands, ContextMode, ContextReason, DelegateEntry,
+        DelegateStatus, Delegates, PendingRequests, ReplayCapture, Routes, SessionRecord,
     };
 
     fn command(name: &str) -> CommandDto {
@@ -755,5 +817,29 @@ mod tests {
     async fn commands_of_unknown_session_is_empty() {
         let commands = Commands::default();
         assert!(commands.commands_of("never-seen").await.is_empty());
+    }
+
+    #[test]
+    fn replay_capture_buffers_until_close() {
+        let capture = ReplayCapture::default();
+        let item = Captured {
+            at: 42,
+            kind: "tool_call".into(),
+            payload_json: r#"{"toolCallId":"c1"}"#.into(),
+            refs: None,
+            ext: None,
+            truncated: false,
+        };
+
+        assert!(!capture.push("acp-1", item.clone()), "没开窗口不能捕获");
+        capture.open("acp-1");
+        assert!(capture.is_open("acp-1"));
+        assert!(capture.push("acp-1", item.clone()));
+
+        let got = capture.close("acp-1");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].at, 42);
+        assert!(!capture.is_open("acp-1"));
+        assert!(!capture.push("acp-1", item), "close 后必须拒收");
     }
 }
