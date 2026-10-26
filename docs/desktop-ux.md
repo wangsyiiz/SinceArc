@@ -581,3 +581,73 @@ SettingsView                 外观区一个 Switch「流式补间」
 - 逐字淡入（每段新文本 opacity 过渡）：DOM 节点随回答长度增长，且不解决「不匀」，只是换个观感。
 - 光标重做：`.sc-caret` 保持原样。
 - 用显示长度驱动任何持久状态或指标：见 R1。
+
+## 15. agent 正文的 markdown：只买词法，自己渲染（2026-10-26 定）
+
+正文现在是纯文本（`whitespace-pre-wrap`），代码块、表格、列表全挤成一坨段落 —— 这是「正文可读性」最大的缺口。
+所有者 2026-10-26 拍板走 **A 方案：只引 `marked` 的词法层**（`marked.lexer(src)` → token 树），
+token 自己映射成 React 元素。
+
+**M1 只买词法。** 依赖只有 `marked`（^18.1.1，MIT，0 运行时依赖），且只用 `marked.lexer`；
+不用它的 Renderer/Parser，不产出 HTML 字符串，**全程不碰 `dangerouslySetInnerHTML`**。
+三条理由缺一不可：① 样式归我们（样式棘轮才管得住）；② agent 正文属不可信输入，不过 innerHTML 就没有 XSS 面；
+③ 补间让显示文本每帧变，词法层必须便宜（实测 2288 字 0.31ms，占一帧 1.9%）。
+
+**M2 块级白名单。** 只渲染：段落、标题、围栏代码块、列表（含嵌套与任务列表）、引用、表格、分隔线。
+`html` / `tag` / `def` 这几类 token **一律降级成纯文本行**：正文里写 `<div>` 就该显示成 `<div>` 四个字符，
+不许变成 DOM。不认识的新 token 类型同样降级（白名单之外一律走兜底，不猜）。
+
+**M3 内联白名单。** 只渲染 text / strong / em / del / codespan / link / br；内联 `html`、`tag` 降级成文本。
+`image` **不加载远端资源**：渲染成「`[图片] 说明文字`」的纯文本片段（点开与否则随链接策略，见 M4）。
+理由：一张图会在你不知情时向外部发请求，而 agent 正文里出现图本来就是少数。
+
+**M4 链接：只放行 `http` / `https` / `mailto`，且不许自带导航。** 其它 scheme（`javascript:`、`data:`、`file:`）
+降级成纯文本，不给可点样式。放行的链接点击后**复制地址并短暂提示「已复制」**，
+绝不让 WebView 自己导航（当前仓里没有任何外链打开通道，`<a href>` 直接点会把整个应用页换掉）。
+「在系统浏览器里打开」需要 `tauri-plugin-opener` + capability 配置 —— 属新依赖，等所有者单独拍，
+在那之前不给假入口。
+
+**M5 代码块。** 等宽字体、横向滚动、不折行；右上角显示语言标签（有 `lang` 才显示，没有就不占位）；
+内容原样（只去掉末尾空行）。**不做语法高亮**：那要 shiki 级依赖，跟 E5 长列表一起单独定。
+
+**M6 表格。** 外面套横向滚动容器（表格不许撑破消息宽度），首行表头带底色，单元格对齐按 `align`；
+列数不一致时按行补空、不丢内容。
+
+**M7 流式中的不完整块照 marked 给的 token 渲染，不额外「等闭合」。** 真机实测（v18.1.1）：
+未闭合围栏 → `code` token（照常当代码块，只是还会继续长）；半截表格 → `table`（已到的行照常成行）；
+半截 `**粗体` / `[链接](` → 仍是一个 paragraph，星号方括号原样显示。
+理由：补间把文本一帧帧拉长，任何「等闭合再渲染」都会在收口时让整块格式跳一次 —— 那正是 §14 刚去掉的观感。
+
+**M8 解析在渲染层，按「显示文本」走。** `useMemo(normalize(marked.lexer(displayed)))`；
+数据面（`message.text`、落库、轨迹面板）仍是原文，一个字都不改。
+
+**M9 空内容不渲染空壳**：全空白或只有空行时不产生任何块。
+
+**字号只借现有档，不新增**：h1/h2 → `text-body` + 中等字重，h3–h6 → `text-ui` + 中等字重
+（正文本身是 `text-ui`，标题不许比消息头更大）。
+
+### 15.1 落点
+
+```
+src/lib/markdown.ts          token 树 → 我们的窄类型（Block[] / Inline[]）：白名单、降级、
+                             链接 scheme 校验、list.start 归一、表格对齐归一
+src/lib/markdown.test.ts     纯函数单测（不碰 DOM）
+src/components/Markdown.tsx  Block[] → React，类名沿用 sc-prose 体系
+MessageItem                  text.agent 分支改 <Markdown source={displayed} />；其它分支不动
+```
+
+### 15.2 验收读数（DOM 数值，不看图）
+
+1. **块级覆盖**：一段含 h2 / 有序列表 / 嵌套列表 / 表格 / 围栏代码 / 引用 / 分隔线的回答，
+   DOM 里 `h2`、`ol>li`、嵌套 `ul` 层数、`table>tbody>tr`、`pre>code`、`blockquote`、`hr` 的数量与 token 数一致。
+2. **危险输入不生效**：正文写 `<img src=x onerror=alert(1)>`、`<script>alert(1)</script>`、
+   `[x](javascript:alert(1))` —— DOM 里不得出现 `img` / `script` 元素，链接不得带 `javascript:` href（降级为文本）。
+3. **不完整输入不崩**：未闭合围栏 / 半截表格 / 半截粗体三种，界面照常渲染、控制台无报错。
+4. **性能**：≥2000 字回答 + 补间开启，`PerformanceObserver("longtask")` 记录不得出现 > 50ms 的长任务；
+   单次解析单价 ≤ 0.5ms（单测里量 2000 字用例）。
+5. **关闭补间（§14 R8）时 markdown 照常工作**，且 DOM 与开启时一致（补间只影响文本长度，不影响结构）。
+
+### 15.3 不做 / 待定
+
+- 不做：语法规格高亮、脚注、数学公式、图片外链自动加载、内嵌 HTML。
+- 待所有者拍：要不要装 `tauri-plugin-opener` 让外链真能在系统浏览器打开（当前是「点击复制」）。
