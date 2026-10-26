@@ -6,6 +6,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type RefObject,
   type ReactElement,
   type ReactNode,
 } from "react";
@@ -38,6 +39,24 @@ interface TooltipPosition {
   ready: boolean;
 }
 
+interface UseTooltipOptions {
+  label: string;
+  /** 传入后由调用方控制展开；不传则保持原有的内部状态管理。 */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** 固定展开的 Hint 用；不传就不输出 aria-live。 */
+  ariaLive?: "off" | "polite" | "assertive";
+}
+
+export interface UseTooltipResult {
+  triggerProps: TooltipTriggerProps;
+  tooltip: ReactNode;
+  tooltipId: string;
+  tooltipRef: RefObject<HTMLDivElement | null>;
+  showNow: (anchor: Element) => void;
+  closeNow: () => void;
+}
+
 let activeTooltipId: string | null = null;
 let activeTooltipClose: (() => void) | null = null;
 
@@ -47,20 +66,24 @@ function mergeDescribedBy(existing: string | undefined, id: string): string {
   return ids.includes(id) ? existing : `${existing} ${id}`;
 }
 
-export function useTooltip({ label }: { label: string }): {
-  triggerProps: TooltipTriggerProps;
-  tooltip: ReactNode;
-} {
+export function useTooltip({
+  label,
+  open: controlledOpen,
+  onOpenChange,
+  ariaLive,
+}: UseTooltipOptions): UseTooltipResult {
   const reactId = useId();
   const tooltipId = `sc-tooltip-${reactId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
   const [position, setPosition] = useState<TooltipPosition | null>(null);
   const anchorRef = useRef<Element | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const focusedRef = useRef(false);
-  const openRef = useRef(false);
+  const openRef = useRef(open);
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  openRef.current = open;
 
   const cancelOpen = useCallback(() => {
     if (openTimer.current === null) return;
@@ -77,15 +100,31 @@ export function useTooltip({ label }: { label: string }): {
   const closeNow = useCallback(() => {
     cancelOpen();
     cancelClose();
+    if (controlledOpen !== undefined) {
+      if (openRef.current) onOpenChange?.(false);
+      return;
+    }
     anchorRef.current = null;
     openRef.current = false;
-    setOpen(false);
+    setUncontrolledOpen(false);
     setPosition(null);
     if (activeTooltipId === tooltipId) {
       activeTooltipId = null;
       activeTooltipClose = null;
     }
-  }, [cancelClose, cancelOpen, tooltipId]);
+  }, [cancelClose, cancelOpen, controlledOpen, onOpenChange, tooltipId]);
+
+  const requestOpen = useCallback(
+    (next: boolean) => {
+      if (controlledOpen !== undefined) {
+        if (next !== openRef.current) onOpenChange?.(next);
+        return;
+      }
+      openRef.current = next;
+      setUncontrolledOpen(next);
+    },
+    [controlledOpen, onOpenChange],
+  );
 
   const activate = useCallback(() => {
     const previousId = activeTooltipId;
@@ -93,16 +132,18 @@ export function useTooltip({ label }: { label: string }): {
     activeTooltipId = tooltipId;
     activeTooltipClose = closeNow;
     if (previousId !== null && previousId !== tooltipId) previousClose?.();
-    openRef.current = true;
-    setOpen(true);
-  }, [closeNow, tooltipId]);
+    requestOpen(true);
+  }, [closeNow, requestOpen, tooltipId]);
 
-  const showNow = (anchor: Element) => {
-    cancelOpen();
-    cancelClose();
-    anchorRef.current = anchor;
-    activate();
-  };
+  const showNow = useCallback(
+    (anchor: Element) => {
+      cancelOpen();
+      cancelClose();
+      anchorRef.current = anchor;
+      activate();
+    },
+    [activate, cancelClose, cancelOpen],
+  );
 
   const scheduleOpen = (anchor: Element) => {
     cancelClose();
@@ -140,6 +181,16 @@ export function useTooltip({ label }: { label: string }): {
     if (!open) return;
     measure();
   }, [label, measure, open]);
+
+  useEffect(() => {
+    if (open) return;
+    anchorRef.current = null;
+    setPosition(null);
+    if (activeTooltipId === tooltipId) {
+      activeTooltipId = null;
+      activeTooltipClose = null;
+    }
+  }, [open, tooltipId]);
 
   useEffect(() => {
     if (!open) return;
@@ -203,6 +254,7 @@ export function useTooltip({ label }: { label: string }): {
           ref={tooltipRef}
           id={tooltipId}
           role="tooltip"
+          aria-live={ariaLive}
           className="sc-tooltip text-caption text-ink-2"
           style={{
             position: "fixed",
@@ -218,7 +270,7 @@ export function useTooltip({ label }: { label: string }): {
       )
     : null;
 
-  return { triggerProps, tooltip };
+  return { triggerProps, tooltip, tooltipId, tooltipRef, showNow, closeNow };
 }
 
 export function Tooltip({ label, children }: { label: string; children: ReactElement }) {

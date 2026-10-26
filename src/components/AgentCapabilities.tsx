@@ -3,6 +3,7 @@ import type { AgentProfile } from "@/types";
 import { capsRows, type CapsGroup } from "@/lib/caps-format";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import { cn } from "@/lib/utils";
+import { Hint } from "./ui/Hint";
 import { useAnchoredLayer } from "./ui/Menu";
 
 interface AgentCapabilitiesProps {
@@ -98,14 +99,15 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
                   const groupRows = rows.filter((r) => r.group === group);
                   return (
                     <div key={group} className="mt-1 first:mt-0">
-                      <div className="px-1.5 py-1 text-micro tracking-wide text-ink-3">
+                      <div className="flex items-center gap-1.5 px-1.5 py-1 text-micro tracking-wide text-ink-3">
                         {group}
+                        {group === "MCP" && (
+                          <Hint
+                            label="MCP 能力"
+                            text="未声明 ≠ 不支持：有的 agent 不报这三项也照样能连"
+                          />
+                        )}
                       </div>
-                      {group === "MCP" && (
-                        <p className="px-1.5 pb-1 text-micro leading-relaxed text-ink-3">
-                          未声明 ≠ 不支持：有的 agent 不报这三项也照样能连
-                        </p>
-                      )}
                       {groupRows.map((r) => (
                         <div
                           key={r.key}

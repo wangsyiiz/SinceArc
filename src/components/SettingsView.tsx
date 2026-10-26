@@ -63,6 +63,7 @@ import { capsRows } from "@/lib/caps-format";
 import { StatusDot } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { EmptyState } from "./ui/EmptyState";
+import { Hint } from "./ui/Hint";
 import { useHoverCard } from "./ui/HoverCard";
 import { Field, Input } from "./ui/Field";
 import { Menu, type MenuItem } from "./ui/Menu";
@@ -1317,10 +1318,13 @@ export function SettingsView({
                     <div className="mt-3 divide-y divide-line-1/50">
                       <div className="flex items-center justify-between gap-6 py-4">
                         <div className="min-w-0">
-                          <div className="text-ui text-ink-1">主题</div>
-                          <p className="mt-1 text-caption text-ink-3">
-                            暗色靠内边缘高光分界，浅色靠 1px 边框分界。
-                          </p>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-ui text-ink-1">主题</span>
+                            <Hint
+                              label="主题"
+                              text="暗色靠内边缘高光分界，浅色靠 1px 边框分界。"
+                            />
+                          </div>
                         </div>
                         <Segmented
                           ariaLabel="主题"
@@ -1331,10 +1335,13 @@ export function SettingsView({
                       </div>
                       <div className="flex items-center justify-between gap-6 py-4">
                         <div className="min-w-0">
-                          <div className="text-ui text-ink-1">流式补间</div>
-                          <p className="mt-1 text-caption text-ink-3">
-                            agent 回答按到达节奏平滑推进；关掉后与改前一致。
-                          </p>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-ui text-ink-1">流式补间</span>
+                            <Hint
+                              label="流式补间"
+                              text="agent 回答按到达节奏平滑推进；关掉后与改前一致。"
+                            />
+                          </div>
                         </div>
                         <Switch
                           checked={settings.tweenEnabled}
