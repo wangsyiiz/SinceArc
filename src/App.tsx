@@ -105,6 +105,8 @@ import { useSessionState } from "@/hooks/useSessionState";
 import { useSessionModes } from "@/hooks/useSessionModes";
 import { useTabs } from "@/hooks/useTabs";
 import { useTheme } from "@/hooks/useTheme";
+import { estimateMessageHeight } from "@/lib/virtual/message-height";
+import { useVirtualList } from "@/lib/virtual/useVirtualList";
 
 const SETTINGS_SAVE_DEBOUNCE_MS = 300;
 
@@ -166,11 +168,8 @@ export default function App() {
   const composerRef = useRef<HTMLDivElement>(null);
   const scrollAnchorRef = useRef<{
     sessionId: string;
-    height: number;
-    top: number;
     firstId: string | null;
   } | null>(null);
-  const skipBottomScrollRef = useRef(false);
   /**
    * 底部浮层的实际高度。消息列表要留出这么多空间，否则最后一条会被输入框盖住 ——
    * 以前这里写死 `pb-32`（128px），输入框一高过 128px（多行输入、权限提示条、
@@ -235,6 +234,31 @@ export default function App() {
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab } = useTabs(sessions);
   const { state, patchSession, initSession, sessionState, hasMore, loadOlder, loadingOlder, opening } =
     useSessionState(lastSessionId);
+
+  const messageKeyOf = useCallback(
+    (index: number) => state.msgs[index]?.id ?? `message-index-${index}`,
+    [state.msgs],
+  );
+  const estimateMessage = useCallback(
+    (index: number) => estimateMessageHeight(state.msgs[index]),
+    [state.msgs],
+  );
+  const {
+    rows: virtualRows,
+    totalSize: virtualTotalSize,
+    measureRow,
+    scrollToIndex: scrollToMessageIndex,
+    scrollToEnd,
+    atBottom: messageAtBottom,
+    beginAnchorShift,
+    endAnchorShift,
+  } = useVirtualList({
+    count: state.msgs.length,
+    keyOf: messageKeyOf,
+    estimate: estimateMessage,
+    scrollRef,
+    stickToBottom: true,
+  });
 
   // 打开会话时读一次；每轮结束（busy 收起、流式标记也已清掉）后再读一次。
   // 只读统计，不轮询、不写库。
@@ -759,15 +783,14 @@ export default function App() {
     if (!hasMore || loadingOlder) return;
     const el = scrollRef.current;
     if (!el) return;
-    // 记录本次翻页前的真实布局，等新历史进入 DOM 后按差值补偿。
+    // 记下当前首条消息在视口里的真实偏移；前插后 hook 用 key 找回它的新索引。
+    beginAnchorShift(0);
     scrollAnchorRef.current = {
       sessionId: lastSessionId,
-      height: el.scrollHeight,
-      top: el.scrollTop,
       firstId: state.msgs[0]?.id ?? null,
     };
     void loadOlder();
-  }, [hasMore, lastSessionId, loadOlder, loadingOlder, state.msgs]);
+  }, [beginAnchorShift, hasMore, lastSessionId, loadOlder, loadingOlder, state.msgs]);
 
   const handleMessageScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -786,40 +809,31 @@ export default function App() {
 
     const firstId = state.msgs[0]?.id ?? null;
     if (firstId === anchor.firstId) {
-      if (!loadingOlder) scrollAnchorRef.current = null;
+      if (!loadingOlder) {
+        scrollAnchorRef.current = null;
+        endAnchorShift();
+      }
       return;
     }
 
-    const delta = el.scrollHeight - anchor.height;
-    if (delta !== 0) el.scrollTop = anchor.top + delta;
-    // 这次 DOM 变化是前插旧消息，不能让下面的“新消息滚到底”覆盖补偿结果。
-    skipBottomScrollRef.current = true;
+    // 前插完成：把原锚点行摆回翻页前的视口偏移。
+    endAnchorShift();
     scrollAnchorRef.current = null;
-  }, [lastSessionId, loadingOlder, state.msgs]);
+  }, [endAnchorShift, lastSessionId, loadingOlder, state.msgs]);
 
   /**
-   * 新消息到了就滚到底。以前只设一次 `scrollTop`，字体/图片/长表格量完高度往往晚一帧，
-   * 结果停在中间偏上（表现为「最后一条看不见」）。改成下一帧再补一次。
+   * 消息条数与总高由虚拟列表 hook 负责贴底；这里只补列表之外的浮层变化：
+   * 权限条、输入框高度和标签切换也会改变底部可用空间。
    */
+  // 只用 ref 拿最新的 scrollToEnd：它随条数变化，挂在依赖里会让「加载更早」触发的
+  // 一次重渲染也滚到最底部（真机上表现为点一次翻页就被拽走）。
+  const scrollToEndRef = useRef(scrollToEnd);
+  scrollToEndRef.current = scrollToEnd;
   useEffect(() => {
-    if (skipBottomScrollRef.current) {
-      skipBottomScrollRef.current = false;
-      return;
-    }
-    let raf2 = 0;
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => {
-        const el = scrollRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
-      });
-    });
-    return () => {
-      cancelAnimationFrame(raf1);
-      if (raf2) cancelAnimationFrame(raf2);
-    };
-    // 权限条出现在输入框上方时会把列表底部顶高，也要跟着滚一次，
-    // 否则「思考中」那一行会被压在权限条后面看不见。
-  }, [state.msgs, activeTabId, state.pendingPerm]);
+    if (!messageAtBottom) return;
+    const raf = requestAnimationFrame(() => scrollToEndRef.current());
+    return () => cancelAnimationFrame(raf);
+  }, [activeTabId, composerH, state.pendingPerm]);
 
   /**
    * 渲染侧对账：界面上到底拿到几条、最后一条是什么。
@@ -1052,20 +1066,16 @@ export default function App() {
 
   /** 轨迹 → 正文：滚到该轮第一条消息，并短暂用 accent 环标一下。 */
   const locateMessage = useCallback((messageId: string) => {
-    const root = scrollRef.current;
-    if (!root) return;
-    const el = [...root.querySelectorAll<HTMLElement>("[data-message-id]")].find(
-      (candidate) => candidate.dataset.messageId === messageId,
-    );
-    if (!el) return;
-    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    const index = state.msgs.findIndex((message) => message.id === messageId);
+    if (index < 0) return;
+    scrollToMessageIndex(index, "center");
     setHighlightMessageId(messageId);
     if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
     highlightTimerRef.current = window.setTimeout(() => {
       setHighlightMessageId((current) => (current === messageId ? null : current));
       highlightTimerRef.current = null;
     }, 1_200);
-  }, []);
+  }, [scrollToMessageIndex, state.msgs]);
 
   /** 正文 → 轨迹：打开面板，并把当前轮作为定位目标。 */
   const locateTraceTurn = useCallback((turnId: string) => {
@@ -1554,14 +1564,14 @@ export default function App() {
                     className="h-full overflow-y-auto"
                   >
                     <div
-                      className="sc-selectable mx-auto flex min-h-full max-w-3xl flex-col gap-3.5 px-4 pt-4"
+                      className="sc-selectable mx-auto min-h-full w-full max-w-3xl px-4 pt-4"
                       style={{ paddingBottom: composerH + 16 }}
                     >
                       {hasMore && (
                         <button
                           type="button"
                           onClick={requestOlder}
-                          className="mx-auto rounded-md px-2 py-1 text-caption text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-2"
+                          className="mx-auto mb-3.5 rounded-md px-2 py-1 text-caption text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-2"
                         >
                           {loadingOlder ? "正在加载更早消息…" : "加载更早"}
                         </button>
@@ -1590,53 +1600,86 @@ export default function App() {
                         )
                       ) : (
                         <>
-                          {state.msgs.map((m) => {
-                            return (
-                              <div
-                                key={m.id}
-                                data-message-id={m.id}
-                                data-turn-id={m.turnId ?? ""}
-                                className={
-                                  "group relative rounded-card transition-shadow" +
-                                  (highlightMessageId === m.id ? " ring-2 ring-accent-1/70" : "")
-                                }
-                              >
-                                <MessageItem
-                                  message={m}
-                                  players={renderPlayers}
-                                  tweenEnabled={settings.tweenEnabled}
-                                  delegatePhase={
-                                    m.role === "user" && m.delegate
-                                      ? delegateRunning[m.delegate.handleId]
-                                      : undefined
-                                  }
-                                  onCancelDelegate={cancelDelegate}
-                                  onLocateTrace={locateTraceTurn}
-                                />
-                              </div>
-                            );
-                          })}
+                          <div className="relative" style={{ height: virtualTotalSize }}>
+                            {virtualRows.map((row) => {
+                              const m = state.msgs[row.index];
+                              if (!m) return null;
+                              return (
+                                <div
+                                  key={row.key}
+                                  ref={measureRow}
+                                  data-index={row.index}
+                                  data-message-id={m.id}
+                                  data-turn-id={m.turnId ?? ""}
+                                  className="absolute inset-x-0 top-0"
+                                  style={{
+                                    transform: `translateY(${row.start}px)`,
+                                    minHeight: estimateMessage(row.index),
+                                  }}
+                                  onClickCapture={(event) => {
+                                    const target = event.target;
+                                    if (
+                                      !(target instanceof Element) ||
+                                      !target.closest("[aria-expanded]")
+                                    ) {
+                                      return;
+                                    }
+                                    // 行内卡片展开前先记锚点，React 更新后下一帧摆回原位。
+                                    beginAnchorShift(row.index);
+                                    requestAnimationFrame(endAnchorShift);
+                                  }}
+                                >
+                                  <div className="pb-3.5">
+                                    <div
+                                      className={
+                                        "group relative rounded-card transition-shadow" +
+                                        (highlightMessageId === m.id
+                                          ? " ring-2 ring-accent-1/70"
+                                          : "")
+                                      }
+                                    >
+                                      <MessageItem
+                                        message={m}
+                                        players={renderPlayers}
+                                        tweenEnabled={settings.tweenEnabled}
+                                        delegatePhase={
+                                          m.role === "user" && m.delegate
+                                            ? delegateRunning[m.delegate.handleId]
+                                            : undefined
+                                        }
+                                        onCancelDelegate={cancelDelegate}
+                                        onLocateTrace={locateTraceTurn}
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
                           {state.acts
                             .filter((a) => a.status === "running")
                             .map((a) => {
                               const p = renderPlayers.find((x) => x.id === a.playerId);
                               if (!p) return null;
                               return (
-                                <ThinkingRow
-                                  key={a.id}
-                                  player={p}
-                                  activity={a}
-                                  onOpenTrace={() => {
-                                    setTraceOpen(true);
-                                    setFocus((f) => ({ id: a.id, tick: (f?.tick ?? 0) + 1 }));
-                                  }}
-                                />
+                                <div key={a.id} className="pt-3.5">
+                                  <ThinkingRow
+                                    player={p}
+                                    activity={a}
+                                    onOpenTrace={() => {
+                                      setTraceOpen(true);
+                                      setFocus((f) => ({ id: a.id, tick: (f?.tick ?? 0) + 1 }));
+                                    }}
+                                  />
+                                </div>
                               );
                             })}
-                          {errorState}
+                          <div className="pt-3.5 empty:hidden">{errorState}</div>
                         </>
                       )}
-                      <StorageNotice key={lastSessionId} stats={storageStats} />
+                      <div className="pt-3.5 empty:hidden">
+                        <StorageNotice key={lastSessionId} stats={storageStats} />
+                      </div>
                     </div>
                   </div>
                   <div
