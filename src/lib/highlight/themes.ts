@@ -3,7 +3,12 @@ import type { HighlightTheme } from "./types.ts";
 /** 语义档位沿用高亮契约里的九档（外加 plain）；不另造档位名。 */
 export type TokenKind = HighlightTheme;
 
-export type CodeThemeId = "github-dark" | "one-dark" | "dracula" | "nord";
+export type CodeThemeId =
+  | "github-dark"
+  | "one-dark"
+  | "dracula"
+  | "nord"
+  | "sincearc";
 
 export interface CodeTheme {
   id: CodeThemeId;
@@ -81,6 +86,26 @@ export const CODE_THEMES: readonly CodeTheme[] = [
       type: "#8fbcbb",
       operator: "#81a1c1",
       punct: "#eceff4",
+    },
+  },
+  {
+    // 我们的设计语言映射（单色）：与界面同一身份，不是默认。
+    // 值取自 :root 令牌：i1 #f6f6f6 / i2 #c0c0c0 / i3 #b2b2b2 / a1 #dedede / s0 #292d3e；
+    // 数字是 --warn 70% + --i1 30% 的混色结果（与 §20 之前那套映射等价）。
+    id: "sincearc",
+    label: "SinceArc",
+    background: "#292d3e",
+    colors: {
+      plain: "#f6f6f6",
+      comment: "#b2b2b2",
+      keyword: "#dedede",
+      string: "#f6f6f6",
+      number: "#ddb562",
+      literal: "#ddb562",
+      function: "#c0c0c0",
+      type: "#c0c0c0",
+      operator: "#c0c0c0",
+      punct: "#c0c0c0",
     },
   },
 ];

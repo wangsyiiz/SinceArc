@@ -26,7 +26,7 @@ import type {
 import { CONTEXT_MESSAGES_DEFAULT, CONTEXT_MESSAGES_MAX } from "@/types";
 import { cn } from "@/lib/utils";
 import { newId } from "@/lib/ids";
-import { CODE_THEMES, type CodeThemeId } from "@/lib/highlight/themes";
+import type { CodeThemeId } from "@/lib/highlight/themes";
 import {
   canSaveConnection,
   createEmptyConnection,
@@ -68,6 +68,7 @@ import { Hint } from "./ui/Hint";
 import { useHoverCard } from "./ui/HoverCard";
 import { Field, Input } from "./ui/Field";
 import { Menu, type MenuItem } from "./ui/Menu";
+import { CodeThemePicker } from "./ui/CodeThemePicker";
 import { Segmented } from "./ui/Segmented";
 import { Switch } from "./ui/Switch";
 
@@ -126,11 +127,6 @@ const THEME_OPTIONS = THEMES.map((theme) => ({
   value: theme.id,
   label: theme.label,
   icon: THEME_ICONS[theme.id],
-}));
-
-const CODE_THEME_OPTIONS = CODE_THEMES.map((theme) => ({
-  value: theme.id,
-  label: theme.label,
 }));
 
 const DISCARD_UNSAVED_HEADING = "放弃未保存的修改";
@@ -1342,19 +1338,18 @@ export function SettingsView({
                           onChange={onCycleTheme}
                         />
                       </div>
-                      <div className="flex items-center justify-between gap-6 py-4">
-                        <div className="min-w-0">
-                          <span className="text-ui text-ink-1">代码配色</span>
-                          <p className="mt-1 text-caption text-ink-3">
-                            代码配色独立于界面主题；只作用于代码（代码块与行内 code）
-                          </p>
+                      <div className="py-4">
+                        <span className="text-ui text-ink-1">代码配色</span>
+                        <p className="mt-1 text-caption text-ink-3">
+                          代码配色独立于界面主题；只作用于代码（代码块与行内 code）。缩略图用的是该主题的真实配色。
+                        </p>
+                        <div className="mt-3">
+                          <CodeThemePicker
+                            label="代码配色"
+                            value={settings.codeTheme}
+                            onChange={onChangeCodeTheme}
+                          />
                         </div>
-                        <Segmented
-                          ariaLabel="代码配色"
-                          options={CODE_THEME_OPTIONS}
-                          value={settings.codeTheme}
-                          onChange={onChangeCodeTheme}
-                        />
                       </div>
                       <div className="flex items-center justify-between gap-6 py-4">
                         <div className="min-w-0">
