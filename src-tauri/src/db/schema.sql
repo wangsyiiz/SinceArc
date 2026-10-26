@@ -89,6 +89,7 @@ CREATE VIEW IF NOT EXISTS messages AS
   SELECT id, session_id, turn_id, seq, role,
          CASE kind WHEN 'text.user' THEN 'text' WHEN 'text.agent' THEN 'text'
                    WHEN 'aside' THEN 'aside' WHEN 'delegate.card' THEN 'delegate'
+                   WHEN 'notice.system' THEN 'text'
                    ELSE 'text' END AS kind,
          atoms.kind AS atom_kind,
          payload_json, at AS created_at, author_id

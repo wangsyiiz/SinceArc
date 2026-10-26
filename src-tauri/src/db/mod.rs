@@ -452,6 +452,30 @@ fn open_allowed(conn: &Connection, turn_id: Option<&str>) -> rusqlite::Result<bo
     ))
 }
 
+/// 流 key 以 `refs.messageId` 为准（docs/message-model.md §3.1）。缺席表示
+/// 本片没带 key，按同一段流的续片处理；显式换了 messageId 才算新的一段。
+fn same_stream_key(
+    existing_refs_json: Option<&str>,
+    incoming_refs: Option<&serde_json::Value>,
+) -> bool {
+    let existing = existing_refs_json
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| {
+            value
+                .get("messageId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        });
+    let incoming = incoming_refs
+        .and_then(|value| value.get("messageId"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    match (existing, incoming) {
+        (Some(existing), Some(incoming)) => existing == incoming,
+        _ => true,
+    }
+}
+
 /// 按字符边界截断，和 `trace::capture` 的口径一致，别切坏中文。
 fn truncate_utf8(text: &str, max_bytes: usize) -> (String, bool) {
     if text.len() <= max_bytes {
@@ -656,6 +680,8 @@ impl Db {
             "UPDATE atoms SET sealed_at = at WHERE sealed_at IS NULL",
             [],
         )?;
+        // I1：收尾封口之后再自检，见 docs/message-model.md §15.2。
+        migrations::audit_unsealed_atoms(&conn)?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
 
         Ok(Self {
@@ -1770,7 +1796,8 @@ impl Db {
         let at = now_ms();
         for e in events {
             seq += 1;
-            let sealed_at = if is_trace_stream_kind(&e.kind)
+            let mut sealed_at = None;
+            if is_trace_stream_kind(&e.kind)
                 && open_allowed(&tx, Some(e.turn_id.as_str()))?
             {
                 let open: Option<OpenStreamRow> = tx
@@ -1791,50 +1818,54 @@ impl Db {
                     )
                     .optional()?;
                 if let Some((open_id, payload_json, truncated, refs_json, ext_json)) = open {
-                    let existing_truncated = truncated != 0;
-                    let (payload, truncated) = if e.kind == "thought" {
-                        merge_thought_payload(
-                            &payload_json,
-                            existing_truncated,
-                            &e.payload_json,
-                            e.truncated,
-                        )
+                    if !same_stream_key(refs_json.as_deref(), e.refs.as_ref()) {
+                        // 换了 stream key：上一段到此为止，新段仍可继续 open。
+                        seal_open_atoms(&tx, session_id, Some(&e.turn_id), at)?;
                     } else {
-                        let incoming = serde_json::from_str(&e.payload_json)
-                            .unwrap_or(serde_json::Value::Null);
-                        (
-                            merge_chat_payload(&payload_json, &incoming),
-                            existing_truncated || e.truncated,
-                        )
-                    };
-                    let refs_json = merge_refs_json(refs_json.as_deref(), e.refs.as_ref());
-                    let ext_json = merge_ext_json(ext_json.as_deref(), e.ext.as_ref());
-                    // 同一段流只更新那一行；seq 跟着最新分片走，水位与 MAX(seq) 不脱节。
-                    tx.execute(
-                        "UPDATE atoms
+                        let existing_truncated = truncated != 0;
+                        let (payload, truncated) = if e.kind == "thought" {
+                            merge_thought_payload(
+                                &payload_json,
+                                existing_truncated,
+                                &e.payload_json,
+                                e.truncated,
+                            )
+                        } else {
+                            let incoming = serde_json::from_str(&e.payload_json)
+                                .unwrap_or(serde_json::Value::Null);
+                            (
+                                merge_chat_payload(&payload_json, &incoming),
+                                existing_truncated || e.truncated,
+                            )
+                        };
+                        let refs_json = merge_refs_json(refs_json.as_deref(), e.refs.as_ref());
+                        let ext_json = merge_ext_json(ext_json.as_deref(), e.ext.as_ref());
+                        // 同一段流只更新那一行；seq 跟着最新分片走，水位与 MAX(seq) 不脱节。
+                        tx.execute(
+                            "UPDATE atoms
                             SET payload_json = ?1, truncated = ?2, at = ?3, seq = ?4,
                                 refs_json = ?5, ext_json = ?6,
                                 schema = COALESCE(?7, schema)
                           WHERE id = ?8",
-                        params![
-                            payload,
-                            truncated as i64,
-                            at,
-                            seq,
-                            refs_json,
-                            ext_json,
-                            e.schema,
-                            open_id,
-                        ],
-                    )?;
-                    continue;
+                            params![
+                                payload,
+                                truncated as i64,
+                                at,
+                                seq,
+                                refs_json,
+                                ext_json,
+                                e.schema,
+                                open_id,
+                            ],
+                        )?;
+                        continue;
+                    }
                 }
-                None
             } else {
                 // 任何非归并类事实（工具 / 权限 / 用量 / 模式…）都是流边界。
                 seal_open_atoms(&tx, session_id, Some(&e.turn_id), at)?;
-                Some(at)
-            };
+                sealed_at = Some(at);
+            }
 
             tx.execute(
                 "INSERT INTO atoms
@@ -2801,6 +2832,26 @@ mod tests {
         }
     }
 
+    fn thought_with_message_id(text: &str, turn_id: &str, message_id: &str) -> EventInput {
+        let mut event = thought(text, turn_id);
+        event.refs = Some(serde_json::json!({ "messageId": message_id }));
+        event
+    }
+
+    fn tool_call(turn_id: &str) -> EventInput {
+        EventInput {
+            turn_id: turn_id.into(),
+            author_id: None,
+            kind: "tool_call".into(),
+            payload_json: r#"{"toolCallId":"call-1","title":"读文件"}"#.into(),
+            refs: Some(serde_json::json!({ "toolCallId": "call-1" })),
+            ext: None,
+            schema: None,
+            source: "live".into(),
+            truncated: false,
+        }
+    }
+
     fn chat_stream(id: &str, text: &str, turn_id: &str, kind: &str) -> MessageInput {
         MessageInput {
             id: id.into(),
@@ -3422,6 +3473,58 @@ mod tests {
     }
 
     #[test]
+    fn messages_view_case_covers_every_registered_chat_kind() {
+        fn messages_view_chat_kinds(schema: &str) -> std::collections::BTreeSet<String> {
+            let marker = "CREATE VIEW IF NOT EXISTS messages AS";
+            let Some(start) = schema.find(marker) else {
+                return std::collections::BTreeSet::new();
+            };
+            let view = &schema[start..];
+            let end = view.find(';').unwrap_or(view.len());
+            let mut kinds = std::collections::BTreeSet::new();
+            let mut cursor = &view[..end];
+            while let Some(when) = cursor.find("WHEN '") {
+                cursor = &cursor[when + "WHEN '".len()..];
+                let Some(end) = cursor.find('\'') else {
+                    break;
+                };
+                kinds.insert(cursor[..end].to_string());
+                cursor = &cursor[end + 1..];
+            }
+            kinds
+        }
+
+        const SCHEMA_FROM_FILE: &str = include_str!("schema.sql");
+        let registered: std::collections::BTreeSet<String> =
+            crate::message_kind::registry()
+                .iter()
+                .filter(|entry| entry.chat)
+                .map(|entry| entry.kind.as_str().to_string())
+                .collect();
+        let in_view = messages_view_chat_kinds(SCHEMA_FROM_FILE);
+
+        assert!(
+            !registered.is_empty(),
+            "I4 注册表 chat kind 集合为空，守卫不能静默变绿"
+        );
+        assert!(
+            !in_view.is_empty(),
+            "I4 没从 messages 视图解析出任何 WHEN 分支，守卫不能静默变绿"
+        );
+
+        let missing: Vec<_> = registered.difference(&in_view).cloned().collect();
+        assert!(
+            missing.is_empty(),
+            "I4 messages 视图 CASE 缺少注册表 chat kind：{missing:?}"
+        );
+        let stale: Vec<_> = in_view.difference(&registered).cloned().collect();
+        assert!(
+            stale.is_empty(),
+            "I4 messages 视图 CASE 含未注册或非 chat kind：{stale:?}"
+        );
+    }
+
+    #[test]
     fn append_events_writes_trace_atoms_visible_through_view() {
         let (db, path) = db_with_session();
         db.start_turn("s-1", "t-1", "问", None, None)
@@ -3743,6 +3846,42 @@ mod tests {
     }
 
     #[test]
+    fn startup_audit_reports_unsealed_atoms_without_repairing_them() {
+        let (db, path) = db_with_session();
+        db.start_turn("s-1", "t-bad", "问", None, None)
+            .expect("start turn");
+        db.end_turn("t-bad", "finished", Some("end_turn"))
+            .expect("finish turn");
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO atoms
+                   (id, session_id, channel, turn_id, seq, at, role, author_id,
+                    kind, payload_json, source, truncated, sealed_at)
+                 VALUES ('bad-open', 's-1', 'trace', 't-bad', 1, 1, NULL, NULL,
+                         'thought', '{\"text\":\"坏行\"}', 'live', 0, NULL)",
+                [],
+            )
+            .expect("seed anomalous open atom");
+
+            assert_eq!(
+                migrations::audit_unsealed_atoms(&conn).expect("audit"),
+                1,
+                "终态轮上的 open 原子必须被自检命中"
+            );
+            let sealed_at: Option<i64> = conn
+                .query_row(
+                    "SELECT sealed_at FROM atoms WHERE id = 'bad-open'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("read audit target");
+            assert_eq!(sealed_at, None, "自检只能报告，不能顺手修复数据");
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn chat_agent_text_chunks_merge_and_a_different_message_id_seals_the_previous_row() {
         let (db, path) = db_with_session();
         db.start_turn("s-1", "t-1", "问", None, None)
@@ -3932,6 +4071,214 @@ mod tests {
         assert!(sealed_at.is_some(), "无轮次消息永远不会有分片续写，必须直接封口");
         drop(conn);
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn turn_state_event_matrix_keeps_open_atom_invariants() {
+        struct Case {
+            name: &'static str,
+            prepare: fn(&Db),
+            act: fn(&Db),
+            turn: Option<&'static str>,
+            expected_open: i64,
+            expected_kinds: &'static [(&'static str, i64)],
+        }
+
+        fn running(db: &Db) {
+            db.start_turn("s-1", "t-1", "问", None, None)
+                .expect("start running turn");
+        }
+
+        fn waiting(db: &Db) {
+            running(db);
+            assert_eq!(
+                db.mark_turn_waiting_approval("t-1").expect("wait"),
+                1
+            );
+        }
+
+        fn finished(db: &Db) {
+            running(db);
+            db.end_turn("t-1", "finished", Some("end_turn"))
+                .expect("finish turn");
+        }
+
+        fn failed(db: &Db) {
+            running(db);
+            db.end_turn("t-1", "failed", Some("timeout"))
+                .expect("fail turn");
+        }
+
+        fn running_with_thought(db: &Db) {
+            running(db);
+            db.append_events("s-1", &[thought_with_message_id("先想", "t-1", "m-1")])
+                .expect("open thought");
+        }
+
+        fn no_turn(_db: &Db) {}
+
+        fn same_key_thoughts(db: &Db) {
+            db.append_events(
+                "s-1",
+                &[
+                    thought_with_message_id("一", "t-1", "m-1"),
+                    thought_with_message_id("二", "t-1", "m-1"),
+                ],
+            )
+            .expect("same-key thoughts");
+        }
+
+        fn different_key_thoughts(db: &Db) {
+            db.append_events(
+                "s-1",
+                &[
+                    thought_with_message_id("一", "t-1", "m-1"),
+                    thought_with_message_id("二", "t-1", "m-2"),
+                ],
+            )
+            .expect("different-key thoughts");
+        }
+
+        fn append_tool_call(db: &Db) {
+            db.append_events("s-1", &[tool_call("t-1")])
+                .expect("append tool call");
+        }
+
+        fn append_late_body(db: &Db) {
+            db.append_messages(
+                "s-1",
+                &[
+                    chat_stream_with_message_id("atom-1", "m-body", "一", "t-1"),
+                    chat_stream_with_message_id("atom-2", "m-body", "二", "t-1"),
+                ],
+            )
+            .expect("late body fragments");
+        }
+
+        fn append_non_turn_body(db: &Db) {
+            db.append_messages("s-1", &[msg("m-non-turn", "正文", None, true)])
+                .expect("non-turn body");
+        }
+
+        let cases = [
+            Case {
+                name: "running × thought 同键 → 一行 open",
+                prepare: running,
+                act: same_key_thoughts,
+                turn: Some("t-1"),
+                expected_open: 1,
+                expected_kinds: &[("thought", 1)],
+            },
+            Case {
+                name: "running × thought 异键 → 两行",
+                prepare: running,
+                act: different_key_thoughts,
+                turn: Some("t-1"),
+                expected_open: 1,
+                expected_kinds: &[("thought", 2)],
+            },
+            Case {
+                name: "running × 工具调用 → 先前 open 封口，新行封口",
+                prepare: running_with_thought,
+                act: append_tool_call,
+                turn: Some("t-1"),
+                expected_open: 0,
+                expected_kinds: &[("thought", 1), ("tool_call", 1)],
+            },
+            Case {
+                name: "waiting_approval × thought 同键 → 仍允许 open",
+                prepare: waiting,
+                act: same_key_thoughts,
+                turn: Some("t-1"),
+                expected_open: 1,
+                expected_kinds: &[("thought", 1)],
+            },
+            Case {
+                name: "finished × 正文同键 → 各自成行且全封口",
+                prepare: finished,
+                act: append_late_body,
+                turn: Some("t-1"),
+                expected_open: 0,
+                expected_kinds: &[("text.agent", 2)],
+            },
+            Case {
+                name: "failed × 工具调用 → 已封口",
+                prepare: failed,
+                act: append_tool_call,
+                turn: Some("t-1"),
+                expected_open: 0,
+                expected_kinds: &[("tool_call", 1)],
+            },
+            Case {
+                name: "无轮 × 正文 → 已封口",
+                prepare: no_turn,
+                act: append_non_turn_body,
+                turn: None,
+                expected_open: 0,
+                expected_kinds: &[("text.user", 1)],
+            },
+        ];
+
+        for case in cases {
+            let (db, path) = db_with_session();
+            (case.prepare)(&db);
+            (case.act)(&db);
+
+            let conn = db.conn.lock().unwrap();
+            let open: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM atoms
+                      WHERE session_id = ?1 AND turn_id IS ?2 AND sealed_at IS NULL",
+                    params!["s-1", case.turn],
+                    |r| r.get(0),
+                )
+                .expect("open count");
+            assert_eq!(open, case.expected_open, "{}：open 行数", case.name);
+
+            let actual_kinds: Vec<(String, i64)> = conn
+                .prepare(
+                    "SELECT kind, COUNT(*) FROM atoms
+                      WHERE session_id = ?1 AND turn_id IS ?2
+                      GROUP BY kind ORDER BY kind",
+                )
+                .expect("prepare kind distribution")
+                .query_map(params!["s-1", case.turn], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .expect("kind distribution")
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .expect("collect kind distribution");
+            let expected_kinds: Vec<(String, i64)> = case
+                .expected_kinds
+                .iter()
+                .map(|(kind, count)| ((*kind).to_string(), *count))
+                .collect();
+            assert_eq!(
+                actual_kinds, expected_kinds,
+                "{}：kind 分布",
+                case.name
+            );
+
+            for (kind, _) in case.expected_kinds {
+                let open_same_kind: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM atoms
+                          WHERE sealed_at IS NULL AND session_id = ?1
+                            AND turn_id IS ?2 AND kind = ?3",
+                        params!["s-1", case.turn, kind],
+                        |r| r.get(0),
+                    )
+                    .expect("I3 open count");
+                assert!(
+                    open_same_kind <= 1,
+                    "{}：I3 同一 (session, turn, kind) 同时最多一行 open",
+                    case.name
+                );
+            }
+            drop(conn);
+            drop(db);
+            std::fs::remove_file(&path).ok();
+        }
     }
 
     #[test]
