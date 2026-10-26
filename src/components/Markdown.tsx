@@ -3,6 +3,7 @@ import type { ReactElement, ReactNode } from "react";
 import type { Block, Inline } from "@/lib/markdown";
 import { parseMarkdown } from "@/lib/markdown";
 import { openExternal } from "@/lib/ipc";
+import { highlightCode } from "@/lib/highlight/highlight";
 import { Tooltip } from "./ui/Tooltip";
 
 async function copyText(text: string): Promise<void> {
@@ -158,22 +159,35 @@ function renderBlock(block: Block, key: number, caret = false): ReactNode {
         </Heading>
       );
     }
-    case "code":
+    case "code": {
+      const highlighted = highlightCode(block.text, block.lang);
+      const label =
+        highlighted.omittedLines === null
+          ? block.lang
+          : `${block.lang ? `${block.lang} · ` : ""}高亮已省略（${highlighted.omittedLines} 行）`;
+      const content: ReactNode = highlighted.highlighted
+        ? highlighted.spans.map((span, index) => (
+            <span key={index} className="sc-token" data-token={span.theme}>
+              {span.text}
+            </span>
+          ))
+        : block.text;
       return (
         <Fragment key={key}>
           <div className="relative">
-            {block.lang && (
+            {label && (
               <span className="pointer-events-none absolute right-2.5 top-1.5 text-micro text-ink-3">
-                {block.lang}
+                {label}
               </span>
             )}
             <pre>
-              <code>{block.text}</code>
+              <code>{content}</code>
             </pre>
           </div>
           {caret && caretParagraph("caret")}
         </Fragment>
       );
+    }
     case "list": {
       const List = block.ordered ? "ol" : "ul";
       const lastItem = block.items.length - 1;
