@@ -724,3 +724,50 @@ MessageItem                  text.agent 分支改 <Markdown source={displayed} /
   ② 启动前 `AllowSetForegroundWindow(ASFW_ANY)` 显式让渡；③ 枚举浏览器窗口 `SetForegroundWindow`
   （最脆弱，不建议）。①② 合计约 30 行 Win32，**不保证成功**：浏览器坚持不抢焦点时，
   客户端任何努力都盖不过它（只会任务栏闪）。
+
+## 16. 统一 Tooltip：自研原语取代原生 `title`（2026-10-26 定）
+
+原生 `title` 全部落到 WebView 自己的 tip 上，四个问题都不在我们手里：延迟由浏览器决定（0.5~1s，
+和 `--dur-*` 不是一套）、样式不可控（深色下是系统浅色方块）、多行长文本会撑成大白板、
+不响应键盘 focus。全仓 `title=` 现状 **26 处 / 16 文件**（2026-10-26 实测，`src/**/*.tsx`；
+卡片上的 54 处是 2026-10-24 的旧读数，E12 重写后已减半）。
+
+### 16.1 契约
+
+`src/components/ui/Tooltip.tsx`，自建原语，不引第三方库。
+
+| 项 | 规定 | 为什么 |
+| --- | --- | --- |
+| 打开 | hover **220ms**；`focus-visible` **立即**开（不等延迟） | 与 §3.4a HoverCard 同一组数字；键盘用户已经表达了意图，再等就是慢 |
+| 关闭 | 指针离开 **140ms**；Esc 立即；滚动 / 切视图立即 | 手抖掠过不该有反应；滚动时浮层留在原地会显得错位 |
+| 触屏 | `pointerType === "touch"` 不开 | 触屏没有 hover，弹出来就是挡内容 |
+| 定位 | 默认在锚点**上方**（间距 6px），放不下翻下方，水平夹进视口 | 与 HoverCard 相反：tip 是短提示，优先不挡被说明的控件下方内容 |
+| 挂载 | `position: fixed` + `createPortal(document.body)` | 面板里有 `backdrop-filter` 与 `overflow-hidden`，不 portal 会被裁/糊 |
+| 外观 | `.sc-glass` + `radius-mark`(6) + `text-caption`；内边距 6/8；最大宽 **280px**，可换行 | 圆角比卡片小一档：tip 不是卡片 |
+| 无障碍 | `role="tooltip"`、`aria-describedby` 指向浮层 id | 读屏能读到；同时**不许**再挂 `title` 兜底（两套提示同时出现是最难看的状态） |
+
+### 16.2 内容边界（决定用哪个原语）
+
+- **≤ 24 字、单行短提示** → Tooltip。
+- **> 24 字、或需要结构化（多行/键值/可复制）** → HoverCard（§3.4a），不要用 Tooltip 兜大段文字。
+- 已经可见的文字不要再做 tooltip（重复朗读，也多余）。
+
+### 16.3 禁用元素
+
+禁用元素**不挂 Tooltip**：禁用的 `button` 不触发 pointer 事件，tip 永远弹不出来（现在的
+`Button` 用 `title={disabledReason}` 就是这种「看起来有、其实多数时候没有」的状态）。
+禁用原因写在**同一行的可见文案**里，或做成点击后的 `role="alert"` 提示。
+
+### 16.4 迁移与验收
+
+分批：① 原语 + 高频三处（`StatusBar` / `TabStrip` / `Composer`）；② 设置页与成员表单
+（`SettingsView` 4 / `AgentUsers` 2 / `McpCatalogSection` 2 / `Field` 1）；③ 轨迹面板与其余。
+
+验收（真机读数，不是看代码）：
+
+1. `grep -rc 'title="' src --include=*.tsx` 汇总为 **0**（`src/lib/**` 里的字符串不算）；
+2. 打开延迟实测 **220ms ± 40ms**（CDP 注入 pointer 事件 + 采样浮层出现时刻）；
+3. `focus-visible` 打开不延迟；Esc 与滚动均能收起；
+4. 在带 `backdrop-filter` 的面板内（轨迹面板/设置页）不被裁，层级高于面板；
+5. 触屏模拟（CDP `Input.dispatchTouchEvent`）不弹；
+6. 禁用按钮 hover 不出 tip（本来就是「弹不出来」，换组件后仍然如此，但不再有隐形 `title`）。
