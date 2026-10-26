@@ -549,15 +549,20 @@ prompt / prompt_atom_id  空
 `stop_reason` 必须用 `end_turn`：前端 `TracePanel` 把非 `end_turn` 的 stopReason 当异常渲染，用 `replay`
 会显示成失败。provenance 不靠轮次表达，靠原子行：`source='replay'` + `ext` 里的 `{"x.replay": true}`。
 
-原子 id 与去重：
+原子 id 与去重**按批次**算（2026-10-26 真机修正）：
 
 ```
-id = "rp-" + FNV-1a 64 的 16 位十六进制(uiSessionId | kind | 规范化 payload | at)
-     （不用 sha1：仓里没有哈希依赖，FNV-1a 十行内实现且跨版本稳定；这里只求确定性，不求抗碰撞）
-写入 INSERT ... ON CONFLICT(id) DO NOTHING
+batch = FNV-1a 64(按捕获顺序拼起来的 "kind | payload_json" 序列)   // 16 位十六进制
+轮 id  = "turn-replay-" + uiSessionId + "-" + batch
+原子 id = "rp-" + batch + "-" + 序号
+写入    INSERT ... ON CONFLICT(id) DO NOTHING
 ```
 
-- 重放同一段两次 → 第二次全部命中去重（`added=0`、`skipped=N`），行数不变。
+- **不能把 `at` 放进 id**：ACP 的 `session/update` 不带时间戳，`at` 只能取「捕获时刻」，
+  同一段重放两次会得到两套不同的值 —— 真机上实测第二遍多写了 7 行（179→186→193），这就是错的。
+- 批次是幂等的单位：同一次重放两次 → `batch` 相同 → 轮 id 相同 → **整批跳过**，
+  返回 `{captured, added:0, skipped:captured}`，行数不变。
+- 批次内用序号保序，所以同一批里两条内容完全相同的事件（例如两次同 payload 的状态更新）不会被压成一条。
 - 已有 live 行即使撞 id 也不会被覆盖（DO NOTHING，不是 DO UPDATE）。
 - 返回 `{ captured, added, skipped, timedOut }`，前端只把这些数说人话，不做二次判断。
 
