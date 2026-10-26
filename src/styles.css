@@ -259,6 +259,9 @@ body {
   box-shadow: var(--edge-highlight);
 }
 .sc-tooltip {
+  /* 平铺实心面 + 1px 边框：短提示要「被看见」，是 §1.8「暗色靠内高光划界」的唯一例外 */
+  background: var(--s2);
+  border: 1px solid var(--l1);
   max-width: 280px;
   padding: 6px 8px;
   border-radius: var(--radius-mark);
