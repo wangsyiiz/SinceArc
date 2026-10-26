@@ -349,6 +349,50 @@ dialog.sc-dialog[open] {
 .sc-prose ul, .sc-prose ol { margin: 0.5em 0 0.8em; padding-left: 1.3em; }
 .sc-prose li { margin: 0.2em 0; }
 .sc-prose a { color: var(--a1); text-decoration: underline; text-underline-offset: 2px; }
+.sc-prose h1, .sc-prose h2, .sc-prose h3, .sc-prose h4, .sc-prose h5, .sc-prose h6 {
+  margin: 1.1em 0 0.45em;
+  line-height: 1.35;
+}
+.sc-prose blockquote {
+  margin: 0.7em 0;
+  border-left: 2px solid var(--l1);
+  padding-left: 0.85em;
+  color: var(--i2);
+}
+.sc-prose table {
+  width: max-content;
+  min-width: 100%;
+  margin: 0.7em 0;
+  border-collapse: collapse;
+}
+.sc-prose th, .sc-prose td {
+  border: 1px solid var(--l1);
+  padding: 0.35em 0.65em;
+  vertical-align: top;
+}
+.sc-prose th {
+  background: var(--s2);
+  font-weight: 500;
+}
+.sc-prose hr {
+  margin: 1em 0;
+  border: 0;
+  border-top: 1px solid var(--l1);
+}
+.sc-prose ul ul, .sc-prose ol ol, .sc-prose ul ol, .sc-prose ol ul {
+  margin-left: 0.6em;
+}
+/* 流式光标（正文已是块级元素，光标由 <Markdown caret> 渲染在最后一段行内文本末尾；
+   `.sc-caret::after` 是给纯文本分支用的，两者共用同一套 keyframes） */
+.sc-caret-inline {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--a1);
+  animation: sc-caret 1s steps(1) infinite;
+}
 
 ::selection {
   background: color-mix(in oklab, var(--a1) 32%, transparent);

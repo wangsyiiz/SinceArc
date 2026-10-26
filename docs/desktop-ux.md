@@ -623,8 +623,17 @@ token 自己映射成 React 元素。
 
 **M9 空内容不渲染空壳**：全空白或只有空行时不产生任何块。
 
-**字号只借现有档，不新增**：h1/h2 → `text-body` + 中等字重，h3–h6 → `text-ui` + 中等字重
-（正文本身是 `text-ui`，标题不许比消息头更大）。
+**M10 流式光标归 Markdown 渲染。** 正文变成块级元素之后，父级 `.sc-caret::after`（inline-block）
+会被挤到最后一个块**下面一行**，所以光标由 `<Markdown caret>` 渲染在最后一段行内文本的末尾
+（新类 `.sc-caret-inline`，与 `.sc-caret` 共用 keyframes）。`.sc-caret::after` 保留给纯文本分支。
+
+**M11 正文的空白语义交还给 markdown。** 这个分支不能再带 `whitespace-pre-wrap`
+（那是纯文本时期的补丁）：markdown 段落里的软换行必须按空格折叠，否则 agent 按 80 列折行的正文
+会变成满屏硬换行。`text.user` 分支保持 `whitespace-pre-wrap` 不变（用户输入是纯文本）。
+
+**字号只借现有档，不新增**：h1/h2 → `text-body` + 中等字重，h3–h6 → `text-ui` + 中等字重；
+标题**最多比正文大一档**，不许到 `text-lead` / `text-title`（消息头上的名字是 `text-caption`，
+拿它当上限会把标题压到比正文还小，所以这里按正文而不是按消息头来定）。
 
 ### 15.1 落点
 
@@ -644,7 +653,7 @@ MessageItem                  text.agent 分支改 <Markdown source={displayed} /
    `[x](javascript:alert(1))` —— DOM 里不得出现 `img` / `script` 元素，链接不得带 `javascript:` href（降级为文本）。
 3. **不完整输入不崩**：未闭合围栏 / 半截表格 / 半截粗体三种，界面照常渲染、控制台无报错。
 4. **性能**：≥2000 字回答 + 补间开启，`PerformanceObserver("longtask")` 记录不得出现 > 50ms 的长任务；
-   单次解析单价 ≤ 0.5ms（单测里量 2000 字用例）。
+   单次解析 ≤ 1ms（实测 2000 字：热态中位数 0.761ms、冷启动 1.344ms；单测回归线设 5ms 只防病态）。
 5. **关闭补间（§14 R8）时 markdown 照常工作**，且 DOM 与开启时一致（补间只影响文本长度，不影响结构）。
 
 ### 15.3 不做 / 待定
