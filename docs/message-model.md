@@ -474,3 +474,40 @@ schema 每个 kind 的 payload 版本，初始一律 1；改 payload 的可选�
                               SELECT count(*) FROM atoms WHERE refs_json IS NOT NULL > 0
 界面不变（refs/ext 不参与渲染）
 ```
+
+## 15. 流程守卫（E17 第一张卡，2026-10-26）
+
+模型只保证「一个事实一个来源」，它管不住时序与生命周期 —— E16.7 那个「轮已终态却留着未封口行」
+就是靠人工查库才发现的。本节把这类不变量写成断言，交给机器每次跑。
+
+### 15.1 不变量（写成代码的地方见括号）
+
+```
+I1  open ⇔ 在跑       sealed_at IS NULL 的原子，其轮必须是 running / waiting_approval；
+                      没有 turn_id 的原子必须已封口（启动自检 + 单测）
+I2  终态即封口        轮进 finished / failed 后写入的原子一律 sealed_at 非空（状态机矩阵）
+I3  一行一段流        同一 (session, turn, kind) 同时最多一行 open（唯一索引 + 状态机矩阵）
+I4  视图映射穷尽      messages 视图 CASE 必须覆盖注册表里所有 chat kind，漏一个即红（静态守卫）
+```
+
+判定口径：出现了「不能解释的状态」就是 bug，不要用「大概是迟到事件」把它糊过去 ——
+要么这条不变量本来就不对（那改规范），要么代码错了（那修代码）。
+
+### 15.2 I1 的启动自检
+
+`Db::open` 收尾时跑一次自检；命中就 `tracing::warn!` 带上 session / turn / atom id，
+**不自动修复**（自动改数据会把「谁写坏的」这条线索一起抹掉）。查询：
+
+```sql
+SELECT a.id, a.session_id, a.turn_id, t.status
+  FROM atoms a JOIN turns t ON t.id = a.turn_id
+ WHERE a.sealed_at IS NULL AND t.status NOT IN ('running', 'waiting_approval');
+```
+
+自检只在启动时跑，不进热路径。
+
+### 15.3 I4 的静态守卫
+
+`db/schema.sql` 里 `messages` 视图的 `CASE kind WHEN …` 分支，与 `message_kind.rs` 的 chat kind
+集合作逐项比对（手法同前端注册表镜像守卫）：少一个 → 该 kind 的 chat 原子会走 `ELSE` 被当成正文，
+静默错类。测试直接读两个文件比对，不查库。
