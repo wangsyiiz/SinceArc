@@ -171,7 +171,7 @@ interface MessageBase {
 export type Message = MessageBase &
   (
     | { role: "user"; text: string; kind?: "aside"; quoted?: QuotedRef; delegate?: MessageDelegate; asideReceipt?: string }
-    | { role: "player"; playerId: string; text: string; streaming?: boolean; /** 用户中途点了停止：已生成的部分保留，但要标出来 */ stopped?: boolean }
+    | { role: "player"; playerId: string; text: string; streaming?: boolean; /** 用户中途点了停止：已生成的部分保留，但要标出来 */ stopped?: boolean; /** 这一轮出错（promptFailed）：收口时当帧拉满，不走补间 */ failed?: boolean }
     | { role: "system"; text: string }
   );
 
@@ -289,6 +289,8 @@ export interface ThreadSettings {
   autoApproveDefault: AutoApproveLevel;
   /** 新建连接时默认继承整份 MCP 目录；只影响新连接，不追溯已有连接 */
   mcpInheritDefault: boolean;
+  /** 流式回答按到达节奏平滑推进；只影响渲染层 */
+  tweenEnabled: boolean;
 }
 
 export const CONTEXT_MESSAGES_MAX = 20;
@@ -298,4 +300,5 @@ export const DEFAULT_THREAD_SETTINGS: ThreadSettings = {
   theme: "dark",
   autoApproveDefault: "off",
   mcpInheritDefault: true,
+  tweenEnabled: true,
 };

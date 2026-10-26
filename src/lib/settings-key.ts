@@ -14,5 +14,6 @@ export function settingsKey(settings: ThreadSettings): string {
     settings.theme,
     settings.autoApproveDefault,
     settings.mcpInheritDefault,
+    settings.tweenEnabled,
   ]);
 }

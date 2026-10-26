@@ -1391,6 +1391,7 @@ export default function App() {
                                 <MessageItem
                                   message={m}
                                   players={renderPlayers}
+                                  tweenEnabled={settings.tweenEnabled}
                                   delegatePhase={
                                     m.role === "user" && m.delegate
                                       ? delegateRunning[m.delegate.handleId]
@@ -1546,6 +1547,9 @@ export default function App() {
               }
               onChangeMcpInheritDefault={(mcpInheritDefault) =>
                 setSettings((s) => ({ ...s, mcpInheritDefault }))
+              }
+              onChangeTweenEnabled={(tweenEnabled) =>
+                setSettings((s) => ({ ...s, tweenEnabled }))
               }
             />
           )}

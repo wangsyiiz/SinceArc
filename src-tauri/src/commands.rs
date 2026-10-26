@@ -327,6 +327,9 @@ pub struct AppSettingsDto {
     /// 新建连接时是否默认继承整份 MCP 目录；只影响新连接，不追溯已有连接。
     #[serde(default = "default_true")]
     pub mcp_inherit_default: bool,
+    /// 流式回答按到达节奏平滑推进；只影响渲染层。
+    #[serde(default = "default_true")]
+    pub tween_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -340,6 +343,7 @@ impl Default for AppSettingsDto {
             theme: "dark".into(),
             auto_approve_default: "off".into(),
             mcp_inherit_default: true,
+            tween_enabled: true,
         }
     }
 }
@@ -4508,6 +4512,7 @@ mod settings_tests {
             theme: "dark".into(),
             auto_approve_default: "off".into(),
             mcp_inherit_default: true,
+            tween_enabled: true,
         };
         let err = settings.validate().expect_err("99 必须被拒");
         assert_eq!(err.code, 50001);
@@ -4521,6 +4526,7 @@ mod settings_tests {
             theme: "neon".into(),
             auto_approve_default: "off".into(),
             mcp_inherit_default: true,
+            tween_enabled: true,
         };
         let err = settings.validate().expect_err("未知主题必须被拒");
         assert_eq!(err.code, 50001);
