@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export function Segmented<T extends string>(props: {
-  options: { value: T; label: string; icon?: ReactNode; disabled?: boolean; title?: string }[];
+  options: { value: T; label: string; icon?: ReactNode; disabled?: boolean }[];
   value: T;
   onChange: (v: T) => void;
   disabled?: boolean;
@@ -108,7 +108,6 @@ export function Segmented<T extends string>(props: {
           }}
           type="button"
           disabled={disabled || option.disabled}
-          title={option.title}
           aria-pressed={option.value === value}
           onClick={() => onChange(option.value)}
           className={cn(

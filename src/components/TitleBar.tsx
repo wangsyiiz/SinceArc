@@ -76,7 +76,6 @@ function WinButton({
 }) {
   return (
     <button
-      title={label}
       aria-label={label}
       onClick={onClick}
       className={cn(

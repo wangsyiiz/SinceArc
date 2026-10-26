@@ -4,6 +4,7 @@ import { capsRows, type CapsGroup } from "@/lib/caps-format";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import { cn } from "@/lib/utils";
 import { useAnchoredLayer } from "./ui/Menu";
+import { Tooltip } from "./ui/Tooltip";
 
 interface AgentCapabilitiesProps {
   profile: AgentProfile | undefined;
@@ -40,24 +41,27 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
   // 握手过但一项都不支持时仍然显示：那本身就是「这个 agent 什么也不报」的事实。
   if (rows.length === 0 && acpCommands.length === 0) return null;
 
+  const trigger = (
+    <button
+      ref={triggerRef}
+      type="button"
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      onClick={toggle}
+      className={cn(
+        "flex h-7 items-center gap-1.5 rounded-mark px-2 text-caption transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-1",
+        open ? "bg-surface-3/65 text-ink-1" : "text-ink-2 hover:bg-surface-3/55 hover:text-ink-1",
+      )}
+    >
+      <Sparkles className="size-3" />
+      能力
+      <span className="font-mono text-micro text-ink-3">{supported}</span>
+    </button>
+  );
+
   return (
     <div className="relative">
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onClick={toggle}
-        title={profile?.agentName ?? undefined}
-        className={cn(
-          "flex h-7 items-center gap-1.5 rounded-mark px-2 text-caption transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-1",
-          open ? "bg-surface-3/65 text-ink-1" : "text-ink-2 hover:bg-surface-3/55 hover:text-ink-1",
-        )}
-      >
-        <Sparkles className="size-3" />
-        能力
-        <span className="font-mono text-micro text-ink-3">{supported}</span>
-      </button>
+      {profile?.agentName ? <Tooltip label={profile.agentName}>{trigger}</Tooltip> : trigger}
 
       {open && (
         <div

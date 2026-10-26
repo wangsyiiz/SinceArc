@@ -26,7 +26,7 @@ const buttonStyles = cva(
   },
 );
 
-export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+export type ButtonProps = Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "title"> & {
   variant?: "primary" | "secondary" | "ghost" | "glass";
   size?: "sm" | "md";
   danger?: boolean;
@@ -51,7 +51,6 @@ export const Button: React.FC<ButtonProps> = ({
   reasonText,
   className,
   children,
-  title,
   type,
   ...props
 }) => {
@@ -60,7 +59,6 @@ export const Button: React.FC<ButtonProps> = ({
       {...props}
       ref={ref}
       type={type ?? "button"}
-      title={title}
       aria-busy={loading || undefined}
       className={cn(buttonStyles({ variant, size }), danger && "text-danger-1", className)}
     >

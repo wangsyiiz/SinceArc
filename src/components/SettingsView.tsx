@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -63,6 +63,7 @@ import { capsRows } from "@/lib/caps-format";
 import { StatusDot } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { EmptyState } from "./ui/EmptyState";
+import { useHoverCard } from "./ui/HoverCard";
 import { Field, Input } from "./ui/Field";
 import { Menu, type MenuItem } from "./ui/Menu";
 import { Segmented } from "./ui/Segmented";
@@ -125,6 +126,29 @@ const THEME_OPTIONS = THEMES.map((theme) => ({
 
 const DISCARD_UNSAVED_HEADING = "放弃未保存的修改";
 const DELETE_CONNECTION_HEADING = "删除连接";
+
+function LongTextHover({
+  text,
+  disabled = false,
+  className,
+  children,
+}: {
+  text: string;
+  disabled?: boolean;
+  className?: string;
+  children?: ReactNode;
+}) {
+  const [el, setEl] = useState<HTMLSpanElement | null>(null);
+  const hover = useHoverCard({ disabled });
+  return (
+    <>
+      <span ref={setEl} {...hover.triggerProps(el)} className={className}>
+        {children ?? text}
+      </span>
+      {hover.card(<span className="break-all font-mono">{text}</span>)}
+    </>
+  );
+}
 
 const AUTO_APPROVE_OPTIONS = [
   { value: "off" as const, label: "关闭" },
@@ -683,12 +707,13 @@ export function SettingsView({
                     {hit.host}
                   </span>
                 </span>
-                <span
-                  title={hit.path}
+                <LongTextHover
+                  text={hit.path}
+                  disabled={hit.path.length <= 24}
                   className="truncate font-mono text-caption text-ink-3"
                 >
                   {hit.path}
-                </span>
+                </LongTextHover>
               </button>
             ))}
           </div>
@@ -756,7 +781,6 @@ export function SettingsView({
               variant="primary"
               size="sm"
               disabled={!saveGate.ok}
-              title={saveGate.reason}
               onClick={() => void saveDraft(profile)}
             >
               保存
@@ -769,7 +793,6 @@ export function SettingsView({
                 variant="secondary"
                 size="sm"
                 disabled={busy === profile.id || draftDirty}
-                title={draftDirty ? "先保存再连接" : undefined}
                 onClick={() =>
                   connected
                     ? void handleDisconnect(profile)
@@ -927,12 +950,13 @@ export function SettingsView({
                 className="min-w-0 flex-1 font-mono"
               />
             ) : (
-              <code
-                title={command}
+              <LongTextHover
+                text={command}
+                disabled={command.length <= 24}
                 className="min-w-0 flex-1 truncate font-mono text-caption text-ink-3"
               >
-                {command}
-              </code>
+                <code>{command}</code>
+              </LongTextHover>
             )}
             {!showCommand && (
               <Button
@@ -1000,16 +1024,20 @@ export function SettingsView({
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               <span className="text-caption text-ink-3">最近使用</span>
               {history.map((path) => (
-                <Button
+                <LongTextHover
                   key={path}
-                  variant="ghost"
-                  size="sm"
-                  className="max-w-60"
-                  title={path}
-                  onClick={() => patchDraft({ cwd: path })}
+                  text={path}
+                  disabled={path.length <= 24}
                 >
-                  <span className="truncate font-mono text-caption">{path}</span>
-                </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="max-w-60"
+                    onClick={() => patchDraft({ cwd: path })}
+                  >
+                    <span className="truncate font-mono text-caption">{path}</span>
+                  </Button>
+                </LongTextHover>
               ))}
             </div>
           )}

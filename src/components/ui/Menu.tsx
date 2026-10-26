@@ -244,7 +244,7 @@ export function Menu({
         aria-label={ariaLabel}
         aria-haspopup="menu"
         aria-expanded={open}
-        title={disabledReason ?? ariaLabel}
+        aria-description={disabled ? disabledReason : undefined}
         onClick={(event) => {
           event.stopPropagation();
           toggle();
@@ -297,7 +297,7 @@ export function Menu({
               role="menuitem"
               aria-checked={item.checked}
               disabled={item.disabled}
-              title={item.disabled ? item.disabledReason : undefined}
+              aria-description={item.disabled ? item.disabledReason : undefined}
               onClick={(event) => {
                 event.stopPropagation();
                 if (item.disabled) return;

@@ -359,7 +359,6 @@ function ActivityListRow({ activity, player }: { activity: Activity; player?: Pl
           <span
             className="size-1.5 shrink-0 rounded-full"
             style={{ background: player.color }}
-            title={player.name}
           />
         )}
         <Icon className="size-2.5 shrink-0 text-ink-3" />
@@ -508,7 +507,6 @@ function GraphLabelRow({
         {...hover.triggerProps(el)}
         data-turn-id={r.kind === "user" ? r.turnId : undefined}
         style={{ height: ROW }}
-        title={r.statusTitle}
         className={cn(
           "flex items-center gap-1.5 rounded-mark pr-2 transition-colors hover:bg-surface-2/50",
           r.id === focusId && "sc-row-fade",
@@ -529,7 +527,6 @@ function GraphLabelRow({
                     "flex shrink-0 items-center gap-1 text-micro",
                     turnStatusTextClass(r.status),
                   )}
-                  title={r.statusTitle}
                 >
                   {r.status && (
                     <span
@@ -567,6 +564,64 @@ function GraphLabelRow({
         )}
       </div>
       {hover.card(<HoverContent row={r} />)}
+    </>
+  );
+}
+
+function TurnListHeader({
+  heading,
+  outcome,
+  at,
+  label,
+  target,
+  onLocate,
+}: {
+  heading: string;
+  outcome: { label: string; dot?: TraceRow["status"]; title?: string };
+  at: string;
+  label: string;
+  target: LocateTarget;
+  onLocate: (messageId: string) => void;
+}) {
+  const [headingEl, setHeadingEl] = useState<HTMLSpanElement | null>(null);
+  const [statusEl, setStatusEl] = useState<HTMLSpanElement | null>(null);
+  const headingHover = useHoverCard();
+  const statusHover = useHoverCard({ disabled: !outcome.title });
+
+  return (
+    <>
+      <div className="flex items-center gap-1.5 px-1 py-1">
+        <span className="shrink-0 font-mono text-micro text-ink-3">{at}</span>
+        <span
+          ref={setHeadingEl}
+          {...headingHover.triggerProps(headingEl)}
+          className="min-w-0 truncate text-caption text-ink-3"
+        >
+          {label}
+        </span>
+        <TurnLocateControl target={target} onLocate={onLocate} />
+        <span
+          ref={setStatusEl}
+          {...statusHover.triggerProps(statusEl)}
+          className={cn(
+            "ml-auto flex shrink-0 items-center gap-1 text-micro",
+            turnStatusTextClass(outcome.dot),
+          )}
+        >
+          {outcome.dot && (
+            <span
+              className={cn("size-1.5 shrink-0 rounded-full", statusDotClass(outcome.dot))}
+            />
+          )}
+          <span className="truncate">{outcome.label}</span>
+        </span>
+      </div>
+      {headingHover.card(
+        <div className="break-words text-caption text-ink-2">{heading}</div>,
+      )}
+      {statusHover.card(
+        <div className="break-words text-caption text-ink-2">{outcome.title}</div>,
+      )}
     </>
   );
 }
@@ -745,33 +800,14 @@ export function TracePanel({
                   data-turn-id={turn.id}
                   className="mb-1"
                 >
-                  <div className="flex items-center gap-1.5 px-1 py-1" title={heading}>
-                    <span className="shrink-0 font-mono text-micro text-ink-3">{turn.at}</span>
-                    <span className="min-w-0 truncate text-caption text-ink-3">
-                      {turnLabel(index)}
-                    </span>
-                    <TurnLocateControl
-                      target={locateTargetOf(turn.id)}
-                      onLocate={onLocateMessage}
-                    />
-                    <span
-                      className={cn(
-                        "ml-auto flex shrink-0 items-center gap-1 text-micro",
-                        turnStatusTextClass(outcome.dot),
-                      )}
-                      title={outcome.title}
-                    >
-                      {outcome.dot && (
-                        <span
-                          className={cn(
-                            "size-1.5 shrink-0 rounded-full",
-                            statusDotClass(outcome.dot),
-                          )}
-                        />
-                      )}
-                      <span className="truncate">{outcome.label}</span>
-                    </span>
-                  </div>
+                  <TurnListHeader
+                    heading={heading}
+                    outcome={outcome}
+                    at={turn.at}
+                    label={turnLabel(index)}
+                    target={locateTargetOf(turn.id)}
+                    onLocate={onLocateMessage}
+                  />
                   {rows.map((a) => (
                     <ActivityListRow
                       key={a.id}

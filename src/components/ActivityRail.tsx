@@ -1,9 +1,11 @@
+import { useState } from "react";
 import type { Activity, Player } from "@/types";
 import { cn } from "@/lib/utils";
 import { PlayerAvatar } from "./PlayerAvatar";
 import { MembersMenu } from "./MembersMenu";
 import type { AgentUser } from "@/lib/ipc";
 import type { AgentProfile } from "@/types";
+import { useHoverCard } from "./ui/HoverCard";
 
 interface ActivityRailProps {
   players: Player[];
@@ -35,29 +37,16 @@ export function ActivityRail({
         const running = mine.find((a) => a.status === "running");
         const selected = filter === p.id;
         return (
-          <button
+          <RailPlayerButton
             key={p.id}
-            onClick={(event) => {
+            player={p}
+            running={running}
+            selected={selected}
+            onOpen={(anchor) => {
               const member = group?.members.find((m) => m.id === p.id);
-              if (member) onOpenMember(member, event.currentTarget);
+              if (member) onOpenMember(member, anchor);
             }}
-            aria-label={`打开 ${p.name} 的详情`}
-            title={running ? `${p.name}：${running.title}` : p.name}
-            className={cn(
-              "relative grid size-7 place-items-center rounded-full transition-opacity",
-              selected ? "ring-2 ring-offset-2 ring-offset-transparent" : "opacity-80 hover:opacity-100",
-            )}
-            /* 同上：颜色可能是 CSS 变量，只能走 color-mix，不能拼 hex 后缀 */
-            style={selected ? { boxShadow: `0 0 0 2px color-mix(in srgb, ${p.color} 40%, transparent)` } : undefined}
-          >
-            <PlayerAvatar player={p} size={24} />
-            {running && (
-              <span
-                className="absolute -bottom-0.5 -right-0.5 size-2 animate-pulse rounded-full border-2 border-surface-0"
-                style={{ background: p.color }}
-              />
-            )}
-          </button>
+          />
         );
       })}
       </div>
@@ -78,5 +67,56 @@ export function ActivityRail({
         {filter ?? "AGENTS"}
       </div>
     </aside>
+  );
+}
+
+function RailPlayerButton({
+  player,
+  running,
+  selected,
+  onOpen,
+}: {
+  player: Player;
+  running: Activity | undefined;
+  selected: boolean;
+  onOpen: (anchor: HTMLElement) => void;
+}) {
+  const [el, setEl] = useState<HTMLButtonElement | null>(null);
+  const hover = useHoverCard();
+  return (
+    <>
+      <button
+        ref={setEl}
+        {...hover.triggerProps(el)}
+        onClick={(event) => onOpen(event.currentTarget)}
+        aria-label={`打开 ${player.name} 的详情`}
+        className={cn(
+          "relative grid size-7 place-items-center rounded-full transition-opacity",
+          selected ? "ring-2 ring-offset-2 ring-offset-transparent" : "opacity-80 hover:opacity-100",
+        )}
+        /* 同上：颜色可能是 CSS 变量，只能走 color-mix，不能拼 hex 后缀 */
+        style={
+          selected
+            ? { boxShadow: `0 0 0 2px color-mix(in srgb, ${player.color} 40%, transparent)` }
+            : undefined
+        }
+      >
+        <PlayerAvatar player={player} size={24} />
+        {running && (
+          <span
+            className="absolute -bottom-0.5 -right-0.5 size-2 animate-pulse rounded-full border-2 border-surface-0"
+            style={{ background: player.color }}
+          />
+        )}
+      </button>
+      {hover.card(
+        <div>
+          <div className="text-caption font-medium text-ink-1">{player.name}</div>
+          {running && (
+            <div className="mt-1 break-words text-caption text-ink-2">{running.title}</div>
+          )}
+        </div>,
+      )}
+    </>
   );
 }
