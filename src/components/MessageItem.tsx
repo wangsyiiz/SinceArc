@@ -13,6 +13,7 @@ import { delegateActionLabel } from "@/lib/delegate-status";
 import { delegateCapsDetail } from "@/lib/delegate-target";
 import { chatVisibilityOf } from "@/lib/chat-visibility";
 import { normaliseTurnId } from "@/lib/turn-align";
+import { useTweenedText } from "@/hooks/useTweenedText";
 import { PlayerAvatar } from "./PlayerAvatar";
 import { RemovedBadge } from "./RemovedBadge";
 
@@ -65,19 +66,26 @@ function QuoteBlock({ quoted }: { quoted: QuotedRef }) {
 export function MessageItem({
   message,
   players,
+  tweenEnabled,
   delegatePhase,
   onCancelDelegate,
   onLocateTrace,
 }: {
   message: Message;
   players: Player[];
+  tweenEnabled: boolean;
   delegatePhase?: string | null;
   onCancelDelegate?: (handleId: string) => void | Promise<void>;
   onLocateTrace?: (turnId: string) => void;
 }) {
+  const chatKind = chatVisibilityOf(message);
+  const displayed = useTweenedText({
+    text: message.text,
+    streaming: message.role === "player" && message.streaming === true,
+    enabled: tweenEnabled && chatKind === "text.agent",
+  });
   const [delegateExpanded, setDelegateExpanded] = useState(false);
 
-  const chatKind = chatVisibilityOf(message);
   if (chatKind === null) return null;
 
   if (chatKind === "notice.system") {
@@ -193,7 +201,7 @@ export function MessageItem({
             message.streaming && "sc-caret",
           )}
         >
-          {renderText(message.text, players)}
+          {renderText(displayed, players)}
         </div>
         {/* 中途停下要留痕：否则用户只看到「回答没了后半段」，不知道是停了还是断了 */}
         {message.stopped && (
