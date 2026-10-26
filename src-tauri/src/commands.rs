@@ -1289,21 +1289,70 @@ fn prompt_failure_outcome(
     }
 }
 
-/// 轨迹视图：最近 N 轮 + 每轮的活动（tool_call 与它的增量更新已合并）。
-///
-/// 只读、只聚合，不做业务判断 —— 谁能看哪一轮由 `uiSessionId` 决定（调用方只传自己的会话）。
-/// 轨迹保留策略的执行体：90 天 / 单会话 5 万条，超出直接删除。
-pub const TRACE_RETENTION_DAYS: i64 = 90;
-pub const TRACE_MAX_EVENTS_PER_SESSION: i64 = 50_000;
+/// 容量提示阈值（docs/message-model.md §13.2）：只用于判断是否提示，不参与任何删除。
+pub const STORAGE_HINT_MAX_EVENTS: i64 = 50_000;
+pub const STORAGE_HINT_MAX_DAYS: i64 = 90;
 
-/// 手动触发一次清理（也用于验证「界面上承诺的清理是否真的发生」）。
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct StorageStatsDto {
+    #[ts(type = "number")]
+    pub atom_count: i64,
+    #[ts(type = "number")]
+    pub chat_count: i64,
+    #[ts(type = "number")]
+    pub trace_count: i64,
+    #[ts(type = "number")]
+    pub bytes: i64,
+    #[ts(type = "number | null")]
+    pub oldest_at: Option<i64>,
+    #[ts(type = "number")]
+    pub threshold_count: i64,
+    #[ts(type = "number")]
+    pub threshold_days: i64,
+    pub over: bool,
+    pub reasons: Vec<String>,
+}
+
+/// 只给标记，文案由前端按原因映射。顺序固定：先条数、后年龄。
+pub(crate) fn storage_hint_reasons(
+    stats: &db::StorageStatsSnapshot,
+    now_ms: i64,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if stats.trace_count > STORAGE_HINT_MAX_EVENTS {
+        reasons.push("count".to_string());
+    }
+    let oldest_cutoff = now_ms - STORAGE_HINT_MAX_DAYS * 24 * 3600 * 1000;
+    if stats.oldest_at.is_some_and(|at| at < oldest_cutoff) {
+        reasons.push("age".to_string());
+    }
+    reasons
+}
+
+/// 读一个会话的存储统计。只读 atoms：不写表、不改行，也不删除任何数据。
 #[tauri::command]
-pub async fn trace_prune(state: State<'_, AppState>) -> Result<db::PruneReport, CmdError> {
-    let cutoff = crate::trace::now_ms() - TRACE_RETENTION_DAYS * 24 * 3600 * 1000;
-    state
+pub async fn session_storage_stats(
+    state: State<'_, AppState>,
+    ui_session_id: String,
+) -> Result<StorageStatsDto, CmdError> {
+    let stats = state
         .db
-        .prune_traces(cutoff, TRACE_MAX_EVENTS_PER_SESSION, true)
-        .map_err(|e| CmdError::new(50000, format!("清理轨迹失败：{e}")))
+        .storage_stats(&ui_session_id)
+        .map_err(|e| CmdError::new(50000, format!("读取存储统计失败：{e}")))?;
+    let reasons = storage_hint_reasons(&stats, crate::trace::now_ms());
+    Ok(StorageStatsDto {
+        atom_count: stats.atom_count,
+        chat_count: stats.chat_count,
+        trace_count: stats.trace_count,
+        bytes: stats.bytes,
+        oldest_at: stats.oldest_at,
+        threshold_count: STORAGE_HINT_MAX_EVENTS,
+        threshold_days: STORAGE_HINT_MAX_DAYS,
+        over: !reasons.is_empty(),
+        reasons,
+    })
 }
 
 #[tauri::command]
@@ -4742,5 +4791,54 @@ mod steer_tests {
         ] {
             assert!(!is_openable_url(bad), "{bad:?} 应当被拒");
         }
+    }
+}
+
+#[cfg(test)]
+mod storage_guard_tests {
+    use super::*;
+
+    const SOURCES: [(&str, &str); 3] = [
+        ("src/lib.rs", include_str!("lib.rs")),
+        ("src/commands.rs", include_str!("commands.rs")),
+        ("src/db/mod.rs", include_str!("db/mod.rs")),
+    ];
+
+    #[test]
+    fn trace_storage_has_no_age_or_count_delete() {
+        let atoms_delete = concat!("DELETE ", "FROM atoms");
+        let turns_delete = concat!("DELETE ", "FROM turns");
+        for (path, source) in SOURCES {
+            assert!(
+                !source.contains(atoms_delete),
+                "{path} 含 {atoms_delete}；口径：轨迹只统计不删除（§13.2）"
+            );
+            assert!(
+                !source.contains(turns_delete),
+                "{path} 含 {turns_delete}；口径：轨迹只统计不删除（§13.2）"
+            );
+        }
+    }
+
+    #[test]
+    fn count_and_age_reasons_are_independent() {
+        let now = 200 * 24 * 3600 * 1000;
+        let mut stats = db::StorageStatsSnapshot {
+            atom_count: STORAGE_HINT_MAX_EVENTS + 1,
+            chat_count: 0,
+            trace_count: STORAGE_HINT_MAX_EVENTS + 1,
+            bytes: 0,
+            oldest_at: Some(now - (STORAGE_HINT_MAX_DAYS + 1) * 24 * 3600 * 1000),
+        };
+        assert_eq!(
+            storage_hint_reasons(&stats, now),
+            vec!["count".to_string(), "age".to_string()]
+        );
+
+        stats.trace_count = 1;
+        assert_eq!(
+            storage_hint_reasons(&stats, now),
+            vec!["age".to_string()]
+        );
     }
 }

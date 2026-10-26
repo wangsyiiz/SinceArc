@@ -2,9 +2,12 @@
 
 import type { ProfileDto, SessionRowDto, SessionUpsert, TraceTurnDto } from "../types";
 import type { MessagePage } from "../types.gen/MessagePage";
+import type { StorageStatsDto } from "../types.gen/StorageStatsDto";
 import type { UsageDto } from "../types.gen/UsageDto";
 import type { AgentProfile, SshAuth, SshConfig } from "@/types";
 import { invokeCmd } from "../client";
+
+export type { StorageStatsDto };
 
 export function toDto(p: AgentProfile) {
   return {
@@ -130,6 +133,11 @@ export function messagesLoad(
 /** 打开会话时读一次最后一条真实 usage；没有就返回 null。 */
 export function sessionUsage(sessionId: string): Promise<UsageDto | null> {
   return invokeCmd<UsageDto | null>("session_usage", { sessionId });
+}
+
+/** 会话存储读数：只统计，不删除；气泡阈值与计数都以后端返回为准。 */
+export function sessionStorageStats(uiSessionId: string): Promise<StorageStatsDto> {
+  return invokeCmd<StorageStatsDto>("session_storage_stats", { uiSessionId });
 }
 
 /* ---------- session/update 的解析 ---------- */

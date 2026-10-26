@@ -20,7 +20,6 @@ export type { ModeChoice } from "./ModeChoice";
 export type { ModeOption } from "./ModeOption";
 export type { ProbeOutcome } from "./ProbeOutcome";
 export type { ProfileDto } from "./ProfileDto";
-export type { PruneReport } from "./PruneReport";
 export type { ResumeOutcome } from "./ResumeOutcome";
 export type { SessionInfo } from "./SessionInfo";
 export type { SessionLoadOutcome } from "./SessionLoadOutcome";
