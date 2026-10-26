@@ -805,6 +805,8 @@ export function useAcpEvents({
                     ...m,
                     streaming: false,
                     stopped: cancelled || m.stopped,
+                    // 出错与「用户点停止」在渲染层要区分：两者都当帧拉满，但只有停止会显示「已停止」。
+                    failed: failed || m.failed,
                     ...(persistTurnId && !m.turnId ? { turnId: persistTurnId } : {}),
                   }
                 : m,
