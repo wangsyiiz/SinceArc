@@ -82,6 +82,7 @@ export function MessageItem({
   const displayed = useTweenedText({
     text: message.text,
     streaming: message.role === "player" && message.streaming === true,
+    snapNow: message.role === "player" && (message.stopped === true || message.failed === true),
     enabled: tweenEnabled && chatKind === "text.agent",
   });
   const [delegateExpanded, setDelegateExpanded] = useState(false);

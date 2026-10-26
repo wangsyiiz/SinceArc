@@ -171,7 +171,7 @@ interface MessageBase {
 export type Message = MessageBase &
   (
     | { role: "user"; text: string; kind?: "aside"; quoted?: QuotedRef; delegate?: MessageDelegate; asideReceipt?: string }
-    | { role: "player"; playerId: string; text: string; streaming?: boolean; /** 用户中途点了停止：已生成的部分保留，但要标出来 */ stopped?: boolean }
+    | { role: "player"; playerId: string; text: string; streaming?: boolean; /** 用户中途点了停止：已生成的部分保留，但要标出来 */ stopped?: boolean; /** 这一轮出错（promptFailed）：收口时当帧拉满，不走补间 */ failed?: boolean }
     | { role: "system"; text: string }
   );
 
