@@ -15,6 +15,10 @@ const LOCAL_TIMEOUT_MS = 30_000;
 const DB_TIMEOUT_MS = 15_000;
 const POLL_MS = 150;
 const LATE_TEXT_WINDOW_MS = 3_000;
+/** 取消用例：先等到 agent 真有这么多字，才允许点停止（否则验的是空转取消）。 */
+const CANCEL_MIN_TEXT = 40;
+/** 取消用例等待输出上限：模型慢时也要给足，但仍要有限。 */
+const CANCEL_TEXT_TIMEOUT_MS = 90_000;
 
 const FLOW_ORDER = ["normal", "cancel", "reopen", "permission", "late-text"];
 
@@ -851,6 +855,28 @@ function createUi(cdp) {
     return state;
   };
 
+  /**
+   * 等 agent 真的开始输出（≥ minLen 字）。
+   *
+   * 「取消」这类用例必须先等出内容再停：否则停止可能落在第一个分片之前，
+   * 只验到「空转被取消」，验不到「流式中途停下」（真机第一次跑就撞成 agent_text_len=0）。
+   */
+  const waitForAgentText = (turnId, minLen, timeoutMs = CANCEL_TEXT_TIMEOUT_MS) =>
+    waitFor(
+      `agent 输出 ≥ ${minLen} 字`,
+      async () => {
+        const text = await cdp.js(pageAgentTextForTurn, turnId);
+        return text.length >= minLen ? { reached: true, textLength: text.length } : null;
+      },
+      {
+        timeout: timeoutMs,
+        detail: async () => {
+          const text = await cdp.js(pageAgentTextForTurn, turnId);
+          return `当前 agent 文本 ${text.length} 字：${JSON.stringify(text.slice(0, 60))}`;
+        },
+      },
+    );
+
   const clickStop = async () => {
     const state = await cdp.js(pageClickStop);
     if (!state.ok) throw new Error(`点击停止失败：${state.reason}`);
@@ -937,6 +963,7 @@ function createUi(cdp) {
     waitForAgentTurn,
     waitForUserTurn,
     waitForStopOrOutput,
+    waitForAgentText,
     clickStop,
     activeSidebarRow,
     sidebarRows,
@@ -1149,8 +1176,21 @@ async function flowCancel({ db, ui }) {
   await ui.send(prompt);
   const userTurn = await ui.waitForUserTurn();
   const turnId = userTurn.turnId;
-  const output = await ui.waitForStopOrOutput(turnId);
-  await ui.clickStop();
+
+  // 先等真的出内容：停止落在第一个分片之前，验的是「空转取消」而不是「流式中途停下」。
+  let streamed = { reached: false, textLength: 0, error: null };
+  try {
+    streamed = await ui.waitForAgentText(turnId, CANCEL_MIN_TEXT);
+  } catch (error) {
+    streamed = { reached: false, textLength: 0, error: errorText(error) };
+  }
+
+  // 无论有没有等到输出，都要把这一轮停掉 —— 否则会留一个 running 轮，污染后面的 flow。
+  try {
+    await ui.clickStop();
+  } catch (error) {
+    if (!streamed.error) streamed.error = `点停止失败：${errorText(error)}`;
+  }
 
   const state = await waitForTurnState(
     db,
@@ -1163,17 +1203,22 @@ async function flowCancel({ db, ui }) {
 
   const checks = [
     check(
-      "a_turn_cancelled",
-      state.status === "finished" && state.stopReason === "cancelled",
-      `status=${state.status} stop_reason=${state.stopReason} agent_text_len=${output.textLength}`,
+      "a_stream_started",
+      streamed.reached && streamed.textLength >= CANCEL_MIN_TEXT,
+      `agent_text_len=${streamed.textLength} 阈值=${CANCEL_MIN_TEXT}${streamed.error ? ` error=${streamed.error}` : ""}`,
     ),
     check(
-      "b_all_atoms_sealed",
+      "b_turn_cancelled",
+      state.status === "finished" && state.stopReason === "cancelled",
+      `status=${state.status} stop_reason=${state.stopReason} agent_text_len=${streamed.textLength}`,
+    ),
+    check(
+      "c_all_atoms_sealed",
       state.openAtoms === 0,
       `open_atoms=${state.openAtoms}`,
     ),
     check(
-      "c_no_send_failure",
+      "d_no_send_failure",
       !failureUi.visible && failureUi.titledCount === 0,
       `visible=${failureUi.visible} titled=${failureUi.titledCount}${failureUi.titled.length ? ` ${JSON.stringify(failureUi.titled)}` : ""}`,
     ),

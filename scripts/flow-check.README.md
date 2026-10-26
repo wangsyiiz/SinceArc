@@ -44,9 +44,13 @@ node scripts/flow-check.mjs --only normal,cancel,reopen
 
 ### cancel
 
-- `a_turn_cancelled`：`turns.status='finished'` 且 `stop_reason='cancelled'`。
-- `b_all_atoms_sealed`：该轮 `sealed_at IS NULL` 的原子数为 0。
-- `c_no_send_failure`：当前 `main` 里没有可见「发送失败」，也没有 `title` 含「发送失败」的节点。
+先等 agent 真的吐出内容（≥ 40 字，最多等 90s）再点停止 —— 否则停止可能落在第一个分片之前，
+验的只是「空转取消」。没等到内容即判 FAIL，但**仍会点停止**把这一轮收尾，避免留 running 轮污染后续 flow。
+
+- `a_stream_started`：停止前 agent 文本已达 40 字（`agent_text_len`）。
+- `b_turn_cancelled`：`turns.status='finished'` 且 `stop_reason='cancelled'`。
+- `c_all_atoms_sealed`：该轮 `sealed_at IS NULL` 的原子数为 0。
+- `d_no_send_failure`：当前 `main` 里没有可见「发送失败」，也没有 `title` 含「发送失败」的节点。
 
 ### reopen
 
