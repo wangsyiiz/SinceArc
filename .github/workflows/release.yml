@@ -68,9 +68,25 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path out | Out-Null
-          Copy-Item "artifacts/windows/SinceArc-*-win-x64.zip" out/
+          $portable = Get-ChildItem "artifacts/windows/SinceArc-*-win-x64.zip"
+          Copy-Item $portable.FullName out/
+          # 再放一份不带版本号的名字：官网/README 用稳定链接指向
+          # releases/latest/download/SinceArc-win-x64.zip，升版本时不用改站点
+          Copy-Item $portable.FullName "out/SinceArc-win-x64.zip"
+
           $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" -ErrorAction SilentlyContinue
-          if ($setup) { Copy-Item $setup.FullName out/ } else { Write-Warning "没找到 NSIS 安装包" }
+          if ($setup) {
+            Copy-Item $setup.FullName out/
+            Copy-Item $setup.FullName "out/SinceArc_x64-setup.exe"
+          } else {
+            Write-Warning "没找到 NSIS 安装包"
+          }
+
+          # 未签名分发：给出校验和，至少让人能核对下载是否完整
+          Get-ChildItem out -File | Where-Object { $_.Extension -in '.zip', '.exe' } |
+            ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } |
+            Set-Content -Path out/SHA256SUMS.txt -Encoding utf8
+
           Get-ChildItem out | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v4
@@ -85,7 +101,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # 用字符串数组拼发布说明：here-string 在 YAML 里会带上缩进，正文会变成代码块
+          $v = "${{ steps.ver.outputs.version }}"
+          $lines = @(
+            "Windows x64 预览版（v$v）。",
+            "",
+            "| 文件 | 用途 |",
+            "| --- | --- |",
+            "| SinceArc-$v-win-x64.zip | 便携版，解压即用 |",
+            "| SinceArc-win-x64.zip | 同上，稳定文件名（releases/latest/download 可直接链） |",
+            "| SinceArc_${v}_x64-setup.exe | NSIS 安装包 |",
+            "| SHA256SUMS.txt | 校验和 |",
+            "",
+            "**未签名**：首次运行 SmartScreen 提示「未知发布者」，选「更多信息 → 仍要运行」。",
+            "需要 WebView2 运行时（Win11 与较新 Win10 自带）；数据在 %APPDATA%\com.sincearc.app。",
+            "细节见 docs/distribution.md。"
+          )
+          ($lines -join "`n") | Set-Content -Path out/RELEASE_NOTES.md -Encoding utf8
           gh release create "${{ github.ref_name }}" `
-            (Get-ChildItem out/* | ForEach-Object { $_.FullName }) `
-            --title "SinceArc ${{ steps.ver.outputs.version }}" `
-            --notes "Windows x64 预览版。未签名，首次运行 SmartScreen 会提示「未知发布者」（docs/distribution.md §4）。"
+            (Get-ChildItem out/* -File | Where-Object { $_.Name -ne 'RELEASE_NOTES.md' } | ForEach-Object { $_.FullName }) `
+            --title "SinceArc $v" `
+            --notes-file out/RELEASE_NOTES.md

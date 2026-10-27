@@ -43,8 +43,8 @@
 
   // 只列真实存在的产物。没有构建的平台不放进菜单——给不存在的链接比给不出下载更糟。
   const ARTIFACTS = [
-    { id: "win-x64-zip", file: `SinceArc-${VERSION}-win-x64.zip`, size: "3.7 MB", kind: { en: "Portable zip", zh: "便携 zip" } },
-    { id: "win-x64-setup", file: `SinceArc_${VERSION}_x64-setup.exe`, size: "2.9 MB", kind: { en: "Installer (.exe)", zh: "安装包 (.exe)" } },
+    { id: "win-x64-zip", file: "SinceArc-win-x64.zip", size: "3.7 MB", kind: { en: "Portable zip", zh: "便携 zip" } },
+    { id: "win-x64-setup", file: "SinceArc_x64-setup.exe", size: "2.9 MB", kind: { en: "Installer (.exe)", zh: "安装包 (.exe)" } },
   ];
 
   const dlMain = document.getElementById("dlMain");
