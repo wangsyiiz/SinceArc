@@ -64,6 +64,27 @@ jobs:
             Write-Host "非 tag 构建（${{ github.ref }}），只校验 package.json 与 tauri.conf.json 一致"
           }
 
+      - name: 读 CHANGELOG 段落（本次发布内容）
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          New-Item -ItemType Directory -Force out | Out-Null
+          $body = @()
+          if (Test-Path CHANGELOG.md) {
+            $in = $false
+            foreach ($line in (Get-Content CHANGELOG.md -Encoding utf8)) {
+              if ($line -match '^##\s') {
+                $in = $line -match "^##\s+\[?v?$([regex]::Escape($v))\]?(\s|$)"
+                continue
+              }
+              if ($in -and $line.Trim()) { $body += $line.TrimEnd() }
+            }
+          }
+          if ($body.Count -eq 0) { $body = @('- 见提交历史') }
+          ($body -join "`n") | Set-Content out/CHANGELOG_SECTION.md -Encoding utf8
+          Write-Host "CHANGELOG v$v 段落 $($body.Count) 行"
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
@@ -135,7 +156,7 @@ jobs:
           $tag = "${{ github.ref_name }}"
           $asset = "SinceArc_${v}_x64-setup.exe"
           $url = "https://github.com/${{ github.repository }}/releases/download/$tag/$asset"
-          $notes = "Windows x64 预览版（v$v）：新增自动更新——设置 → 更新里可以检查并安装新版本。"
+          $notes = (Get-Content out/CHANGELOG_SECTION.md -Raw -Encoding utf8).Trim()
 
           $doc = [ordered]@{
             version   = $v
@@ -162,6 +183,10 @@ jobs:
           $tag = "${{ github.ref_name }}"
           $lines = @(
             "Windows x64 预览版（v$v）。",
+            "",
+            "### 本次内容",
+            "",
+            (Get-Content out/CHANGELOG_SECTION.md -Raw -Encoding utf8).Trim(),
             "",
             "| 文件 | 用途 |",
             "| --- | --- |",
