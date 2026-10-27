@@ -12,3 +12,6 @@ src-tauri/gen
 # 本地数据
 *.db
 *.db-journal
+
+# 打包产物（不进仓库；release 由 CI 出）
+artifacts/
