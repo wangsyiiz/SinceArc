@@ -10,6 +10,7 @@ import {
   Palette,
   Plug,
   PlugZap,
+  RefreshCw,
   Sun,
   Plus,
   Trash2,
@@ -58,6 +59,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { AgentUserDetail, AgentUsersList } from "@/components/AgentUsers";
 import { AgentLogo } from "@/components/AgentLogo";
 import { McpCatalogSection } from "@/components/McpCatalogSection";
+import { UpdateSection } from "@/components/UpdateSection";
 import { McpDefaultPicker } from "@/components/McpDefaultPicker";
 import { agentBrand } from "@/lib/agent-brands";
 import { capsRows } from "@/lib/caps-format";
@@ -176,6 +178,7 @@ const SECTIONS = [
   { id: "members", label: "成员", icon: Users },
   { id: "chat", label: "群聊", icon: MessageSquare },
   { id: "appearance", label: "外观", icon: Palette },
+  { id: "update", label: "更新", icon: RefreshCw },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -554,7 +557,7 @@ export function SettingsView({
   useEffect(() => {
     if (section === "connection" && !draft) return;
     if (section === "members" && !memberDetail) return;
-    if (section === "chat" || section === "appearance" || section === "mcp") return;
+    if (section === "chat" || section === "appearance" || section === "mcp" || section === "update") return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       if (document.querySelector('[role="menu"]') || document.querySelector("dialog[open]")) return;
@@ -1370,6 +1373,8 @@ export function SettingsView({
                     </div>
                   </div>
                 )}
+
+                {section === "update" && <UpdateSection />}
               </>
             )}
           </div>

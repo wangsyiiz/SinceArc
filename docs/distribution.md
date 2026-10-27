@@ -113,3 +113,37 @@ P1 解封后要补的验收：装 → 开始菜单有项 → 卸载干清（`%AP
 3. exe 属性里 `ProductVersion` 与 `tauri.conf.json` 的 `version` 一致。
 4. 数据目录仍是 `%APPDATA%\com.sincearc.app`，解压位置换了数据还在（说明数据不跟着包走）。
 5. 缺 WebView2 的分支：检测函数有单测；真机不做移除运行时的破坏性验证（写明未验）。
+
+## 9. 自动更新（tauri-plugin-updater）
+
+### 9.1 通道与端点
+
+| 通道 | Release tag | 更新端点 | 谁在用 |
+| --- | --- | --- | --- |
+| 正式 | `v<版本>`（非预发布） | `releases/latest/download/latest.json` | 装在机器上的客户端 |
+
+只有正式通道：`releases/latest/download/...` 永远指向最新正式版，没有预发布/夜间版。
+发版只认 tag（合并 main 不自动发版），一键打 tag 的流程见 §5.1。
+
+### 9.2 签名与密钥
+
+- 更新包用 **minisign**（Tauri 自带），与 Authenticode 无关；没签 Authenticode 不影响自动更新。
+- 公钥写进 `tauri.conf.json` 的 `plugins.updater.pubkey`（公开，进仓库）。
+- 私钥只放 GitHub Secrets：`TAURI_SIGNING_PRIVATE_KEY`（文件内容）与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
+  **私钥或口令丢了就没法再签，已装客户端再也收不到更新** —— 离线备份一份，不要只放在 GitHub。
+
+### 9.3 latest.json 由 CI 生成
+
+`createUpdaterArtifacts: true` 只产出 `*.sig`，`latest.json` 需要自己拼（Tauri 官方的 tauri-action 帮忙做这件事，
+我们没引入该 action）。release workflow 在打包后：
+
+1. 读 `src-tauri/target/release/bundle/nsis/*.exe.sig` 的签名内容；
+2. 组装 `{"version", "notes", "pub_date", "platforms": {"windows-x86_64": {"signature", "url"}}}`，
+   `url` 指向**该 tag** 下的 setup.exe（不要用 `latest`，否则历史版本会指到别人的包）；
+3. 与产物一起挂到 Release。
+
+### 9.4 客户端行为
+
+- 设置 → 更新：显示当前版本、手动「检查更新」；有新版显示版本号与发布说明，点「下载并安装」→ 安装后重启。
+- 启动时**不**静默下载，只在设置页里由用户触发检查（分发量还小，避免无谓流量与后台惊吓）。
+- 失败要说人话：网络失败 / 签名校验失败 / 安装器启动失败 分开报，不要统一「更新失败」。

@@ -144,6 +144,10 @@ fn shutdown_agents(app: &tauri::AppHandle) {
 
 pub fn run() {
     let app = tauri::Builder::default()
+        // 自动更新：更新包走 minisign 签名（与 Authenticode 无关），端点见 docs/distribution.md §9
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // 更新装完后重启自己
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             use tauri::Manager as _;
             let dir = app.path().app_data_dir()?;
