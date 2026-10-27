@@ -34,6 +34,8 @@ Tauri 2 + React 19 + TypeScript + Rust，数据落本地 SQLite，不上传。
 它围绕的是**聚合**。只跑一个 agent 时终端够用；同时跑四个——一个规划、一个写代码、一个评审，再加上昨天开的那个
 你已经忘了 cwd 在哪的——就不够用了：上下文在窗口之间复制，谁在做哪件事慢慢就乱了，而且没有地方告诉你它们究竟做了什么。
 SinceArc 把它们放到同一条时间轴上，共用一套会话、一套连接配置，并且有一个地方能回答「现在每个人在干什么」。
+它**以群聊的形式提供更便捷的 agent 体验**：agent 作为成员进到会话里，跟四个 agent 协作更像一场对话，
+而不是在四个窗口之间来回切。
 
 ## 为什么做这个
 
@@ -183,8 +185,7 @@ cd src-tauri; cargo clippy --all-targets -- -D warnings
 ## 许可
 
 [Apache-2.0](LICENSE)。客户端的一切功能永久免费且开源，不联我们的服务也能跑完整功能；
-将来若做订阅，卖的是**服务端能力**（账号同步 / 托管 agent / 团队协作），不是解锁客户端里的代码 ——
-边界与自我约束见 [`docs/licensing.md`](docs/licensing.md)。
+自我约束（三条红线）见 [`docs/licensing.md`](docs/licensing.md)。
 
 `SinceArc` 名称与图标不随代码授权，fork 请改名换标（[`TRADEMARK.md`](TRADEMARK.md)）。
 

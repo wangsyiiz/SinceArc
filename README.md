@@ -35,7 +35,9 @@ The thing it is built around is **aggregation**. Running one agent in a terminal
 planner, a coder, a reviewer, plus the one you started yesterday and forgot the working directory of — is not:
 context gets copied between windows, you lose track of which agent is on which task, and nothing tells you what
 they actually did. SinceArc puts them on one timeline with one set of sessions, one set of profiles and one
-place to answer "what is everyone doing right now".
+place to answer "what is everyone doing right now". Group chat is how it delivers that as a lighter
+experience: agents join a session as members, so working with four of them feels like one conversation
+instead of four window switches.
 
 ## Why another client
 
@@ -196,9 +198,7 @@ description, not "tested locally".
 ## License
 
 [Apache-2.0](LICENSE). Every client feature is free and open source, permanently, and works without connecting
-to our servers. If subscriptions arrive later, they sell **server-side capabilities** (account sync, hosted
-agents, team collaboration) — not the unlocking of code that already ships in the client. The boundary and our
-self-imposed red lines are written down in [`docs/licensing.md`](docs/licensing.md).
+to our servers. The self-imposed red lines are written down in [`docs/licensing.md`](docs/licensing.md).
 
 The `SinceArc` name and logo are not licensed with the code; forks must rename and re-brand
 (see [`TRADEMARK.md`](TRADEMARK.md)).
