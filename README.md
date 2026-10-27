@@ -5,8 +5,8 @@
 <h1 align="center">SinceArc</h1>
 
 <p align="center">
-  An ACP client for Windows desktop that lifts the agent's thinking and tool calls out of the chat
-  and turns them into a swimlane you can look back at.
+  One window for every agent you run: several CLI agents, their sessions and their sub-agents in a single
+  place — and the thinking behind each answer kept out of the way, where you can still look it up.
 </p>
 
 <p align="center">
@@ -20,55 +20,65 @@
   <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
+<p align="center">
+  <img src="website/assets/dark.png" alt="SinceArc" width="820">
+</p>
+
 ---
 
 ## What this is
 
-SinceArc is a desktop client for agents speaking [ACP (Agent Client Protocol)](https://agentclientprotocol.com).
-Built with Tauri 2, React 19, TypeScript and Rust; everything is stored in a local SQLite database and never uploaded.
+SinceArc is a Windows desktop client for agents speaking [ACP (Agent Client Protocol)](https://agentclientprotocol.com).
+Tauri 2, React 19, TypeScript and Rust; everything is stored in a local SQLite database and never uploaded.
 
-It does one thing differently: **process is separated from prose.** Replies stay in the chat; thinking and
-tool calls go into a trace panel, and the two cross-link by anchor. When something goes wrong you can look back
-at *why* the agent did it, instead of scrolling through one endless message stream.
+The thing it is built around is **aggregation**. Running one agent in a terminal is fine. Running four — a
+planner, a coder, a reviewer, plus the one you started yesterday and forgot the working directory of — is not:
+context gets copied between windows, you lose track of which agent is on which task, and nothing tells you what
+they actually did. SinceArc puts them on one timeline with one set of sessions, one set of profiles and one
+place to answer "what is everyone doing right now".
 
-<!-- Screenshots: drop images into assets/screenshots/ and uncomment
-<p align="center"><img src="assets/screenshots/main.png" width="720"></p>
--->
+## Why another client
 
-## Why
+**1. Many agents, one place to manage them** *(the main reason)*
 
-Most existing agent clients fold thinking, tool calls and answers into a single message stream, where process
-is drowned by prose. Our four trade-offs:
+- A **profile** describes one agent launch: this machine, a WSL distro, or a host over SSH — with its own cwd,
+  env and MCP servers. Switch agent per session instead of per terminal window.
+- **Group chat**: add agents as members of a session, then `@` one. It runs on its own branch in parallel,
+  merges back into the trunk when it answers, and its messages stay attributable to it.
+- **One trace per session** collects what *all* members did — filters by player, so you can read just the
+  reviewer's tool calls, or the whole picture.
+- **Approvals, MCP servers and storage** are managed in the same window, not in five shell configs.
 
-1. **Process separated from prose** — the chat only says human things; the trace holds what happened;
-2. **Local first** — sessions, traces and settings live in `%APPDATA%\com.sincearc.app`; nothing is uploaded;
-3. **We never dispose of your data** — irreversible actions (deleting an account or a file) require explicit
-   authorization; there is no "helpful" automatic cleanup;
-4. **Diagnosable** — every screen's performance is measured over CDP (frame times, virtualized row counts,
-   panel open latency), not asserted as "feels fast".
+**2. A GitHub desktop client** — *planned.* PRs, issues and reviews in the same window, with agents taking part
+in them over ACP. Listed here because it is the next thing this architecture is good for, not because it exists.
+See [Roadmap](#roadmap).
 
-## Capabilities and limits
+**3. Process kept apart from prose.** Replies stay in the chat; thinking, tool calls and permission prompts go
+into a trace panel, and the two cross-link by anchor. When something goes wrong you can look back at *why* the
+agent did it instead of scrolling through one endless message stream.
+
+## Capabilities
 
 | What it does | Notes |
 | --- | --- |
-| Connects to ACP agents | Local processes, or processes inside WSL |
-| Streaming replies | Tweened output, seal-first (aligns to full text the moment a turn ends); can be turned off in Settings |
+| Aggregate agents | Multiple profiles; a session picks its agent; local / WSL / SSH launch kinds |
+| Group chat with sub-agents | `@` a member to run it on its own branch in parallel, merging back to the trunk |
+| One trace for everyone | Per-player lanes and filtering; virtualized list; graph view degrades above 1500 activities |
+| Approvals | Per-kind permission requests, plus "allow same kind for this turn" (in-memory, expires at turn end) |
+| Streaming replies | Tweened output, seal-first (aligns to full text the moment a turn ends); can be turned off |
 | Markdown | Fenced code, inline code, lists, tables, links — parsed into elements, never injected as HTML |
 | Syntax highlighting | Prism, five themes, inline code uses the same theme; SinceArc palette by default |
-| Trace panel | Virtualized list, graph swimlanes, auto-degrades above 1500 activities, cross-jump with the chat |
-| Multi-agent group chat | `@` a member to run it on its own branch in parallel, merging back to the trunk |
-| Approvals | Per-kind permission requests, with "allow same kind for this turn" (in-memory, expires at turn end) |
 | External links | Scheme allowlist, validated on both sides of the IPC boundary |
 | Storage notice | Counts and warns only; nothing is ever deleted automatically |
 
 **What it does not do** (so you don't find out after installing):
 
 - **Windows x64 only** — no macOS, no Linux, no ARM64, and no unverified artifacts;
-- **No code signing** — SmartScreen will warn about an unknown publisher on first run;
+- **No code signing** — SmartScreen warns about an unknown publisher on first run;
 - **No auto-update** — upgrades are a manual download;
+- **No GitHub integration yet** — that is roadmap, not shipped;
 - **No single-instance mode / `sincearc .` reverse entry**;
-- The trace panel loads 50 turns at a time (server cap: 200), so **you cannot page back to older traces yet** —
-  pagination is on the roadmap.
+- The trace panel loads 50 turns at a time (server cap: 200), so **you cannot page back to older traces yet**.
 
 ## Install
 
@@ -118,8 +128,8 @@ src/                      Frontend: React 19 + TS + Tailwind 4 (Vite; the bundle
   lib/highlight/          Prism adapter + theme table
   lib/markdown.ts         marked.lexer -> our own block/inline model (never emits HTML strings)
 src-tauri/src/
-  acp/                    ACP connection, process management (Local / WSL launch), event capture
-  db/                     SQLite (atoms as the single authority + turns/sessions; numbered migrations)
+  acp/                    ACP connection, process management (Local / WSL / SSH launch), event capture
+  db/                     SQLite (atoms as the single authority + turns/sessions/members; numbered migrations)
   commands.rs             IPC command layer (business logic lives in Rust; the frontend only renders)
 docs/                     Specifications (Chinese) — written before the code
 ```
@@ -176,11 +186,12 @@ description, not "tested locally".
 
 ## Roadmap
 
-| Area | Content |
-| --- | --- |
-| Distribution | First tag → auto-update (tauri-plugin-updater) → website |
-| Features | Projects and locations (repos / worktree isolation, E14); session-open state topology and error matrix (E15) |
-| UX | Trace pagination to reach older turns, message row height floor, long-list feel (E18) |
+| Status | Area | Content |
+| --- | --- | --- |
+| planned | GitHub desktop client | PRs, issues and reviews in the same window; agents participate over ACP |
+| planned | Distribution | First tag → auto-update (tauri-plugin-updater) → website |
+| next | Aggregation | Projects and locations (repo / worktree isolation); session-open state and error matrix |
+| next | UX | Trace pagination to reach older turns; message row height floor |
 
 ## License
 

@@ -5,11 +5,8 @@
 <h1 align="center">SinceArc</h1>
 
 <p align="center">
-  Windows 桌面上的 ACP 客户端：把 agent 的思考与工具调用从对话里拆出来，做成一条能回看的泳道。
-</p>
-
-<p align="center">
-  <a href="README.md">English</a> · <strong>简体中文</strong>
+  你手上一堆 agent 的一个窗口：几个 CLI agent、它们的会话和子 agent 都在同一处——
+  而每个回答背后的思考被放到一边，需要时再翻。
 </p>
 
 <p align="center">
@@ -19,40 +16,52 @@
   <a href="https://github.com/wangsyiiz/SinceArc/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/wangsyiiz/SinceArc/actions/workflows/release.yml/badge.svg"></a>
 </p>
 
+<p align="center">
+  <a href="README.md">English</a> · <strong>简体中文</strong>
+</p>
+
+<p align="center">
+  <img src="website/assets/dark.png" alt="SinceArc" width="820">
+</p>
+
 ---
 
 ## 这是什么
 
-SinceArc 是一个用 [ACP（Agent Client Protocol）](https://agentclientprotocol.com) 连 agent 的桌面客户端，
+SinceArc 是一个用 [ACP（Agent Client Protocol）](https://agentclientprotocol.com) 连 agent 的 Windows 桌面客户端，
 Tauri 2 + React 19 + TypeScript + Rust，数据落本地 SQLite，不上传。
 
-它只做一件与别的客户端不一样的事：**过程与正文分家**。回答是回答，思考与工具调用进轨迹面板，
-两者靠锚点互相跳转——出了问题能回查「它当时为什么这么干」，而不用在一屏滚动里翻。
-
-<!-- 截图位：把图放到 assets/screenshots/ 后取消注释
-<p align="center"><img src="assets/screenshots/main.png" width="720"></p>
--->
+它围绕的是**聚合**。只跑一个 agent 时终端够用；同时跑四个——一个规划、一个写代码、一个评审，再加上昨天开的那个
+你已经忘了 cwd 在哪的——就不够用了：上下文在窗口之间复制，谁在做哪件事慢慢就乱了，而且没有地方告诉你它们究竟做了什么。
+SinceArc 把它们放到同一条时间轴上，共用一套会话、一套连接配置，并且有一个地方能回答「现在每个人在干什么」。
 
 ## 为什么做这个
 
-现有 agent 客户端大多把思考、工具调用、回答揉在一条消息流里，过程被正文淹没。我们的四条取舍：
+**1. 多 agent，一处管理**（主要理由）
 
-1. **过程与正文分离** —— 正文只讲人话，过程进轨迹，互不污染；
-2. **本地优先** —— 会话、轨迹、设置全在 `%APPDATA%\com.sincearc.app`，不上传；
-3. **不替用户处置数据** —— 删账号、删文件这类不可逆操作必须显式授权，没有「贴心」的自动清理；
-4. **可诊断** —— 每一屏的性能都用 CDP 量得出来（滚动帧时间、虚拟行数、面板打开延迟），不靠「感觉快了」。
+- **连接配置（profile）**描述一次 agent 启动：本机、某个 WSL 发行版，或经 SSH 的远端——各有自己的 cwd、环境变量
+  与 MCP 服务器。换 agent 是按会话换，不是按终端窗口换。
+- **群聊**：把 agent 加成会话成员，`@` 其中一个，它就在自己的支线上并行跑，答完弯回主干；它说的话始终归属于它。
+- **每个会话一份轨迹**，收集**所有成员**做过的事，可按玩家过滤——只看评审那位的工具调用，或看全貌。
+- **审批、MCP 服务器、存储占用**都在同一个窗口里管，不用去翻五份 shell 配置。
 
-## 能力与边界
+**2. GitHub 桌面客户端**——*规划中*。PR、issue、评审进同一个窗口，agent 通过 ACP 参与其中。列在这里是因为这是
+这套架构下一步顺手能做的事，不是因为它已经存在。见 [Roadmap](#roadmap)。
+
+**3. 过程与正文分离。** 回答留在对话里；思考、工具调用、权限请求进轨迹面板，两者靠锚点互跳。出了问题能回查
+「它当时为什么这么干」，而不用在一屏滚动里翻。
+
+## 能力
 
 | 能做 | 说明 |
 | --- | --- |
-| 连接 ACP agent | 本机进程或 WSL 里的进程 |
+| 聚合多个 agent | 多套连接配置；每个会话自己选 agent；本机 / WSL / SSH 三种启动形态 |
+| 群聊与子 agent | `@` 成员让它单开一条支线并行跑，答完弯回主干 |
+| 一份轨迹给所有人 | 按玩家分泳道与过滤；列表虚拟化；活动数 > 1500 时图视图降级 |
+| 审批 | 按类型分档，支持「本轮同类自动允许」（内存策略，轮末失效） |
 | 流式回答 | 补间过渡、收口优先（轮结束立刻对齐全文），可在设置里关掉 |
 | markdown 渲染 | 围栏代码块 / 行内 code / 列表 / 表格 / 链接；只解析成元素，不注入 HTML |
 | 代码高亮 | Prism，五套主题，行内 code 同主题；默认 SinceArc 配色 |
-| 轨迹面板 | 列表虚拟化、图视图泳道、活动数 > 1500 自动降级、与正文互跳定位 |
-| 多 agent 群聊 | `@` 成员让它单开一条支线并行跑，答完弯回主干 |
-| 审批 | 按类型分档，支持「本轮同类自动允许」（内存策略，轮末失效） |
 | 外链安全打开 | scheme 白名单，前后端各校验一次 |
 | 存储提示 | 只统计、只提示，不自动删任何东西 |
 
@@ -61,14 +70,16 @@ Tauri 2 + React 19 + TypeScript + Rust，数据落本地 SQLite，不上传。
 - 只有 **Windows x64**；macOS / Linux / ARM64 都没做，也没有未验证的产物；
 - **没有代码签名**，首次运行 SmartScreen 会提示「未知发布者」；
 - **没有自动更新**，升级靠手动下新包；
+- **还没有 GitHub 集成**——那在 Roadmap 上，不是现成功能；
 - **没有单实例 / `sincearc .` 反向入口**；
-- 轨迹面板一次只取 50 轮（服务端上限 200 轮），**翻不到更早的轨迹**——分页在 Roadmap 里。
+- 轨迹面板一次只取 50 轮（服务端上限 200 轮），**翻不到更早的轨迹**。
 
 ## 安装
 
 > 首个版本 `v0.0.0` 还没有打 tag，下面描述的是发布后的路径。
 
-1. 到 [Releases](https://github.com/wangsyiiz/SinceArc/releases) 下载 `SinceArc-<version>-win-x64.zip`（便携）或 `SinceArc_<version>_x64-setup.exe`（安装）；
+1. 到 [Releases](https://github.com/wangsyiiz/SinceArc/releases) 下载 `SinceArc-<version>-win-x64.zip`（便携）或
+   `SinceArc_<version>_x64-setup.exe`（安装）；
 2. 便携版解压到任意目录（别在压缩包里直接双击），双击 `SinceArc.exe`；
 3. SmartScreen 提示时点「更多信息 → 仍要运行」（未签名）；
 4. 需要 WebView2 运行时：Win11 与较新的 Win10 自带；缺的话装
@@ -109,8 +120,8 @@ src/                      前端：React 19 + TS + Tailwind 4（Vite 构建，�
   lib/highlight/          Prism 适配 + 主题表
   lib/markdown.ts         marked.lexer → 自己的块/行内模型（不产出 HTML 字符串）
 src-tauri/src/
-  acp/                    ACP 连接、进程管理（Local / WSL 两种启动形态）、事件采集
-  db/                     SQLite（atoms 单一权威 + turns/sessions；编号迁移）
+  acp/                    ACP 连接、进程管理（Local / WSL / SSH 启动形态）、事件采集
+  db/                     SQLite（atoms 单一权威 + turns/sessions/members；编号迁移）
   commands.rs             IPC 命令层（业务计算都在 Rust，前端只做展示）
 docs/                     规范（先写规范再写代码）
 ```
@@ -162,11 +173,12 @@ cd src-tauri; cargo clippy --all-targets -- -D warnings
 
 ## Roadmap
 
-| 方向 | 内容 |
-| --- | --- |
-| 分发 | 打首个 tag → 自动更新（tauri-plugin-updater）→ 官网 |
-| 功能 | 项目与位置（repos / worktree 隔离，E14）；会话打开态拓扑与错误态矩阵（E15） |
-| 体验 | 轨迹分页翻得到更早、消息行高度地板、长列表体感（E18） |
+| 状态 | 方向 | 内容 |
+| --- | --- | --- |
+| 规划中 | GitHub 桌面客户端 | PR、issue、评审进同一个窗口，agent 通过 ACP 参与 |
+| 规划中 | 分发 | 打首个 tag → 自动更新（tauri-plugin-updater）→ 官网 |
+| 下一步 | 聚合 | 项目与位置（repo / worktree 隔离）；会话打开态与错误态矩阵 |
+| 下一步 | 体验 | 轨迹分页翻得到更早；消息行高度地板 |
 
 ## 许可
 
