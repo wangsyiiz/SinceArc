@@ -677,67 +677,39 @@ article.planned p {
 }
 
 
-/* ---------- QA（details/summary，无需 JS） ---------- */
+/* ---------- QA（常显，不折叠） ---------- */
 
 .faq h2 {
   margin-bottom: 6px;
 }
 
 .qa {
+  margin: 0;
   border-top: 1px solid var(--line);
 }
 
-.qa details {
+.qa-item {
+  padding: 16px 0 18px;
   border-bottom: 1px solid var(--line);
 }
 
-.qa summary {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 15px 2px;
+.qa dt {
+  margin: 0 0 6px;
   color: var(--ink-1);
   font-size: 14px;
-  cursor: pointer;
-  list-style: none;
-  transition: color var(--t);
+  font-weight: 600;
 }
 
-.qa summary::-webkit-details-marker {
-  display: none;
-}
-
-.qa summary::after {
-  content: "+";
-  flex: none;
-  color: var(--ink-3);
-  font-family: var(--mono);
-  font-size: 15px;
-  line-height: 1;
-}
-
-.qa details[open] summary::after {
-  content: "−";
-}
-
-.qa summary:hover {
-  color: var(--ink-2);
-}
-
-.qa summary:focus-visible {
-  outline: 2px solid var(--ink-1);
-  outline-offset: 3px;
-  border-radius: 4px;
-}
-
-.qa details p {
-  margin: 0 0 16px;
-  padding-right: 28px;
-  max-width: 72ch;
+.qa dd {
+  margin: 0;
+  max-width: 74ch;
   color: var(--ink-2);
   font-size: var(--fs-small);
   line-height: 1.75;
+}
+
+.qa dd code {
+  font-size: 12px;
 }
 
 /* ---------- 页脚 ---------- */
