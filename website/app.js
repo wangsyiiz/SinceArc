@@ -160,8 +160,6 @@
     dlAll: "全部版本",
     ctaSource: "源码",
     ctaDocs: "读文档",
-    showcaseTitle: "同一个窗口，两套主题",
-    compareHint: "拖动中间的斜切滑块；聚焦后可用 ← → 键。",
     tagDark: "暗色",
     tagLight: "亮色",
     whyTitle: "为什么再造一个客户端",
@@ -170,17 +168,12 @@
       "回答留在对话里；思考、工具调用、权限请求进轨迹面板。两者靠锚点互跳，「它当时为什么这么干」永远查得到。",
     why2Title: "本地优先",
     why2Body: "会话、轨迹、设置都在 %APPDATA%\\com.sincearc.app，不上传；没有账号也能用完整功能。",
-    why3Title: "不替你处置数据",
-    why3Body: "删除会话或文件必须显式授权；存储只做统计与提示，不自动动手。",
-    notTitle: "它不是什么",
-    not1: "<strong>只有 Windows x64。</strong>没有 macOS、Linux、ARM64 版本，也没有未验证的产物。",
-    not2: "<strong>未签名。</strong>首次运行 SmartScreen 会提示一次，选「更多信息 → 仍要运行」。",
-    not3: "<strong>还没有自动更新。</strong>升级靠手动下载新包。",
-    not4: "<strong>轨迹翻页有限。</strong>面板一次只取 50 轮。",
-    installTitle: "安装",
-    install1: "从 Releases 下载便携 zip 或安装包 exe。",
-    install2: "解压到真实目录（别在压缩包里直接双击），运行 SinceArc.exe。",
-    install3: "需要 WebView2 运行时：Win11 与较新的 Win10 自带。",
+    why3Title: "多 agent 聚合，管在一处",
+    why3Body:
+      "几个 CLI agent、群聊成员和它们的会话都在同一条时间轴上。<code>@</code> 一个成员就让它单开支线并行跑，答完弯回主干——不用在几个终端窗口之间来回搬上下文，也不用分别去翻「刚才那个 agent 干了什么」。",
+    why4Title: "GitHub 桌面客户端",
+    why4Body: "把 PR、issue、评审搬进同一个窗口，agent 通过 ACP 参与评论与改动。目前只有设计稿，还没有可安装的版本。",
+    plannedChip: "规划中",
     fine: "SinceArc 名称与图标不随代码授权，fork 必须改名换标。",
   };
 
@@ -199,7 +192,7 @@
       if (typeof text === "string") el.innerHTML = text;
     });
     root.lang = lang === "zh" ? "zh-CN" : "en";
-    langBtn.textContent = lang === "zh" ? "EN" : "ZH";
+    langBtn.textContent = lang === "zh" ? "EN" : "中文";
     langBtn.setAttribute("aria-label", lang === "zh" ? "Switch to English" : "Switch to Chinese");
     store.set("sincearc.lang", lang);
     // 下载按钮的文案与下拉里的语言都要跟着换

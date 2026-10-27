@@ -22,6 +22,7 @@
   --glass-bg: rgba(20, 20, 23, 0.55);
   --glass-line: rgba(255, 255, 255, 0.14);
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --grid: rgba(255, 255, 255, 0.055);
   --grip-bg: rgba(10, 10, 11, 0.72);
   --grip-ink: #f4f4f5;
 }
@@ -38,6 +39,7 @@ html[data-theme="light"] {
   --glass-bg: rgba(255, 255, 255, 0.62);
   --glass-line: rgba(0, 0, 0, 0.08);
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  --grid: rgba(0, 0, 0, 0.06);
   --grip-bg: rgba(255, 255, 255, 0.86);
   --grip-ink: #0a0a0b;
 }
@@ -160,8 +162,27 @@ html[data-theme="light"] .nav-icon .i-sun {
 /* ---------- hero ---------- */
 
 .hero {
+  position: relative;
   padding: 96px 0 48px;
   text-align: center;
+  isolation: isolate;
+  /* 网格铺满 hero 盒，遮罩在盒子边缘前已经淡到透明；裁掉以防往外溢出 */
+  overflow: hidden;
+}
+
+/* 浅网格：只铺在 logo + 简介这一块后面，用径向遮罩向四周渐隐 */
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: -88px 0 -60px;
+  z-index: -1;
+  pointer-events: none;
+  background-image: linear-gradient(to right, var(--grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+  background-size: 46px 46px;
+  background-position: center center;
+  -webkit-mask-image: radial-gradient(ellipse 52% 58% at 50% 38%, #000 0%, rgba(0, 0, 0, 0.55) 42%, transparent 74%);
+  mask-image: radial-gradient(ellipse 52% 58% at 50% 38%, #000 0%, rgba(0, 0, 0, 0.55) 42%, transparent 74%);
 }
 
 .logo {
@@ -175,6 +196,12 @@ html[data-theme="light"] .nav-icon .i-sun {
   font-size: 34px;
   font-weight: 600;
   letter-spacing: 0.01em;
+  /* 辉光只做明暗扩散，不加颜色 */
+  text-shadow: 0 0 22px rgba(255, 255, 255, 0.34), 0 0 64px rgba(255, 255, 255, 0.16);
+}
+
+html[data-theme="light"] .hero h1 {
+  text-shadow: 0 0 22px rgba(0, 0, 0, 0.16), 0 0 64px rgba(0, 0, 0, 0.07);
 }
 
 .tagline {
@@ -570,22 +597,50 @@ article p {
   font-size: var(--fs-small);
 }
 
-.limits,
-.steps {
-  margin: 0;
-  padding-left: 20px;
-  color: var(--ink-2);
-  font-size: var(--fs-small);
+/* 重点卡：只有一道更亮的边，不加颜色 */
+article.lead {
+  border-color: var(--line-strong);
+  background: var(--surface-2);
 }
 
-.limits li,
-.steps li {
+article.lead h3 {
+  font-size: 16px;
+}
+
+article.planned {
+  background: transparent;
+  border-style: dashed;
+}
+
+article.planned p {
+  color: var(--ink-3);
+}
+
+/* 标题与标记同一行；chip 不能塞进 h3——h3 的 innerHTML 会被语言切换整段替换 */
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
   margin-bottom: 8px;
 }
 
-.limits strong {
-  color: var(--ink-1);
-  font-weight: 600;
+.card-head h3 {
+  margin: 0;
+}
+
+.chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  color: var(--ink-3);
+  font-size: 10px;
+  font-family: var(--mono);
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  vertical-align: 2px;
 }
 
 /* ---------- 页脚 ---------- */

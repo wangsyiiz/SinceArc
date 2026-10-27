@@ -25,7 +25,7 @@
   <body>
     <!-- 玻璃态导航：右侧顶部 -->
     <nav class="nav" aria-label="Site">
-      <button class="nav-btn" id="lang" type="button" aria-label="Switch language">ZH</button>
+      <button class="nav-btn" id="lang" type="button" aria-label="Switch language">中文</button>
 
       <button class="nav-btn nav-icon" id="theme" type="button" aria-label="Switch to light theme" aria-pressed="false">
         <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true">
@@ -83,8 +83,7 @@
     </header>
 
     <!-- 软件展示：中间斜切、可拖动的亮/暗对比 -->
-    <section class="wrap showcase" aria-labelledby="showcaseTitle">
-      <h2 id="showcaseTitle" data-i18n="showcaseTitle">The same window, two themes</h2>
+    <section class="wrap showcase" aria-label="Screenshots">
       <div
         class="compare"
         id="compare"
@@ -111,7 +110,6 @@
         <span class="compare-tag tag-left" data-i18n="tagDark">Dark</span>
         <span class="compare-tag tag-right" data-i18n="tagLight">Light</span>
       </div>
-      <p class="hint" data-i18n="compareHint">Drag the diagonal handle, or focus it and use ← →.</p>
     </section>
 
     <main class="wrap">
@@ -132,33 +130,25 @@
               client works fully without an account.
             </p>
           </article>
-          <article>
-            <h3 data-i18n="why3Title">It never disposes of your data</h3>
+          <article class="lead">
+            <h3 data-i18n="why3Title">Many agents, one timeline</h3>
             <p data-i18n="why3Body">
-              Deleting a session or a file requires explicit authorization. Storage is counted and reported,
-              never acted on.
+              Several CLI agents, group members and their sessions sit on a single timeline. Mention a member with
+              <code>@</code> and it runs on its own branch in parallel, then merges back into the trunk — no more
+              copying context between terminal windows, and one place to review what each of them did.
+            </p>
+          </article>
+          <article class="planned">
+            <div class="card-head">
+              <h3 data-i18n="why4Title">GitHub desktop client</h3>
+              <span class="chip" data-i18n="plannedChip">Planned</span>
+            </div>
+            <p data-i18n="why4Body">
+              Bring PRs, issues and reviews into the same window, with agents taking part in them over ACP.
+              Design only for now — nothing to install yet.
             </p>
           </article>
         </div>
-      </section>
-
-      <section>
-        <h2 data-i18n="notTitle">What it is not</h2>
-        <ul class="limits">
-          <li data-i18n="not1"><strong>Windows x64 only.</strong> No macOS, Linux or ARM64 builds, and no unverified artifacts.</li>
-          <li data-i18n="not2"><strong>Unsigned.</strong> SmartScreen warns once on first run; choose "More info → Run anyway".</li>
-          <li data-i18n="not3"><strong>No auto-update yet.</strong> Upgrading means downloading a new package.</li>
-          <li data-i18n="not4"><strong>Trace paging is limited.</strong> The panel loads 50 turns at a time.</li>
-        </ul>
-      </section>
-
-      <section>
-        <h2 data-i18n="installTitle">Install</h2>
-        <ol class="steps">
-          <li data-i18n="install1">Download the portable zip or the setup .exe from Releases.</li>
-          <li data-i18n="install2">Extract somewhere real — not inside the zip — then run SinceArc.exe.</li>
-          <li data-i18n="install3">Needs WebView2 Runtime, shipped with Windows 11 and recent Windows 10.</li>
-        </ol>
       </section>
     </main>
 
