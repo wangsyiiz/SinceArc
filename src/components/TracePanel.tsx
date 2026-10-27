@@ -5,6 +5,7 @@ import type { TraceBackfillDto } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { isTurnCancelled } from "@/lib/turn-status";
 import { turnHeading, turnLabel } from "@/lib/turn-summary";
+import { turnHasDrawableContent } from "@/lib/trace-adapter";
 import { useVirtualList } from "@/lib/virtual/useVirtualList";
 import type { LocateTarget } from "@/lib/turn-anchors";
 import { Button } from "./ui/Button";
@@ -59,6 +60,8 @@ function buildTrace(turns: TraceTurn[], activities: Activity[], players: Player[
   let lanes = 1;
 
   for (const [index, t] of turns.entries()) {
+    // §19.6：0 活动且无回复的轮不占行；编号仍按原始轮序传下去，不能让「第 N 轮」串位。
+    if (!turnHasDrawableContent(t, (id) => byId.has(id))) continue;
     const p0 = players.find((x) => x.id === t.branches[0]?.playerId);
     const outcome = turnOutcome(t);
     const heading = turnHeading(t, index, outcome.label);
@@ -914,9 +917,13 @@ export function TracePanel({
         <div className="min-h-0 flex-1 overflow-y-auto">
           {rows.length === 0 && (
             <div className="px-4 py-10 text-center text-caption leading-relaxed text-ink-3">
-              这个会话还没有轨迹
+              {turns.length === 0 ? "这个会话还没有轨迹" : "这些轮没有记录到活动"}
               <br />
-              <span className="text-micro">@ 一个玩家开始</span>
+              <span className="text-micro">
+                {turns.length === 0
+                  ? "@ 一个玩家开始"
+                  : "纯对话轮不会留下轨迹（没有思考、没有工具调用）"}
+              </span>
             </div>
           )}
           <div className="flex">
