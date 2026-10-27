@@ -55,12 +55,33 @@
       </p>
       <p class="tagline-zh" data-i18n="taglineZh">把 agent 的思考与工具调用从对话里拆出来，做成一条能回看的泳道。</p>
 
-      <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/wangsyiiz/SinceArc/releases" data-i18n="ctaDownload">Download for Windows</a>
-        <a class="btn" href="https://github.com/wangsyiiz/SinceArc" data-i18n="ctaSource">Source</a>
-        <a class="btn" href="https://github.com/wangsyiiz/SinceArc/blob/master/README.zh-CN.md" data-i18n="ctaDocs">Read the docs</a>
+      <div class="dl">
+        <a class="btn btn-primary dl-main" id="dlMain" href="#" data-dl-default>
+          <span id="dlMainLabel" data-i18n="dlMain">Download for Windows</span>
+        </a>
+        <button
+          class="btn btn-primary dl-more"
+          id="dlMore"
+          type="button"
+          aria-haspopup="menu"
+          aria-expanded="false"
+          aria-controls="dlMenu"
+          aria-label="Other downloads"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 9.5 12 15.5 18 9.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+        <div class="dl-menu" id="dlMenu" role="menu" aria-labelledby="dlMore" hidden></div>
       </div>
-      <p class="meta">v0.0.0 · Windows x64 · Apache-2.0 · unsigned preview</p>
+
+      <p class="dl-meta" id="dlMeta">—</p>
+
+      <p class="dl-links">
+        <a href="https://github.com/wangsyiiz/SinceArc/releases" data-i18n="dlAll">All releases</a> ·
+        <a href="https://github.com/wangsyiiz/SinceArc" data-i18n="ctaSource">Source</a> ·
+        <a href="https://github.com/wangsyiiz/SinceArc/blob/master/README.zh-CN.md" data-i18n="ctaDocs">Read the docs</a>
+      </p>
     </header>
 
     <!-- 软件展示：中间斜切、可拖动的亮/暗对比 -->
