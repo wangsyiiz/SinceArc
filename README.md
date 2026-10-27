@@ -212,6 +212,6 @@ The `SinceArc` name and logo are not licensed with the code; forks must rename a
 
 ## Links
 
-- Website: <https://wangsyiiz.github.io/SinceArc/>
+- Website: <https://sincearc.com/>
 - Repository: <https://github.com/wangsyiiz/SinceArc>
 - Issues: <https://github.com/wangsyiiz/SinceArc/issues>
