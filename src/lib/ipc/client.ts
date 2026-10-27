@@ -22,7 +22,7 @@ export function isTauri(): boolean {
 /** 调用后端命令。非 Tauri 环境（浏览器直开）给一句能看懂的话，而不是 undefined 报错。 */
 export async function invokeCmd<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri()) {
-    throw { code: 50900, msg: "当前不在 Tauri 运行环境里（浏览器直开无法调用后端）" } as CmdError;
+    throw { code: 50900, msg: "当前不在 Tauri 运行环境里（浏览器直开无法调用后端）" } as CmdError; // i18n-ignore: 非 Tauri 技术错误
   }
   const { invoke: raw } = await import("@tauri-apps/api/core");
   return raw<T>(cmd, args);

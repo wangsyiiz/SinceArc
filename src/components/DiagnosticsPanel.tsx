@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Activity, Check, Copy } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
+import { currentLocale } from "@/i18n/locale";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/Button";
 import { useAnchoredLayer } from "./ui/Menu";
@@ -23,7 +24,7 @@ export function DiagnosticsPanel({
     const text = eventLog
       .map(
         (event) =>
-          `${new Date(event.at).toLocaleTimeString("zh-CN", { hour12: false })}  ${event.text}`,
+          `${new Date(event.at).toLocaleTimeString(currentLocale(), { hour12: false })}  ${event.text}`,
       )
       .join("\n");
     try {
@@ -103,7 +104,7 @@ export function DiagnosticsPanel({
               eventLog.map((event, index) => (
                 <div key={index} className="flex gap-2 py-px">
                   <span className="shrink-0 opacity-60">
-                    {new Date(event.at).toLocaleTimeString("zh-CN", { hour12: false })}
+                    {new Date(event.at).toLocaleTimeString(currentLocale(), { hour12: false })}
                   </span>
                   <span className="break-all">{event.text}</span>
                 </div>

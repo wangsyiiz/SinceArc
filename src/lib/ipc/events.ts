@@ -19,7 +19,7 @@ function ensureSubscribed(): Promise<void> {
   if (subscribed) return subscribed;
   subscribed = (async () => {
     if (!isTauri()) {
-      throw { code: 50900, msg: "当前不在 Tauri 运行环境里（浏览器直开无法调用后端）" } as CmdError;
+      throw { code: 50900, msg: "当前不在 Tauri 运行环境里（浏览器直开无法调用后端）" } as CmdError; // i18n-ignore: 非 Tauri 技术错误
     }
     const { Channel } = await import("@tauri-apps/api/core");
     const channel = new Channel<WireEvent>();

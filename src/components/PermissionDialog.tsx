@@ -75,7 +75,7 @@ export function PermissionDialog({
     } catch (e) {
       const message =
         (e as { msg?: string })?.msg ?? (e instanceof Error ? e.message : String(e));
-      setAllowTurnError(message);
+      setAllowTurnError(localizeText(message, t));
     } finally {
       setAllowTurnBusy(false);
     }

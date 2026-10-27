@@ -1,3 +1,5 @@
+import { currentLocale } from "../i18n/locale.ts";
+
 /** 18530 → "18.5k"；1000000 → "1M"；999 → "999" */
 export function formatTokens(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return "0";
@@ -16,7 +18,7 @@ export function describeUsage(u: { used: number; size: number; percent: number }
   warn: boolean;
 } {
   const warn = u.percent >= 80;
-  const base = `上下文 ${formatTokens(u.used)} / ${formatTokens(u.size)}（${u.percent}%）`; // i18n-ignore: 唯一消费点 App.tsx 不在本批次白名单
+  const base = `上下文 ${formatTokens(u.used)} / ${formatTokens(u.size)}（${new Intl.NumberFormat(currentLocale(), { maximumFractionDigits: 0 }).format(u.percent)}%）`; // i18n-ignore: 唯一消费点 App.tsx 不在本批次白名单
   return {
     text: warn ? `${base}，再问下去 agent 可能会丢开头` : base, // i18n-ignore: 唯一消费点 App.tsx 不在本批次白名单
     warn,

@@ -23,6 +23,7 @@ import { autoApproveCovered, type AutoApproveLevel } from "@/lib/auto-approve";
 import { settingsKey } from "@/lib/settings-key";
 import { normalizeCodeThemeId } from "@/lib/highlight/themes";
 import { profileLabel } from "@/lib/format";
+import { localizeText } from "@/lib/i18n-text";
 import { pushSystemNotice } from "@/lib/notices";
 import { delegateCancelFailureMessage, type DelegatePhase } from "@/lib/delegate-status";
 import { mergeMessages } from "@/lib/messages-merge";
@@ -220,7 +221,7 @@ export default function App() {
           if (seq !== settingsSaveSeq.current) return;
           settingsPendingKey.current = null;
           const err = asCmdError(e);
-          setSettingsError(t("app.settings.saveFailed", { msg: err.msg }));
+          setSettingsError(t("app.settings.saveFailed", { msg: localizeText(err.msg, t) }));
         });
     }, SETTINGS_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
@@ -539,7 +540,7 @@ export default function App() {
       .catch((e) => {
         if (!alive) return;
         const err = asCmdError(e);
-        setSettingsError(err.msg);
+        setSettingsError(localizeText(err.msg, t));
       })
       .finally(() => {
         if (alive) setSettingsLoaded(true);
@@ -547,7 +548,7 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [diag]);
+  }, [diag, t]);
   const activeSession = sessions.find((s) => s.id === lastSessionId);
   // 归属跟会话走，不再跟一个全局「选中连接」走：全局选中项的唯一入口（左下角列表）
   // 已经移除，靠它就等于靠一个永远空着的值
@@ -629,11 +630,11 @@ export default function App() {
       dropTurnPolicy(lastSessionId);
       if (!removed) diag(`TURN-POLICY revoke found nothing ui=${lastSessionId}`);
     } catch (e) {
-      const message = (e as { msg?: string })?.msg ?? String(e);
+      const message = localizeText((e as { msg?: string })?.msg ?? String(e), t);
       diag(`TURN-POLICY revoke failed ui=${lastSessionId} · ${message}`);
       clog("TURN-POLICY-REVOKE-ERR", `ui=${lastSessionId} ${message}`);
     }
-  }, [diag, dropTurnPolicy, lastSessionId]);
+  }, [diag, dropTurnPolicy, lastSessionId, t]);
 
   // 换会话即失效：不把上一页的授权带到新页面，也通知后端撤销。
   const prevPolicyUiRef = useRef<string | null>(null);
@@ -645,10 +646,10 @@ export default function App() {
     if (!policy) return;
     dropTurnPolicy(prev);
     void permissionRevokeTurn(policy.profileId, policy.acpSessionId, policy.turnId).catch((e) => {
-      const message = (e as { msg?: string })?.msg ?? String(e);
+      const message = localizeText((e as { msg?: string })?.msg ?? String(e), t);
       diag(`TURN-POLICY revoke on switch failed ui=${prev} · ${message}`);
     });
-  }, [diag, dropTurnPolicy, lastSessionId]);
+  }, [diag, dropTurnPolicy, lastSessionId, t]);
 
   // 轮终态/换轮后后端已清；界面必须同步收起 chip，不能在下一轮继续显示。
   useEffect(() => {
@@ -767,7 +768,7 @@ export default function App() {
       .catch((e) => {
         const err = asCmdError(e);
         diag(`RESUME new failed ui=${sid} · ${err.code} ${err.msg}`);
-        pushSystemNotice(patchSession, sid, t("app.session.newFailed", { code: err.code, msg: err.msg }));
+        pushSystemNotice(patchSession, sid, t("app.session.newFailed", { code: err.code, msg: localizeText(err.msg, t) }));
       })
       .finally(() => setResumeBusy(false));
   }, [cwd, diag, lastSessionId, onSession, patchSession, reportResume, sessionProfile?.id, t]);
@@ -1070,7 +1071,7 @@ export default function App() {
       setTraceBackfill({ sessionId: targetSessionId, running: false, result, error: null });
       setTraceTick((tick) => tick + 1);
     } catch (e) {
-      const message = String((e as { msg?: string })?.msg ?? e);
+      const message = localizeText(String((e as { msg?: string })?.msg ?? e), t);
       setTraceBackfill((current) =>
         current.sessionId === targetSessionId
           ? { ...current, running: false, error: message }
@@ -1086,6 +1087,7 @@ export default function App() {
     diag,
     lastSessionId,
     sessionProfile?.id,
+    t,
   ]);
 
   /** 轨迹 → 正文：滚到该轮第一条消息，并短暂用 accent 环标一下。 */
@@ -1135,7 +1137,7 @@ export default function App() {
       const err = asCmdError(e);
       // 应答没写出去时队头仍在，界面继续显示请求；这条是「当前状态坏了」，必须留痕，
       // 而且要走落库版提示，否则重开会话它又会换位置。
-      pushSystemNotice(patchSession, uiSid, t("app.permission.decideFailed", { code: err.code, msg: err.msg }));
+      pushSystemNotice(patchSession, uiSid, t("app.permission.decideFailed", { code: err.code, msg: localizeText(err.msg, t) }));
     }
   }, [lastSessionId, patchSession, permissions.decide, t]);
 
@@ -1203,7 +1205,7 @@ export default function App() {
     } catch (e) {
       const err = asCmdError(e);
       // 失败就留在框里说清楚：没删成，别让用户以为删了
-      setDeleteError(`${err.code} ${err.msg}`);
+      setDeleteError(`${err.code} ${localizeText(err.msg, t)}`);
     }
   };
 
@@ -1228,7 +1230,7 @@ export default function App() {
         resolved = await mentionResolve(lastSessionId, raw);
       } catch (e) {
         const err = asCmdError(e);
-        pushSystemNotice(patchSession, lastSessionId, err.msg);
+        pushSystemNotice(patchSession, lastSessionId, localizeText(err.msg, t));
         return;
       }
 
@@ -1287,7 +1289,7 @@ export default function App() {
         patchSession(sid, (s) => ({ ...s, msgs: s.msgs.filter((m) => m.id !== aside.id) }));
         const err = asCmdError(e);
         clog("ASIDE-ERR", `ui=${sid} acp=${acpSid} ${err.code} ${err.msg}`);
-        pushSystemNotice(patchSession, sid, t("app.notice.steerFailed", { msg: err.msg }));
+        pushSystemNotice(patchSession, sid, t("app.notice.steerFailed", { msg: localizeText(err.msg, t) }));
         return;
       }
 
@@ -1349,7 +1351,7 @@ export default function App() {
       const err = asCmdError(e);
       setCancelling((prev) => ({ ...prev, [sid]: false }));
       patchSession(sid, (s) => ({ ...s, busy: false }));
-      pushSystemNotice(patchSession, sid, t("app.notice.stopFailed", { code: err.code, msg: err.msg }));
+      pushSystemNotice(patchSession, sid, t("app.notice.stopFailed", { code: err.code, msg: localizeText(err.msg, t) }));
     }
   }, [
     activeAcpSid,
@@ -1729,7 +1731,8 @@ export default function App() {
                           </span>
                           <span className="truncate text-ink-2">
                             {t("app.permission.request", {
-                              title: state.pendingPerm.title.replace(/？$/, ""),
+                              // 剥掉标题末尾的问号（中文全角 / 英文半角都算）；这是判据不是文案
+                              title: state.pendingPerm.title.replace(/？\?\s*$/, ""), // i18n-ignore
                             })}
                           </span>
                           <span className="ml-auto shrink-0 text-ink-3">{t("app.permission.view")}</span>

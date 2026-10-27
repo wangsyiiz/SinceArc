@@ -1,4 +1,7 @@
-export const now = () => new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+import { currentLocale } from "../i18n/locale.ts";
+
+export const now = () =>
+  new Date().toLocaleTimeString(currentLocale(), { hour: "2-digit", minute: "2-digit" });
 
 /** 旧版本写入库里的占位名；只用于迁移识别，不再作为新连接的显示名。 */
 // i18n-ignore: 持久化历史数据值

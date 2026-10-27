@@ -23,6 +23,7 @@ import {
   mcpCatalogEditorReducer,
 } from "@/lib/mcp-catalog-editor";
 import { newId } from "@/lib/ids";
+import { localizeText } from "@/lib/i18n-text";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Button } from "./ui/Button";
@@ -248,7 +249,7 @@ export function McpCatalogSection({
     try {
       setEntries(await mcpCatalog());
     } catch (e) {
-      setError(t("settings.mcp.catalog.loadFailed", { msg: asCmdError(e).msg }));
+      setError(t("settings.mcp.catalog.loadFailed", { msg: localizeText(asCmdError(e).msg, t) }));
     } finally {
       setLoading(false);
     }
@@ -294,7 +295,7 @@ export function McpCatalogSection({
       await load();
     } catch (e) {
       const err = asCmdError(e);
-      setFormError(t("settings.mcp.form.saveFailed", { msg: err.msg }));
+      setFormError(t("settings.mcp.form.saveFailed", { msg: localizeText(err.msg, t) }));
     } finally {
       setSaving(false);
     }
@@ -309,7 +310,7 @@ export function McpCatalogSection({
       await load();
     } catch (e) {
       const err = asCmdError(e);
-      setError(t("settings.mcp.form.deleteFailed", { msg: err.msg }));
+      setError(t("settings.mcp.form.deleteFailed", { msg: localizeText(err.msg, t) }));
     } finally {
       setBusy(null);
     }

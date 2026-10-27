@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { asCmdError, mcpCatalog, type McpCatalogEntryDto } from "@/lib/ipc";
+import { localizeText } from "@/lib/i18n-text";
 import { McpServerChecklist } from "./McpChecklist";
 import { Segmented } from "./ui/Segmented";
 
@@ -29,7 +30,7 @@ export function McpDefaultPicker({
         if (alive) setCatalog(entries);
       })
       .catch((e) => {
-        if (alive) setError(asCmdError(e).msg);
+        if (alive) setError(localizeText(asCmdError(e).msg, t));
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -37,7 +38,7 @@ export function McpDefaultPicker({
     return () => {
       alive = false;
     };
-  }, []);
+  }, [t]);
 
   const catalogNames = useMemo(() => catalog.map((entry) => entry.name), [catalog]);
   const mode: DefaultMode = value === null ? "follow" : "custom";

@@ -134,7 +134,7 @@ const THEMES: { id: ThemeMode; labelKey: MessageKey }[] = [
 
 /** 语言档位：选项名用各自语言书写（切到英文后这一行仍然可读）。 */
 const LANGUAGE_OPTIONS: { value: Language; label: string }[] = [
-  { value: "zh-CN", label: "中文" },
+  { value: "zh-CN", label: "中文" }, // i18n-ignore: 语言名用母语显示
   { value: "en", label: "English" },
 ];
 

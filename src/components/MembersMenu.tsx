@@ -10,6 +10,7 @@ import {
   type AgentUser,
 } from "@/lib/ipc";
 import { profileLabel } from "@/lib/format";
+import { localizeText } from "@/lib/i18n-text";
 import type { AgentProfile } from "@/types";
 import { Tooltip } from "./ui/Tooltip";
 
@@ -71,8 +72,8 @@ export function MembersMenu({
     setError(null);
     agentUsersList()
       .then(setUsers)
-      .catch((e) => setError(asCmdError(e).msg));
-  }, [open]);
+      .catch((e) => setError(localizeText(asCmdError(e).msg, t)));
+  }, [open, t]);
 
   useEffect(() => {
     if (!open) return;
@@ -104,7 +105,7 @@ export function MembersMenu({
       onChanged();
     } catch (e) {
       const err = asCmdError(e);
-      setError(`${err.code} ${err.msg}`);
+      setError(`${err.code} ${localizeText(err.msg, t)}`);
     } finally {
       setBusy(null);
     }

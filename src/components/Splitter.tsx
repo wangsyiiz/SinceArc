@@ -1,4 +1,5 @@
 import { useRef } from "react";
+import { useTranslation } from "react-i18next";
 
 interface SplitterProps {
   value: number;
@@ -14,13 +15,14 @@ interface SplitterProps {
  * 常识性交互，不挂提示（拖动块的手感自己说明用途，§16.2）。
  */
 export function Splitter({ value, onChange, onDragChange, min = 200, max }: SplitterProps) {
+  const { t } = useTranslation();
   const drag = useRef<{ x: number; v: number } | null>(null);
 
   return (
     <div
       role="separator"
       aria-orientation="vertical"
-      aria-label="拖动调整宽度"
+      aria-label={t("splitter.ariaLabel")}
       onPointerDown={(e) => {
         drag.current = { x: e.clientX, v: value };
         onDragChange?.(true);

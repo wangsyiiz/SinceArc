@@ -1,13 +1,14 @@
-import i18next, { type i18n as I18n, type Resource } from "i18next";
+import type { Resource } from "i18next";
 import { initReactI18next } from "react-i18next";
-import { en } from "./en";
-import { normalizeLanguage, type Language } from "./normalize";
-import { zhCN } from "./zh-CN";
+import { en } from "./en.ts";
+import { i18n } from "./instance.ts";
+import { normalizeLanguage, type Language } from "./normalize.ts";
+import { zhCN } from "./zh-CN.ts";
 
 /** 资源只在这里组装一次；语言表由 `zh-CN.ts` 决定（docs/i18n.md §1）。 */
 const resources: Resource = { app: { "zh-CN": zhCN, en } };
 
-export const i18n: I18n = i18next.createInstance();
+export { i18n } from "./instance";
 
 /**
  * 初始化（幂等）。语言来源是 `settings.language` 或首启判定的系统语言，都先过归一化。

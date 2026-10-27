@@ -22,6 +22,7 @@ import { asCmdError, type AgentUser } from "@/lib/ipc";
 import { agentBrand } from "@/lib/agent-brands";
 import { delegateTargetCaps } from "@/lib/delegate-target";
 import { profileLabel } from "@/lib/format";
+import { localizeText } from "@/lib/i18n-text";
 import { cn } from "@/lib/utils";
 import type { AgentProfile } from "@/types";
 import { AgentLogo } from "./AgentLogo";
@@ -161,7 +162,7 @@ export function MemberDetailPanel({
       await onRemove();
       onClose();
     } catch (e) {
-      setError(asCmdError(e).msg);
+      setError(localizeText(asCmdError(e).msg, t));
     } finally {
       setRemoving(false);
     }

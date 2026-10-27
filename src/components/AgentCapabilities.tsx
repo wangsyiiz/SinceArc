@@ -4,6 +4,7 @@ import type { AgentProfile } from "@/types";
 import { capsRows, type CapsGroup } from "@/lib/caps-format";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import type { MessageKey } from "@/i18n/zh-CN";
+import { currentLocale } from "@/i18n/locale";
 import { cn } from "@/lib/utils";
 import { Hint } from "./ui/Hint";
 import { useAnchoredLayer } from "./ui/Menu";
@@ -38,7 +39,7 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
   const supported = rows.filter((r) => r.on).length;
   const hasCommands = acpCommands.length > 0;
   const handshake = profile?.capsAt
-    ? new Date(profile.capsAt * 1000).toLocaleString("zh-CN", {
+    ? new Date(profile.capsAt * 1000).toLocaleString(currentLocale(), {
         month: "2-digit",
         day: "2-digit",
         hour: "2-digit",

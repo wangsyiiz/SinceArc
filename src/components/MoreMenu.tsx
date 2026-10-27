@@ -1,5 +1,6 @@
 import { MoreHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { Menu } from "./ui/Menu";
 
@@ -21,7 +22,7 @@ export interface MenuItem {
  */
 export function MoreMenu({
   items,
-  label = "更多操作",
+  label,
   className,
   iconSize = 14,
   triggerRef,
@@ -32,9 +33,11 @@ export function MoreMenu({
   iconSize?: number;
   triggerRef?: React.RefObject<HTMLButtonElement | null>;
 }) {
+  const { t } = useTranslation();
+  const ariaLabel = label ?? t("moreMenu.ariaLabel");
   return (
     <Menu
-      ariaLabel={label}
+      ariaLabel={ariaLabel}
       triggerRef={triggerRef}
       align="end"
       compact

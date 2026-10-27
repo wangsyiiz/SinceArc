@@ -1,13 +1,14 @@
 import { useState } from "react";
 import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { currentLocale } from "@/i18n/locale";
 import type { StorageStatsDto } from "@/lib/ipc";
 import { Tooltip } from "./ui/Tooltip";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function formatCount(value: number): string {
-  return value.toLocaleString("zh-CN");
+  return value.toLocaleString(currentLocale());
 }
 
 export function StorageNotice({ stats }: { stats: StorageStatsDto | null }) {

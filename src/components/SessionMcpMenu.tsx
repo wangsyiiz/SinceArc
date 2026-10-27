@@ -13,6 +13,7 @@ import {
 } from "@/lib/ipc";
 import { entryKind, transportSupportNote } from "@/lib/mcp-display";
 import { diffMcpNames } from "@/lib/mcp-names-diff";
+import { localizeText } from "@/lib/i18n-text";
 import { cn } from "@/lib/utils";
 import { McpServerChecklist } from "./McpChecklist";
 import { MoreMenu } from "./MoreMenu";
@@ -165,7 +166,7 @@ function SessionMcpPanel({
       })
       .catch((e) => {
         if (alive) {
-          setError(t("settings.sessionMcp.loadFailed", { msg: asCmdError(e).msg }));
+          setError(t("settings.sessionMcp.loadFailed", { msg: localizeText(asCmdError(e).msg, t) }));
         }
       })
       .finally(() => {
@@ -191,7 +192,7 @@ function SessionMcpPanel({
       applyLoadedState(next);
     } catch (e) {
       applyLoadedState(state);
-      setError(t("settings.sessionMcp.saveFailed", { msg: asCmdError(e).msg }));
+      setError(t("settings.sessionMcp.saveFailed", { msg: localizeText(asCmdError(e).msg, t) }));
     } finally {
       setSaving(false);
     }
@@ -225,7 +226,7 @@ function SessionMcpPanel({
       await onReconnect();
       setReconnectNeeded(false);
     } catch (e) {
-      setError(t("settings.sessionMcp.reconnectFailed", { msg: asCmdError(e).msg }));
+      setError(t("settings.sessionMcp.reconnectFailed", { msg: localizeText(asCmdError(e).msg, t) }));
     } finally {
       setReconnecting(false);
     }

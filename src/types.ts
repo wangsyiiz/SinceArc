@@ -86,7 +86,7 @@ export interface SessionSummary {
   /** 库里的时间戳（秒）；排序/去重仍用它，不再用它算分组 */
   updatedAtSec?: number;
   /** 由后端按机器本地时区判定，前端只映射成中文 */
-  group: "今天" | "昨天" | "更早";
+  group: "今天" | "昨天" | "更早"; // i18n-ignore
   /** 这个会话里有哪些玩家 */
   playerIds: string[];
   /** 绑定的 ACP 会话 id：事件按它归属，重连时优先复用 */

@@ -35,7 +35,7 @@ export function McpServerChecklist({
   onToggle,
   caps = null,
   disabled = false,
-  emptyText = "目录里还没有条目。",
+  emptyText,
 }: {
   entries: McpCatalogEntryDto[];
   selected: readonly string[];
@@ -45,8 +45,9 @@ export function McpServerChecklist({
   emptyText?: string;
 }) {
   const { t } = useTranslation();
+  const text = emptyText ?? t("mcp.checklist.empty");
   if (entries.length === 0) {
-    return <p className="px-1 py-1 text-caption text-ink-3">{emptyText}</p>;
+    return <p className="px-1 py-1 text-caption text-ink-3">{text}</p>;
   }
 
   return (

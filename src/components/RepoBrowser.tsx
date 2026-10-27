@@ -53,7 +53,7 @@ export function RepoBrowser({ repo, prs, onOpenPr }: RepoBrowserProps) {
 
           {prs.length === 0 ? (
             <div className="rounded-control border border-dashed border-line-1/60 px-4 py-12 text-center text-caption leading-relaxed text-ink-3">
-              这个项目还没有 PR
+              {t("repo.empty")}
               <br />
               <span className="font-mono text-micro">{repo.path}</span>
             </div>
