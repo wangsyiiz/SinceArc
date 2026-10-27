@@ -153,41 +153,6 @@
         </div>
       </section>
 
-      <section class="faq">
-        <h2 data-i18n="faqTitle">Questions</h2>
-        <dl class="qa">
-          <div class="qa-item">
-            <dt data-i18n="faq1Q">Do I need an internet connection?</dt>
-            <dd data-i18n="faq1A">The client itself uploads nothing. The agent is a process you launch on your machine or in WSL,
-              so whatever model access it needs is its own business — the client only talks to that process.</dd>
-          </div>
-          <div class="qa-item">
-            <dt data-i18n="faq2Q">Where does my data live?</dt>
-            <dd data-i18n="faq2A">In <code>%APPDATA%\com.sincearc.app</code> — <code>sincearc.db</code> plus <code>logs\</code>.
-              Deleting the program folder does not touch it; delete that directory to remove everything.</dd>
-          </div>
-          <div class="qa-item">
-            <dt data-i18n="faq3Q">Which agents can it drive?</dt>
-            <dd data-i18n="faq3A">Anything that speaks ACP. Locally tested with hermes and codex running inside WSL. A profile can
-              launch on this machine, in a WSL distro, or over SSH.</dd>
-          </div>
-          <div class="qa-item">
-            <dt data-i18n="faq4Q">Why Windows only?</dt>
-            <dd data-i18n="faq4A">Because that is the only platform it has been verified on. Shipping unverified macOS or Linux
-              builds would just move the failure to your machine.</dd>
-          </div>
-          <div class="qa-item">
-            <dt data-i18n="faq5Q">The package is unsigned — is that a problem?</dt>
-            <dd data-i18n="faq5A">SmartScreen warns once on first run: choose “More info → Run anyway”. The code is public, so you
-              can also build it yourself and skip the download entirely.</dd>
-          </div>
-          <div class="qa-item">
-            <dt data-i18n="faq6Q">Will this cost money later?</dt>
-            <dd data-i18n="faq6A">Every client feature is free and open source, permanently. If a subscription ever happens, it sells
-              server-side capabilities — not the unlocking of code that already ships.</dd>
-          </div>
-        </dl>
-      </section>
     </main>
 
     <footer class="wrap">

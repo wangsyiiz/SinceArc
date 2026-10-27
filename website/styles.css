@@ -677,41 +677,6 @@ article.planned p {
 }
 
 
-/* ---------- QA（常显，不折叠） ---------- */
-
-.faq h2 {
-  margin-bottom: 6px;
-}
-
-.qa {
-  margin: 0;
-  border-top: 1px solid var(--line);
-}
-
-.qa-item {
-  padding: 16px 0 18px;
-  border-bottom: 1px solid var(--line);
-}
-
-.qa dt {
-  margin: 0 0 6px;
-  color: var(--ink-1);
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.qa dd {
-  margin: 0;
-  max-width: 74ch;
-  color: var(--ink-2);
-  font-size: var(--fs-small);
-  line-height: 1.75;
-}
-
-.qa dd code {
-  font-size: 12px;
-}
-
 /* ---------- 页脚 ---------- */
 
 footer {
