@@ -388,6 +388,20 @@ export interface TraceView {
 }
 
 /**
+ * 图视图是否给这一轮铺行（docs/desktop-ux.md §19.6）。
+ *
+ * 一条活动都没有、也没有分支回复的轮不占行：没开思考、没调工具、agent 也没发 `usage_update`
+ * 的纯对话轮就是这样（真库里 28 轮有 5 轮），按轮铺节点会画出一片无标签的空白圆点。
+ * `hasActivity` 由调用方给（它手里有活动表），所以这里是纯函数、可单测。
+ */
+export function turnHasDrawableContent(
+  turn: Pick<TraceTurn, "branches">,
+  hasActivity: (id: string) => boolean,
+): boolean {
+  return turn.branches.some((b) => Boolean(b.reply) || b.activityIds.some(hasActivity));
+}
+
+/**
  * 转换。每个作者一条支线（多 agent 群聊各走各的），顺序保持后端给的 seq 顺序。
  *
  * 没有把「回答」放进支线：回答是对话正文，面板只画「思考与操作」——
