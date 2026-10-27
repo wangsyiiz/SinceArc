@@ -25,9 +25,9 @@
   <body>
     <!-- 玻璃态导航：右侧顶部 -->
     <nav class="nav" aria-label="Site">
-      <button class="nav-btn" id="lang" type="button" aria-label="Switch language">中文</button>
+      <button class="nav-btn" id="lang" type="button" aria-label="Switch language">ZH</button>
 
-      <button class="nav-btn nav-icon" id="theme" type="button" aria-label="Switch theme">
+      <button class="nav-btn nav-icon" id="theme" type="button" aria-label="Switch to light theme" aria-pressed="false">
         <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
         </svg>
@@ -53,14 +53,14 @@
         A Windows desktop client for ACP agents that keeps the <em>process</em> visible: thinking and tool calls
         live in a trace swimlane, not buried in the chat stream.
       </p>
-      <p class="tagline-zh" data-i18n="taglineZh">把 agent 的思考与工具调用从对话里拆出来，做成一条能回看的泳道。</p>
 
       <div class="dl">
-        <a class="btn btn-primary dl-main" id="dlMain" href="#" data-dl-default>
-          <span id="dlMainLabel" data-i18n="dlMain">Download for Windows</span>
+        <a class="dl-main" id="dlMain" href="https://github.com/wangsyiiz/SinceArc/releases/latest/download/SinceArc-0.0.0-win-x64.zip" download="SinceArc-0.0.0-win-x64.zip">
+          <span class="dl-label" id="dlLabel">Download for Windows</span>
+          <span class="dl-sub" id="dlSub">Windows 10/11 · x64 · v0.0.0</span>
         </a>
         <button
-          class="btn btn-primary dl-more"
+          class="dl-more"
           id="dlMore"
           type="button"
           aria-haspopup="menu"
@@ -75,12 +75,10 @@
         <div class="dl-menu" id="dlMenu" role="menu" aria-labelledby="dlMore" hidden></div>
       </div>
 
-      <p class="dl-meta" id="dlMeta">—</p>
-
       <p class="dl-links">
         <a href="https://github.com/wangsyiiz/SinceArc/releases" data-i18n="dlAll">All releases</a> ·
         <a href="https://github.com/wangsyiiz/SinceArc" data-i18n="ctaSource">Source</a> ·
-        <a href="https://github.com/wangsyiiz/SinceArc/blob/master/README.zh-CN.md" data-i18n="ctaDocs">Read the docs</a>
+        <a id="docLink" href="https://github.com/wangsyiiz/SinceArc/blob/master/README.md" data-i18n="ctaDocs">Docs</a>
       </p>
     </header>
 
@@ -98,9 +96,9 @@
         aria-valuenow="50"
         style="--split: 50%"
       >
-        <img class="compare-layer compare-light" src="assets/app-light.svg" alt="SinceArc in light theme" />
+        <img class="compare-layer compare-light" src="assets/light.png" alt="SinceArc light theme" />
         <div class="compare-clip">
-          <img class="compare-layer" src="assets/app-dark.svg" alt="SinceArc in dark theme" />
+          <img class="compare-layer" src="assets/dark.png" alt="SinceArc dark theme" />
         </div>
         <div class="compare-edge" aria-hidden="true"></div>
         <div class="compare-handle" aria-hidden="true">
@@ -113,7 +111,7 @@
         <span class="compare-tag tag-left" data-i18n="tagDark">Dark</span>
         <span class="compare-tag tag-right" data-i18n="tagLight">Light</span>
       </div>
-      <p class="hint" data-i18n="compareHint">拖动中间的斜切滑块；聚焦后可用 ← → 键。</p>
+      <p class="hint" data-i18n="compareHint">Drag the diagonal handle, or focus it and use ← →.</p>
     </section>
 
     <main class="wrap">

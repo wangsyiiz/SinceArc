@@ -48,6 +48,7 @@ html[data-theme="light"] {
 
 html {
   color-scheme: dark;
+  background: var(--bg);
 }
 
 html[data-theme="light"] {
@@ -142,15 +143,17 @@ a:hover {
 }
 
 /* 主题按钮：暗色下显示太阳（可切到亮），亮色下显示月亮 */
-.i-sun {
+/* 两个图标互斥：规则必须比 .nav-icon svg { display: block } 更具体，
+   否则太阳和月亮会一起显示（右上角那个「主题切换有问题」就是这个）。 */
+.nav-icon .i-moon {
   display: none;
 }
 
-html[data-theme="light"] .i-sun {
+html[data-theme="light"] .nav-icon .i-moon {
   display: block;
 }
 
-html[data-theme="light"] .i-moon {
+html[data-theme="light"] .nav-icon .i-sun {
   display: none;
 }
 
@@ -175,7 +178,7 @@ html[data-theme="light"] .i-moon {
 }
 
 .tagline {
-  margin: 0 auto 10px;
+  margin: 0 auto 26px;
   max-width: 620px;
   color: var(--ink-2);
 }
@@ -184,13 +187,6 @@ html[data-theme="light"] .i-moon {
   color: var(--ink-1);
   font-style: normal;
   border-bottom: 1px solid var(--line-strong);
-}
-
-.tagline-zh {
-  margin: 0 auto 28px;
-  max-width: 620px;
-  color: var(--ink-3);
-  font-size: var(--fs-small);
 }
 
 .cta {
@@ -241,30 +237,61 @@ html[data-theme="light"] .i-moon {
 
 .dl {
   display: inline-flex;
+  align-items: stretch;
   position: relative;
   vertical-align: middle;
 }
 
+/* 主按钮：主文案 + 副标题两行都在按钮里 */
 .dl-main {
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 8px 20px 9px;
+  border: 1px solid var(--ink-1);
+  border-right: 0;
+  border-radius: var(--radius-card) 0 0 var(--radius-card);
+  background: var(--ink-1);
+  color: var(--bg);
+  text-align: center;
+  transition: opacity var(--t);
+}
+
+.dl-main:hover {
+  opacity: 0.86;
+  color: var(--bg);
+}
+
+.dl-label {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.dl-sub {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+  opacity: 0.68;
 }
 
 .dl-more {
-  padding: 0 9px;
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
+  display: grid;
+  place-items: center;
+  padding: 0 11px;
+  border: 1px solid var(--ink-1);
   border-left: 1px solid rgba(0, 0, 0, 0.22);
+  border-radius: 0 var(--radius-card) var(--radius-card) 0;
   background: var(--ink-1);
   color: var(--bg);
-  border-color: var(--ink-1);
+  cursor: pointer;
+  transition: opacity var(--t);
 }
 
 .dl-more:hover {
-  background: var(--ink-1);
-  color: var(--bg);
-  border-color: var(--ink-1);
-  opacity: 0.88;
+  opacity: 0.86;
 }
 
 .dl-more svg {
@@ -364,14 +391,6 @@ html[data-theme="light"] .i-moon {
   opacity: 1;
 }
 
-.dl-meta {
-  margin: 12px 0 0;
-  color: var(--ink-2);
-  font-size: 12px;
-  font-family: var(--mono);
-  letter-spacing: 0.01em;
-}
-
 .dl-links {
   margin: 10px 0 0;
   color: var(--ink-3);
@@ -388,7 +407,7 @@ html[data-theme="light"] .i-moon {
   --split: 50%;
   --slant: 40px;
   position: relative;
-  aspect-ratio: 16 / 10;
+  aspect-ratio: 1180 / 800;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -595,7 +614,7 @@ footer .fine {
   }
   .compare {
     --slant: 22px;
-    aspect-ratio: 4 / 3;
+    aspect-ratio: 1180 / 800;
   }
   .grip {
     width: 38px;

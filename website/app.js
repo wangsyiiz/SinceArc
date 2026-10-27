@@ -26,6 +26,7 @@
     root.dataset.theme = theme;
     store.set("sincearc.theme", theme);
     themeBtn.setAttribute("aria-label", theme === "dark" ? "Switch to light theme" : "Switch to dark theme");
+    themeBtn.setAttribute("aria-pressed", String(theme === "light"));
   }
 
   // 首屏前已经用内联脚本定过；这里只补上按钮文案
@@ -35,183 +36,69 @@
     applyTheme(root.dataset.theme === "light" ? "dark" : "light");
   });
 
-  /* ---------------- 下载按钮：按浏览器平台选默认包 ---------------- */
+  /* ---------------- 下载按钮：默认项直接下载，右侧下拉换包 ---------------- */
 
   const VERSION = "0.0.0";
   const REL = "https://github.com/wangsyiiz/SinceArc/releases/latest/download/";
 
-  // 真实产物只有 Windows x64 两种；其余平台明写「未提供」，不做假链接。
+  // 只列真实存在的产物。没有构建的平台不放进菜单——给不存在的链接比给不出下载更糟。
   const ARTIFACTS = [
-    {
-      id: "win-x64-zip",
-      os: "windows",
-      arch: "x64",
-      group: "win",
-      title: { en: "Windows x64 · portable zip", zh: "Windows x64 · 便携 zip" },
-      note: `SinceArc-${VERSION}-win-x64.zip · 3.7 MB`,
-      href: `${REL}SinceArc-${VERSION}-win-x64.zip`,
-      btn: { en: "Download for Windows", zh: "下载 Windows 版" },
-    },
-    {
-      id: "win-x64-setup",
-      os: "windows",
-      arch: "x64",
-      group: "win",
-      title: { en: "Windows x64 · installer (.exe)", zh: "Windows x64 · 安装包 (.exe)" },
-      note: `SinceArc_${VERSION}_x64-setup.exe · 2.9 MB`,
-      href: `${REL}SinceArc_${VERSION}_x64-setup.exe`,
-      btn: { en: "Download for Windows", zh: "下载 Windows 版" },
-    },
-    {
-      id: "macos-arm64",
-      os: "macos",
-      arch: "arm64",
-      group: "other",
-      title: { en: "macOS (Apple silicon)", zh: "macOS（Apple 芯片）" },
-      note: { en: "no build yet — build from source", zh: "暂无构建 —— 只能从源码编译" },
-      disabled: true,
-    },
-    {
-      id: "macos-x64",
-      os: "macos",
-      arch: "x64",
-      group: "other",
-      title: { en: "macOS (Intel)", zh: "macOS（Intel）" },
-      note: { en: "no build yet — build from source", zh: "暂无构建 —— 只能从源码编译" },
-      disabled: true,
-    },
-    {
-      id: "linux-x64",
-      os: "linux",
-      arch: "x64",
-      group: "other",
-      title: { en: "Linux x64", zh: "Linux x64" },
-      note: { en: "no build yet — build from source", zh: "暂无构建 —— 只能从源码编译" },
-      disabled: true,
-    },
-    {
-      id: "source",
-      os: "any",
-      arch: "any",
-      group: "other",
-      title: { en: "Source code (zip)", zh: "源代码 (zip)" },
-      note: `v${VERSION} · Apache-2.0`,
-      href: `https://github.com/wangsyiiz/SinceArc/archive/refs/tags/v${VERSION}.zip`,
-      btn: { en: "Download source", zh: "下载源码" },
-    },
+    { id: "win-x64-zip", file: `SinceArc-${VERSION}-win-x64.zip`, size: "3.7 MB", kind: { en: "Portable zip", zh: "便携 zip" } },
+    { id: "win-x64-setup", file: `SinceArc_${VERSION}_x64-setup.exe`, size: "2.9 MB", kind: { en: "Installer (.exe)", zh: "安装包 (.exe)" } },
   ];
 
   const dlMain = document.getElementById("dlMain");
-  const dlMainLabel = document.getElementById("dlMainLabel");
+  const dlLabel = document.getElementById("dlLabel");
+  const dlSub = document.getElementById("dlSub");
   const dlMore = document.getElementById("dlMore");
   const dlMenu = document.getElementById("dlMenu");
-  const dlMeta = document.getElementById("dlMeta");
+  const docLink = document.getElementById("docLink");
 
   const isZh = () => document.documentElement.lang.startsWith("zh");
   const pick = (v) => (typeof v === "string" ? v : v[isZh() ? "zh" : "en"]);
-
-  // 平台识别：优先 UA-CH（能拿到架构），降级到 UA 字符串
-  const detected = { os: "unknown", arch: "unknown" };
-
-  function detectFromUA() {
-    const ua = navigator.userAgent;
-    if (/Windows NT/i.test(ua)) detected.os = "windows";
-    else if (/Mac OS X|Macintosh/i.test(ua)) detected.os = "macos";
-    else if (/Linux|X11/i.test(ua)) detected.os = "linux";
-    detected.arch = /arm64|aarch64/i.test(ua) ? "arm64" : "x64";
-  }
-
-  detectFromUA();
-
-  if (navigator.userAgentData?.getHighEntropyValues) {
-    navigator.userAgentData
-      .getHighEntropyValues(["architecture", "bitness", "platform"])
-      .then((v) => {
-        if (v.platform === "Windows" || v.platform === "macOS" || v.platform === "Linux") {
-          detected.os = v.platform.toLowerCase();
-        }
-        if (v.architecture === "arm") detected.arch = "arm64";
-        else if (v.bitness === "64") detected.arch = "x64";
-        renderDownload();
-      })
-      .catch(() => {});
-  }
-
-  function defaultArtifact() {
-    return (
-      ARTIFACTS.find((a) => a.os === detected.os && a.arch === detected.arch && !a.disabled) ??
-      ARTIFACTS.find((a) => a.os === detected.os && !a.disabled) ??
-      ARTIFACTS.find((a) => a.id === "source")
-    );
-  }
 
   let chosenId = null;
   try {
     chosenId = localStorage.getItem("sincearc.download");
   } catch {}
-  const currentArtifact = () => ARTIFACTS.find((a) => a.id === chosenId) ?? defaultArtifact();
+  const current = () => ARTIFACTS.find((a) => a.id === chosenId) ?? ARTIFACTS[0];
 
-  const OS_LABEL = {
-    windows: { en: "Windows 10/11", zh: "Windows 10/11" },
-    macos: { en: "macOS", zh: "macOS" },
-    linux: { en: "Linux", zh: "Linux" },
-    unknown: { en: "Unknown platform", zh: "未知平台" },
-  };
-
-  // 副标题行：当前平台 / 架构 / 版本 / 包形态 / 体积
-  // 平台与架构以「选中的产物」为准（用户可能手动切到别的平台），源码才回落到检测结果
-  function metaLine(item) {
-    const osKey = item.os !== "any" ? item.os : detected.os;
-    const archKey = item.arch !== "any" ? item.arch : detected.arch;
-    const os = pick(OS_LABEL[osKey]);
-    const arch = archKey === "arm64" ? "arm64" : "x64";
-    if (item.disabled || item.id === "source") {
-      return isZh()
-        ? `${os} · ${arch} · v${VERSION} · 暂无官方构建，只能从源码编译`
-        : `${os} · ${arch} · v${VERSION} · no official build yet — build from source`;
-    }
-    const kind = item.id.endsWith("setup") ? (isZh() ? "安装包" : "installer") : isZh() ? "便携 zip" : "portable zip";
-    const size = item.note.split(" · ").pop();
-    return `${os} · ${arch} · v${VERSION} · ${kind} · ${size}`;
-  }
+  // 副标题：平台 · 架构 · 版本（放在按钮主文案下面，同一颗按钮里）
+  const SUBTITLE = { en: `Windows 10/11 · x64 · v${VERSION}`, zh: `Windows 10/11 · x64 · v${VERSION}` };
 
   function checkIcon() {
     return `<svg class="dl-check" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 10 17.5 19 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   }
 
   function renderMenu() {
-    const cur = currentArtifact();
-    const win = ARTIFACTS.filter((a) => a.group === "win");
-    const other = ARTIFACTS.filter((a) => a.group === "other");
-    const row = (a) => `
-      <button class="dl-item" role="menuitemradio" type="button" data-id="${a.id}"
-              aria-checked="${a.id === cur.id}" aria-disabled="${a.disabled ? "true" : "false"}">
+    const cur = current();
+    dlMenu.innerHTML =
+      `<div class="dl-group">Windows x64</div>` +
+      ARTIFACTS.map(
+        (a) => `
+      <button class="dl-item" role="menuitemradio" type="button" data-id="${a.id}" aria-checked="${a.id === cur.id}">
         <span class="dl-item-body">
-          <span class="dl-item-title">${pick(a.title)}</span>
-          <span class="dl-item-note">${pick(a.note)}</span>
+          <span class="dl-item-title">${pick(a.kind)}</span>
+          <span class="dl-item-note">${a.size} · ${a.file.split(".").pop()}</span>
         </span>
         ${checkIcon()}
-      </button>`;
-    dlMenu.innerHTML = `
-      <div class="dl-group">${isZh() ? "Windows" : "Windows"}</div>
-      ${win.map(row).join("")}
-      <div class="dl-group">${isZh() ? "其他平台 / 源码" : "Other platforms / source"}</div>
-      ${other.map(row).join("")}`;
+      </button>`,
+      ).join("");
   }
 
   function renderDownload() {
-    const item = currentArtifact();
-    dlMainLabel.textContent = pick(item.btn ?? ARTIFACTS.find((a) => a.id === "source").btn);
-    if (item.href) {
-      dlMain.href = item.href;
-      dlMain.setAttribute("download", "");
-      dlMain.removeAttribute("aria-disabled");
-    } else {
-      dlMain.href = "https://github.com/wangsyiiz/SinceArc/releases";
-      dlMain.removeAttribute("download");
+    const item = current();
+    dlLabel.textContent = isZh() ? "下载 Windows 版" : "Download for Windows";
+    dlSub.textContent = pick(SUBTITLE);
+    dlMain.href = REL + item.file;
+    dlMain.setAttribute("download", item.file);
+    dlMore.setAttribute("aria-label", isZh() ? "其他安装包" : "Other downloads");
+    if (docLink) {
+      docLink.textContent = isZh() ? "读文档" : "Docs";
+      docLink.href = isZh()
+        ? "https://github.com/wangsyiiz/SinceArc/blob/master/README.zh-CN.md"
+        : "https://github.com/wangsyiiz/SinceArc/blob/master/README.md";
     }
-    dlMeta.textContent = metaLine(item);
-    dlMore.setAttribute("aria-label", isZh() ? "其他平台下载" : "Other downloads");
     renderMenu();
   }
 
@@ -223,9 +110,12 @@
 
   dlMore.addEventListener("click", () => openMenu(dlMenu.hidden));
 
+  // 主按钮就是下载：点一次直接下当前默认包，不经过任何中间态
+  dlMain.addEventListener("click", () => openMenu(false));
+
   dlMenu.addEventListener("click", (e) => {
     const btn = e.target.closest(".dl-item");
-    if (!btn || btn.getAttribute("aria-disabled") === "true") return;
+    if (!btn) return;
     chosenId = btn.dataset.id;
     try {
       localStorage.setItem("sincearc.download", chosenId);
@@ -236,7 +126,7 @@
   });
 
   dlMenu.addEventListener("keydown", (e) => {
-    const items = [...dlMenu.querySelectorAll('.dl-item:not([aria-disabled="true"])')];
+    const items = [...dlMenu.querySelectorAll(".dl-item")];
     const i = items.indexOf(document.activeElement);
     if (e.key === "Escape") {
       openMenu(false);
@@ -266,7 +156,6 @@
 
   const ZH = {
     tagline: "面向 ACP agent 的 Windows 桌面客户端，把<em>过程</em>留在明处：思考与工具调用进轨迹泳道，而不是埋进聊天流里。",
-    taglineZh: "对话只讲人话，过程进轨迹；两者靠锚点互跳，出了问题能回查。",
     dlMain: "下载 Windows 版",
     dlAll: "全部版本",
     ctaSource: "源码",
@@ -310,8 +199,8 @@
       if (typeof text === "string") el.innerHTML = text;
     });
     root.lang = lang === "zh" ? "zh-CN" : "en";
-    langBtn.textContent = lang === "zh" ? "EN" : "中文";
-    langBtn.setAttribute("aria-label", lang === "zh" ? "Switch to English" : "切换到中文");
+    langBtn.textContent = lang === "zh" ? "EN" : "ZH";
+    langBtn.setAttribute("aria-label", lang === "zh" ? "Switch to English" : "Switch to Chinese");
     store.set("sincearc.lang", lang);
     // 下载按钮的文案与下拉里的语言都要跟着换
     renderDownload();
