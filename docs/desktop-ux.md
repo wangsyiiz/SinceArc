@@ -1098,3 +1098,23 @@ type CodeTheme = {
   行高完全由内容决定；估算值只留在 `estimate`，并补一条读数验收「行高 == 内容高（差 ≤ 1px）」。
   注意 `useVirtualList` 的 `measureElement` 读的是 `offsetHeight`，`minHeight` 会被算进测量结果，
   所以这不是「无关的样式」而是直接影响滚动总高。
+
+## 20. release 构建禁用右键菜单（2026-10-27 拍板）
+
+Windows 上 WebView2 自带右键菜单：重新加载 / 另存为 / 打印 / 检查。在桌面应用里露出来像浏览器，
+而且「重新加载」会清空前端状态（标签、滚动位置），属于一误触就断工作流的入口。
+
+**拍板**：release 构建屏蔽，dev 构建保留（排查时要用「检查」）。
+
+实现：`src/lib/release-ui.ts` 的 `blockNativeContextMenu()`，在 `src/main.tsx` 里按
+`import.meta.env.PROD` 调一次 —— 一行 DOM 逻辑，跨平台，不引依赖。
+
+另一条路（未采用，留档）：Rust 侧 `WebviewWindow::with_webview` 调 WebView2 的
+`ICoreWebView2Settings::SetAreDefaultContextMenusEnabled(false)`。代价：要加 `webview2-com` + `windows`
+两个依赖、要用 `#[cfg(windows)]` 包住（否则非 Windows 目标编不过）、API 面比一行 `preventDefault()` 大得多；
+换来的唯一差别是「非 DOM 区域的右键」也被关掉 —— 本应用窗口全部自绘，没有非 DOM 区域可点。
+真出现 DOM 之外的右键场景再换。
+
+**边界**：只屏蔽 ContextMenu，不影响键盘、拖放、输入框内的粘贴（Ctrl+V 照旧）。
+验收：release 包里右键无菜单、dev 里右键有菜单；`src/lib/release-ui.test.ts` 断言
+`contextmenu` 的 `defaultPrevented === true` 且其它事件不受影响。
