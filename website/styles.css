@@ -59,6 +59,7 @@ html[data-theme="light"] {
 
 body {
   margin: 0;
+  position: relative;
   background: var(--bg);
   color: var(--ink-1);
   font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans SC", sans-serif;
@@ -83,6 +84,33 @@ a:hover {
 .wrap {
   width: min(920px, calc(100% - 40px));
   margin: 0 auto;
+}
+
+
+/* ---------- 顶部网格背景（全宽，向四周渐隐） ---------- */
+
+.backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1080px;
+  z-index: 0;
+  pointer-events: none;
+  background-image: linear-gradient(to right, var(--grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+  background-size: 46px 46px;
+  background-position: center top;
+  -webkit-mask-image: radial-gradient(ellipse 68% 62% at 50% 30%, #000 0%, rgba(0, 0, 0, 0.6) 44%, transparent 78%);
+  mask-image: radial-gradient(ellipse 68% 62% at 50% 30%, #000 0%, rgba(0, 0, 0, 0.6) 44%, transparent 78%);
+}
+
+/* 内容压在背景板之上（背景板是 z-index:0 的定位元素，会盖住流内文本） */
+.hero,
+main,
+footer {
+  position: relative;
+  z-index: 1;
 }
 
 /* ---------- 玻璃态导航（右侧顶部） ---------- */
@@ -165,24 +193,6 @@ html[data-theme="light"] .nav-icon .i-sun {
   position: relative;
   padding: 96px 0 48px;
   text-align: center;
-  isolation: isolate;
-  /* 网格铺满 hero 盒，遮罩在盒子边缘前已经淡到透明；裁掉以防往外溢出 */
-  overflow: hidden;
-}
-
-/* 浅网格：只铺在 logo + 简介这一块后面，用径向遮罩向四周渐隐 */
-.hero::before {
-  content: "";
-  position: absolute;
-  inset: -88px 0 -60px;
-  z-index: -1;
-  pointer-events: none;
-  background-image: linear-gradient(to right, var(--grid) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
-  background-size: 46px 46px;
-  background-position: center center;
-  -webkit-mask-image: radial-gradient(ellipse 52% 58% at 50% 38%, #000 0%, rgba(0, 0, 0, 0.55) 42%, transparent 74%);
-  mask-image: radial-gradient(ellipse 52% 58% at 50% 38%, #000 0%, rgba(0, 0, 0, 0.55) 42%, transparent 74%);
 }
 
 .logo {
@@ -196,12 +206,18 @@ html[data-theme="light"] .nav-icon .i-sun {
   font-size: 34px;
   font-weight: 600;
   letter-spacing: 0.01em;
-  /* 辉光只做明暗扩散，不加颜色 */
-  text-shadow: 0 0 22px rgba(255, 255, 255, 0.34), 0 0 64px rgba(255, 255, 255, 0.16);
+  /* 辉光只做明暗扩散，不加颜色：近处一圈实光 + 中距扩散 + 远处弥散 */
+  text-shadow:
+    0 0 10px rgba(255, 255, 255, 0.55),
+    0 0 30px rgba(255, 255, 255, 0.42),
+    0 0 84px rgba(255, 255, 255, 0.26);
 }
 
 html[data-theme="light"] .hero h1 {
-  text-shadow: 0 0 22px rgba(0, 0, 0, 0.16), 0 0 64px rgba(0, 0, 0, 0.07);
+  text-shadow:
+    0 0 10px rgba(0, 0, 0, 0.22),
+    0 0 30px rgba(0, 0, 0, 0.14),
+    0 0 84px rgba(0, 0, 0, 0.08);
 }
 
 .tagline {

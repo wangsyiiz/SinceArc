@@ -174,7 +174,6 @@
     why4Title: "GitHub 桌面客户端",
     why4Body: "把 PR、issue、评审搬进同一个窗口，agent 通过 ACP 参与评论与改动。目前只有设计稿，还没有可安装的版本。",
     plannedChip: "规划中",
-    fine: "SinceArc 名称与图标不随代码授权，fork 必须改名换标。",
   };
 
   // 英文取自页面初始 HTML，切换回来时用它复原，避免两处维护
