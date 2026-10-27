@@ -179,6 +179,7 @@ The specs are written in Chinese; each line below links to the file.
 | [`docs/ipc-contract.md`](docs/ipc-contract.md) | Frontend/backend contract and error codes |
 | [`docs/permissions-spec.md`](docs/permissions-spec.md) | Approvals and auto-consent |
 | [`docs/distribution.md`](docs/distribution.md) | Packaging and distribution (platform scope, artifacts, signing) |
+| [`docs/gh.md`](docs/gh.md) | GitHub view: gh-CLI-only adapter, availability probe, error codes, diff slicing |
 | [`docs/licensing.md`](docs/licensing.md) | Free vs. subscription boundary, three red lines |
 
 ## Contributing
