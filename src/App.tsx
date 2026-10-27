@@ -110,6 +110,12 @@ import { estimateMessageHeight } from "@/lib/virtual/message-height";
 import { useVirtualList } from "@/lib/virtual/useVirtualList";
 
 const SETTINGS_SAVE_DEBOUNCE_MS = 300;
+/**
+ * 轨迹面板一次拉取的轮数。服务端上限是 200 轮（事件 limit×200），但实测成本是线性的：
+ * 50 轮 ≈ 1 万条活动、IPC 314 ms；200 轮 ≈ 4 万条、IPC 1213 ms、冷开面板 1574 ms。
+ * 所以默认只拉 50 轮，翻更早交给「轨迹分页」那张卡（docs/desktop-ux.md §19.6）。
+ */
+const TRACE_TURN_LIMIT = 50;
 
 interface TurnPolicy {
   profileId: string;
@@ -1013,11 +1019,12 @@ export default function App() {
     [openTab, patchSession, tabs],
   );
 
-  // 轨迹拉取：只读库，失败留日志（面板空着比整页报错好）
+  // 轨迹拉取：只读库，失败留日志（面板空着比整页报错好）。
+  // 轮数上限跟服务端一致（服务端会把 limit 夹到 200 轮、事件 limit×200）——只在面板打开时拉。
   useEffect(() => {
     if (!traceOpen) return;
     let alive = true;
-    void sessionTrace(lastSessionId, 50)
+    void sessionTrace(lastSessionId, TRACE_TURN_LIMIT)
       .then((rows) => {
         if (alive) setTraceTurns(rows);
       })
