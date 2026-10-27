@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -10,69 +10,135 @@
     />
     <link rel="icon" href="assets/logo-128.png" />
     <link rel="stylesheet" href="styles.css" />
+    <script>
+      // 主题与语言要在首帧前定下来，避免闪一下
+      (() => {
+        try {
+          const t = localStorage.getItem("sincearc.theme");
+          const l = localStorage.getItem("sincearc.lang");
+          if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+          if (l === "en" || l === "zh") document.documentElement.lang = l;
+        } catch {}
+      })();
+    </script>
   </head>
   <body>
+    <!-- 玻璃态导航：右侧顶部 -->
+    <nav class="nav" aria-label="Site">
+      <button class="nav-btn" id="lang" type="button" aria-label="Switch language">中文</button>
+
+      <button class="nav-btn nav-icon" id="theme" type="button" aria-label="Switch theme">
+        <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+        </svg>
+        <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="4.2" fill="none" stroke="currentColor" stroke-width="1.6" />
+          <g stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+            <path d="M12 2.6v2.4M12 19v2.4M2.6 12H5M19 12h2.4M5.4 5.4l1.7 1.7M16.9 16.9l1.7 1.7M18.6 5.4l-1.7 1.7M7.1 16.9l-1.7 1.7" />
+          </g>
+        </svg>
+      </button>
+
+      <a class="nav-btn nav-icon" href="https://github.com/wangsyiiz/SinceArc" aria-label="GitHub repository" rel="noreferrer">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+        </svg>
+      </a>
+    </nav>
+
     <header class="wrap hero">
       <img class="logo" src="assets/logo-128.png" alt="SinceArc" width="96" height="96" />
       <h1>SinceArc</h1>
-      <p class="tagline">
-        A Windows desktop client for ACP agents that keeps the <em>process</em> visible:
-        thinking and tool calls live in a trace swimlane, not buried in the chat stream.
+      <p class="tagline" data-i18n="tagline">
+        A Windows desktop client for ACP agents that keeps the <em>process</em> visible: thinking and tool calls
+        live in a trace swimlane, not buried in the chat stream.
       </p>
-      <p class="tagline-zh">把 agent 的思考与工具调用从对话里拆出来，做成一条能回看的泳道。</p>
+      <p class="tagline-zh" data-i18n="taglineZh">把 agent 的思考与工具调用从对话里拆出来，做成一条能回看的泳道。</p>
 
       <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/wangsyiiz/SinceArc/releases">Download for Windows</a>
-        <a class="btn" href="https://github.com/wangsyiiz/SinceArc">Source</a>
-        <a class="btn" href="https://github.com/wangsyiiz/SinceArc/blob/master/README.zh-CN.md">中文说明</a>
+        <a class="btn btn-primary" href="https://github.com/wangsyiiz/SinceArc/releases" data-i18n="ctaDownload">Download for Windows</a>
+        <a class="btn" href="https://github.com/wangsyiiz/SinceArc" data-i18n="ctaSource">Source</a>
+        <a class="btn" href="https://github.com/wangsyiiz/SinceArc/blob/master/README.zh-CN.md" data-i18n="ctaDocs">Read the docs</a>
       </div>
       <p class="meta">v0.0.0 · Windows x64 · Apache-2.0 · unsigned preview</p>
     </header>
 
+    <!-- 软件展示：中间斜切、可拖动的亮/暗对比 -->
+    <section class="wrap showcase" aria-labelledby="showcaseTitle">
+      <h2 id="showcaseTitle" data-i18n="showcaseTitle">The same window, two themes</h2>
+      <div
+        class="compare"
+        id="compare"
+        role="slider"
+        tabindex="0"
+        aria-label="Drag to compare dark and light theme"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow="50"
+        style="--split: 50%"
+      >
+        <img class="compare-layer compare-light" src="assets/app-light.svg" alt="SinceArc in light theme" />
+        <div class="compare-clip">
+          <img class="compare-layer" src="assets/app-dark.svg" alt="SinceArc in dark theme" />
+        </div>
+        <div class="compare-edge" aria-hidden="true"></div>
+        <div class="compare-handle" aria-hidden="true">
+          <span class="grip">
+            <svg viewBox="0 0 24 24">
+              <path d="M9 6 4 12l5 6M15 6l5 6-5 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+        </div>
+        <span class="compare-tag tag-left" data-i18n="tagDark">Dark</span>
+        <span class="compare-tag tag-right" data-i18n="tagLight">Light</span>
+      </div>
+      <p class="hint" data-i18n="compareHint">拖动中间的斜切滑块；聚焦后可用 ← → 键。</p>
+    </section>
+
     <main class="wrap">
       <section>
-        <h2>Why another client</h2>
+        <h2 data-i18n="whyTitle">Why another client</h2>
         <div class="grid">
           <article>
-            <h3>Process apart from prose</h3>
-            <p>
+            <h3 data-i18n="why1Title">Process apart from prose</h3>
+            <p data-i18n="why1Body">
               Replies stay in the chat; thinking, tool calls and permission prompts go into a trace panel.
-              The two cross-link by anchor, so you can always ask “why did it do that” and get an answer.
+              The two cross-link by anchor, so "why did it do that" always has an answer.
             </p>
           </article>
           <article>
-            <h3>Local first</h3>
-            <p>
-              Sessions, traces and settings live in <code>%APPDATA%\com.sincearc.app</code>.
-              Nothing is uploaded, and the client works fully without any account.
+            <h3 data-i18n="why2Title">Local first</h3>
+            <p data-i18n="why2Body">
+              Sessions, traces and settings live in %APPDATA%\com.sincearc.app. Nothing is uploaded, and the
+              client works fully without an account.
             </p>
           </article>
           <article>
-            <h3>It never disposes of your data</h3>
-            <p>
-              Deleting a session or a file requires explicit authorization. There is no “helpful”
-              automatic cleanup — storage is counted and reported, never acted on.
+            <h3 data-i18n="why3Title">It never disposes of your data</h3>
+            <p data-i18n="why3Body">
+              Deleting a session or a file requires explicit authorization. Storage is counted and reported,
+              never acted on.
             </p>
           </article>
         </div>
       </section>
 
       <section>
-        <h2>What it is not</h2>
+        <h2 data-i18n="notTitle">What it is not</h2>
         <ul class="limits">
-          <li><strong>Windows x64 only.</strong> No macOS, Linux or ARM64 builds, and no unverified artifacts.</li>
-          <li><strong>Unsigned.</strong> SmartScreen warns once on first run; choose “More info → Run anyway”.</li>
-          <li><strong>No auto-update yet.</strong> Upgrading means downloading a new package.</li>
-          <li><strong>Trace paging is limited.</strong> The panel loads 50 turns at a time; older traces need pagination.</li>
+          <li data-i18n="not1"><strong>Windows x64 only.</strong> No macOS, Linux or ARM64 builds, and no unverified artifacts.</li>
+          <li data-i18n="not2"><strong>Unsigned.</strong> SmartScreen warns once on first run; choose "More info → Run anyway".</li>
+          <li data-i18n="not3"><strong>No auto-update yet.</strong> Upgrading means downloading a new package.</li>
+          <li data-i18n="not4"><strong>Trace paging is limited.</strong> The panel loads 50 turns at a time.</li>
         </ul>
       </section>
 
       <section>
-        <h2>Install</h2>
+        <h2 data-i18n="installTitle">Install</h2>
         <ol class="steps">
-          <li>Download <code>SinceArc-&lt;version&gt;-win-x64.zip</code> (portable) or the setup <code>.exe</code>.</li>
-          <li>Extract somewhere real — not inside the zip — then run <code>SinceArc.exe</code>.</li>
-          <li>Needs WebView2 Runtime: shipped with Windows 11 and recent Windows 10.</li>
+          <li data-i18n="install1">Download the portable zip or the setup .exe from Releases.</li>
+          <li data-i18n="install2">Extract somewhere real — not inside the zip — then run SinceArc.exe.</li>
+          <li data-i18n="install3">Needs WebView2 Runtime, shipped with Windows 11 and recent Windows 10.</li>
         </ol>
       </section>
     </main>
@@ -84,7 +150,9 @@
         <a href="https://agentclientprotocol.com">ACP</a> ·
         <a href="https://github.com/wangsyiiz/SinceArc/issues">Issues</a>
       </p>
-      <p class="fine">SinceArc name and logo are not licensed with the code. Forks must rename and re-brand.</p>
+      <p class="fine" data-i18n="fine">SinceArc name and logo are not licensed with the code. Forks must rename and re-brand.</p>
     </footer>
+
+    <script src="app.js"></script>
   </body>
 </html>
