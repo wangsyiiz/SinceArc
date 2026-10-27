@@ -5,7 +5,7 @@ Windows 桌面上的 ACP（Agent Client Protocol）客户端：把 agent 的**�
 
 Tauri 2 + React 19 + TypeScript + Rust，本地 SQLite 落库，数据不出机器。
 
-> 当前版本 `0.1.0`，Windows x64 预览版。功能边界见下面「现在能做什么 / 不能做什么」，没做的就写没做。
+> 当前版本 `0.0.0`（从 0 起算，见 docs/distribution.md §5），Windows x64 预览版。功能边界见下面「现在能做什么 / 不能做什么」，没做的就写没做。
 
 ---
 
@@ -118,7 +118,7 @@ npm run build                                      # tsc -b && vite build
 npm test                                           # node --test "src/**/*.test.ts"
 ```
 
-当前基线（`0.1.0`）：cargo **277** / node **228** / tsc 0 / vite ~3s。
+当前基线（`0.0.0`）：cargo **277** / node **228** / tsc 0 / vite ~3s。
 
 > `kill_tree_reaps_forked_child_on_windows` 在机器忙时会超时变红：先查有没有残留
 > `powershell.exe`（`tasklist /FI "IMAGENAME eq powershell.exe"`），清掉再跑；
