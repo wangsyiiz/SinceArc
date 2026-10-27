@@ -172,8 +172,26 @@
     why3Body:
       "几个 CLI agent、群聊成员和它们的会话都在同一条时间轴上。<code>@</code> 一个成员就让它单开支线并行跑，答完弯回主干——不用在几个终端窗口之间来回搬上下文，也不用分别去翻「刚才那个 agent 干了什么」。",
     why4Title: "GitHub 桌面客户端",
-    why4Body: "把 PR、issue、评审搬进同一个窗口，agent 通过 ACP 参与评论与改动。目前只有设计稿，还没有可安装的版本。",
+    why4Body: "把 PR、issue、评审搬进同一个窗口，agent 通过 ACP 参与评论与改动。",
     plannedChip: "规划中",
+    faqTitle: "常见问题",
+    faq1Q: "需要联网吗？",
+    faq1A:
+      "客户端自己不上传任何东西。agent 是你在本机或 WSL 里起的进程，它要访问模型服务是它自己的事——客户端只跟那个进程说话。",
+    faq2Q: "数据存在哪？",
+    faq2A:
+      "在 <code>%APPDATA%\\com.sincearc.app</code>，也就是 <code>sincearc.db</code> 与 <code>logs\\</code>。删程序文件夹不会动它；要彻底清干净就删这个目录。",
+    faq3Q: "能接哪些 agent？",
+    faq3A:
+      "任何说 ACP 的 agent。实际测过的是 WSL 里的 hermes 与 codex。一个配置可以选三种启动方式：本机、WSL、SSH。",
+    faq4Q: "为什么只有 Windows？",
+    faq4A: "因为只在这一个平台上验证过。发没验证过的 macOS / Linux 包，只是把失败挪到你的机器上。",
+    faq5Q: "包没签名，有问题吗？",
+    faq5A:
+      "首次运行 SmartScreen 会提示「未知发布者」，选「更多信息 → 仍要运行」即可。代码是公开的，你也可以自己构建，跳过下载这一步。",
+    faq6Q: "以后会收费吗？",
+    faq6A:
+      "客户端的所有功能永久免费且开源。真做订阅的话，卖的是服务端能力，不是给已经在你机器上的代码上锁。",
   };
 
   // 英文取自页面初始 HTML，切换回来时用它复原，避免两处维护

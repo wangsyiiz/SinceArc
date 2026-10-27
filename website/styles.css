@@ -595,8 +595,14 @@ h3 {
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
+}
+
+@media (max-width: 880px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 article {
@@ -613,14 +619,25 @@ article p {
   font-size: var(--fs-small);
 }
 
-/* 重点卡：只有一道更亮的边，不加颜色 */
+/* 重点卡：独占一行，靠面积、面阶和更亮的描边突出，不加颜色 */
 article.lead {
+  grid-column: 1 / -1;
+  padding: 22px 24px;
   border-color: var(--line-strong);
   background: var(--surface-2);
 }
 
 article.lead h3 {
-  font-size: 16px;
+  margin-bottom: 10px;
+  font-size: 18px;
+  letter-spacing: 0.005em;
+}
+
+article.lead p {
+  max-width: 62ch;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--ink-2);
 }
 
 article.planned {
@@ -657,6 +674,70 @@ article.planned p {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   vertical-align: 2px;
+}
+
+
+/* ---------- QA（details/summary，无需 JS） ---------- */
+
+.faq h2 {
+  margin-bottom: 6px;
+}
+
+.qa {
+  border-top: 1px solid var(--line);
+}
+
+.qa details {
+  border-bottom: 1px solid var(--line);
+}
+
+.qa summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px 2px;
+  color: var(--ink-1);
+  font-size: 14px;
+  cursor: pointer;
+  list-style: none;
+  transition: color var(--t);
+}
+
+.qa summary::-webkit-details-marker {
+  display: none;
+}
+
+.qa summary::after {
+  content: "+";
+  flex: none;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.qa details[open] summary::after {
+  content: "−";
+}
+
+.qa summary:hover {
+  color: var(--ink-2);
+}
+
+.qa summary:focus-visible {
+  outline: 2px solid var(--ink-1);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.qa details p {
+  margin: 0 0 16px;
+  padding-right: 28px;
+  max-width: 72ch;
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  line-height: 1.75;
 }
 
 /* ---------- 页脚 ---------- */
