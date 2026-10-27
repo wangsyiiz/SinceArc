@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { translateKey } from "@/lib/i18n-text";
 import { useTranslation } from "react-i18next";
 
 import { asCmdError } from "@/lib/ipc";
@@ -8,6 +9,7 @@ import {
   delegateCapsNote,
   delegateErrorMessage,
   delegateTargetCaps,
+  type DelegateError,
 } from "@/lib/delegate-target";
 import { Button } from "./ui/Button";
 import { Dialog } from "./ui/Dialog";
@@ -31,9 +33,9 @@ export function DelegateDialog({
   const { t } = useTranslation();
   const [task, setTask] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<DelegateError | null>(null);
   const caps = delegateTargetCaps(profile);
-  const note = delegateCapsNote(caps);
+  const noteKey = delegateCapsNote(caps);
   const canSubmit = task.trim().length > 0 && !submitting;
 
   useEffect(() => {
@@ -87,9 +89,9 @@ export function DelegateDialog({
     >
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <span className="text-caption text-ink-3">{t("delegate.level")}</span>
-        <span className="text-caption text-ink-3">{delegateCapsLabel(caps)}</span>
+        <span className="text-caption text-ink-3">{t(delegateCapsLabel(caps))}</span>
       </div>
-      {note && <p className="mt-1 text-caption text-ink-3">{note}</p>}
+      {noteKey && <p className="mt-1 text-caption text-ink-3">{t(noteKey)}</p>}
 
       <Textarea
         autoFocus
@@ -110,7 +112,7 @@ export function DelegateDialog({
 
       {error && (
         <p className="mt-2 break-all text-caption text-danger-1" aria-live="polite">
-          {error}
+          {translateKey(t, error.key, error.params)}
         </p>
       )}
 

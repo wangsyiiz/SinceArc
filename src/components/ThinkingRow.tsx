@@ -1,6 +1,7 @@
 import { Waypoints } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
+import { localizeText } from "@/lib/i18n-text";
 import type { Activity, Player } from "@/types";
 import { PlayerAvatar } from "./PlayerAvatar";
 import { Button } from "./ui/Button";
@@ -23,7 +24,7 @@ export function ThinkingRow({ player, activity, onOpenTrace, queued }: ThinkingR
       <div className="min-w-0 flex-1">
         <div className="mb-1 flex items-baseline gap-2">
           <span className="text-caption font-medium" style={{ color: player.color }}>
-            {player.name}
+            {localizeText(player.name, t)}
           </span>
           <span className="font-mono text-micro text-ink-3">{activity.at}</span>
         </div>
@@ -35,10 +36,14 @@ export function ThinkingRow({ player, activity, onOpenTrace, queued }: ThinkingR
             <span className="sc-dot size-1 rounded-full" style={{ background: player.color }} />
           </span>
           <span className={cn("truncate text-caption", queued ? "text-ink-3" : "text-ink-2")}>
-            {queued ? t("thinking.waiting", { holder: queued.holder }) : activity.title}
+            {queued
+              ? t("thinking.waiting", { holder: queued.holder })
+              : localizeText(activity.title, t)}
           </span>
           {activity.detail && (
-            <span className="min-w-0 truncate font-mono text-micro text-ink-3">{activity.detail}</span>
+            <span className="min-w-0 truncate font-mono text-micro text-ink-3">
+              {localizeText(activity.detail, t)}
+            </span>
           )}
 
           <Tooltip label={t("thinking.locate")}>

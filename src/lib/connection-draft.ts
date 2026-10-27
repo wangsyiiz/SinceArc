@@ -1,5 +1,12 @@
 import type { AgentProfile } from "@/types";
 
+export type MissingConnectionField = "host" | "user" | "agentCommand";
+
+export type ConnectionSaveGate =
+  | { ok: true }
+  | { ok: false; reason: "missing"; fields: MissingConnectionField[] }
+  | { ok: false; reason: "probeRequired" };
+
 /** 新建连接草稿的初始值；id 由调用方生成，保存前这个 id 不会进 store。 */
 export function createEmptyConnection(id: string): AgentProfile {
   return {
@@ -21,24 +28,24 @@ export function createEmptyConnection(id: string): AgentProfile {
 }
 
 /** 必填字段清单。名字不在此列：空名由 profileLabel 派生。 */
-export function missingFields(p: AgentProfile): string[] {
-  const missing: string[] = [];
+export function missingFields(p: AgentProfile): MissingConnectionField[] {
+  const missing: MissingConnectionField[] = [];
   if (p.launch === "ssh") {
-    if (!(p.ssh?.host ?? "").trim()) missing.push("主机");
-    if (!(p.ssh?.user ?? "").trim()) missing.push("用户名");
+    if (!(p.ssh?.host ?? "").trim()) missing.push("host");
+    if (!(p.ssh?.user ?? "").trim()) missing.push("user");
   }
   // WSL 留空时 agentProbe 会用默认发行版，因此 distro 不算必填。
-  if (!(p.program ?? "").trim()) missing.push("agent 命令");
+  if (!(p.program ?? "").trim()) missing.push("agentCommand");
   return missing;
 }
 
 export function canSaveConnection(
   probeOk: boolean,
   p: AgentProfile,
-): { ok: boolean; reason?: string } {
+): ConnectionSaveGate {
   const missing = missingFields(p);
-  if (missing.length > 0) return { ok: false, reason: `还缺：${missing.join("、")}` };
-  if (!probeOk) return { ok: false, reason: "先探测通过才能保存" };
+  if (missing.length > 0) return { ok: false, reason: "missing", fields: missing };
+  if (!probeOk) return { ok: false, reason: "probeRequired" };
   return { ok: true };
 }
 

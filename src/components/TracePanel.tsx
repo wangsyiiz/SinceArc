@@ -5,9 +5,14 @@ import type { TFunction } from "i18next";
 import type { Activity, ActivityKind, Player, TraceTurn } from "@/types";
 import type { TraceBackfillDto } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
+import { localizeText } from "@/lib/i18n-text";
 import { isTurnCancelled } from "@/lib/turn-status";
 import { turnHeading, turnLabel } from "@/lib/turn-summary";
-import { turnHasDrawableContent } from "@/lib/trace-adapter";
+import {
+  localizeTraceActivity,
+  turnHasDrawableContent,
+  type TraceActivity,
+} from "@/lib/trace-adapter";
 import { useVirtualList } from "@/lib/virtual/useVirtualList";
 import type { LocateTarget } from "@/lib/turn-anchors";
 import { Button } from "./ui/Button";
@@ -71,7 +76,7 @@ function buildTrace(
     if (!turnHasDrawableContent(t, (id) => byId.has(id))) continue;
     const p0 = players.find((x) => x.id === t.branches[0]?.playerId);
     const outcome = turnOutcome(t, translate);
-    const heading = turnHeading(t, index, outcome.label);
+    const heading = turnHeading(t, index, outcome.label, translate);
 
     rows.push({
       id: `${t.id}-user`,
@@ -79,7 +84,7 @@ function buildTrace(
       y,
       kind: "user",
       title: heading,
-      turnLabel: turnLabel(index),
+      turnLabel: turnLabel(index, translate),
       at: t.at,
       color: "var(--i2)",
       status: outcome.dot,
@@ -268,7 +273,9 @@ function HoverContent({ row }: { row: TraceRow }) {
     row.kind === "user"
       ? t("trace.hover.thisTurn")
       : row.kind === "reply"
-        ? t("trace.hover.reply", { player: row.playerName ?? t("trace.player") })
+        ? t("trace.hover.reply", {
+            player: row.playerName ? localizeText(row.playerName, t) : t("trace.player"),
+          })
         : activity?.kind === "thinking"
           ? t("trace.hover.thinking")
           : (activity?.title ?? row.title);
@@ -287,7 +294,9 @@ function HoverContent({ row }: { row: TraceRow }) {
           <div className="break-words text-caption font-medium text-ink-1">{headline}</div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-micro text-ink-3">
             {row.at && <span className="font-mono">{row.at}</span>}
-            {row.playerName && <span style={{ color: row.color }}>{row.playerName}</span>}
+            {row.playerName && (
+              <span style={{ color: row.color }}>{localizeText(row.playerName, t)}</span>
+            )}
             <RemovedBadge player={row} />
             {row.status && (
               <span
@@ -565,7 +574,7 @@ function GraphLabelRow({
         ) : r.kind === "reply" ? (
           <span className="flex min-w-0 items-baseline gap-1.5">
             <span className="shrink-0 text-caption font-medium" style={{ color: r.color }}>
-              {r.playerName}
+              {localizeText(r.playerName ?? "", t)}
             </span>
             <RemovedBadge player={r} />
             <span className="truncate text-caption text-ink-2">
@@ -686,7 +695,7 @@ export function TracePanel({
   locateTargetOf,
   onLocateMessage,
   turns,
-  activities,
+  activities: rawActivities,
   players,
   resumeGap,
   onClose,
@@ -695,6 +704,10 @@ export function TracePanel({
   backfill,
 }: TracePanelProps) {
   const { t } = useTranslation();
+  const activities = useMemo(
+    () => rawActivities.map((activity) => localizeTraceActivity(activity as TraceActivity, t)),
+    [rawActivities, t],
+  );
   const [backfillEl, setBackfillEl] = useState<HTMLButtonElement | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const turnRefs = useRef(new Map<string, HTMLDivElement>());
@@ -921,10 +934,11 @@ export function TracePanel({
                             item.turn,
                             item.index,
                             turnOutcome(item.turn, t).label,
+                            t,
                           )}
                           outcome={turnOutcome(item.turn, t)}
                           at={item.turn.at}
-                          label={turnLabel(item.index)}
+                          label={turnLabel(item.index, t)}
                           target={locateTargetOf(item.turn.id)}
                           onLocate={onLocateMessage}
                         />

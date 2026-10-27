@@ -1,5 +1,7 @@
 import type { Player } from "@/types";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
+import { localizeText } from "@/lib/i18n-text";
 
 export function PlayerAvatar({
   player,
@@ -10,6 +12,7 @@ export function PlayerAvatar({
   size?: number;
   className?: string;
 }) {
+  const { t } = useTranslation();
   return (
     <span
       style={{
@@ -28,7 +31,7 @@ export function PlayerAvatar({
         className,
       )}
     >
-      {player.name.slice(0, 1)}
+      {localizeText(player.name, t).slice(0, 1)}
     </span>
   );
 }

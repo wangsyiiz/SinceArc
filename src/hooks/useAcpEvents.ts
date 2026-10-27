@@ -26,6 +26,7 @@ import {
   shouldSettleLate,
 } from "@/lib/late-window";
 import { pushSystemNotice } from "@/lib/notices";
+import { i18nText } from "@/lib/i18n-text";
 import { keyOf } from "@/lib/stream-key";
 import { replaceTurnId, turnIdForPersist } from "@/lib/turn-id";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
@@ -282,7 +283,7 @@ export function useAcpEvents({
       st.text += text;
       if (flushDiag.current < 12) {
         flushDiag.current += 1;
-        diag(`flush -> ${st.uiSid} +${text.length} 字`);
+        diag(`flush -> ${st.uiSid} +${text.length} 字`); // i18n-ignore: diagnostic log
         clog("FLUSH", `acp=${st.acpSid} key=${streamKey} ui=${st.uiSid} +${text.length}`);
       }
       const turnId = acpToTurn.current[st.acpSid];
@@ -392,7 +393,11 @@ export function useAcpEvents({
           .catch((e) => {
             console.warn("[db] append late reply failed", e);
             clog("DB-ERR", `late ui=${st.uiSid} id=${st.msgId} ${String(e)}`);
-            pushSystemNotice(patchSession, st.uiSid, `这条回答没能写入历史：${String(e)}`);
+            pushSystemNotice(
+              patchSession,
+              st.uiSid,
+              i18nText("app.notice.historyWriteFailed", { msg: String(e) }),
+            );
           });
       }
     },
@@ -431,7 +436,7 @@ export function useAcpEvents({
       if (topic === "conn.exited") {
         onPermissionsExpired?.({
           profileId,
-          reason: "连接已断开",
+          reason: i18nText("permission.expiredReason.disconnected"),
           cause: "disconnected",
         });
         setSessionsByProfile((m) => {
@@ -456,9 +461,9 @@ export function useAcpEvents({
         setEventLog((prev) => [...prev, { at: Date.now(), text: message }].slice(-80));
         setLastEvent(topic);
         if (topic === "proc.warning") {
-          const text = `进程树回收不完整，可能有残留：${message}`;
+          const text = i18nText("app.notice.procWarning", { message });
           if (report.uiSessionId) pushSystemNotice(patchSession, report.uiSessionId, text);
-          else diag(text);
+          else diag(`进程树回收不完整，可能有残留：${message}`); // i18n-ignore: diagnostic log
         }
         return;
       }
@@ -598,7 +603,7 @@ export function useAcpEvents({
 
       if (event.kind === "request" && event.method === "session/request_permission") {
         if (!uiSid) {
-          diag(`权限请求 #${event.id} 没有归属会话（acp=${acpSid ?? "-"}），按拒绝作答`);
+          diag(`权限请求 #${event.id} 没有归属会话（acp=${acpSid ?? "-"}），按拒绝作答`); // i18n-ignore: diagnostic log
           clog("PERM-NOUI", `acp=${acpSid ?? "-"} id=${event.id}`);
           // 丢弃不等于可以不管：没人回答，agent 会一直等。按拒绝收尾最保守。
           denyPermission(profileId, event.id, parsePermissionOptions(event.params));
@@ -747,7 +752,7 @@ export function useAcpEvents({
         if (acpSid) lateUntil.current[acpSid] = Date.now() + LATE_WINDOW_MS;
         if (!uiSid) {
           clog("RESULT-NOUI", `acp=${acpSid ?? "-"} kind=${event.kind}`);
-          diag(`promptResult 无归属会话（acp=${acpSid ?? "-"}）`);
+          diag(`promptResult 无归属会话（acp=${acpSid ?? "-"}）`); // i18n-ignore: diagnostic log
           if (acpSid) {
             for (const [streamKey, stream] of Object.entries(streams.current)) {
               if (stream.acpSid === acpSid) delete streams.current[streamKey];
@@ -760,7 +765,11 @@ export function useAcpEvents({
         onPermissionsExpired?.({
           uiSid,
           profileId,
-          reason: event.kind === "promptResult" ? "这一轮已结束" : "这一轮已失败",
+          reason: i18nText(
+            event.kind === "promptResult"
+              ? "permission.expiredReason.turnEnded"
+              : "permission.expiredReason.turnFailed",
+          ),
           cause: "turn-end",
         });
         const streamsForTurn = acpSid
@@ -786,7 +795,7 @@ export function useAcpEvents({
             a.id === actId
               ? {
                   ...a,
-                  title: cancelled ? "已停止" : a.title,
+                  title: cancelled ? i18nText("trace.status.stopped") : a.title,
                   status: failed ? ("error" as const) : ("ok" as const),
                 }
               : a,
@@ -817,7 +826,7 @@ export function useAcpEvents({
                     id: newId("perr"),
                     role: "system" as const,
                     atomKind: "notice.system",
-                    text: `这一轮失败：${event.msg}`,
+                    text: i18nText("app.notice.turnFailed", { msg: event.msg }),
                     at: now(),
                     turnId: null,
                   },
@@ -842,7 +851,7 @@ export function useAcpEvents({
               payload: {
                 id,
                 role: "system",
-                text: `这一轮失败：${event.msg}`,
+                text: i18nText("app.notice.turnFailed", { msg: event.msg }),
                 at: now(),
                 turnId: null,
               },
@@ -877,7 +886,11 @@ export function useAcpEvents({
               console.warn("[db] append reply failed", e);
               clog("DB-ERR", `ui=${st.uiSid} id=${st.msgId} ${String(e)}`);
               // 写不进库必须让用户看见，否则恢复会话时他只会以为回答丢了
-              pushSystemNotice(patchSession, st.uiSid, `这条回答没能写入历史：${String(e)}`);
+              pushSystemNotice(
+                patchSession,
+                st.uiSid,
+                i18nText("app.notice.historyWriteFailed", { msg: String(e) }),
+              );
             }
           }
         })();
@@ -921,7 +934,7 @@ export function useAcpEvents({
     ) => {
       setSessionsByProfile((m) => ({ ...m, [profileId]: sessionId }));
       if (!uiSid) {
-        clog("BIND-NOUI", `acp=${sessionId} profile=${profileId}（没有界面会话）`);
+        clog("BIND-NOUI", `acp=${sessionId} profile=${profileId}（没有界面会话）`); // i18n-ignore: diagnostic log
         return;
       }
       // 同步记一份：send 里 await ensureConnected 之后会立刻重新读 own。

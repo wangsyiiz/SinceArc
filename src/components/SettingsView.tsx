@@ -67,6 +67,7 @@ import { UpdateSection } from "@/components/UpdateSection";
 import { McpDefaultPicker } from "@/components/McpDefaultPicker";
 import { agentBrand } from "@/lib/agent-brands";
 import { capsRows } from "@/lib/caps-format";
+import { localizeText, translateKey } from "@/lib/i18n-text";
 import { StatusDot } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { EmptyState } from "./ui/EmptyState";
@@ -195,21 +196,6 @@ const LAUNCH_LABEL: Record<LaunchKind, MessageKey> = {
   ssh: "settings.connection.launch.ssh",
 };
 
-const CAPS_LABEL_KEYS: Record<keyof AgentCaps, MessageKey> = {
-  promptImage: "settings.caps.promptImage",
-  promptAudio: "settings.caps.promptAudio",
-  promptEmbeddedContext: "settings.caps.promptEmbeddedContext",
-  loadSession: "settings.caps.loadSession",
-  sessionList: "settings.caps.sessionList",
-  sessionDelete: "settings.caps.sessionDelete",
-  sessionFork: "settings.caps.sessionFork",
-  sessionResume: "settings.caps.sessionResume",
-  sessionClose: "settings.caps.sessionClose",
-  mcpHttp: "settings.caps.mcpHttp",
-  mcpSse: "settings.caps.mcpSse",
-  mcpAcp: "settings.caps.mcpAcp",
-};
-
 type ProbeResult =
   | { ok: true; outcome: ProbeOutcome }
   | { ok: false; error: string };
@@ -258,7 +244,9 @@ function AgentSelect({
     ...AGENT_PRESETS.map((preset) => ({
       id: preset.id,
       label: preset.name,
-      description: preset.requires ?? preset.origin,
+      description: preset.requiresKey
+        ? t(preset.requiresKey)
+        : translateKey(t, preset.originKey, preset.originParams),
       checked: current?.id === preset.id,
       onSelect: () => onPreset(preset),
     })),
@@ -400,7 +388,10 @@ export function SettingsView({
       }
     } catch (e) {
       const err = asCmdError(e);
-      setErrors((prev) => ({ ...prev, [profile.id]: `${err.code} ${err.msg}` }));
+      setErrors((prev) => ({
+        ...prev,
+        [profile.id]: `${err.code} ${localizeText(err.msg, t)}`,
+      }));
     } finally {
       setBusy(null);
     }
@@ -414,7 +405,10 @@ export function SettingsView({
       onDisconnected?.(profile.id);
     } catch (e) {
       const err = asCmdError(e);
-      setErrors((prev) => ({ ...prev, [profile.id]: `${err.code} ${err.msg}` }));
+      setErrors((prev) => ({
+        ...prev,
+        [profile.id]: `${err.code} ${localizeText(err.msg, t)}`,
+      }));
     } finally {
       setBusy(null);
     }
@@ -482,7 +476,7 @@ export function SettingsView({
       const err = asCmdError(e);
       setProbeResults((prev) => ({
         ...prev,
-        [profile.id]: { ok: false, error: `${err.code} ${err.msg}` },
+        [profile.id]: { ok: false, error: `${err.code} ${localizeText(err.msg, t)}` },
       }));
     } finally {
       if (probeSeq.current[profile.id] === seq) {
@@ -495,7 +489,7 @@ export function SettingsView({
   const describeCaps = (caps: AgentCaps): string => {
     const labels = capsRows(caps)
       .filter((row) => row.on)
-      .map((row) => t(CAPS_LABEL_KEYS[row.key]));
+      .map((row) => t(row.labelKey));
     if (labels.length === 0) return "";
     const head = labels.slice(0, 3).join(" / ");
     return labels.length > 3
@@ -670,7 +664,7 @@ export function SettingsView({
       const err = asCmdError(e);
       setErrors((prev) => ({
         ...prev,
-        [id]: t("settings.connection.mcpSaveFailed", { msg: err.msg }),
+        [id]: t("settings.connection.mcpSaveFailed", { msg: localizeText(err.msg, t) }),
       }));
       if (isNew) {
         setDraft({ profile: { ...effective, id }, isNew: false, addPath: "manual" });
@@ -1064,7 +1058,7 @@ export function SettingsView({
 
           <p className="mt-1.5 text-caption text-ink-3">
             {currentPreset
-              ? currentPreset.origin
+              ? translateKey(t, currentPreset.originKey, currentPreset.originParams)
               : t("settings.connection.agent.commandHint")}
           </p>
           {probe && (

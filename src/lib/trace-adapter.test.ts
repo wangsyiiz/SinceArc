@@ -8,10 +8,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { toTraceView } from "./trace-adapter.ts";
+import { toTraceView, type TraceTextPart } from "./trace-adapter.ts";
 import type { TraceTurnDto } from "./ipc/types.ts";
 
 const t0 = new Date("2026-10-22T17:38:00+08:00").getTime();
+
+function partKey(part: TraceTextPart | undefined): string | undefined {
+  return typeof part === "string" ? undefined : part?.key;
+}
 
 function turn(over: Partial<TraceTurnDto> = {}): TraceTurnDto {
   return {
@@ -151,11 +155,16 @@ test("工具 rawInput 超过 2 KB 时截断并提示", () => {
       },
     ],
   });
-  const body = toTraceView([dto]).activities[0].body ?? "";
+  const activity = toTraceView([dto]).activities[0];
+  const body = activity.body ?? "";
   assert.ok(body.length > 0);
   assert.ok(!body.includes(long), "超长 rawInput 不能整段进正文");
   assert.ok(!body.includes("\uFFFD"), "截断不能切坏多字节字符");
-  assert.match(body, /…已截断 [1-9]\d* KB/);
+  const truncated = activity.bodyText?.find(
+    (part) => partKey(part) === "trace.truncated.line",
+  );
+  assert.ok(truncated && typeof truncated === "object");
+  assert.ok(Number(truncated.values?.kb) >= 1);
 });
 
 test("工具正文展开 content 的文本与类型摘要", () => {
@@ -201,10 +210,16 @@ test("工具字段的 __truncated 标记会写成可见提示", () => {
       },
     ],
   });
-  const body = toTraceView([dto]).activities[0].body ?? "";
+  const activity = toTraceView([dto]).activities[0];
+  const body = activity.body ?? "";
   assert.match(body, /command: rg/);
-  assert.match(body, /已截断 4 KB/);
-  assert.match(body, /已截断 2 KB/);
+  const truncations = (activity.bodyText ?? []).filter(
+    (part) => partKey(part) === "trace.truncated.line",
+  );
+  assert.deepEqual(
+    truncations.map((part) => (typeof part === "string" ? null : part.values?.kb)),
+    [4, 2],
+  );
 });
 
 test("权限卡片列出选项名，摘要用斜线连接", () => {
@@ -246,7 +261,8 @@ test("群聊里不同 author 分到不同支线", () => {
   const member = branches.find((b) => b.playerId === "u-2");
   assert.equal(main?.activityIds.length, 1);
   assert.equal(member?.activityIds.length, 2);
-  assert.match(view.activities[2].title, /请求权限：执行 rm/);
+  assert.equal(view.activities[2].titleText?.key, "trace.permission.request");
+  assert.deepEqual(view.activities[2].titleText?.values, { tool: "执行 rm" });
 });
 
 test("派活是一步进行中的活动，档位写在 detail", () => {
@@ -270,10 +286,17 @@ test("派活是一步进行中的活动，档位写在 detail", () => {
   });
   const activity = toTraceView([dto]).activities[0];
   assert.equal(activity.kind, "delegate");
-  assert.equal(activity.title, "派活给 Kimi");
-  assert.equal(
-    activity.detail,
-    "只带任务描述 · 这个 agent 没报 fork 能力",
+  assert.equal(activity.titleText?.key, "trace.delegate.assigned");
+  assert.deepEqual(activity.titleText?.values, { target: "Kimi" });
+  assert.equal(activity.detailText && partKey(activity.detailText), "delegate.caps.detail.withReason");
+  assert.deepEqual(
+    activity.detailText && typeof activity.detailText === "object"
+      ? activity.detailText.values
+      : undefined,
+    {
+      label: { key: "settings.memberDetail.delegateCaps.taskOnly" },
+      reason: { key: "delegate.caps.reason.forkUnsupported" },
+    },
     "档位必须带成因：用户要能对得上为什么这个 agent 没带上下文",
   );
   assert.equal(activity.status, "running", "结果没回来时派活仍在跑");
@@ -313,8 +336,12 @@ test("delegate_result 合进原步骤并转终态，不新增第二行", () => {
   });
   const view = toTraceView([dto]);
   assert.equal(view.activities.length, 1);
-  assert.equal(view.activities[0].title, "Kimi 回来了 · 8123ms");
-  assert.equal(view.activities[0].detail, "带 TA 的上下文");
+  assert.equal(view.activities[0].titleText?.key, "trace.delegate.result.returnedElapsed");
+  assert.deepEqual(view.activities[0].titleText?.values, { target: "Kimi", elapsed: 8123 });
+  assert.equal(
+    partKey(view.activities[0].detailText),
+    "settings.memberDetail.delegateCaps.memberFork",
+  );
   assert.equal(view.activities[0].status, "ok");
 });
 
@@ -340,7 +367,8 @@ test("派活失败时同一步写失败原因", () => {
     ],
   });
   const activity = toTraceView([dto]).activities[0];
-  assert.equal(activity.title, "Kimi 回来了 · 900ms");
+  assert.equal(activity.titleText?.key, "trace.delegate.result.returnedElapsed");
+  assert.deepEqual(activity.titleText?.values, { target: "Kimi", elapsed: 900 });
   assert.equal(activity.detail, "overloaded");
   assert.equal(activity.status, "error");
 });
@@ -369,7 +397,8 @@ test("用户停止的派活是已停止，不是还在跑也不是回来", () =>
     ],
   });
   const activity = toTraceView([dto]).activities[0];
-  assert.equal(activity.title, "Kimi 已停止");
+  assert.equal(activity.titleText?.key, "trace.delegate.result.stopped");
+  assert.deepEqual(activity.titleText?.values, { target: "Kimi" });
   assert.equal(activity.status, "cancelled");
 });
 
@@ -441,7 +470,11 @@ test("权限决定按请求里的 tool kind 显示批准分类", () => {
   });
   const decision = toTraceView([dto]).activities[1];
   assert.equal(decision.kind, "permission");
-  assert.equal(decision.title, "批准 · 编辑文件");
+  assert.equal(decision.titleText?.key, "trace.permission.decision.withKind");
+  assert.deepEqual(decision.titleText?.values, {
+    action: { key: "trace.permission.decision.approved" },
+    kind: { key: "permission.kind.edit" },
+  });
   assert.equal(decision.decision, "allow");
 });
 
@@ -478,7 +511,17 @@ test("拒绝备注只进轨迹正文，不混进协议字段", () => {
     ],
   });
   const decision = toTraceView([dto]).activities[1];
-  assert.equal(decision.title, "拒绝（备注）");
+  assert.equal(decision.titleText?.key, "trace.permission.decision.withNote");
+  assert.deepEqual(decision.titleText?.values, {
+    action: { key: "trace.permission.decision.rejected" },
+  });
   assert.equal(decision.decision, "reject");
-  assert.match(decision.body ?? "", /备注：先别删/);
+  assert.ok(
+    decision.bodyText?.some(
+      (part) =>
+        typeof part !== "string" &&
+        part.key === "trace.permission.decision.note" &&
+        part.values?.note === "先别删",
+    ),
+  );
 });

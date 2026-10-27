@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { AgentProfile, SessionResumeState } from "@/types";
 import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
+import { localizeText } from "@/lib/i18n-text";
 import { ModeSelect } from "@/components/ModeSelect";
 import { DiagnosticsPanel } from "@/components/DiagnosticsPanel";
 import { Badge } from "./ui/Badge";
@@ -224,7 +225,7 @@ function ProfileStatus({
   const detail = connectError
     ? t("statusbar.profile.connectError", {
         code: connectError.code,
-        message: connectError.message,
+        message: localizeText(connectError.message, t),
       })
     : profile.connected
       ? t("statusbar.profile.connected", {

@@ -333,9 +333,8 @@ function SessionMcpPanel({
               <div className="mt-1 space-y-0.5">
                 {effective.map((entry) => {
                   const kind = entryKind(entry);
-                  const note = transportSupportNote(kind, profile?.caps ?? null)
-                    ? t("settings.sessionMcp.transportUnsupported")
-                    : null;
+                  const noteKey = transportSupportNote(kind, profile?.caps ?? null);
+                  const note = noteKey ? t(noteKey) : null;
                   const name = (
                     <span className="min-w-0 flex-1 truncate text-ui-tight text-ink-1">
                       {entry.name}

@@ -2,7 +2,6 @@ import { Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AgentProfile } from "@/types";
 import { capsRows, type CapsGroup } from "@/lib/caps-format";
-import type { AgentCaps } from "@/lib/ipc/types";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import type { MessageKey } from "@/i18n/zh-CN";
 import { cn } from "@/lib/utils";
@@ -15,25 +14,10 @@ interface AgentCapabilitiesProps {
   acpCommands?: CommandDto[];
 }
 
-const CAPS_LABEL_KEYS: Record<keyof AgentCaps, MessageKey> = {
-  promptImage: "settings.caps.promptImage",
-  promptAudio: "settings.caps.promptAudio",
-  promptEmbeddedContext: "settings.caps.promptEmbeddedContext",
-  loadSession: "settings.caps.loadSession",
-  sessionList: "settings.caps.sessionList",
-  sessionDelete: "settings.caps.sessionDelete",
-  sessionFork: "settings.caps.sessionFork",
-  sessionResume: "settings.caps.sessionResume",
-  sessionClose: "settings.caps.sessionClose",
-  mcpHttp: "settings.caps.mcpHttp",
-  mcpSse: "settings.caps.mcpSse",
-  mcpAcp: "settings.caps.mcpAcp",
-};
-
 const GROUP_LABEL_KEYS: Record<CapsGroup, MessageKey> = {
-  输入: "caps.group.input", // i18n-ignore: CapsGroup domain value
-  会话: "caps.group.session", // i18n-ignore: CapsGroup domain value
-  MCP: "caps.group.mcp",
+  input: "caps.group.input",
+  session: "caps.group.session",
+  mcp: "caps.group.mcp",
 };
 
 /**
@@ -50,7 +34,7 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
   });
 
   const rows = capsRows(profile?.caps ?? null);
-  const groups: CapsGroup[] = ["输入", "会话", "MCP"]; // i18n-ignore: CapsGroup domain values
+  const groups: CapsGroup[] = ["input", "session", "mcp"];
   const supported = rows.filter((r) => r.on).length;
   const hasCommands = acpCommands.length > 0;
   const handshake = profile?.capsAt
@@ -130,7 +114,7 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
                     <div key={group} className="mt-1 first:mt-0">
                       <div className="flex items-center gap-1.5 px-1.5 py-1 text-micro tracking-wide text-ink-3">
                         {t(GROUP_LABEL_KEYS[group])}
-                        {group === "MCP" && (
+                        {group === "mcp" && (
                           <Hint
                             label={t("caps.hint.mcpLabel")}
                             text={t("caps.hint.mcpText")}
@@ -145,14 +129,18 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
                           <span
                             className={cn(
                               "shrink-0 text-center font-mono",
-                              r.group === "MCP" ? "w-10" : "w-3",
+                              r.group === "mcp" ? "w-10" : "w-3",
                               r.on ? "text-ok-1" : "text-ink-3",
                             )}
                           >
-                            {r.group === "MCP" && !r.on ? t("caps.undeclared") : r.display}
+                            {r.display === "undeclared"
+                              ? t("caps.undeclared")
+                              : r.display === "on"
+                                ? "✓"
+                                : "✗"}
                           </span>
                           <span className={r.on ? "text-ink-1" : "text-ink-3"}>
-                            {t(CAPS_LABEL_KEYS[r.key])}
+                            {t(r.labelKey)}
                           </span>
                         </div>
                       ))}

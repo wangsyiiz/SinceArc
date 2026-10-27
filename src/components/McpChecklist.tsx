@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { Check } from "lucide-react";
 import type { AgentCaps } from "@/lib/ipc";
 import type { McpCatalogEntryDto } from "@/lib/ipc";
@@ -43,6 +44,7 @@ export function McpServerChecklist({
   disabled?: boolean;
   emptyText?: string;
 }) {
+  const { t } = useTranslation();
   if (entries.length === 0) {
     return <p className="px-1 py-1 text-caption text-ink-3">{emptyText}</p>;
   }
@@ -52,7 +54,7 @@ export function McpServerChecklist({
       {entries.map((entry) => {
         const checked = selected.includes(entry.name);
         const kind = entryKind(entry);
-        const note = transportSupportNote(kind, caps);
+        const noteKey = transportSupportNote(kind, caps);
         const name = (
           <span className="min-w-0 flex-1 truncate text-ui-tight text-ink-1">{entry.name}</span>
         );
@@ -77,7 +79,7 @@ export function McpServerChecklist({
               name
             )}
             <span className="shrink-0 font-mono text-micro text-ink-3">{kind}</span>
-            {note && <span className="shrink-0 text-micro text-warn-1">{note}</span>}
+            {noteKey && <span className="shrink-0 text-micro text-warn-1">{t(noteKey)}</span>}
           </button>
         );
       })}

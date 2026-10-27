@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { ShieldAlert, ShieldCheck, ShieldX } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { PermissionRequest, Player } from "@/types";
-import { permissionKindLabel } from "@/lib/permission-kind";
+import { permissionKindKey } from "@/lib/permission-kind";
+import { localizeText } from "@/lib/i18n-text";
 import { PlayerAvatar } from "./PlayerAvatar";
 import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
@@ -84,10 +85,10 @@ export function PermissionDialog({
     <Dialog
       open={open}
       onClose={() => onCancel(noteForDecision)}
-      title={request.title}
+      title={localizeText(request.title, t)}
       titleAdornment={
         <span className="shrink-0 rounded-mark border border-line-1 px-1 text-caption text-ink-3">
-          {permissionKindLabel(request.kind)}
+          {t(permissionKindKey(request.kind))}
         </span>
       }
       width="md"
@@ -105,7 +106,7 @@ export function PermissionDialog({
           {player && (
             <span className="flex items-center gap-1 rounded-full bg-surface-2 py-0.5 pl-0.5 pr-2">
               <PlayerAvatar player={player} size={14} />
-              <span className="text-caption text-ink-2">{player.name}</span>
+              <span className="text-caption text-ink-2">{localizeText(player.name, t)}</span>
             </span>
           )}
           {request.meta && <span className="font-mono text-caption text-ink-3">{request.meta}</span>}
@@ -114,17 +115,19 @@ export function PermissionDialog({
 
       {expired && (
         <div className="mb-3 rounded-control border border-line-1 bg-surface-2 px-2.5 py-1.5 text-small text-ink-3">
-          {t("permission.expired", { reason: request.expiredReason ?? "" })}
+          {t("permission.expired", {
+            reason: localizeText(request.expiredReason ?? "", t),
+          })}
         </div>
       )}
 
       {skippedReason && (
         <div className="mb-3 rounded-control border border-line-1 bg-surface-2 px-2.5 py-1.5 text-small text-ink-3">
-          {skippedReason}
+          {localizeText(skippedReason, t)}
         </div>
       )}
 
-      <p>{request.detail}</p>
+      <p>{localizeText(request.detail, t)}</p>
 
       <div className="mt-4 flex flex-col gap-1.5">
         {request.options.map((option, index) => {
@@ -162,7 +165,7 @@ export function PermissionDialog({
           >
             <ShieldCheck className="size-3.5 shrink-0" />
             <span className="min-w-0 flex-1 truncate">
-              {t("permission.allowTurn", { kind: permissionKindLabel(request.kind) })}
+              {t("permission.allowTurn", { kind: t(permissionKindKey(request.kind)) })}
             </span>
           </Button>
           {allowTurnError && (

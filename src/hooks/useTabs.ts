@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionSummary, Tab } from "@/types";
 import { nextActiveTabId, pruneSessionTabs, sessionIdForActiveTab } from "@/lib/tabs-prune";
+import { i18nText } from "@/lib/i18n-text";
 
 export function useTabs(sessions: SessionSummary[]) {
   const [tabs, setTabs] = useState<Tab[]>([]);
@@ -79,11 +80,12 @@ export function useTabs(sessions: SessionSummary[]) {
     const title =
       tab.title ??
       (tab.kind === "session"
-        ? (sessionsRef.current.find((s) => s.id === tab.sessionId)?.title ?? "会话")
+        ? (sessionsRef.current.find((s) => s.id === tab.sessionId)?.title ??
+          i18nText("app.tab.session"))
         : tab.kind === "repo"
-          ? "项目"
+          ? i18nText("app.tab.repo")
           : tab.kind === "settings"
-            ? "设置"
+            ? i18nText("app.tab.settings")
             : `#${tab.prNumber}`);
     setTabs((prev) => (prev.some((t) => t.id === key) ? prev : [...prev, { ...tab, id: key, title }]));
     setActiveTabId(key);

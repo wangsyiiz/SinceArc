@@ -1,6 +1,8 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { Activity, Player } from "@/types";
 import { cn } from "@/lib/utils";
+import { localizeText } from "@/lib/i18n-text";
 import { PlayerAvatar } from "./PlayerAvatar";
 import { MembersMenu } from "./MembersMenu";
 import type { AgentUser } from "@/lib/ipc";
@@ -81,6 +83,7 @@ function RailPlayerButton({
   selected: boolean;
   onOpen: (anchor: HTMLElement) => void;
 }) {
+  const { t } = useTranslation();
   const [el, setEl] = useState<HTMLButtonElement | null>(null);
   const hover = useHoverCard();
   return (
@@ -89,7 +92,7 @@ function RailPlayerButton({
         ref={setEl}
         {...hover.triggerProps(el)}
         onClick={(event) => onOpen(event.currentTarget)}
-        aria-label={`打开 ${player.name} 的详情`}
+        aria-label={t("members.openDetail", { name: localizeText(player.name, t) })}
         className={cn(
           "relative grid size-7 place-items-center rounded-full transition-opacity",
           selected ? "ring-2 ring-offset-2 ring-offset-transparent" : "opacity-80 hover:opacity-100",
@@ -111,9 +114,13 @@ function RailPlayerButton({
       </button>
       {hover.card(
         <div>
-          <div className="text-caption font-medium text-ink-1">{player.name}</div>
+          <div className="text-caption font-medium text-ink-1">
+            {localizeText(player.name, t)}
+          </div>
           {running && (
-            <div className="mt-1 break-words text-caption text-ink-2">{running.title}</div>
+            <div className="mt-1 break-words text-caption text-ink-2">
+              {localizeText(running.title, t)}
+            </div>
           )}
         </div>,
       )}

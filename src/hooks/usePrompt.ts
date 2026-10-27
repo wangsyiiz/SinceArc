@@ -13,6 +13,7 @@ import { pushSystemNotice } from "@/lib/notices";
 import { clog } from "@/lib/log";
 import { newId } from "@/lib/ids";
 import { replaceTurnId } from "@/lib/turn-id";
+import { i18nText } from "@/lib/i18n-text";
 import type { AgentProfile, Message } from "@/types";
 import type { EnsureResult } from "./useAgentConnect";
 import type { AcpRefs } from "./useAcpEvents";
@@ -120,7 +121,7 @@ export function usePrompt({
                   id: connectNoteId,
                   role: "system" as const,
                   atomKind: "notice.system",
-                  text: "正在连接 agent…（连接期间可以继续操作界面）",
+                  text: i18nText("app.notice.connecting"),
                   at,
                   turnId: null,
                 },
@@ -152,7 +153,7 @@ export function usePrompt({
             ...s,
             msgs: s.msgs.map((m) =>
               m.id === connectNoteId
-                ? { ...m, text: "还在连接 agent…（握手较慢，界面可以继续操作）" }
+                ? { ...m, text: i18nText("app.notice.connectSlow") }
                 : m,
             ),
           }));
@@ -169,7 +170,14 @@ export function usePrompt({
           setBusy(sid, false);
           persistUserMessage();
           // 失败原因必须落库，否则恢复会话后只剩一条没人答的提问
-          pushSystemNotice(patchSession, sid, `连接失败：${r.error!.code} ${r.error!.msg}`);
+          pushSystemNotice(
+            patchSession,
+            sid,
+            i18nText("app.notice.connectFailed", {
+              code: r.error!.code,
+              msg: r.error!.msg,
+            }),
+          );
           return;
         }
         if (r.resume) onResume(sid, r.resume, r.lastEventSeq);
@@ -205,7 +213,11 @@ export function usePrompt({
           const err = asCmdError(e);
           setBusy(sid, false);
           persistUserMessage();
-          pushSystemNotice(patchSession, sid, `新建 ACP 会话失败：${err.code} ${err.msg}`);
+          pushSystemNotice(
+            patchSession,
+            sid,
+            i18nText("app.notice.newSessionFailed", { code: err.code, msg: err.msg }),
+          );
           return;
         }
       }
@@ -223,7 +235,7 @@ export function usePrompt({
             pushSystemNotice(
               patchSession,
               sid,
-              `@ 的成员会话恢复不了，这一条没有发出去：${loaded.resume.reason}`,
+              i18nText("app.notice.memberResumeFailed", { reason: loaded.resume.reason }),
             );
             return;
           }
@@ -231,7 +243,11 @@ export function usePrompt({
           const err = asCmdError(e);
           setBusy(sid, false);
           persistUserMessage();
-          pushSystemNotice(patchSession, sid, `无法恢复成员会话：${err.code} ${err.msg}`);
+          pushSystemNotice(
+            patchSession,
+            sid,
+            i18nText("app.notice.memberResumeError", { code: err.code, msg: err.msg }),
+          );
           return;
         }
       }
@@ -252,7 +268,7 @@ export function usePrompt({
               id: actId,
               playerId: target?.authorId ?? MAIN_AGENT_ID,
               kind: "thinking" as const,
-              title: "思考中",
+              title: i18nText("thinking.running"),
               status: "running" as const,
               at,
             },
@@ -302,7 +318,11 @@ export function usePrompt({
             const err = asCmdError(e);
             setBusy(sid, false);
             persistUserMessage();
-            pushSystemNotice(patchSession, sid, `发送失败：${err.code} ${err.msg}`);
+            pushSystemNotice(
+              patchSession,
+              sid,
+              i18nText("app.notice.sendFailed", { code: err.code, msg: err.msg }),
+            );
           });
         return;
       }
@@ -315,7 +335,7 @@ export function usePrompt({
       pushSystemNotice(
         patchSession,
         sid,
-        "这个会话没有可用的连接配置 —— 去「设置 → 连接」加一条并连上，再发一次。",
+        i18nText("app.notice.noConnectionProfile"),
       );
     },
     [

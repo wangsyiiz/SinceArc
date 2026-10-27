@@ -40,8 +40,9 @@ test("12 行分组顺序稳定", () => {
   );
   assert.deepEqual(
     [...new Set(rows.map((row) => row.group))],
-    ["输入", "会话", "MCP"],
+    ["input", "session", "mcp"],
   );
+  assert.equal(rows[0].labelKey, "settings.caps.promptImage");
   assert.ok(rows.every((row) => row.on));
 });
 
@@ -56,15 +57,15 @@ test("MCP 三项未声明时显示「未声明」，已声明仍是 ✓", () => 
     mcpSse: false,
     mcpAcp: false,
   };
-  const mcpOff = capsRows(allOff).filter((row) => row.group === "MCP");
+  const mcpOff = capsRows(allOff).filter((row) => row.group === "mcp");
   assert.deepEqual(
     mcpOff.map((row) => row.display),
-    ["未声明", "未声明", "未声明"],
+    ["undeclared", "undeclared", "undeclared"],
   );
   assert.ok(mcpOff.every((row) => !row.on));
 
-  const mcpOn = capsRows(allOn).filter((row) => row.group === "MCP");
-  assert.ok(mcpOn.every((row) => row.on && row.display === "✓"));
+  const mcpOn = capsRows(allOn).filter((row) => row.group === "mcp");
+  assert.ok(mcpOn.every((row) => row.on && row.display === "on"));
 });
 
 test("非 MCP 组的 false 仍保持原来的状态字", () => {
@@ -72,9 +73,9 @@ test("非 MCP 组的 false 仍保持原来的状态字", () => {
     ...allOn,
     promptImage: false,
     loadSession: false,
-  }).filter((row) => row.group !== "MCP");
+  }).filter((row) => row.group !== "mcp");
   assert.deepEqual(
     rows.filter((row) => !row.on).map((row) => row.display),
-    ["✗", "✗"],
+    ["off", "off"],
   );
 });

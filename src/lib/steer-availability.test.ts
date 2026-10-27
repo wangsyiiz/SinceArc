@@ -23,7 +23,7 @@ test("三态：没声明 steer 是 off，声明了但没见过正文分组是 wa
 });
 
 test("waiting 不能被说成「不支持」——文案要区分没能力与还没探明", () => {
-  assert.equal(steerUnavailableReason("off"), "这个 agent 不支持插话");
-  assert.equal(steerUnavailableReason("waiting"), "正文出现后才能插话");
+  assert.equal(steerUnavailableReason("off"), "composer.steer.unsupported");
+  assert.equal(steerUnavailableReason("waiting"), "composer.steer.waiting");
   assert.equal(steerUnavailableReason("on"), null);
 });

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { i18nText } from "./i18n-text.ts";
 import { buildPlayers } from "./players.ts";
 
 const kimi = {
@@ -56,7 +57,7 @@ test("彻底删除的成员走灰色占位身份", () => {
   assert.deepEqual(players, [
     {
       id: "gone",
-      name: "已删除的成员",
+      name: i18nText("members.deleted"),
       handle: "",
       color: "var(--i3)",
       profileId: "",

@@ -1,10 +1,12 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { FolderGit2, GitPullRequest, MessageSquare, Settings2, X } from "lucide-react";
 import type { Tab } from "@/types";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/Button";
 import { useHoverCard } from "./ui/HoverCard";
 import { Tooltip } from "./ui/Tooltip";
+import { localizeText } from "@/lib/i18n-text";
 
 const ICON = {
   session: MessageSquare,
@@ -22,18 +24,19 @@ interface TabStripProps {
 }
 
 export function TabStrip({ tabs, activeId, badgeOf, onSelect, onClose }: TabStripProps) {
+  const { t } = useTranslation();
   if (tabs.length === 0) return null;
 
   return (
     <div className="flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-line-1/60">
-      {tabs.map((t) => {
-        const Icon = ICON[t.kind];
-        const active = t.id === activeId;
+      {tabs.map((tab) => {
+        const Icon = ICON[tab.kind];
+        const active = tab.id === activeId;
         return (
           <button
-            key={t.id}
+            key={tab.id}
             type="button"
-            onClick={() => onSelect(t.id)}
+            onClick={() => onSelect(tab.id)}
             className={cn(
               "group flex h-full min-w-0 max-w-55 cursor-pointer items-center gap-1.5 border-r border-line-1/40 px-3 text-ui-tight transition-colors",
               active
@@ -42,22 +45,22 @@ export function TabStrip({ tabs, activeId, badgeOf, onSelect, onClose }: TabStri
             )}
           >
             <Icon className={cn("size-3 shrink-0", active ? "text-ink-2" : "text-ink-3")} />
-            <TabTitle title={t.title} subtitle={t.subtitle} />
-            {badgeOf?.(t) && (
+            <TabTitle title={tab.title} subtitle={tab.subtitle} />
+            {badgeOf?.(tab) && (
               <span
-                className={cn("size-1.5 shrink-0 rounded-full", activeId !== t.id && "animate-pulse")}
-                style={{ background: badgeOf(t) ?? undefined }}
+                className={cn("size-1.5 shrink-0 rounded-full", activeId !== tab.id && "animate-pulse")}
+                style={{ background: badgeOf(tab) ?? undefined }}
               />
             )}
-            <Tooltip label="关闭">
+            <Tooltip label={t("ui.titleBar.close")}>
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onClose(t.id);
+                  onClose(tab.id);
                 }}
-                aria-label="关闭"
+                aria-label={t("ui.titleBar.close")}
                 className={cn(
                   "ml-0.5 size-4 shrink-0 gap-0 rounded-mark p-0",
                   active
@@ -76,12 +79,13 @@ export function TabStrip({ tabs, activeId, badgeOf, onSelect, onClose }: TabStri
 }
 
 function TabTitle({ title, subtitle }: { title: string; subtitle?: string }) {
+  const { t } = useTranslation();
   const [el, setEl] = useState<HTMLSpanElement | null>(null);
   const hover = useHoverCard({ disabled: !subtitle });
   return (
     <>
       <span ref={setEl} {...hover.triggerProps(el)} className="truncate">
-        {title}
+        {localizeText(title, t)}
       </span>
       {hover.card(<span className="break-words">{subtitle}</span>)}
     </>

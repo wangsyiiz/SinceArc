@@ -2,6 +2,7 @@ import type { AgentCaps } from "./ipc/types.gen/AgentCaps";
 import type { McpCatalogEntryDto } from "./ipc/types.gen/McpCatalogEntryDto";
 import type { McpKeyValueDto } from "./ipc/types.gen/McpKeyValueDto";
 import type { McpServerDto } from "./ipc/types.gen/McpServerDto";
+import type { MessageKey } from "@/i18n/zh-CN";
 
 export type McpKind = "stdio" | "http" | "sse";
 
@@ -86,9 +87,9 @@ export function truncateText(value: string, maxLength: number): string {
  * 只做标注，不做禁用：未声明不等于不支持（docs/mcp.md §11.1）。
  * 没有握手快照时不猜。
  */
-export function transportSupportNote(kind: string, caps: AgentCaps | null): string | null {
+export function transportSupportNote(kind: string, caps: AgentCaps | null): MessageKey | null {
   if (!caps) return null;
-  if (kind === "http" && !caps.mcpHttp) return "agent 未声明支持";
-  if (kind === "sse" && !caps.mcpSse) return "agent 未声明支持";
+  if (kind === "http" && !caps.mcpHttp) return "settings.sessionMcp.transportUnsupported";
+  if (kind === "sse" && !caps.mcpSse) return "settings.sessionMcp.transportUnsupported";
   return null;
 }

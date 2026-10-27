@@ -5,6 +5,7 @@ import type { AgentProfile, GithubPR, GithubRepo, Player, SessionSummary } from 
 import type { MessageKey } from "@/i18n/zh-CN";
 import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
+import { localizeText } from "@/lib/i18n-text";
 import { SessionMoreMenu } from "./SessionMcpMenu";
 import { StatusDot } from "./ui/Badge";
 import { useHoverCard } from "./ui/HoverCard";
@@ -166,7 +167,7 @@ export function Sidebar({
                         {s.playerIds.slice(0, 3).map((pid) => {
                           const pl = players.find((x) => x.id === pid);
                           return pl ? (
-                            <Tooltip key={pid} label={pl.name}>
+                            <Tooltip key={pid} label={localizeText(pl.name, t)}>
                               <span
                                 className="size-1.5 rounded-full"
                                 style={{ background: pl.color }}
@@ -273,6 +274,7 @@ function RepoButton({
   count: number;
   onOpen: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const [el, setEl] = useState<HTMLButtonElement | null>(null);
   const hover = useHoverCard();
   return (
@@ -286,7 +288,7 @@ function RepoButton({
         <span className="flex items-center gap-1.5">
           <StatusDot status={repo.connected ? "connected" : "untested"} />
           <span className="transition-colors duration-150 truncate text-small text-ink-2 group-hover:text-ink-1">
-            {repo.name}
+            {localizeText(repo.name, t)}
           </span>
           {count > 0 && (
             <span className="ml-auto shrink-0 font-mono text-micro text-ink-3">{count}</span>

@@ -120,7 +120,7 @@ export function useSessionState(lastSessionId: string) {
         loadingOlder: false,
       });
     })()
-      .catch((e) => clog("LOAD", `ui=${sid} 读取失败：${String(e)}`))
+      .catch((e) => clog("LOAD", `ui=${sid} 读取失败：${String(e)}`)) // i18n-ignore: diagnostic log
       .finally(() => {
         if (!alive) return;
         setOpening((prev) => ({ ...prev, [sid]: false }));

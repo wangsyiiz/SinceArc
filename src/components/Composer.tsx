@@ -3,8 +3,9 @@ import { ArrowUp, Square, Paperclip, ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AgentProfile, Player } from "@/types";
 import type { AutoApproveLevel } from "@/lib/auto-approve";
-import { permissionKindLabel } from "@/lib/permission-kind";
+import { permissionKindKey } from "@/lib/permission-kind";
 import { cn } from "@/lib/utils";
+import { localizeText } from "@/lib/i18n-text";
 import { Button } from "./ui/Button";
 import { Menu, type MenuItem } from "./ui/Menu";
 import { SessionMcpButton } from "./SessionMcpMenu";
@@ -154,7 +155,8 @@ export function Composer({
   const slashItems = slashOpen ? filterCommands(value, commands) : [];
   const slashVisible = slashOpen && slashItems.length > 0;
   const canSteerSend = busy && steerGate === "on" && value.trim().length > 0;
-  const steerReason = steerUnavailableReason(steerGate);
+  const steerReasonKey = steerUnavailableReason(steerGate);
+  const steerReason = steerReasonKey ? t(steerReasonKey) : null;
 
   /**
    * 档位选择器（docs/desktop-ux.md §10）：
@@ -231,7 +233,9 @@ export function Composer({
                   className="h-2 w-2 shrink-0 rounded-full"
                   style={{ backgroundColor: p.color }}
                 />
-                <span className="shrink-0 text-caption text-ink-1">{p.name}</span>
+                <span className="shrink-0 text-caption text-ink-1">
+                  {localizeText(p.name, t)}
+                </span>
                 <span className="shrink-0 font-mono text-micro text-ink-3">@{p.handle}</span>
               </button>
             ))
@@ -351,7 +355,9 @@ export function Composer({
                 onClick={onRevokeTurnPolicy}
               >
                 {t("composer.turnPolicy", {
-                  kinds: turnPolicyKinds.map(permissionKindLabel).join(" / "),
+                  kinds: turnPolicyKinds
+                    .map((kind) => t(permissionKindKey(kind)))
+                    .join(" / "),
                 })}
               </button>
             </Tooltip>

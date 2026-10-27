@@ -6,8 +6,10 @@ import {
   MessageSquare,
   XCircle,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { GithubPR, GithubRepo } from "@/types";
 import { cn } from "@/lib/utils";
+import { localizeText } from "@/lib/i18n-text";
 
 const STATE_STYLE: Record<GithubPR["state"], { className: string; label: string }> = {
   open: { className: "text-ok-1", label: "open" },
@@ -29,11 +31,12 @@ interface RepoBrowserProps {
 }
 
 export function RepoBrowser({ repo, prs, onOpenPr }: RepoBrowserProps) {
+  const { t } = useTranslation();
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line-1/60 px-3">
         <FolderGit2 className="size-3.5 text-ink-2" />
-        <span className="text-small font-medium text-ink-1">{repo.name}</span>
+        <span className="text-small font-medium text-ink-1">{localizeText(repo.name, t)}</span>
         <span className="truncate font-mono text-micro text-ink-3">{repo.slug}</span>
         <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-micro text-ink-3">
           <span className="rounded-mark bg-surface-3/45 px-1.5 py-0.5">{repo.branch}</span>

@@ -10,8 +10,9 @@ import {
 } from "lucide-react";
 import type { Message, Player, QuotedRef } from "@/types";
 import { cn } from "@/lib/utils";
-import { delegateActionLabel } from "@/lib/delegate-status";
+import { delegateActionCode } from "@/lib/delegate-status";
 import { delegateCapsDetail } from "@/lib/delegate-target";
+import { localizeText } from "@/lib/i18n-text";
 import { chatVisibilityOf } from "@/lib/chat-visibility";
 import { normaliseTurnId } from "@/lib/turn-align";
 import { useTweenedText } from "@/hooks/useTweenedText";
@@ -96,7 +97,7 @@ export function MessageItem({
     return (
       <div className="flex justify-center py-0.5">
         <span className="rounded-full bg-surface-3/35 px-2.5 py-1 font-mono text-micro text-ink-3">
-          {message.text}
+          {localizeText(message.text, t)}
         </span>
       </div>
     );
@@ -116,7 +117,14 @@ export function MessageItem({
   if (chatKind === "delegate.card" && message.role === "user") {
     if (message.delegate) {
       const handleId = message.delegate.handleId;
-      const action = delegateActionLabel(delegatePhase);
+      const action = delegateActionCode(delegatePhase);
+      const caps = delegateCapsDetail(message.delegate.context, message.delegate.reason);
+      const capsText = caps.reasonKey
+        ? t("delegate.caps.detail.withReason", {
+            label: t(caps.labelKey),
+            reason: t(caps.reasonKey),
+          })
+        : t(caps.labelKey);
       return (
         <div className="flex w-full flex-col gap-1 border-l-2 border-line-1/60 pl-2.5 text-left">
           <div className="flex items-center gap-1.5 text-micro text-ink-3">
@@ -129,10 +137,10 @@ export function MessageItem({
             >
               {t("chat.delegate.summary", {
                 target: message.delegate.targetName,
-                detail: delegateCapsDetail(message.delegate.context, message.delegate.reason),
+                detail: capsText,
               })}
             </button>
-            {action === "停止" ? ( // i18n-ignore: delegateActionLabel returns UI text
+            {action === "stop" ? (
               <button
                 type="button"
                 aria-label={t("chat.delegate.stopAria")}
@@ -143,7 +151,9 @@ export function MessageItem({
                 {t("ui.button.stop")}
               </button>
             ) : action ? (
-              <span className="shrink-0 text-caption text-ink-3">{action}</span>
+              <span className="shrink-0 text-caption text-ink-3">
+                {t(action === "stopping" ? "app.composer.stopping" : "trace.status.stopped")}
+              </span>
             ) : null}
           </div>
           <button
@@ -185,7 +195,7 @@ export function MessageItem({
       <div className="min-w-0 flex-1">
         <div className="mb-0.5 flex items-baseline gap-2">
           <span className="text-caption font-medium" style={{ color: p?.color }}>
-            {p?.name ?? "agent"}
+            {p ? localizeText(p.name, t) : "agent"}
           </span>
           <RemovedBadge player={p} />
           <span className="font-mono text-micro text-ink-3">{message.at}</span>

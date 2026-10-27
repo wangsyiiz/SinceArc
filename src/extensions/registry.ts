@@ -1,5 +1,6 @@
 import type { AgentCommand, AgentProfile } from "@/types";
 import type { CommandPreview } from "@/lib/ipc/types.gen/CommandPreview";
+import type { MessageKey } from "@/i18n/zh-CN";
 
 /**
  * ACP 之外的能力：agent 自己的 CLI 子命令。
@@ -20,28 +21,28 @@ const HERMES: AgentCommand[] = [
   {
     id: "sessions.stats",
     binary: "hermes",
-    label: "会话统计",
+    label: "extensions.hermes.sessionsStats.label",
     argv: ["sessions", "stats"],
-    note: "会话库的体积与分布",
+    note: "extensions.hermes.sessionsStats.note",
   },
   {
     id: "sessions.prune",
     binary: "hermes",
-    label: "清理旧会话",
+    label: "extensions.hermes.sessionsPrune.label",
     argv: ["sessions", "prune", "--older-than", "30d"],
-    note: "会真的删数据",
+    note: "extensions.hermes.sessionsPrune.note",
   },
   {
     id: "worktree",
     binary: "hermes",
-    label: "Worktree 审计",
+    label: "extensions.hermes.worktree.label",
     argv: ["worktree"],
-    note: "回收已合并分支的工作树",
+    note: "extensions.hermes.worktree.note",
   },
   {
     id: "cron.list",
     binary: "hermes",
-    label: "定时任务",
+    label: "extensions.hermes.cronList.label",
     argv: ["cron", "list"],
   },
 ];
@@ -56,28 +57,28 @@ const CODEX: AgentCommand[] = [
   {
     id: "doctor",
     binary: "codex",
-    label: "环境诊断",
+    label: "extensions.codex.doctor.label",
     argv: ["doctor"],
-    note: "安装 / 配置 / 认证 / 运行时健康",
+    note: "extensions.codex.doctor.note",
   },
   {
     id: "login.status",
     binary: "codex",
-    label: "登录状态",
+    label: "extensions.codex.loginStatus.label",
     argv: ["login", "status"],
   },
   {
     id: "mcp.list",
     binary: "codex",
-    label: "MCP 服务器",
+    label: "extensions.codex.mcpList.label",
     argv: ["mcp", "list"],
   },
   {
     id: "agents",
     binary: "codex",
-    label: "本地会话",
+    label: "extensions.codex.agents.label",
     argv: ["agents"],
-    note: "共享 daemon 上的 agent 会话",
+    note: "extensions.codex.agents.note",
   },
 ];
 
@@ -123,6 +124,15 @@ export function commandsFor(
   return key ? REGISTRY[key] : [];
 }
 
+/** registry 的 label/note 存的是文案 key，由渲染层翻译。 */
+export function commandLabelKey(command: AgentCommand): MessageKey {
+  return command.label as MessageKey;
+}
+
+export function commandNoteKey(command: AgentCommand): MessageKey | null {
+  return command.note ? (command.note as MessageKey) : null;
+}
+
 /**
  * 面板里显示「这条命令实际会怎么跑」。
  *
@@ -133,7 +143,7 @@ export async function commandPreview(
   profile: AgentProfile | undefined,
   cmd: AgentCommand,
 ): Promise<string> {
-  if (!profile) throw new Error("缺少 profile，无法生成命令预览");
+  if (!profile) throw new Error("extensions.commandPreview.missingProfile");
   const { invokeCmd, toDto } = await import("@/lib/ipc");
   const preview = await invokeCmd<CommandPreview>("command_preview", {
     profile: toDto(profile),

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { newId } from "@/lib/ids";
 import { fromDto, profilesLoad, profilesSave } from "@/lib/ipc";
-import { profileLabel } from "@/lib/format";
+import { LEGACY_DEFAULT_PROFILE_NAME, profileLabel } from "@/lib/format";
 import type { AgentProfile } from "@/types";
 
 export function useProfileStore() {
@@ -53,7 +53,7 @@ export function useProfileStore() {
         const loaded = stored.map(fromDto);
         // 老的占位名「新连接」对所有连接都一样，读进来就换成能区分的名字
         loaded.forEach((p) => {
-          if (p.name === "新连接") p.name = profileLabel(p);
+          if (p.name === LEGACY_DEFAULT_PROFILE_NAME) p.name = profileLabel(p);
         });
         setProfiles(loaded);
       } catch {
