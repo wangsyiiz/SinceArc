@@ -45,6 +45,14 @@
   const ARTIFACTS = [
     { id: "win-x64-zip", file: "SinceArc-win-x64.zip", size: "3.7 MB", kind: { en: "Portable zip", zh: "便携 zip" } },
     { id: "win-x64-setup", file: "SinceArc_x64-setup.exe", size: "2.9 MB", kind: { en: "Installer (.exe)", zh: "安装包 (.exe)" } },
+    // 预发布：main 每次合并都会覆盖这个 release，用来试最新改动
+    {
+      id: "win-x64-continuous",
+      file: "SinceArc-win-x64.zip",
+      url: "https://github.com/wangsyiiz/SinceArc/releases/download/continuous/SinceArc-win-x64.zip",
+      size: "3.7 MB",
+      kind: { en: "Newest build (main)", zh: "最新构建（main）" },
+    },
   ];
 
   const dlMain = document.getElementById("dlMain");
@@ -90,7 +98,7 @@
     const item = current();
     dlLabel.textContent = isZh() ? "下载 Windows 版" : "Download for Windows";
     dlSub.textContent = pick(SUBTITLE);
-    dlMain.href = REL + item.file;
+    dlMain.href = item.url ?? REL + item.file;
     dlMain.setAttribute("download", item.file);
     dlMore.setAttribute("aria-label", isZh() ? "其他安装包" : "Other downloads");
     if (docLink) {

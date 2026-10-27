@@ -5,17 +5,27 @@ name: release
 # 为什么在 CI 上能出 NSIS、本地不能：Tauri 首次打包要从 GitHub 下载 nsis-3.11.zip，
 # 本机到 GitHub 不通（§6），而 runner 本身就在 GitHub 网络里，下载没问题。
 #
-# 触发：
-#   - 推 tag v*        → 出产物 + 建 GitHub Release 并挂附件
-#   - 手动 workflow_dispatch → 只出产物（不建 Release），用来自检流水线
+# 触发（三条，各管一件事）：
+#   - push tag v*            → 正式版：出产物 + 建 GitHub Release（带版号，成为 latest）
+#   - push main              → 持续构建：出产物 + 更新预发布 rolling release（tag=continuous），
+#                              不发正式版，避免每次合并都堆一个版本号
+#   - workflow_dispatch      → 只出产物，不建任何 Release，用来自检流水线
+#
+# 为什么主分支也要产出：官网/README 指向 releases/latest/download/<稳定文件名>，
+# 正式版一打就自动跟着走；想试最新 main 的人则走 continuous 那一条。
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   windows:
@@ -95,13 +105,12 @@ jobs:
           path: out/*
           if-no-files-found: error
 
-      - name: 建 Release 并挂附件（仅 tag）
+      - name: 建正式 Release（tag v*）
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 用字符串数组拼发布说明：here-string 在 YAML 里会带上缩进，正文会变成代码块
           $v = "${{ steps.ver.outputs.version }}"
           $lines = @(
             "Windows x64 预览版（v$v）。",
@@ -122,3 +131,44 @@ jobs:
             (Get-ChildItem out/* -File | Where-Object { $_.Name -ne 'RELEASE_NOTES.md' } | ForEach-Object { $_.FullName }) `
             --title "SinceArc $v" `
             --notes-file out/RELEASE_NOTES.md
+
+      - name: 更新持续构建 Release（push main）
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $sha = "${{ github.sha }}".Substring(0, 7)
+          $lines = @(
+            "main 分支的持续构建，每个合并都覆盖更新——**不是正式版**，正式版看 Releases 里的 v* 标签。",
+            "",
+            "- commit: $sha",
+            "- 构建时间: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm')) UTC",
+            "",
+            "| 文件 | 用途 |",
+            "| --- | --- |",
+            "| SinceArc-win-x64.zip | 便携版（稳定文件名，releases/download/continuous 可直接链） |",
+            "| SinceArc_x64-setup.exe | NSIS 安装包 |",
+            "| SHA256SUMS.txt | 校验和 |",
+            "",
+            "未签名；只用于试最新改动，不要当发布版分发。"
+          )
+          ($lines -join "`n") | Set-Content -Path out/RELEASE_NOTES.md -Encoding utf8
+
+          $exists = $true
+          gh release view continuous *> $null
+          if ($LASTEXITCODE -ne 0) { $exists = $false }
+
+          if ($exists) {
+            # 覆盖同名资产，保持 asset 名稳定，官网链接不会失效
+            # RELEASE_NOTES.md 只是喂 gh 的临时文件，不挂成资产
+            $assets = Get-ChildItem out/* -File | Where-Object { $_.Name -ne 'RELEASE_NOTES.md' } | ForEach-Object { $_.FullName }
+            gh release upload continuous $assets --clobber
+            gh release edit continuous --notes-file out/RELEASE_NOTES.md --prerelease
+          } else {
+            gh release create continuous `
+              (Get-ChildItem out/* -File | Where-Object { $_.Name -ne 'RELEASE_NOTES.md' } | ForEach-Object { $_.FullName }) `
+              --title "Continuous build (main)" `
+              --notes-file out/RELEASE_NOTES.md `
+              --prerelease
+          }

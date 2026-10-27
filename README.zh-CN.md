@@ -84,8 +84,9 @@ SinceArc 把它们放到同一条时间轴上，共用一套会话、一套连�
 
 > 首个版本 `v0.0.0` 还没有打 tag，下面描述的是发布后的路径。
 
-1. 到 [Releases](https://github.com/wangsyiiz/SinceArc/releases) 下载 `SinceArc-<version>-win-x64.zip`（便携）或
-   `SinceArc_<version>_x64-setup.exe`（安装）；
+1. 到 [Releases](https://github.com/wangsyiiz/SinceArc/releases) 下载 `SinceArc-win-x64.zip`（便携）或
+   `SinceArc_x64-setup.exe`（安装）。文件名不带版本号是有意的：永远指向最新正式版。想试最新 `main`，
+   用 `continuous` 预发布（[`releases/download/continuous/`](https://github.com/wangsyiiz/SinceArc/releases/download/continuous/SinceArc-win-x64.zip)）；
 2. 便携版解压到任意目录（别在压缩包里直接双击），双击 `SinceArc.exe`；
 3. SmartScreen 提示时点「更多信息 → 仍要运行」（未签名）；
 4. 需要 WebView2 运行时：Win11 与较新的 Win10 自带；缺的话装
