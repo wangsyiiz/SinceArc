@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Trans, useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -16,6 +18,7 @@ import {
   Trash2,
   Users,
 } from "lucide-react";
+import type { MessageKey } from "@/i18n/zh-CN";
 import type {
   AgentProfile,
   AutoApproveLevel,
@@ -122,17 +125,11 @@ const THEME_ICONS = {
   system: <Monitor />,
 } as const;
 
-const THEMES: { id: ThemeMode; label: string }[] = [
-  { id: "dark", label: "深色" },
-  { id: "light", label: "浅色" },
-  { id: "system", label: "跟随系统" },
+const THEMES: { id: ThemeMode; labelKey: MessageKey }[] = [
+  { id: "dark", labelKey: "settings.appearance.theme.dark" },
+  { id: "light", labelKey: "settings.appearance.theme.light" },
+  { id: "system", labelKey: "settings.appearance.theme.system" },
 ];
-
-const THEME_OPTIONS = THEMES.map((theme) => ({
-  value: theme.id,
-  label: theme.label,
-  icon: THEME_ICONS[theme.id],
-}));
 
 /** 语言档位：选项名用各自语言书写（切到英文后这一行仍然可读）。 */
 const LANGUAGE_OPTIONS: { value: Language; label: string }[] = [
@@ -140,8 +137,8 @@ const LANGUAGE_OPTIONS: { value: Language; label: string }[] = [
   { value: "en", label: "English" },
 ];
 
-const DISCARD_UNSAVED_HEADING = "放弃未保存的修改";
-const DELETE_CONNECTION_HEADING = "删除连接";
+const DISCARD_UNSAVED_HEADING_KEY: MessageKey = "settings.connection.discard.title";
+const DELETE_CONNECTION_HEADING_KEY: MessageKey = "settings.connection.delete";
 
 function LongTextHover({
   text,
@@ -166,36 +163,51 @@ function LongTextHover({
   );
 }
 
-const AUTO_APPROVE_OPTIONS = [
-  { value: "off" as const, label: "关闭" },
-  { value: "edits" as const, label: "编辑类" },
+const AUTO_APPROVE_OPTIONS: { value: AutoApproveLevel; labelKey: MessageKey }[] = [
+  { value: "off", labelKey: "settings.chat.autoApprove.off" },
+  { value: "edits", labelKey: "settings.chat.autoApprove.edits" },
 ];
 
-const SSH_AUTH_OPTIONS: { value: SshAuth; label: string }[] = [
-  { value: "key", label: "私钥" },
-  { value: "password", label: "密码" },
+const SSH_AUTH_OPTIONS: { value: SshAuth; labelKey: MessageKey }[] = [
+  { value: "key", labelKey: "settings.connection.ssh.auth.key" },
+  { value: "password", labelKey: "settings.connection.ssh.password.label" },
 ];
 
-const ADD_PATH_OPTIONS: { value: AddPath; label: string }[] = [
-  { value: "manual", label: "手动填写" },
-  { value: "scan", label: "自动扫描" },
+const ADD_PATH_OPTIONS: { value: AddPath; labelKey: MessageKey }[] = [
+  { value: "manual", labelKey: "settings.connection.addMethod.manual" },
+  { value: "scan", labelKey: "settings.connection.addMethod.scan" },
 ];
 
 const SECTIONS = [
-  { id: "connection", label: "连接", icon: Plug },
-  { id: "mcp", label: "MCP", icon: PlugZap },
-  { id: "members", label: "成员", icon: Users },
-  { id: "chat", label: "群聊", icon: MessageSquare },
-  { id: "appearance", label: "外观", icon: Palette },
-  { id: "update", label: "更新", icon: RefreshCw },
+  { id: "connection", labelKey: "settings.sections.connection", icon: Plug },
+  { id: "mcp", labelKey: "settings.sections.mcp", icon: PlugZap },
+  { id: "members", labelKey: "settings.sections.members", icon: Users },
+  { id: "chat", labelKey: "settings.sections.chat", icon: MessageSquare },
+  { id: "appearance", labelKey: "settings.sections.appearance", icon: Palette },
+  { id: "update", labelKey: "settings.sections.update", icon: RefreshCw },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
 
-const LAUNCH_LABEL: Record<LaunchKind, string> = {
-  local: "本机直连",
-  wsl: "WSL",
-  ssh: "SSH",
+const LAUNCH_LABEL: Record<LaunchKind, MessageKey> = {
+  local: "settings.connection.launch.local",
+  wsl: "settings.connection.launch.wsl",
+  ssh: "settings.connection.launch.ssh",
+};
+
+const CAPS_LABEL_KEYS: Record<keyof AgentCaps, MessageKey> = {
+  promptImage: "settings.caps.promptImage",
+  promptAudio: "settings.caps.promptAudio",
+  promptEmbeddedContext: "settings.caps.promptEmbeddedContext",
+  loadSession: "settings.caps.loadSession",
+  sessionList: "settings.caps.sessionList",
+  sessionDelete: "settings.caps.sessionDelete",
+  sessionFork: "settings.caps.sessionFork",
+  sessionResume: "settings.caps.sessionResume",
+  sessionClose: "settings.caps.sessionClose",
+  mcpHttp: "settings.caps.mcpHttp",
+  mcpSse: "settings.caps.mcpSse",
+  mcpAcp: "settings.caps.mcpAcp",
 };
 
 type ProbeResult =
@@ -210,17 +222,17 @@ function cloneProfile(profile: AgentProfile): AgentProfile {
   return { ...profile, args: [...(profile.args ?? [])], ssh: profile.ssh ? { ...profile.ssh } : undefined };
 }
 
-function connectionTarget(profile: AgentProfile): string {
+function connectionTarget(profile: AgentProfile, t: TFunction): string {
   const cwd = profile.cwd?.trim();
   if (profile.launch === "ssh") {
-    const host = profile.ssh?.host || "未填主机";
+    const host = profile.ssh?.host || t("settings.connection.target.noHost");
     const user = profile.ssh?.user || "?";
     return `${user}@${host}${cwd ? ` · ${cwd}` : ""}`;
   }
   if (profile.launch === "wsl") {
     return `${profile.distro || "WSL"}${cwd ? ` · ${cwd}` : ""}`;
   }
-  return cwd || profile.program || "未配置";
+  return cwd || profile.program || t("settings.connection.target.unconfigured");
 }
 
 function agentOfProfile(profile: AgentProfile): string {
@@ -240,6 +252,7 @@ function AgentSelect({
   onPreset: (preset: AgentPreset) => void;
   onCustom: () => void;
 }) {
+  const { t } = useTranslation();
   const current = matchPreset(profile.program, profile.args);
   const items: MenuItem[] = [
     ...AGENT_PRESETS.map((preset) => ({
@@ -251,7 +264,7 @@ function AgentSelect({
     })),
     {
       id: "custom",
-      label: "自定义命令",
+      label: t("settings.connection.agent.customCommand"),
       checked: !current,
       onSelect: onCustom,
     },
@@ -259,13 +272,15 @@ function AgentSelect({
 
   return (
     <Menu
-      ariaLabel="Agent 预设"
+      ariaLabel={t("settings.connection.agent.preset")}
       align="end"
       compact
       className="max-w-56 justify-between"
       trigger={
         <>
-          <span className="min-w-0 truncate">{current?.name ?? "自定义"}</span>
+          <span className="min-w-0 truncate">
+            {current?.name ?? t("settings.connection.agent.custom")}
+          </span>
           <ChevronDown className="size-3 shrink-0 text-ink-3" />
         </>
       }
@@ -298,6 +313,7 @@ export function SettingsView({
   onScanDiscovery,
   onUseDiscovered,
 }: SettingsViewProps) {
+  const { t } = useTranslation();
   const [section, setSection] = useState<SectionId>("connection");
   const [connectionId, setConnectionId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -380,7 +396,7 @@ export function SettingsView({
         throw { code: 50403, msg: result.resume.reason };
       }
       if (!result.acpSid) {
-        throw new Error("agent 没有给出会话");
+        throw new Error(t("settings.connection.noSession"));
       }
     } catch (e) {
       const err = asCmdError(e);
@@ -479,12 +495,15 @@ export function SettingsView({
   const describeCaps = (caps: AgentCaps): string => {
     const labels = capsRows(caps)
       .filter((row) => row.on)
-      .map((row) => row.label);
+      .map((row) => t(CAPS_LABEL_KEYS[row.key]));
     if (labels.length === 0) return "";
     const head = labels.slice(0, 3).join(" / ");
     return labels.length > 3
-      ? ` · ${head} 等 ${labels.length - 3} 项`
-      : ` · ${head}`;
+      ? t("settings.connection.agent.capsMore", {
+          head,
+          count: labels.length - 3,
+        })
+      : head;
   };
 
   const newConnectionDraft = (id: string): AgentProfile => ({
@@ -651,7 +670,7 @@ export function SettingsView({
       const err = asCmdError(e);
       setErrors((prev) => ({
         ...prev,
-        [id]: `保存默认 MCP 服务器失败：${err.msg}`,
+        [id]: t("settings.connection.mcpSaveFailed", { msg: err.msg }),
       }));
       if (isNew) {
         setDraft({ profile: { ...effective, id }, isNew: false, addPath: "manual" });
@@ -680,7 +699,7 @@ export function SettingsView({
       <div className="space-y-4">
         <div className="flex items-start justify-between gap-3">
           <p className="min-w-0 flex-1 text-ui text-ink-2">
-            扫描本机已安装的 ACP agent，点一条直接填入当前草稿。
+            {t("settings.connection.discovery.description")}
           </p>
           <Button
             variant="secondary"
@@ -688,7 +707,9 @@ export function SettingsView({
             disabled={discoveryScanning}
             onClick={() => onScanDiscovery?.()}
           >
-            {discoveryScanning ? "扫描中…" : "扫描本机"}
+            {discoveryScanning
+              ? t("settings.connection.discovery.scanning")
+              : t("settings.connection.discovery.scan")}
           </Button>
         </div>
 
@@ -702,13 +723,15 @@ export function SettingsView({
         ))}
 
         {!discovery ? (
-          <p className="text-caption text-ink-3">还没扫描过</p>
+          <p className="text-caption text-ink-3">
+            {t("settings.connection.discovery.notScanned")}
+          </p>
         ) : rows.length === 0 ? (
           <EmptyState
             compact
             kind="empty"
-            heading="没找到能跑 ACP 的 agent"
-            description="也可以手动填写启动命令"
+            heading={t("settings.connection.discovery.emptyHeading")}
+            description={t("settings.connection.discovery.emptyDescription")}
           />
         ) : (
           <div className="divide-y divide-line-1/50">
@@ -763,7 +786,25 @@ export function SettingsView({
     const command = commandDrafts[profile.id] ?? joinCommand(profile.program, profile.args);
     const showCommand = currentPreset === null || commandEditing[profile.id];
     const probe = probeResults[profile.id];
-    const saveGate = canSaveConnection(probe?.ok === true, effectiveProfile(profile));
+    const saveGateProfile = effectiveProfile(profile);
+    const saveGate = canSaveConnection(probe?.ok === true, saveGateProfile);
+    const missingGateFields: MessageKey[] = [];
+    if (saveGateProfile.launch === "ssh") {
+      if (!(saveGateProfile.ssh?.host ?? "").trim()) {
+        missingGateFields.push("settings.connection.ssh.host.label");
+      }
+      if (!(saveGateProfile.ssh?.user ?? "").trim()) {
+        missingGateFields.push("settings.connection.validation.field.user");
+      }
+    }
+    if (!(saveGateProfile.program ?? "").trim()) {
+      missingGateFields.push("settings.connection.validation.field.agentCommand");
+    }
+    const saveGateReason = missingGateFields.length
+      ? t("ui.validation.missing", {
+          fields: missingGateFields.map((key) => t(key)).join(t("ui.list.separator")),
+        })
+      : t("settings.connection.validation.probeRequired");
     const history = (recentPaths[profile.id] ?? []).filter(
       (path) => path !== (profile.cwd ?? ""),
     );
@@ -772,10 +813,15 @@ export function SettingsView({
       <div className="mt-5 space-y-5">
         {isNew && (
           <div className="flex flex-col gap-1.5">
-            <span className="text-ui font-medium text-ink-2">添加方式</span>
+            <span className="text-ui font-medium text-ink-2">
+              {t("settings.connection.addMethod.label")}
+            </span>
             <Segmented
-              ariaLabel="添加方式"
-              options={ADD_PATH_OPTIONS}
+              ariaLabel={t("settings.connection.addMethod.label")}
+              options={ADD_PATH_OPTIONS.map(({ value, labelKey }) => ({
+                value,
+                label: t(labelKey),
+              }))}
               value={addPath}
               onChange={setDraftPath}
             />
@@ -785,7 +831,9 @@ export function SettingsView({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <span className="flex items-center gap-1.5 text-caption text-ink-3">
             <StatusDot status={connected ? "connected" : "untested"} />
-            {connected ? savedProfile?.agentName || "已连接" : "未连接"}
+            {connected
+              ? savedProfile?.agentName || t("statusbar.profile.statusConnected")
+              : t("statusbar.profile.statusDisconnected")}
           </span>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
@@ -794,7 +842,9 @@ export function SettingsView({
               disabled={probeBusy === profile.id}
               onClick={() => void handleProbe(effectiveProfile(profile))}
             >
-              {probeBusy === profile.id ? "探测中…" : "探测"}
+              {probeBusy === profile.id
+                ? t("settings.connection.action.probing")
+                : t("settings.connection.action.probe")}
             </Button>
             <Button
               variant="primary"
@@ -802,10 +852,10 @@ export function SettingsView({
               disabled={!saveGate.ok}
               onClick={() => void saveDraft(profile)}
             >
-              保存
+              {t("ui.button.save")}
             </Button>
             <Button variant="ghost" size="sm" onClick={() => discardDraft()}>
-              取消
+              {t("ui.button.cancel")}
             </Button>
             {!isNew && (
               <Button
@@ -819,18 +869,20 @@ export function SettingsView({
                 }
               >
                 {busy === profile.id
-                  ? "处理中…"
+                  ? t("settings.connection.action.working")
                   : connected
-                    ? "断开"
-                    : "连接"}
+                    ? t("settings.connection.action.disconnect")
+                    : t("settings.connection.action.connect")}
               </Button>
             )}
           </div>
         </div>
         {(!saveGate.ok || (!isNew && draftDirty)) && (
           <div className="text-right text-caption text-ink-3">
-            {!saveGate.ok && <p>{saveGate.reason}</p>}
-            {!isNew && draftDirty && <p>先保存再连接</p>}
+            {!saveGate.ok && <p>{saveGateReason}</p>}
+            {!isNew && draftDirty && (
+              <p>{t("settings.connection.saveBeforeConnect")}</p>
+            )}
           </div>
         )}
 
@@ -838,22 +890,24 @@ export function SettingsView({
           renderDiscoveryPicker()
         ) : (
           <>
-            <Field label="名称" htmlFor={`connection-name-${profile.id}`}>
+            <Field label={t("ui.field.name")} htmlFor={`connection-name-${profile.id}`}>
           <Input
             id={`connection-name-${profile.id}`}
             value={profile.name}
             onChange={(e) => patchDraft({ name: e.target.value })}
-            placeholder="留空时按命令与位置自动命名"
+            placeholder={t("settings.connection.name.placeholder")}
           />
         </Field>
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-ui font-medium text-ink-2">启动方式</span>
+          <span className="text-ui font-medium text-ink-2">
+            {t("settings.connection.launch.label")}
+          </span>
           <Segmented
-            ariaLabel="启动方式"
+            ariaLabel={t("settings.connection.launch.label")}
             options={(["local", "wsl", "ssh"] as LaunchKind[]).map((kind) => ({
               value: kind,
-              label: LAUNCH_LABEL[kind],
+              label: t(LAUNCH_LABEL[kind]),
             }))}
             value={profile.launch}
             onChange={(kind) =>
@@ -870,16 +924,22 @@ export function SettingsView({
 
         {profile.launch === "ssh" && ssh && (
           <div className="grid gap-4 md:grid-cols-2">
-            <Field label="主机" htmlFor={`ssh-host-${profile.id}`}>
+            <Field
+              label={t("settings.connection.ssh.host.label")}
+              htmlFor={`ssh-host-${profile.id}`}
+            >
               <Input
                 id={`ssh-host-${profile.id}`}
                 value={ssh.host}
-                placeholder="47.109.56.213 或 ~/.ssh/config 的别名"
+                placeholder={t("settings.connection.ssh.host.placeholder")}
                 onChange={(e) => patchDraft({ ssh: { ...ssh, host: e.target.value } })}
                 className="font-mono"
               />
             </Field>
-            <Field label="端口" htmlFor={`ssh-port-${profile.id}`}>
+            <Field
+              label={t("settings.connection.ssh.port.label")}
+              htmlFor={`ssh-port-${profile.id}`}
+            >
               <Input
                 id={`ssh-port-${profile.id}`}
                 value={String(ssh.port)}
@@ -890,7 +950,10 @@ export function SettingsView({
                 className="font-mono"
               />
             </Field>
-            <Field label="账号" htmlFor={`ssh-user-${profile.id}`}>
+            <Field
+              label={t("settings.connection.ssh.user.label")}
+              htmlFor={`ssh-user-${profile.id}`}
+            >
               <Input
                 id={`ssh-user-${profile.id}`}
                 value={ssh.user}
@@ -900,21 +963,29 @@ export function SettingsView({
               />
             </Field>
             <div className="flex flex-col gap-1.5">
-              <span className="text-ui font-medium text-ink-2">认证</span>
+              <span className="text-ui font-medium text-ink-2">
+                {t("settings.connection.ssh.auth.label")}
+              </span>
               <Segmented
-                ariaLabel="SSH 认证方式"
-                options={SSH_AUTH_OPTIONS}
+                ariaLabel={t("settings.connection.ssh.auth.aria")}
+                options={SSH_AUTH_OPTIONS.map(({ value, labelKey }) => ({
+                  value,
+                  label: t(labelKey),
+                }))}
                 value={ssh.auth}
                 onChange={(auth) => patchDraft({ ssh: { ...ssh, auth } })}
               />
             </div>
             <div className="md:col-span-2">
               {ssh.auth === "key" ? (
-                <Field label="私钥路径" htmlFor={`ssh-key-${profile.id}`}>
+                <Field
+                  label={t("settings.connection.ssh.keyPath.label")}
+                  htmlFor={`ssh-key-${profile.id}`}
+                >
                   <Input
                     id={`ssh-key-${profile.id}`}
                     value={ssh.keyPath ?? ""}
-                    placeholder="C:\\Users\\you\\.ssh\\id_ed25519"
+                    placeholder={t("settings.connection.ssh.keyPath.placeholder")}
                     onChange={(e) =>
                       patchDraft({ ssh: { ...ssh, keyPath: e.target.value } })
                     }
@@ -922,12 +993,15 @@ export function SettingsView({
                   />
                 </Field>
               ) : (
-                <Field label="密码" htmlFor={`ssh-password-${profile.id}`}>
+                <Field
+                  label={t("settings.connection.ssh.password.label")}
+                  htmlFor={`ssh-password-${profile.id}`}
+                >
                   <Input
                     id={`ssh-password-${profile.id}`}
                     type="password"
                     value={ssh.password ?? ""}
-                    placeholder="仅本次运行有效，不落盘"
+                    placeholder={t("settings.connection.ssh.password.placeholder")}
                     onChange={(e) =>
                       patchDraft({ ssh: { ...ssh, password: e.target.value } })
                     }
@@ -951,7 +1025,7 @@ export function SettingsView({
           <div className="mt-2 flex items-center gap-2">
             {showCommand ? (
               <Input
-                aria-label="Agent 命令"
+                aria-label={t("settings.connection.agent.commandAria")}
                 spellCheck={false}
                 value={command}
                 placeholder="npx -y @google/gemini-cli@0.65.0 --acp"
@@ -983,7 +1057,7 @@ export function SettingsView({
                 size="sm"
                 onClick={() => setCommandEditing((prev) => ({ ...prev, [profile.id]: true }))}
               >
-                编辑命令
+                {t("settings.connection.agent.editCommand")}
               </Button>
             )}
           </div>
@@ -991,7 +1065,7 @@ export function SettingsView({
           <p className="mt-1.5 text-caption text-ink-3">
             {currentPreset
               ? currentPreset.origin
-              : "命令里可以带参数；确认能起 ACP 就用右边的探测"}
+              : t("settings.connection.agent.commandHint")}
           </p>
           {probe && (
             <>
@@ -1002,46 +1076,54 @@ export function SettingsView({
                 )}
               >
                 {probe.ok
-                  ? `已连接 ${probe.outcome.agentName} ${probe.outcome.agentVersion} · 协议 v${probe.outcome.protocolVersion}`
+                  ? t("settings.connection.agent.probeConnected", {
+                      agent: probe.outcome.agentName,
+                      version: probe.outcome.agentVersion,
+                      protocol: probe.outcome.protocolVersion,
+                    })
                   : probe.error}
               </p>
               {probe.ok && (
                 <p className="mt-0.5 break-all text-caption text-ink-3">
                   {capsRows(probe.outcome.caps).every((row) => !row.on)
-                    ? "这个 agent 没报任何可选能力"
-                    : describeCaps(probe.outcome.caps).replace(" · ", "")}
+                    ? t("settings.connection.agent.noCaps")
+                    : describeCaps(probe.outcome.caps)}
                 </p>
               )}
             </>
           )}
           {connected && (
             <p className="mt-1 text-caption text-warn-1">
-              改了 agent 命令需要重新连接才会生效
+              {t("settings.connection.agent.commandChanged")}
             </p>
           )}
         </div>
 
         <div>
-          <Field label="工作目录" htmlFor={`connection-cwd-${profile.id}`}>
+          <Field
+            label={t("ui.field.workingDirectory")}
+            htmlFor={`connection-cwd-${profile.id}`}
+          >
             <Input
               id={`connection-cwd-${profile.id}`}
               value={profile.cwd ?? ""}
               placeholder={
                 profile.launch === "local"
-                  ? "C:\\source\\your-project"
-                  : "/mnt/c/source/your-project"
+                  ? t("settings.connection.cwd.placeholder.local")
+                  : t("settings.connection.cwd.placeholder.remote")
               }
               onChange={(e) => patchDraft({ cwd: e.target.value })}
               className="font-mono"
             />
           </Field>
           <p className="mt-1.5 text-caption text-ink-3">
-            这个路径必须存在于 agent 那一侧：WSL 与 SSH 要 Linux 路径，本机要 Windows
-            路径。填错了 agent 起不来（wsl 会报 chdir failed）。
+            {t("settings.connection.cwd.hint")}
           </p>
           {history.length > 0 && (
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <span className="text-caption text-ink-3">最近使用</span>
+              <span className="text-caption text-ink-3">
+                {t("settings.connection.cwd.recent")}
+              </span>
               {history.map((path) => (
                 <LongTextHover
                   key={path}
@@ -1064,11 +1146,13 @@ export function SettingsView({
 
         <div>
           <div className="flex items-center justify-between gap-3">
-            <span className="text-ui font-medium text-ink-2">默认文件编辑审批</span>
+            <span className="text-ui font-medium text-ink-2">
+              {t("settings.connection.defaultMode.label")}
+            </span>
             <ModeSelect
               compact
               variant="connection"
-              followLabel="跟随 Agent"
+              followLabel={t("settings.connection.defaultMode.follow")}
               fallbackLabel={agentDefaultLabel}
               // 跟随且没有连接默认时，按钮上显示 agent 报的当前值（规范 §5.2）
               current={profile.defaultMode ?? snapshot?.current ?? null}
@@ -1078,10 +1162,12 @@ export function SettingsView({
             />
           </div>
           {availableModes.length === 0 && (
-            <p className="mt-1 text-right text-caption text-ink-3">连接一次之后才能选</p>
+            <p className="mt-1 text-right text-caption text-ink-3">
+              {t("settings.connection.defaultMode.unavailable")}
+            </p>
           )}
           <p className="mt-1 text-caption text-ink-3">
-            每次打开会话都会按这里重新应用；agent 在会话内自己切走的模式，重开后回到这里的设置。
+            {t("settings.connection.defaultMode.hint")}
           </p>
         </div>
 
@@ -1104,7 +1190,7 @@ export function SettingsView({
                 onClick={() => setConfirmDeleteId(profile.id)}
               >
                 <Trash2 className="size-3" />
-                删除连接
+                {t("settings.connection.delete")}
               </Button>
             </div>
           </>
@@ -1117,7 +1203,7 @@ export function SettingsView({
     <div className="flex min-h-0 flex-1 justify-center">
       <div className="flex min-h-0 w-full max-w-3xl">
         <nav className="w-40 shrink-0 px-2 py-6">
-          {SECTIONS.map(({ id, label, icon: Icon }) => (
+          {SECTIONS.map(({ id, labelKey, icon: Icon }) => (
             <button
               key={id}
               type="button"
@@ -1131,7 +1217,7 @@ export function SettingsView({
               )}
             >
               <Icon className="size-3.5 shrink-0 text-ink-3" />
-              {label}
+              {t(labelKey)}
             </button>
           ))}
         </nav>
@@ -1148,17 +1234,17 @@ export function SettingsView({
                     onClick={backToList}
                   >
                     <ArrowLeft className="size-3.5" />
-                    返回
+                    {t("settings.back")}
                   </Button>
                   {section === "connection" && draft && (
                     <AgentLogo agent={agentOfProfile(draft.profile)} />
                   )}
                   <h1 className="text-title font-medium text-ink-1">
                     {section === "connection"
-                      ? "连接详情"
+                      ? t("settings.connection.detailTitle")
                       : memberDetail?.user
-                        ? "成员详情"
-                        : "新建成员"}
+                        ? t("settings.member.detailTitle")
+                        : t("settings.member.newTitle")}
                   </h1>
                 </div>
 
@@ -1181,15 +1267,19 @@ export function SettingsView({
               </>
             ) : (
               <>
-                <h1 className="text-title font-medium text-ink-1">设置</h1>
+                <h1 className="text-title font-medium text-ink-1">
+                  {t("app.tab.settings")}
+                </h1>
 
                 {section === "connection" && (
                   <div className="mt-5">
                     <div className="flex items-center justify-between gap-3">
-                      <h2 className="text-small font-medium text-ink-2">连接</h2>
+                      <h2 className="text-small font-medium text-ink-2">
+                        {t("settings.sections.connection")}
+                      </h2>
                       <Button variant="secondary" size="sm" onClick={startNewConnection}>
                         <Plus className="size-3" />
-                        新建
+                        {t("settings.connection.new")}
                       </Button>
                     </div>
 
@@ -1197,12 +1287,12 @@ export function SettingsView({
                       <div className="mt-4">
                         <EmptyState
                           compact
-                          heading="还没有连接配置"
-                          description="新建一个连接，填好 agent 命令与工作目录。"
+                          heading={t("settings.connection.emptyHeading")}
+                          description={t("settings.connection.emptyDescription")}
                           action={
                             <Button variant="secondary" size="sm" onClick={startNewConnection}>
                               <Plus className="size-3" />
-                              新建连接
+                              {t("settings.connection.newAction")}
                             </Button>
                           }
                         />
@@ -1222,10 +1312,13 @@ export function SettingsView({
                             <AgentLogo agent={agentOfProfile(profile)} />
                             <span className="min-w-0 flex-1">
                               <span className="block truncate text-ui font-medium text-ink-1">
-                                {profile.name || profile.program || "未命名连接"}
+                                {profile.name ||
+                                  profile.program ||
+                                  t("settings.connection.unnamed")}
                               </span>
                               <span className="mt-0.5 block truncate font-mono text-caption text-ink-3">
-                                {LAUNCH_LABEL[profile.launch]} · {connectionTarget(profile)}
+                                {t(LAUNCH_LABEL[profile.launch])} ·{" "}
+                                {connectionTarget(profile, t)}
                               </span>
                               <span className="mt-1 flex items-center gap-1.5 text-caption text-ink-3">
                                 <StatusDot
@@ -1233,8 +1326,8 @@ export function SettingsView({
                                 />
                                 <span>
                                   {profile.connected
-                                    ? profile.agentName || "已连接"
-                                    : "未连接"}
+                                    ? profile.agentName || t("statusbar.profile.statusConnected")
+                                    : t("statusbar.profile.statusDisconnected")}
                                 </span>
                               </span>
                             </span>
@@ -1265,25 +1358,33 @@ export function SettingsView({
 
                 {section === "chat" && (
                   <div className="mt-5">
-                    <h2 className="text-small font-medium text-ink-2">群聊</h2>
+                    <h2 className="text-small font-medium text-ink-2">
+                      {t("settings.sections.chat")}
+                    </h2>
                     <div className="mt-3 divide-y divide-line-1/50">
                       <div className="flex gap-6 py-4">
                         <div className="min-w-0 flex-1">
                           <div className="text-ui text-ink-1">
-                            @ 玩家时附带最近几条记录
+                            {t("settings.chat.context.label")}
                           </div>
                           <p className="mt-2 text-caption text-ink-3">
-                            只附带<span className="text-ink-2">其他成员</span>的发言。你自己的历史已经在
-                            session 里，重复带进去等于双份上下文。
+                            <Trans
+                              i18nKey="settings.chat.context.hint"
+                              components={{ span: <span className="text-ink-2" /> }}
+                            />
                           </p>
                           <p className="mt-1.5 text-caption text-ink-3">
-                            这是<span className="text-ink-2">本轮开始前</span>
-                            的快照：并行时，A 看不到 B 在这一轮里刚说的话。
+                            <Trans
+                              i18nKey="settings.chat.snapshot.hint"
+                              components={{ span: <span className="text-ink-2" /> }}
+                            />
                           </p>
                         </div>
                         <div className="w-64 shrink-0">
                           <div className="flex items-baseline justify-between">
-                            <span className="text-caption text-ink-3">条数</span>
+                            <span className="text-caption text-ink-3">
+                              {t("settings.chat.count.label")}
+                            </span>
                             <span className="font-mono text-ui tabular-nums text-accent-1">
                               {n}
                             </span>
@@ -1300,22 +1401,30 @@ export function SettingsView({
                           />
                           <div className="mt-1 flex justify-between font-mono text-micro text-ink-3">
                             <span>0</span>
-                            <span>默认 {CONTEXT_MESSAGES_DEFAULT}</span>
+                            <span>
+                              {t("settings.chat.count.default", {
+                                count: CONTEXT_MESSAGES_DEFAULT,
+                              })}
+                            </span>
                             <span>{CONTEXT_MESSAGES_MAX}</span>
                           </div>
                         </div>
                       </div>
                       <div className="flex items-center justify-between gap-6 py-4">
                         <div className="min-w-0">
-                          <div className="text-ui text-ink-1">新会话默认自动同意</div>
+                          <div className="text-ui text-ink-1">
+                            {t("settings.chat.autoApprove.label")}
+                          </div>
                           <p className="mt-1 text-caption text-ink-3">
-                            agent 发来审批请求时替你答的方式，只管编辑类（改文件 / 删除 / 移动）；
-                            命令与读取始终交给你。agent 自己的审批档已经不问的情况下，这一档不起作用。
+                            {t("settings.chat.autoApprove.hint")}
                           </p>
                         </div>
                         <Segmented
-                          ariaLabel="新会话默认自动同意"
-                          options={AUTO_APPROVE_OPTIONS}
+                          ariaLabel={t("settings.chat.autoApprove.label")}
+                          options={AUTO_APPROVE_OPTIONS.map(({ value, labelKey }) => ({
+                            value,
+                            label: t(labelKey),
+                          }))}
                           value={settings.autoApproveDefault}
                           onChange={onChangeAutoApproveDefault}
                         />
@@ -1323,7 +1432,7 @@ export function SettingsView({
                       {heavy && (
                         <p className="flex items-start gap-1.5 border-l-2 border-warn-1 py-3 pl-3 text-caption text-warn-1">
                           <AlertTriangle className="mt-0.5 size-3 shrink-0" />
-                          {n} 条会明显推高每次请求的输入 token；并行时还要乘以被 @ 的人数。
+                          {t("settings.chat.heavyWarning", { count: n })}
                         </p>
                       )}
                     </div>
@@ -1332,21 +1441,29 @@ export function SettingsView({
 
                 {section === "appearance" && (
                   <div className="mt-5">
-                    <h2 className="text-small font-medium text-ink-2">外观</h2>
+                    <h2 className="text-small font-medium text-ink-2">
+                      {t("settings.sections.appearance")}
+                    </h2>
                     <div className="mt-3 divide-y divide-line-1/50">
                       <div className="flex items-center justify-between gap-6 py-4">
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5">
-                            <span className="text-ui text-ink-1">主题</span>
+                            <span className="text-ui text-ink-1">
+                              {t("settings.appearance.theme.label")}
+                            </span>
                             <Hint
-                              label="主题"
-                              text="暗色靠内边缘高光分界，浅色靠 1px 边框分界。"
+                              label={t("settings.appearance.theme.label")}
+                              text={t("settings.appearance.theme.hint")}
                             />
                           </div>
                         </div>
                         <Segmented
-                          ariaLabel="主题"
-                          options={THEME_OPTIONS}
+                          ariaLabel={t("settings.appearance.theme.label")}
+                          options={THEMES.map(({ id, labelKey }) => ({
+                            value: id,
+                            label: t(labelKey),
+                            icon: THEME_ICONS[id],
+                          }))}
                           value={theme}
                           onChange={onCycleTheme}
                         />
@@ -1354,28 +1471,32 @@ export function SettingsView({
                       <div className="flex items-center justify-between gap-6 py-4">
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5">
-                            <span className="text-ui text-ink-1">语言</span>
+                            <span className="text-ui text-ink-1">
+                              {t("language.label")}
+                            </span>
                             <Hint
-                              label="语言"
-                              text="界面文案与时间格式跟着切换，改完立即生效并落库。"
+                              label={t("language.label")}
+                              text={t("settings.appearance.language.hint")}
                             />
                           </div>
                         </div>
                         <Segmented
-                          ariaLabel="语言"
+                          ariaLabel={t("language.label")}
                           options={LANGUAGE_OPTIONS}
                           value={settings.language ?? normalizeLanguage(navigator.language)}
                           onChange={onChangeLanguage}
                         />
                       </div>
                       <div className="py-4">
-                        <span className="text-ui text-ink-1">代码配色</span>
+                        <span className="text-ui text-ink-1">
+                          {t("settings.appearance.codeTheme.label")}
+                        </span>
                         <p className="mt-1 text-caption text-ink-3">
-                          代码配色独立于界面主题；只作用于代码（代码块与行内 code）。缩略图用的是该主题的真实配色。
+                          {t("settings.appearance.codeTheme.hint")}
                         </p>
                         <div className="mt-3">
                           <CodeThemePicker
-                            label="代码配色"
+                            label={t("settings.appearance.codeTheme.label")}
                             value={settings.codeTheme}
                             onChange={onChangeCodeTheme}
                           />
@@ -1384,16 +1505,18 @@ export function SettingsView({
                       <div className="flex items-center justify-between gap-6 py-4">
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5">
-                            <span className="text-ui text-ink-1">流式补间</span>
+                            <span className="text-ui text-ink-1">
+                              {t("settings.appearance.tween.label")}
+                            </span>
                             <Hint
-                              label="流式补间"
-                              text="agent 回答按到达节奏平滑推进；关掉后与改前一致。"
+                              label={t("settings.appearance.tween.label")}
+                              text={t("settings.appearance.tween.hint")}
                             />
                           </div>
                         </div>
                         <Switch
                           checked={settings.tweenEnabled}
-                          label="流式补间"
+                          label={t("settings.appearance.tween.label")}
                           onChange={onChangeTweenEnabled}
                         />
                       </div>
@@ -1409,10 +1532,10 @@ export function SettingsView({
       </div>
       <ConfirmDialog
         open={discardOpen}
-        title={DISCARD_UNSAVED_HEADING}
-        body={<p>这些改动没有保存，放弃后就没了。</p>}
-        confirmLabel="放弃"
-        cancelLabel="继续编辑"
+        title={t(DISCARD_UNSAVED_HEADING_KEY)}
+        body={<p>{t("settings.connection.discard.body")}</p>}
+        confirmLabel={t("settings.connection.discard.confirm")}
+        cancelLabel={t("settings.connection.discard.cancel")}
         onConfirm={() => {
           const after = pendingDiscardRef.current;
           pendingDiscardRef.current = null;
@@ -1426,16 +1549,21 @@ export function SettingsView({
       />
       <ConfirmDialog
         open={confirmDeleteId !== null}
-        title={DELETE_CONNECTION_HEADING}
+        title={t(DELETE_CONNECTION_HEADING_KEY)}
         body={
           <ul className="list-disc space-y-0.5 pl-4">
-            <li>只删这一条连接配置，<span className="text-ink-1">不会</span>删除任何会话与历史消息；</li>
-            <li>如果它正在连接中，会先断开；</li>
-            <li>删除后无法恢复，需要重新填一遍主机与认证。</li>
+            <li>
+              <Trans
+                i18nKey="settings.connection.delete.body1"
+                components={{ span: <span className="text-ink-1" /> }}
+              />
+            </li>
+            <li>{t("settings.connection.delete.body2")}</li>
+            <li>{t("settings.connection.delete.body3")}</li>
           </ul>
         }
-        confirmLabel="删除"
-        cancelLabel="取消"
+        confirmLabel={t("app.delete.confirm")}
+        cancelLabel={t("ui.button.cancel")}
         onConfirm={() => {
           if (!confirmDeleteId) return;
           setConnectionFocus({ id: confirmDeleteId, tick: Date.now() });

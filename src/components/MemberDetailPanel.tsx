@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import {
   AtSign,
   Eye,
@@ -19,7 +20,7 @@ import {
 } from "lucide-react";
 import { asCmdError, type AgentUser } from "@/lib/ipc";
 import { agentBrand } from "@/lib/agent-brands";
-import { delegateCapsLabel, delegateTargetCaps } from "@/lib/delegate-target";
+import { delegateTargetCaps } from "@/lib/delegate-target";
 import { profileLabel } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { AgentProfile } from "@/types";
@@ -80,6 +81,7 @@ export function MemberDetailPanel({
   filtered: boolean;
   onRemove: () => Promise<void>;
 }) {
+  const { t } = useTranslation();
   const [pos, setPos] = useState<CSSProperties | null>(null);
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -135,13 +137,21 @@ export function MemberDetailPanel({
 
   if (!anchor) return null;
 
-  const connection = profile ? profileLabel(profile) : "连接已不在";
+  const connection = profile ? profileLabel(profile) : t("settings.connection.missing");
   const logoAgent = profile
     ? ([profile.agentName, profile.program, profileLabel(profile)].find(
         (candidate): candidate is string => !!candidate && agentBrand(candidate) !== null,
       ) ?? profileLabel(profile))
     : null;
   const workDir = profile?.cwd?.trim() || "—";
+  const delegateCaps = delegateTargetCaps(profile);
+  const delegateLabel = t(
+    delegateCaps === "member_fork"
+      ? "settings.memberDetail.delegateCaps.memberFork"
+      : delegateCaps === "task_only"
+        ? "settings.memberDetail.delegateCaps.taskOnly"
+        : "settings.memberDetail.delegateCaps.unknown",
+  );
 
   const remove = async () => {
     if (removing) return;
@@ -161,7 +171,7 @@ export function MemberDetailPanel({
     <div
       ref={panelRef}
       role="dialog"
-      aria-label={`${member.name} 的详情`}
+      aria-label={t("settings.memberDetail.aria", { name: member.name })}
       className="sc-glass fixed sc-z-popover rounded-control p-2.5 text-ink-1"
       style={{
         width: "max-content",
@@ -180,19 +190,32 @@ export function MemberDetailPanel({
       <div className="my-2 h-px bg-line-1/60" />
 
       <div className="space-y-1.5">
-        <DetailRow icon={<AtSign size={13} />} label="@短名" value={`@${member.handle}`} />
+        <DetailRow
+          icon={<AtSign size={13} />}
+          label={t("settings.memberDetail.handle")}
+          value={`@${member.handle}`}
+        />
         <DetailRow
           icon={<Plug size={13} />}
-          label="连接"
+          label={t("settings.sections.connection")}
           value={connection}
           before={<AgentLogo agent={logoAgent} size={14} />}
         />
-        <DetailRow icon={<Hash size={13} />} label="ACP 会话" value={member.acpSessionId} mono />
-        <DetailRow icon={<FolderOpen size={13} />} label="工作目录" value={workDir} />
+        <DetailRow
+          icon={<Hash size={13} />}
+          label={t("settings.memberDetail.acpSession")}
+          value={member.acpSessionId}
+          mono
+        />
+        <DetailRow
+          icon={<FolderOpen size={13} />}
+          label={t("ui.field.workingDirectory")}
+          value={workDir}
+        />
         <DetailRow
           icon={<Layers size={13} />}
-          label="派活档位"
-          value={delegateCapsLabel(delegateTargetCaps(profile))}
+          label={t("settings.memberDetail.delegateLevel")}
+          value={delegateLabel}
         />
       </div>
 
@@ -201,16 +224,16 @@ export function MemberDetailPanel({
       <div className="mt-2 flex items-center gap-1">
         <button
           type="button"
-          aria-label="派活"
+          aria-label={t("settings.memberDetail.delegate")}
           onClick={onDelegate}
           className={cn(ACTION_CLASS, "text-ink-3 hover:bg-surface-3/55 hover:text-ink-1")}
         >
           <SendHorizontal size={13} />
-          <span>派活</span>
+          <span>{t("settings.memberDetail.delegate")}</span>
         </button>
         <button
           type="button"
-          aria-label="只看 TA"
+          aria-label={t("settings.memberDetail.filter")}
           aria-pressed={filtered}
           onClick={onFilter}
           className={cn(
@@ -221,11 +244,11 @@ export function MemberDetailPanel({
           )}
         >
           <Eye size={13} />
-          <span>只看 TA</span>
+          <span>{t("settings.memberDetail.filter")}</span>
         </button>
         <button
           type="button"
-          aria-label="移出群"
+          aria-label={t("settings.memberDetail.remove")}
           disabled={removing}
           onClick={() => void remove()}
           className={cn(
@@ -234,7 +257,7 @@ export function MemberDetailPanel({
           )}
         >
           <UserMinus size={13} />
-          <span>移出群</span>
+          <span>{t("settings.memberDetail.remove")}</span>
         </button>
       </div>
 

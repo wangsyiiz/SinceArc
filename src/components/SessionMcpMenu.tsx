@@ -1,4 +1,5 @@
 import { useEffect, useState, type CSSProperties, type RefObject } from "react";
+import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import { PlugZap, Trash2 } from "lucide-react";
 import type { AgentProfile } from "@/types";
@@ -35,15 +36,16 @@ export function SessionMoreMenu({
   busy: boolean;
   onDelete: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <MoreMenu
       items={[
         {
-          label: "删除会话",
+          label: t("settings.sessionMcp.deleteSession"),
           icon: <Trash2 size={12} />,
           danger: true,
           disabled: busy,
-          hint: busy ? "这一轮还在跑，等它结束再删" : undefined,
+          hint: busy ? t("settings.sessionMcp.busyHint") : undefined,
           onSelect: onDelete,
         },
       ]}
@@ -63,6 +65,7 @@ export function SessionMcpButton({
   onReconnect: () => Promise<void>;
   avoidRef?: RefObject<HTMLElement | null>;
 }) {
+  const { t } = useTranslation();
   const layer = useAnchoredLayer({ align: "end", prefer: "above", avoidRef });
   const [state, setState] = useState<SessionMcpStateDto | null>(null);
   const count = state?.effective.length ?? 0;
@@ -91,7 +94,7 @@ export function SessionMcpButton({
         size="sm"
         aria-haspopup="dialog"
         aria-expanded={layer.open}
-        aria-label="MCP 服务器设置"
+        aria-label={t("settings.sessionMcp.settingsAria")}
         className="h-7 gap-1 px-1.5 text-caption"
         onClick={layer.toggle}
       >
@@ -133,6 +136,7 @@ function SessionMcpPanel({
   panelRef: RefObject<HTMLDivElement | null>;
   style: CSSProperties;
 }) {
+  const { t } = useTranslation();
   const [state, setState] = useState<SessionMcpStateDto | null>(null);
   const [catalog, setCatalog] = useState<McpCatalogEntryDto[]>([]);
   const [mode, setMode] = useState<SessionMode>("follow");
@@ -160,7 +164,9 @@ function SessionMcpPanel({
         setCatalog(entries);
       })
       .catch((e) => {
-        if (alive) setError(`读取会话 MCP 配置失败：${asCmdError(e).msg}`);
+        if (alive) {
+          setError(t("settings.sessionMcp.loadFailed", { msg: asCmdError(e).msg }));
+        }
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -168,7 +174,7 @@ function SessionMcpPanel({
     return () => {
       alive = false;
     };
-  }, [retrySeq, sessionId]);
+  }, [retrySeq, sessionId, t]);
 
   const applyNames = async (names: string[] | null, nextMode: SessionMode) => {
     if (saving || !state) return;
@@ -185,7 +191,7 @@ function SessionMcpPanel({
       applyLoadedState(next);
     } catch (e) {
       applyLoadedState(state);
-      setError(`保存会话 MCP 名单失败：${asCmdError(e).msg}`);
+      setError(t("settings.sessionMcp.saveFailed", { msg: asCmdError(e).msg }));
     } finally {
       setSaving(false);
     }
@@ -219,7 +225,7 @@ function SessionMcpPanel({
       await onReconnect();
       setReconnectNeeded(false);
     } catch (e) {
-      setError(`重新连接 agent 失败：${asCmdError(e).msg}`);
+      setError(t("settings.sessionMcp.reconnectFailed", { msg: asCmdError(e).msg }));
     } finally {
       setReconnecting(false);
     }
@@ -235,26 +241,30 @@ function SessionMcpPanel({
     <div
       ref={panelRef}
       role="dialog"
-      aria-label="MCP 服务器"
+      aria-label={t("settings.mcp.server")}
       style={{ ...style, animation: "sc-pop 150ms var(--ease-pop)" }}
       className="sc-glass sc-z-popover max-h-96 w-96 overflow-y-auto rounded-card p-3"
     >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-ui font-medium text-ink-1">MCP 服务器</h2>
-          <p className="mt-0.5 text-caption text-ink-3">只影响这个会话。</p>
+          <h2 className="text-ui font-medium text-ink-1">{t("settings.mcp.server")}</h2>
+          <p className="mt-0.5 text-caption text-ink-3">
+            {t("settings.sessionMcp.scopeHint")}
+          </p>
         </div>
         <Button variant="ghost" size="sm" onClick={onClose}>
-          关闭
+          {t("app.settingsError.dismiss")}
         </Button>
       </div>
 
       {loading ? (
-        <p className="mt-3 text-caption text-ink-3">正在读取会话 MCP 配置…</p>
+        <p className="mt-3 text-caption text-ink-3">
+          {t("settings.sessionMcp.loading")}
+        </p>
       ) : !state ? (
         <div className="mt-3">
           <p role="alert" className="break-all text-caption text-danger-1">
-            {error ?? "读取不到这个会话的 MCP 配置。"}
+            {error ?? t("settings.sessionMcp.loadUnavailable")}
           </p>
           <div className="mt-2 flex justify-end">
             <Button
@@ -266,7 +276,7 @@ function SessionMcpPanel({
                 setRetrySeq((value) => value + 1);
               }}
             >
-              重试
+              {t("ui.emptyState.retry")}
             </Button>
           </div>
         </div>
@@ -274,12 +284,18 @@ function SessionMcpPanel({
         <>
           <div className="mt-3">
             <Segmented
-              ariaLabel="本会话 MCP 名单"
+              ariaLabel={t("settings.sessionMcp.listAria")}
               compact
               options={[
-                { value: "follow", label: `跟随连接默认（${followCount} 个）` },
-                { value: "custom", label: `自定义（${customNames.length} 个）` },
-                { value: "none", label: "全部不要" },
+                {
+                  value: "follow",
+                  label: t("settings.sessionMcp.mode.follow", { count: followCount }),
+                },
+                {
+                  value: "custom",
+                  label: t("settings.mcp.mode.customCount", { count: customNames.length }),
+                },
+                { value: "none", label: t("settings.sessionMcp.mode.none") },
               ]}
               value={mode}
               disabled={saving}
@@ -295,25 +311,31 @@ function SessionMcpPanel({
                 caps={profile?.caps ?? null}
                 disabled={saving}
                 onToggle={toggleName}
-                emptyText="MCP 目录还是空的，先去「设置 → MCP」添加服务器。"
+                emptyText={t("settings.mcp.catalog.emptyHint")}
               />
             </div>
           )}
 
           <div className="mt-3 border-t border-line-1/50 pt-2">
             <div className="flex items-baseline justify-between gap-3">
-              <span className="text-caption text-ink-2">已注入清单</span>
+              <span className="text-caption text-ink-2">
+                {t("settings.sessionMcp.injected")}
+              </span>
               <span className="font-mono text-micro text-ink-3">
-                本会话已注入 {effective.length} 个
+                {t("settings.sessionMcp.injectedCount", { count: effective.length })}
               </span>
             </div>
             {effective.length === 0 ? (
-              <p className="mt-1 text-caption text-ink-3">本会话没有注入 MCP 服务器。</p>
+              <p className="mt-1 text-caption text-ink-3">
+                {t("settings.sessionMcp.noneInjected")}
+              </p>
             ) : (
               <div className="mt-1 space-y-0.5">
                 {effective.map((entry) => {
                   const kind = entryKind(entry);
-                  const note = transportSupportNote(kind, profile?.caps ?? null);
+                  const note = transportSupportNote(kind, profile?.caps ?? null)
+                    ? t("settings.sessionMcp.transportUnsupported")
+                    : null;
                   const name = (
                     <span className="min-w-0 flex-1 truncate text-ui-tight text-ink-1">
                       {entry.name}
@@ -347,32 +369,32 @@ function SessionMcpPanel({
               {error
                 ? error
                 : saving
-                  ? "正在保存会话 MCP 名单…"
+                  ? t("settings.sessionMcp.saving")
                   : reconnectNeeded
-                    ? "名单已保存；减少的部分需要重连才可能生效。"
-                    : "名单已保存。"}
+                    ? t("settings.sessionMcp.savedNeedsReconnect")
+                    : t("settings.sessionMcp.saved")}
             </p>
 
             {reconnectNeeded && (
               <div className="mt-2 rounded-control bg-warn-1/10 p-2">
                 <p className="text-caption text-warn-1">
-                  这篇改动要重新连接 agent 才可能生效：它的 MCP 工具登记在进程上，减少不会自动注销。
+                  {t("settings.sessionMcp.reconnectNotice")}
                 </p>
                 <div className="mt-2 flex justify-end">
                   <Button
                     variant="secondary"
                     size="sm"
                     loading={reconnecting}
-                    loadingText="重连中…"
+                    loadingText={t("settings.sessionMcp.reconnecting")}
                     disabled={!profile || saving || reconnecting}
                     onClick={() => void reconnect()}
                   >
-                    重连以生效
+                    {t("settings.sessionMcp.reconnect")}
                   </Button>
                 </div>
                 {!profile && (
                   <p className="mt-1 text-right text-caption text-ink-3">
-                    这个会话没有可用的连接配置。
+                    {t("settings.sessionMcp.noProfile")}
                   </p>
                 )}
               </div>

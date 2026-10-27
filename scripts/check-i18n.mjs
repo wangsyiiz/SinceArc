@@ -116,7 +116,7 @@ for (const file of walk(join(root, "src"))) {
 }
 
 if (residue) {
-  const top = [...byFile.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
+  const top = [...byFile.entries()].sort((a, b) => b[1] - a[1]).slice(0, 30);
   problems.push(`界面代码里还有中文（${residue} 处 / ${byFile.size} 个文件），最多的：\n` +
     top.map(([f, n]) => `    ${n}  ${f}`).join("\n"));
 }

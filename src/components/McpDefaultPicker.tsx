@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { asCmdError, mcpCatalog, type McpCatalogEntryDto } from "@/lib/ipc";
 import { McpServerChecklist } from "./McpChecklist";
 import { Segmented } from "./ui/Segmented";
@@ -16,6 +17,7 @@ export function McpDefaultPicker({
   value: string[] | null;
   onChange: (names: string[] | null) => void;
 }) {
+  const { t } = useTranslation();
   const [catalog, setCatalog] = useState<McpCatalogEntryDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -56,13 +58,13 @@ export function McpDefaultPicker({
   return (
     <div className="border-t border-line-1/50 pt-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <span className="text-ui font-medium text-ink-2">默认 MCP 服务器</span>
+        <span className="text-ui font-medium text-ink-2">{t("settings.mcp.default.label")}</span>
         <Segmented
-          ariaLabel="默认 MCP 服务器"
+          ariaLabel={t("settings.mcp.default.label")}
           compact
           options={[
-            { value: "follow", label: "跟随目录全部" },
-            { value: "custom", label: "自定义" },
+            { value: "follow", label: t("settings.mcp.mode.follow") },
+            { value: "custom", label: t("settings.mcp.mode.custom") },
           ]}
           value={mode}
           disabled={loading || !!error}
@@ -72,27 +74,29 @@ export function McpDefaultPicker({
 
       <p className="mt-1.5 text-caption text-ink-3">
         {mode === "follow"
-          ? `跟随目录全部（${catalogNames.length} 个）`
-          : `自定义（${selected.length} 个）`}
+          ? t("settings.mcp.mode.followCount", { count: catalogNames.length })
+          : t("settings.mcp.mode.customCount", { count: selected.length })}
       </p>
 
       {loading ? (
-        <p className="mt-2 text-caption text-ink-3">正在读取 MCP 目录…</p>
+        <p className="mt-2 text-caption text-ink-3">{t("settings.mcp.catalog.loading")}</p>
       ) : error ? (
-        <p className="mt-2 break-all text-caption text-danger-1">{`读取 MCP 目录失败：${error}`}</p>
+        <p className="mt-2 break-all text-caption text-danger-1">
+          {t("settings.mcp.catalog.loadFailed", { msg: error })}
+        </p>
       ) : mode === "custom" ? (
         <div className="sc-pane mt-2 p-1">
           <McpServerChecklist
             entries={catalog}
             selected={selected}
             onToggle={toggle}
-            emptyText="MCP 目录还是空的，先去「设置 → MCP」添加服务器。"
+            emptyText={t("settings.mcp.catalog.emptyHint")}
           />
         </div>
       ) : null}
 
       <p className="mt-1.5 text-caption text-ink-3">
-        这是这个连接新建会话时的默认，单个会话还能再改。
+        {t("settings.mcp.default.hint")}
       </p>
     </div>
   );

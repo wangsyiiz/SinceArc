@@ -18,6 +18,14 @@ test("同一 key 的占位符集合相等（漏一个参数就是拼错的文案
   }
 });
 
+test("同一 key 的内联标签集合相等（<Trans> 用的标签，两边得一致）", () => {
+  const tags = (value: string): string[] =>
+    [...value.matchAll(/<\/?([a-zA-Z][a-zA-Z0-9]*)[ >/]/g)].map((m) => m[1].toLowerCase()).sort();
+  for (const key of Object.keys(zhCN) as (keyof typeof zhCN)[]) {
+    assert.deepEqual(tags(en[key]), tags(zhCN[key]), `内联标签不一致: ${key}`);
+  }
+});
+
 test("没有空文案", () => {
   for (const [key, value] of Object.entries(zhCN)) assert.ok(value.trim(), `中文空文案: ${key}`);
   for (const [key, value] of Object.entries(en)) assert.ok(value.trim(), `英文空文案: ${key}`);

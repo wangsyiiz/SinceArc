@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useReducer, useState, type ReactNode } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { Eye, EyeOff, Pencil, Plus, Trash2, X } from "lucide-react";
+import type { MessageKey } from "@/i18n/zh-CN";
 import {
   asCmdError,
   mcpCatalog,
@@ -36,7 +38,7 @@ const KIND_OPTIONS: { value: McpKind; label: string }[] = [
   { value: "sse", label: "sse" },
 ];
 
-const DELETE_MCP_HEADING = "删除 MCP 服务器";
+const DELETE_MCP_HEADING_KEY: MessageKey = "settings.mcp.deleteHeading";
 
 function LongTextHover({
   text,
@@ -142,10 +144,10 @@ function formServer(form: FormState): McpServerDto {
   });
 }
 
-function validateForm(form: FormState): string | null {
-  if (!form.name.trim()) return "还缺：名称";
-  if (form.kind === "stdio" && !form.command.trim()) return "还缺：command";
-  if (form.kind !== "stdio" && !form.url.trim()) return "还缺：url";
+function validateForm(form: FormState): MessageKey | null {
+  if (!form.name.trim()) return "ui.field.name";
+  if (form.kind === "stdio" && !form.command.trim()) return "settings.mcp.field.command";
+  if (form.kind !== "stdio" && !form.url.trim()) return "settings.mcp.field.url";
   return null;
 }
 
@@ -158,6 +160,7 @@ function PairEditor({
   rows: PairRow[];
   onChange: (rows: PairRow[]) => void;
 }) {
+  const { t } = useTranslation();
   const patch = (id: string, next: Partial<PairRow>) => {
     onChange(rows.map((row) => (row.id === id ? { ...row, ...next } : row)));
   };
@@ -165,30 +168,34 @@ function PairEditor({
   return (
     <div className="flex flex-col gap-1.5">
       <span className="text-caption font-medium text-ink-2">{label}</span>
-      <p className="text-micro text-ink-3">键名不掩码；值默认隐藏，每行可单独显示。</p>
+      <p className="text-micro text-ink-3">{t("settings.mcp.form.pairsHint")}</p>
       <div className="space-y-1.5">
         {rows.map((row) => (
           <div key={row.id} className="flex items-center gap-1.5">
             <Input
-              aria-label={`${label}键名`}
+              aria-label={t("settings.mcp.form.pairKeyAria", { label })}
               value={row.name}
-              placeholder="键名"
+              placeholder={t("settings.mcp.form.keyPlaceholder")}
               spellCheck={false}
               onChange={(event) => patch(row.id, { name: event.target.value })}
               className="w-40 shrink-0 font-mono"
             />
             <Input
-              aria-label={`${label}值`}
+              aria-label={t("settings.mcp.form.pairValueAria", { label })}
               type={row.reveal ? "text" : "password"}
               value={row.value}
-              placeholder="值"
+              placeholder={t("settings.mcp.form.valuePlaceholder")}
               spellCheck={false}
               onChange={(event) => patch(row.id, { value: event.target.value })}
               className="min-w-0 flex-1 font-mono"
             />
             <button
               type="button"
-              aria-label={row.reveal ? `隐藏${label}值` : `显示${label}值`}
+              aria-label={
+                row.reveal
+                  ? t("settings.mcp.form.hideValueAria", { label })
+                  : t("settings.mcp.form.showValueAria", { label })
+              }
               onClick={() => patch(row.id, { reveal: !row.reveal })}
               className="grid size-7 shrink-0 place-items-center rounded-mark text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
             >
@@ -196,7 +203,7 @@ function PairEditor({
             </button>
             <button
               type="button"
-              aria-label={`删除这行${label}`}
+              aria-label={t("settings.mcp.form.deletePairAria", { label })}
               onClick={() => onChange(rows.filter((item) => item.id !== row.id))}
               className="grid size-7 shrink-0 place-items-center rounded-mark text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
             >
@@ -208,7 +215,7 @@ function PairEditor({
       <div>
         <Button variant="ghost" size="sm" onClick={() => onChange([...rows, pairRow()])}>
           <Plus className="size-3" />
-          添加一行
+          {t("settings.mcp.form.addRow")}
         </Button>
       </div>
     </div>
@@ -222,6 +229,7 @@ export function McpCatalogSection({
   inheritDefault: boolean;
   onInheritDefaultChange: (next: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const [entries, setEntries] = useState<McpCatalogEntryDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState<FormState | null>(null);
@@ -240,11 +248,11 @@ export function McpCatalogSection({
     try {
       setEntries(await mcpCatalog());
     } catch (e) {
-      setError(`读取 MCP 目录失败：${asCmdError(e).msg}`);
+      setError(t("settings.mcp.catalog.loadFailed", { msg: asCmdError(e).msg }));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void load();
@@ -274,7 +282,7 @@ export function McpCatalogSection({
     if (!form) return;
     const invalid = validateForm(form);
     if (invalid) {
-      setFormError(invalid);
+      setFormError(t("ui.validation.missing", { fields: t(invalid) }));
       return;
     }
     setSaving(true);
@@ -286,7 +294,7 @@ export function McpCatalogSection({
       await load();
     } catch (e) {
       const err = asCmdError(e);
-      setFormError(`保存 MCP 服务器失败：${err.msg}`);
+      setFormError(t("settings.mcp.form.saveFailed", { msg: err.msg }));
     } finally {
       setSaving(false);
     }
@@ -301,7 +309,7 @@ export function McpCatalogSection({
       await load();
     } catch (e) {
       const err = asCmdError(e);
-      setError(`删除 MCP 服务器失败：${err.msg}`);
+      setError(t("settings.mcp.form.deleteFailed", { msg: err.msg }));
     } finally {
       setBusy(null);
     }
@@ -319,30 +327,32 @@ export function McpCatalogSection({
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-ui font-medium text-ink-1">{title}</h3>
           <Button variant="ghost" size="sm" onClick={cancelEdit}>
-            取消
+            {t("ui.button.cancel")}
           </Button>
         </div>
 
         <Field
-          label="名称"
+          label={t("ui.field.name")}
           htmlFor="mcp-name"
           required
-          hint={form.originalName ? "名称是目录里的唯一键，创建后不能改。" : undefined}
+          hint={form.originalName ? t("settings.mcp.form.nameHint") : undefined}
         >
           <Input
             id="mcp-name"
             value={form.name}
             readOnly={form.originalName !== null}
-            placeholder="例如 filesystem"
+            placeholder={t("settings.mcp.form.namePlaceholder")}
             spellCheck={false}
             onChange={(event) => patchForm({ name: event.target.value })}
           />
         </Field>
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-caption font-medium text-ink-2">类型</span>
+          <span className="text-caption font-medium text-ink-2">
+            {t("settings.mcp.form.type")}
+          </span>
           <Segmented
-            ariaLabel="MCP 类型"
+            ariaLabel={t("settings.mcp.form.typeAria")}
             compact
             options={KIND_OPTIONS}
             value={form.kind}
@@ -352,7 +362,11 @@ export function McpCatalogSection({
 
         {form.kind === "stdio" ? (
           <>
-            <Field label="command" htmlFor="mcp-command" required>
+            <Field
+              label={t("settings.mcp.field.command")}
+              htmlFor="mcp-command"
+              required
+            >
               <Input
                 id="mcp-command"
                 value={form.command}
@@ -365,7 +379,7 @@ export function McpCatalogSection({
             <Field
               label="args"
               htmlFor="mcp-args"
-              hint="每行一个参数；参数里的空格会原样保留。"
+              hint={t("settings.mcp.form.argsHint")}
             >
               <Textarea
                 id="mcp-args"
@@ -377,14 +391,14 @@ export function McpCatalogSection({
               />
             </Field>
             <PairEditor
-              label="环境变量"
+              label={t("settings.mcp.form.env")}
               rows={form.env}
               onChange={(env) => patchForm({ env })}
             />
           </>
         ) : (
           <>
-            <Field label="url" htmlFor="mcp-url" required>
+            <Field label={t("settings.mcp.field.url")} htmlFor="mcp-url" required>
               <Input
                 id="mcp-url"
                 value={form.url}
@@ -395,7 +409,7 @@ export function McpCatalogSection({
               />
             </Field>
             <PairEditor
-              label="请求头"
+              label={t("settings.mcp.form.headers")}
               rows={form.headers}
               onChange={(headers) => patchForm({ headers })}
             />
@@ -410,10 +424,10 @@ export function McpCatalogSection({
 
         <div className="flex justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={cancelEdit}>
-            取消
+            {t("ui.button.cancel")}
           </Button>
           <Button variant="primary" size="sm" loading={saving} onClick={() => void save()}>
-            保存
+            {t("ui.button.save")}
           </Button>
         </div>
       </div>
@@ -423,10 +437,10 @@ export function McpCatalogSection({
   return (
     <div className="mt-5">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-small font-medium text-ink-2">MCP 目录</h2>
+        <h2 className="text-small font-medium text-ink-2">{t("settings.mcp.catalog.title")}</h2>
         <Button variant="secondary" size="sm" onClick={startAdd}>
           <Plus className="size-3" />
-          添加
+          {t("ui.button.add")}
         </Button>
       </div>
 
@@ -438,32 +452,32 @@ export function McpCatalogSection({
 
       <div className="mt-3 flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <div className="text-ui text-ink-1">新建连接默认继承这份目录</div>
+          <div className="text-ui text-ink-1">{t("settings.mcp.catalog.inheritLabel")}</div>
           <p className="mt-0.5 text-caption text-ink-3">
-            只影响之后新建的连接；已有连接各自保留自己的选择。
+            {t("settings.mcp.catalog.inheritHint")}
           </p>
         </div>
         <Switch
           checked={inheritDefault}
-          label="新建连接默认继承这份目录"
+          label={t("settings.mcp.catalog.inheritLabel")}
           onChange={onInheritDefaultChange}
         />
       </div>
 
-      {editor.mode === "add" && renderForm("添加 MCP 服务器")}
+      {editor.mode === "add" && renderForm(t("settings.mcp.form.addTitle"))}
 
       {loading ? (
-        <p className="mt-4 text-caption text-ink-3">正在读取 MCP 目录…</p>
+        <p className="mt-4 text-caption text-ink-3">{t("settings.mcp.catalog.loading")}</p>
       ) : entries.length === 0 && !form ? (
         <div className="mt-4">
           <EmptyState
             compact
-            heading="还没有 MCP 服务器"
-            description="这里配置的 MCP 服务器对所有 agent 生效。"
+            heading={t("settings.mcp.catalog.emptyHeading")}
+            description={t("settings.mcp.catalog.emptyDescription")}
             action={
               <Button variant="secondary" size="sm" onClick={startAdd}>
                 <Plus className="size-3" />
-                添加服务器
+                {t("settings.mcp.catalog.addServer")}
               </Button>
             }
           />
@@ -477,7 +491,12 @@ export function McpCatalogSection({
             if (editor.mode === "edit" && editor.name === entry.name) {
               return (
                 <div key={entry.name}>
-                  {renderForm(`编辑 ${form?.originalName ?? entry.name}`, true)}
+                  {renderForm(
+                    t("settings.mcp.form.editTitle", {
+                      name: form?.originalName ?? entry.name,
+                    }),
+                    true,
+                  )}
                 </div>
               );
             }
@@ -517,7 +536,7 @@ export function McpCatalogSection({
                     onClick={() => startEdit(entry)}
                   >
                     <Pencil className="size-3" />
-                    编辑
+                    {t("ui.button.edit")}
                   </Button>
                   <Button
                     variant="ghost"
@@ -527,7 +546,7 @@ export function McpCatalogSection({
                     onClick={() => setDeleteTarget(entry)}
                   >
                     <Trash2 className="size-3" />
-                    删除
+                    {t("app.delete.confirm")}
                   </Button>
                 </div>
               </div>
@@ -538,20 +557,22 @@ export function McpCatalogSection({
 
       <ConfirmDialog
         open={deleteTarget !== null}
-        title={DELETE_MCP_HEADING}
+        title={t(DELETE_MCP_HEADING_KEY)}
         body={
           <ul className="list-disc space-y-0.5 pl-4">
             <li>
-              从全局目录删除
-              {deleteTarget ? <span className="font-mono text-ink-1"> {deleteTarget.name}</span> : null}
-              ，所有连接与会话都会受影响。
+              <Trans
+                i18nKey="settings.mcp.delete.body.global"
+                values={{ name: deleteTarget?.name ?? "" }}
+                components={{ name: <span className="font-mono text-ink-1" /> }}
+              />
             </li>
-            <li>已经注入的会话要重新连接后，这个服务器才可能从 agent 进程里消失。</li>
-            <li>删除后无法恢复。</li>
+            <li>{t("settings.mcp.delete.body.injected")}</li>
+            <li>{t("settings.mcp.delete.body.irreversible")}</li>
           </ul>
         }
-        confirmLabel="删除"
-        cancelLabel="取消"
+        confirmLabel={t("app.delete.confirm")}
+        cancelLabel={t("ui.button.cancel")}
         onConfirm={() => {
           const target = deleteTarget;
           setDeleteTarget(null);
