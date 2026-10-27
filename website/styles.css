@@ -1,0 +1,227 @@
+/* SinceArc 官网：单页、纯静态、零外部请求（不引字体/CDN，离线也能看）。
+   配色沿用应用的设计语言：暗底、单色前景、面阶分层，唯一强调色是图标本身。 */
+
+:root {
+  --s0: #0e1014;
+  --s1: #14171d;
+  --s2: #1a1e26;
+  --l1: #ffffff14;
+  --l2: #ffffff26;
+  --ink-1: #e8ebf2;
+  --ink-2: #b6bdcb;
+  --ink-3: #7f8797;
+  --a1: #9db4ff;
+  --radius: 10px;
+  --fs-body: 15px;
+  --fs-small: 13px;
+  --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--s0);
+  color: var(--ink-1);
+  font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans SC", sans-serif;
+  font-size: var(--fs-body);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--ink-1);
+  text-decoration: none;
+  border-bottom: 1px solid var(--l2);
+  transition: border-color 160ms ease, color 160ms ease;
+}
+
+a:hover {
+  color: var(--a1);
+  border-color: var(--a1);
+}
+
+.wrap {
+  width: min(880px, calc(100% - 40px));
+  margin: 0 auto;
+}
+
+/* ---------- hero ---------- */
+
+.hero {
+  padding: 88px 0 56px;
+  text-align: center;
+}
+
+.logo {
+  display: block;
+  margin: 0 auto 20px;
+  border-radius: 22px;
+}
+
+.hero h1 {
+  margin: 0 0 16px;
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.tagline {
+  margin: 0 auto 10px;
+  max-width: 620px;
+  color: var(--ink-2);
+}
+
+.tagline em {
+  color: var(--ink-1);
+  font-style: normal;
+  border-bottom: 1px solid var(--l2);
+}
+
+.tagline-zh {
+  margin: 0 auto 28px;
+  max-width: 620px;
+  color: var(--ink-3);
+  font-size: var(--fs-small);
+}
+
+.cta {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btn {
+  display: inline-block;
+  padding: 9px 16px;
+  border: 1px solid var(--l1);
+  border-radius: var(--radius);
+  background: var(--s1);
+  color: var(--ink-1);
+  font-size: var(--fs-small);
+  border-bottom: 1px solid var(--l1);
+}
+
+.btn:hover {
+  background: var(--s2);
+  border-color: var(--l2);
+  color: var(--ink-1);
+}
+
+.btn-primary {
+  background: var(--ink-1);
+  color: var(--s0);
+  border-color: var(--ink-1);
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  background: #fff;
+  color: var(--s0);
+}
+
+.meta {
+  margin: 18px 0 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-family: var(--mono);
+}
+
+/* ---------- sections ---------- */
+
+section {
+  padding: 34px 0;
+  border-top: 1px solid var(--l1);
+}
+
+h2 {
+  margin: 0 0 18px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+article {
+  padding: 16px 18px;
+  background: var(--s1);
+  border: 1px solid var(--l1);
+  border-radius: var(--radius);
+}
+
+article p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+}
+
+.limits,
+.steps {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+}
+
+.limits li,
+.steps li {
+  margin-bottom: 8px;
+}
+
+.limits strong {
+  color: var(--ink-1);
+  font-weight: 600;
+}
+
+code {
+  padding: 1px 5px;
+  background: var(--s2);
+  border: 1px solid var(--l1);
+  border-radius: 5px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-1);
+}
+
+/* ---------- footer ---------- */
+
+footer {
+  padding: 30px 0 60px;
+  border-top: 1px solid var(--l1);
+  text-align: center;
+  font-size: var(--fs-small);
+  color: var(--ink-3);
+}
+
+footer .fine {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #5d6472;
+}
+
+@media (max-width: 560px) {
+  .hero {
+    padding: 56px 0 40px;
+  }
+  .hero h1 {
+    font-size: 27px;
+  }
+}

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SinceArc — an ACP client that keeps the process visible</title>
+    <meta
+      name="description"
+      content="SinceArc is a Windows desktop client for ACP agents. Thinking and tool calls live in a trace swimlane instead of the chat stream. Local-first, Apache-2.0."
+    />
+    <link rel="icon" href="assets/logo-128.png" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="wrap hero">
+      <img class="logo" src="assets/logo-128.png" alt="SinceArc" width="96" height="96" />
+      <h1>SinceArc</h1>
+      <p class="tagline">
+        A Windows desktop client for ACP agents that keeps the <em>process</em> visible:
+        thinking and tool calls live in a trace swimlane, not buried in the chat stream.
+      </p>
+      <p class="tagline-zh">把 agent 的思考与工具调用从对话里拆出来，做成一条能回看的泳道。</p>
+
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/wangsyiiz/SinceArc/releases">Download for Windows</a>
+        <a class="btn" href="https://github.com/wangsyiiz/SinceArc">Source</a>
+        <a class="btn" href="https://github.com/wangsyiiz/SinceArc/blob/master/README.zh-CN.md">中文说明</a>
+      </div>
+      <p class="meta">v0.0.0 · Windows x64 · Apache-2.0 · unsigned preview</p>
+    </header>
+
+    <main class="wrap">
+      <section>
+        <h2>Why another client</h2>
+        <div class="grid">
+          <article>
+            <h3>Process apart from prose</h3>
+            <p>
+              Replies stay in the chat; thinking, tool calls and permission prompts go into a trace panel.
+              The two cross-link by anchor, so you can always ask “why did it do that” and get an answer.
+            </p>
+          </article>
+          <article>
+            <h3>Local first</h3>
+            <p>
+              Sessions, traces and settings live in <code>%APPDATA%\com.sincearc.app</code>.
+              Nothing is uploaded, and the client works fully without any account.
+            </p>
+          </article>
+          <article>
+            <h3>It never disposes of your data</h3>
+            <p>
+              Deleting a session or a file requires explicit authorization. There is no “helpful”
+              automatic cleanup — storage is counted and reported, never acted on.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <h2>What it is not</h2>
+        <ul class="limits">
+          <li><strong>Windows x64 only.</strong> No macOS, Linux or ARM64 builds, and no unverified artifacts.</li>
+          <li><strong>Unsigned.</strong> SmartScreen warns once on first run; choose “More info → Run anyway”.</li>
+          <li><strong>No auto-update yet.</strong> Upgrading means downloading a new package.</li>
+          <li><strong>Trace paging is limited.</strong> The panel loads 50 turns at a time; older traces need pagination.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Install</h2>
+        <ol class="steps">
+          <li>Download <code>SinceArc-&lt;version&gt;-win-x64.zip</code> (portable) or the setup <code>.exe</code>.</li>
+          <li>Extract somewhere real — not inside the zip — then run <code>SinceArc.exe</code>.</li>
+          <li>Needs WebView2 Runtime: shipped with Windows 11 and recent Windows 10.</li>
+        </ol>
+      </section>
+    </main>
+
+    <footer class="wrap">
+      <p>
+        <a href="https://github.com/wangsyiiz/SinceArc">GitHub</a> ·
+        <a href="https://github.com/wangsyiiz/SinceArc/blob/master/LICENSE">Apache-2.0</a> ·
+        <a href="https://agentclientprotocol.com">ACP</a> ·
+        <a href="https://github.com/wangsyiiz/SinceArc/issues">Issues</a>
+      </p>
+      <p class="fine">SinceArc name and logo are not licensed with the code. Forks must rename and re-brand.</p>
+    </footer>
+  </body>
+</html>
