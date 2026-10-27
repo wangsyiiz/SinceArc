@@ -1,0 +1,91 @@
+name: release
+
+# Windows-only release (docs/distribution.md §7：只做 Win x64)。
+#
+# 为什么在 CI 上能出 NSIS、本地不能：Tauri 首次打包要从 GitHub 下载 nsis-3.11.zip，
+# 本机到 GitHub 不通（§6），而 runner 本身就在 GitHub 网络里，下载没问题。
+#
+# 触发：
+#   - 推 tag v*        → 出产物 + 建 GitHub Release 并挂附件
+#   - 手动 workflow_dispatch → 只出产物（不建 Release），用来自检流水线
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 读版本号（与 tauri.conf.json 单一来源一致）
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "version = $v"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 门禁（不绿不出包）
+        run: |
+          npm run build
+          npm test
+
+      - name: 单元测试 + clippy
+        working-directory: src-tauri
+        run: |
+          cargo test --lib
+          cargo clippy --all-targets -- -D warnings
+
+      # 带 bundle 的构建：在 runner 上 NSIS 可下载，产出 setup.exe
+      - name: 构建（NSIS + 可执行文件）
+        run: npm run tauri -- build --bundles nsis
+
+      - name: 打便携包
+        run: npm run package:win
+
+      - name: 收集产物
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item "artifacts/windows/SinceArc-*-win-x64.zip" out/
+          $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" -ErrorAction SilentlyContinue
+          if ($setup) { Copy-Item $setup.FullName out/ } else { Write-Warning "没找到 NSIS 安装包" }
+          Get-ChildItem out | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sincearc-win-x64-${{ steps.ver.outputs.version }}
+          path: out/*
+          if-no-files-found: error
+
+      - name: 建 Release 并挂附件（仅 tag）
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            (Get-ChildItem out/* | ForEach-Object { $_.FullName }) `
+            --title "SinceArc ${{ steps.ver.outputs.version }}" `
+            --notes "Windows x64 预览版。未签名，首次运行 SmartScreen 会提示「未知发布者」（docs/distribution.md §4）。"

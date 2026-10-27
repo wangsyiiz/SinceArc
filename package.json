@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "node --test \"src/**/*.test.ts\""
+    "test": "node --test \"src/**/*.test.ts\"",
+    "package:win": "node scripts/package-win.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.104.1",
