@@ -38,7 +38,7 @@
 
   /* ---------------- 下载按钮：默认项直接下载，右侧下拉换包 ---------------- */
 
-  const VERSION = "0.0.0";
+  const VERSION = "0.0.1";
   const REL = "https://github.com/wangsyiiz/SinceArc/releases/latest/download/";
 
   // 只列真实存在的产物。没有构建的平台不放进菜单——给不存在的链接比给不出下载更糟。

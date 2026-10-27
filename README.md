@@ -12,7 +12,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20x64-lightgrey.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.0.0-orange.svg">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.0.1-orange.svg">
   <a href="https://github.com/wangsyiiz/SinceArc/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/wangsyiiz/SinceArc/actions/workflows/release.yml/badge.svg"></a>
 </p>
 
@@ -89,7 +89,7 @@ agent did it instead of scrolling through one endless message stream.
 
 ## Install
 
-> The first release `v0.0.0` is not tagged yet; the path below describes what it will look like.
+> Released: `v0.0.1` (Windows x64, unsigned preview). Auto-update is built in — `Settings → Updates`.
 
 1. From [Releases](https://github.com/wangsyiiz/SinceArc/releases) grab `SinceArc-win-x64.zip` (portable)
    or `SinceArc_x64-setup.exe` (installer). Those file names are version-less on purpose: they always point at
@@ -159,7 +159,7 @@ cd src-tauri; cargo test --lib
 cd src-tauri; cargo clippy --all-targets -- -D warnings
 ```
 
-Current baseline (`0.0.0`): cargo **277** / node **228** / tsc 0 / vite ~3s.
+Current baseline (`0.0.1`): cargo **277** / node **228** / tsc 0 / vite ~3s.
 
 > `kill_tree_reaps_forked_child_on_windows` times out when the machine is busy: check for leftover
 > `powershell.exe` (`tasklist /FI "IMAGENAME eq powershell.exe"`) and clear them before re-running. Report both

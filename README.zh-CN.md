@@ -12,7 +12,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20x64-lightgrey.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.0.0-orange.svg">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.0.1-orange.svg">
   <a href="https://github.com/wangsyiiz/SinceArc/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/wangsyiiz/SinceArc/actions/workflows/release.yml/badge.svg"></a>
 </p>
 
@@ -82,7 +82,7 @@ SinceArc 把它们放到同一条时间轴上，共用一套会话、一套连�
 
 ## 安装
 
-> 首个版本 `v0.0.0` 还没有打 tag，下面描述的是发布后的路径。
+> 已发布：`v0.0.1`（Windows x64 预览版，未签名）。自动更新已内置——设置 → 更新。
 
 1. 到 [Releases](https://github.com/wangsyiiz/SinceArc/releases) 下载 `SinceArc-win-x64.zip`（便携）或
    `SinceArc_x64-setup.exe`（安装）。文件名不带版本号是有意的：永远指向最新发布，链接不会过期；
@@ -149,7 +149,7 @@ cd src-tauri; cargo test --lib
 cd src-tauri; cargo clippy --all-targets -- -D warnings
 ```
 
-当前基线（`0.0.0`）：cargo **277** / node **228** / tsc 0 / vite ≈ 3s。
+当前基线（`0.0.1`）：cargo **277** / node **228** / tsc 0 / vite ≈ 3s。
 
 > `kill_tree_reaps_forked_child_on_windows` 在机器忙时会超时变红：先查有没有残留 `powershell.exe`
 > （`tasklist /FI "IMAGENAME eq powershell.exe"`），清掉再跑；汇报时把「全量」与「单跑」两个读数都写出来。
