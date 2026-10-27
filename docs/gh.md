@@ -25,6 +25,66 @@ src-tauri/src/gh/
 - 调用走 async，不阻塞 UI 线程。
 - 不碰 `dangerouslySetInnerHTML`（PR 正文只渲染纯文本 + 链接白名单，与 markdown 那条约束一致）。
 
+## 1.1 分层与解耦（硬要求）
+
+通信层（跑 `gh` 进程）与业务层必须各管一件事，**依赖只能朝一个方向**：
+
+```
+commands（Tauri 命令 / DTO）
+      ↓ 只依赖
+domain（模型 + 缓存 + 编排）      ← 只认 trait GhCli，不认 gh 命令行长什么样
+      ↑ 由
+adapter（src-tauri/src/gh/cli.rs，实现 trait GhCli：进程、argv、超时、JSON 解析、错误映射）
+```
+
+### 四条不许
+
+| 不许 | 原因 |
+| --- | --- |
+| adapter 里出现 `tauri`、`AppState`、会话、数据库、DTO 序列化 | 通信层不认识业务；它要能脱离应用单独测 |
+| domain / commands 里出现 `std::process`、`Command`、`--json`、`headRefName` 这类 CLI 细节 | 换数据源（哪怕以后真换了）只动 adapter，业务层零改动 |
+| gh 的原始 JSON 结构（`RawPr` 之类）泄漏到 adapter 之外 | 原始形状随 gh 版本变，泄漏一次就变成全局债 |
+| 前端直接拿到 gh 字段名 | 前端只认 DTO；`types.ts` 里的字段是自家命名的，不是 gh 的 |
+
+### 契约只有三样
+
+1. **trait**（放在 domain 侧定义，adapter 实现）：
+
+   ```rust
+   #[async_trait]
+   pub trait GhCli: Send + Sync {
+       async fn status(&self) -> Result<GhStatus, GhError>;
+       async fn list_prs(&self, repo: &RepoRef, state: PrState) -> Result<Vec<PullRequest>, GhError>;
+       async fn pr_detail(&self, repo: &RepoRef, n: u32) -> Result<PullRequestDetail, GhError>;
+       async fn pr_diff(&self, repo: &RepoRef, n: u32) -> Result<String, GhError>;
+   }
+   ```
+
+2. **领域模型**（domain 定义，只在 domain 与 commands 之间流动）：`RepoRef` / `GhStatus` / `PullRequest` / `PullRequestDetail` / `GhError`。
+
+3. **错误枚举**（domain 定义）：`GhError { NotInstalled, NotLoggedIn, RateLimited{reset}, RepoUnavailable, Timeout, ParseFailed{version}, CliFailed{stderr} }`，
+   码只在一个地方映射：`impl GhError { fn code(&self) -> u16 }`。**adapter 只负责把 stderr 文本判成枚举，不碰数字码**。
+
+### 各层职责一览
+
+| 层 | 有 | 没有 |
+| --- | --- | --- |
+| adapter | 探测路径、argv、超时、进程生命周期、stderr→枚举、raw JSON→领域模型 | 缓存、TTL、排序、分页切片、DTO、`tauri::` 任何东西 |
+| domain | TTL 缓存（列表 30s / 详情 5min）、排序、diff 按行切片、并用 trait 编排调用 | 进程、argv、字段名、错误码数字 |
+| commands | 入参校验、DTO 映射、`code()` 取码、日志 | gh 调用细节、解析、缓存逻辑 |
+
+**缓存放 domain 而不是 adapter**：这样 adapter 保持无状态，domain 的缓存逻辑可以用假 adapter（fixture JSON）单测，不需要机器上装 gh。
+
+### 可测性（这是分层的验收方式，不是口号）
+
+- **domain 测试**：实现一个 `FakeGh`（返回捕获下来的真实 JSON 反序列化后的领域模型 / 直接返回 `GhError`），
+  验证缓存命中、TTL 过期、排序、切片边界、错误码映射。**不需要 gh 在场。**
+- **adapter 测试**：用一个 stub 脚本冒充 `gh`（`tests/fixtures/fake-gh.sh`，按 argv 吐捕获的 JSON / 退出码 / stderr），
+  验证探测、版本解析、四类 stderr→枚举、超时。**不需要网络。**
+- **端到端**：真机真 gh，只跑 E9.5 的冒烟脚本。
+
+判断是否解耦成功的一条硬线：**把 `src-tauri/src/gh/cli.rs` 整个删掉，domain 与 commands 应当仍能编译**（trait 与模型都在 domain 侧）。做不到就是解耦没做到。
+
 ## 2. 可用性探测（这是本功能的第一道门）
 
 `gh_status` 返回：`{ available, version?, loggedIn, host, cwdOk, ghPath? }`。
