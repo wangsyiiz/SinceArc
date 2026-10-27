@@ -268,11 +268,17 @@ test("2000 字输入的解析耗时只防病态回归", () => {
     parseMarkdown(src);
     return performance.now() - started;
   }).sort((a, b) => a - b);
-  const elapsed = samples[Math.floor(samples.length / 2)];
+  // 微基准取最小值判：中位数会被共享 runner 的调度抖动整段抬起来
+  // （实测同一份代码：本机中位数 0.76ms，GitHub windows-latest 5.33ms，约 7 倍）
+  const best = samples[0];
+  const median = samples[Math.floor(samples.length / 2)];
 
   console.log(
-    `[markdown] 2000 字 parseMarkdown 冷启动 ${coldElapsed.toFixed(3)}ms，热态中位数 ${elapsed.toFixed(3)}ms`,
+    `[markdown] 2000 字 parseMarkdown 冷启动 ${coldElapsed.toFixed(3)}ms，` +
+      `热态最小 ${best.toFixed(3)}ms / 中位数 ${median.toFixed(3)}ms`,
   );
   assert.ok(blocks.length > 0);
-  assert.ok(elapsed <= 5, `2000 字解析耗时 ${elapsed.toFixed(3)}ms，超过 5ms 回归线`);
+  // 这条只防「病态回归」（比如某次改动把复杂度弄成 O(n²)），不是性能指标本身：
+  // 本机 0.76ms、CI 5.33ms 都远在 15ms 之下，而真出问题通常是几十上百毫秒。
+  assert.ok(best <= 15, `2000 字解析耗时 ${best.toFixed(3)}ms（最小），超过 15ms 回归线`);
 });
