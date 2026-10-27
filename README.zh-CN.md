@@ -196,6 +196,6 @@ cd src-tauri; cargo clippy --all-targets -- -D warnings
 
 ## 联系
 
-- 官网：<https://wangsyiiz.github.io/SinceArc/>
+- 官网：<https://sincearc.com/>
 - 仓库：<https://github.com/wangsyiiz/SinceArc>
 - 问题：<https://github.com/wangsyiiz/SinceArc/issues>
