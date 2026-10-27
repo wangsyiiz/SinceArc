@@ -11,7 +11,7 @@
 
 ## 二、分支与提交
 
-- 从 `master` 切 `feat/<topic>` 或 `fix/<topic>`，提交前确认 `git branch --show-current`；
+- 从 `main` 切 `feat/<topic>` 或 `fix/<topic>`，提交前确认 `git branch --show-current`；
 - 提交信息写清「为什么」和实测读数，而不是只写「改了什么」；
 - **每个提交都要带 sign-off**（见下），CI 会校验。
 

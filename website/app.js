@@ -96,8 +96,8 @@
     if (docLink) {
       docLink.textContent = isZh() ? "读文档" : "Docs";
       docLink.href = isZh()
-        ? "https://github.com/wangsyiiz/SinceArc/blob/master/README.zh-CN.md"
-        : "https://github.com/wangsyiiz/SinceArc/blob/master/README.md";
+        ? "https://github.com/wangsyiiz/SinceArc/blob/main/README.zh-CN.md"
+        : "https://github.com/wangsyiiz/SinceArc/blob/main/README.md";
     }
     renderMenu();
   }

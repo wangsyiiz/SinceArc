@@ -35,11 +35,11 @@
 
 ## 1.5 分支与提交（每个 task 一条线）
 
-一个 task = 一条分支 = 一次合并。**不许攒几个 task 再一起回 master。**
+一个 task = 一条分支 = 一次合并。**不许攒几个 task 再一起回 main。**
 
-- 从 `master` 切分支，命名 `feat/<卡片关键词>`（`feat/trace-retention`、`feat/ipc-batching`）；
+- 从 `main` 切分支，命名 `feat/<卡片关键词>`（`feat/trace-retention`、`feat/ipc-batching`）；
 - 分支上可以多次提交，但每次提交要是**可回滚的单一行为变更**（重构和改行为分开）；
-- 完成定义（DoD）满足后立刻 `git merge --no-ff` 回 `master` 并删除分支：
+- 完成定义（DoD）满足后立刻 `git merge --no-ff` 回 `main` 并删除分支：
   不留「做完但没合」的分支，也不把两条不相关的改动塞进同一次合并；
 - 合并前必须过门禁（L0–L3）：`cargo test` / `npm test` / `tsc -b` / `vite build` / clippy；
 - 提交信息写「为什么」，不是「改了什么」；破坏性变更（删数据、改 schema）在正文里单独点名。
@@ -72,7 +72,7 @@
 流程是单向的闸门：
 
 ```
-派 brief → Codex 交付 → 跑门禁 → 复核 diff → 合 master → 关卡 → 才允许写下一个 brief
+派 brief → Codex 交付 → 跑门禁 → 复核 diff → 合 main → 关卡 → 才允许写下一个 brief
 ```
 
 理由有两条，都是实感：

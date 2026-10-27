@@ -5,7 +5,7 @@ name: pages
 
 on:
   push:
-    branches: [master]
+    branches: [main]
     paths: ["website/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
@@ -33,7 +33,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh api -X POST "repos/${{ github.repository }}/pages" \
-            -f build_type=workflow -f source[branch]=master -f source[path]=/ || true
+            -f build_type=workflow -f source[branch]=main -f source[path]=/ || true
           gh api "repos/${{ github.repository }}/pages" 2>/dev/null || echo "Pages 未启用（可能是套餐限制）"
 
       - uses: actions/configure-pages@v5
