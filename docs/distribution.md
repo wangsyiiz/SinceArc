@@ -147,3 +147,49 @@ P1 解封后要补的验收：装 → 开始菜单有项 → 卸载干清（`%AP
 - 设置 → 更新：显示当前版本、手动「检查更新」；有新版显示版本号与发布说明，点「下载并安装」→ 安装后重启。
 - 启动时**不**静默下载，只在设置页里由用户触发检查（分发量还小，避免无谓流量与后台惊吓）。
 - 失败要说人话：网络失败 / 签名校验失败 / 安装器启动失败 分开报，不要统一「更新失败」。
+
+## 10. 安装包外观：图标 / 头图 / 侧图
+
+**问题（2026-10-27 实测）**：v0.0.1 的 `SinceArc_0.0.1_x64-setup.exe` 里的图标不是我们的。
+把安装包按 PE 资源拆开、逐像素对比：
+
+| 对象 | 实测 |
+| --- | --- |
+| `SinceArc.exe`（便携包里的应用本体） | 6 档 RT_ICON（16/24/32/48/64/256）与 `src-tauri/icons/icon.ico` **逐档像素全等** |
+| `SinceArc_0.0.1_x64-setup.exe`（安装包） | 7 档 RT_ICON（16/32/48，多种位深）与 `icon.ico` **一档都不等**：32×32 中心像素 `#b9d9ca` vs 我们的 `#f1f1f6`，1024 个像素差 921 个；侧图是 NSIS 自带的 4 位 `modern-wizard.bmp`（调色板只有 navy/black/white，与品牌色 `#1a1d26` 无关） |
+
+原因：`bundle.icon` 只决定**应用 exe** 的图标；NSIS 的 `MUI_ICON` 没被指定时落到 NSIS 自带的
+`modern-install.ico`，跟 `bundle.icon` 无关。也就是说「安装包长得像 NSIS，不像 SinceArc」不是错觉。
+
+**修法**：`tauri.conf.json` 的 `bundle.windows.nsis` 显式给五张图。
+
+| 配置项 | 文件 | 规格 | 出现在哪 |
+| --- | --- | --- | --- |
+| `installerIcon` | `icons/icon.ico` | 16/24/32/48/64/256 多档 | setup.exe 自身（资源管理器、任务栏、卸载项） |
+| `uninstallerIcon` | `icons/icon.ico` | 同上 | 卸载程序 |
+| `headerImage` | `icons/installer/header.bmp` | 150×57，24 位无压缩 BMP | 每个向导页右上角 |
+| `uninstallerHeaderImage` | `icons/installer/header.bmp` | 同上 | 卸载向导页右上角 |
+| `sidebarImage` | `icons/installer/sidebar.bmp` | 164×314，24 位无压缩 BMP | 欢迎页 / 完成页左侧 |
+
+外观口径（跟品牌物料一致，不另造风格）：
+
+- 侧图：底色 `#1a1d26`（品牌磁贴底色）+ 浅色「s-弧」标识居中，**不写字标** —— NSIS 只吃 BMP，
+  没有 alpha，也不保证渲染字体的机器上有 Georgia，写字会变成另一套排版。
+- 头图：白底 + 深色标识，贴在白色的向导页上不显块。
+- 都是 24 位无压缩 BMP：NSIS 不认 PNG，也不处理 alpha 通道。
+
+**重生成**（一次性资产，产物入库；跟 `design/logo/README.md` 的图标同规矩：临时脚本不入库）：
+
+```bash
+# 1) 4 倍渲染 design/logo/d-s-arc.svg（HTML 里 inline 该 SVG，canvas = 目标尺寸 ×4，背景即最终底色）
+PW_WIDTH=660 PW_FULL=1 pw-shot sidebar.html      sidebar-4x.png 600
+PW_WIDTH=600 PW_FULL=1 pw-shot header-light.html header-4x.png 400
+# 2) 缩到 164×314 / 150×57 并存 24 位 BMP
+python3 -c "from PIL import Image; Image.open('sidebar-4x.png').convert('RGB').resize((164,314),Image.LANCZOS).save('src-tauri/icons/installer/sidebar.bmp','BMP')"
+python3 -c "from PIL import Image; Image.open('header-4x.png').convert('RGB').resize((150,57),Image.LANCZOS).save('src-tauri/icons/installer/header.bmp','BMP')"
+```
+
+**验收（下一个版本的 setup.exe）**：拆包后 `installerIcon` 那几档 RT_ICON 应与 `icon.ico` 逐档
+像素相等（v0.0.1 就是不等才发现的）；侧图与头图应与 `icons/installer/*.bmp` 字节相等 ——
+注意 NSIS 包里的文件名不变（Tauri 模板把它们放在 `$PLUGINSDIR/modern-wizard.bmp`、
+`modern-header.bmp`），**看内容不看名字**。看外观这件事仍归所有者，代码侧只保证「用的是我们的文件」。

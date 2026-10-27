@@ -18,6 +18,10 @@ icon-1024.png       栅格化结果，作为 `tauri icon` 的输入
 preview.html        对比页（本地 `python3 -m http.server` 起一个静态服务看，需同目录）
 ```
 
+安装包的图标/头图/侧图不在本目录：`installerIcon` 直接复用 `src-tauri/icons/icon.ico`，
+头图与侧图是 `src-tauri/icons/installer/header.bmp`、`sidebar.bmp`（由 `d-s-arc.svg` 按 4 倍渲染再缩，
+规格与重生成命令见 `docs/distribution.md` §10）。
+
 应用内只使用 **不带磁贴、不含辉光** 的标识（`src/components/BrandMark.tsx`）：
 标题栏 20px、空态 28/36px。辉光属于品牌物料，chrome 按设计语言走扁平。
 
