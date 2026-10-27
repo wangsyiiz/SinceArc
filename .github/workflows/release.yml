@@ -69,7 +69,7 @@ jobs:
         shell: pwsh
         run: |
           $v = "${{ steps.ver.outputs.version }}"
-          New-Item -ItemType Directory -Force out | Out-Null
+          New-Item -ItemType Directory -Force .ci | Out-Null
           $body = @()
           if (Test-Path CHANGELOG.md) {
             $in = $false
@@ -82,7 +82,7 @@ jobs:
             }
           }
           if ($body.Count -eq 0) { $body = @('- 见提交历史') }
-          ($body -join "`n") | Set-Content out/CHANGELOG_SECTION.md -Encoding utf8
+          ($body -join "`n") | Set-Content .ci/changelog-section.md -Encoding utf8
           Write-Host "CHANGELOG v$v 段落 $($body.Count) 行"
 
       - uses: dtolnay/rust-toolchain@stable
@@ -156,7 +156,7 @@ jobs:
           $tag = "${{ github.ref_name }}"
           $asset = "SinceArc_${v}_x64-setup.exe"
           $url = "https://github.com/${{ github.repository }}/releases/download/$tag/$asset"
-          $notes = (Get-Content out/CHANGELOG_SECTION.md -Raw -Encoding utf8).Trim()
+          $notes = (Get-Content .ci/changelog-section.md -Raw -Encoding utf8).Trim()
 
           $doc = [ordered]@{
             version   = $v
@@ -186,7 +186,7 @@ jobs:
             "",
             "### 本次内容",
             "",
-            (Get-Content out/CHANGELOG_SECTION.md -Raw -Encoding utf8).Trim(),
+            (Get-Content .ci/changelog-section.md -Raw -Encoding utf8).Trim(),
             "",
             "| 文件 | 用途 |",
             "| --- | --- |",
