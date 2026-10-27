@@ -166,6 +166,7 @@ cd src-tauri; cargo clippy --all-targets -- -D warnings
 | [`docs/ipc-contract.md`](docs/ipc-contract.md) | 前后端契约与错误码 |
 | [`docs/permissions-spec.md`](docs/permissions-spec.md) | 审批与自动同意 |
 | [`docs/distribution.md`](docs/distribution.md) | 打包与分发（平台口径、产物、签名） |
+| [`docs/gh.md`](docs/gh.md) | GH 可视化：只做 gh CLI、可用性探测、错误码、diff 切片 |
 | [`docs/licensing.md`](docs/licensing.md) | 免费与订阅的边界、三条红线 |
 
 ## 贡献
