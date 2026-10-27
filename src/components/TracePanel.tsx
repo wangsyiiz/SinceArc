@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlignLeft, FileText, PencilLine, Play, Search, SendHorizontal, Sparkles, ShieldAlert, ShieldCheck, ShieldX, Waypoints, X } from "lucide-react";
 import type { Activity, ActivityKind, Player, TraceTurn } from "@/types";
 import type { TraceBackfillDto } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { isTurnCancelled } from "@/lib/turn-status";
 import { turnHeading, turnLabel } from "@/lib/turn-summary";
+import { useVirtualList } from "@/lib/virtual/useVirtualList";
 import type { LocateTarget } from "@/lib/turn-anchors";
 import { Button } from "./ui/Button";
 import { useHoverCard } from "./ui/HoverCard";
@@ -12,6 +13,8 @@ import { Tooltip } from "./ui/Tooltip";
 import { RemovedBadge } from "./RemovedBadge";
 
 const ROW = 34;
+/** 图视图的活动上限：超过就只剩列表（§19.6，4 万节点会卡死）。 */
+const TRACE_GRAPH_MAX_ACTIVITIES = 1500;
 const MAIN_X = 13;
 const LANE_W = 22;
 
@@ -668,27 +671,22 @@ export function TracePanel({
   animate,
   backfill,
 }: TracePanelProps) {
-  const [view, setView] = useState<"graph" | "list">("graph");
   const [backfillEl, setBackfillEl] = useState<HTMLButtonElement | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const turnRefs = useRef(new Map<string, HTMLDivElement>());
   const backfillHover = useHoverCard({ disabled: !backfill?.canRun || backfill.running });
+  // 图视图的布局只在真正要画图时算：4 万活动全量算一遍要好几秒，
+  // 而列表视图 + 超阈值（图被禁用）时这份计算纯属浪费（真机：打开 11.6s 里有大头在这儿）。
+  const [view, setView] = useState<"graph" | "list">("graph");
+  const graphTooHeavy = activities.length > TRACE_GRAPH_MAX_ACTIVITIES;
+  const graphWanted = view === "graph" && !graphTooHeavy;
   const { rows, edges, height, width: svgWidth } = useMemo(
-    () => buildTrace(turns, activities, players),
-    [turns, activities, players],
+    () =>
+      graphWanted
+        ? buildTrace(turns, activities, players)
+        : { rows: [], edges: [], height: 0, width: 0 },
+    [graphWanted, turns, activities, players],
   );
-
-  useEffect(() => {
-    if (!open || !focusId) return;
-    const el = rowRefs.current.get(focusId);
-    if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [open, focusId, focusTick]);
-
-  useEffect(() => {
-    if (!open || !locateTurnId) return;
-    const el = turnRefs.current.get(locateTurnId);
-    if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [open, locateTurnId, locateTick, turns, view]);
 
   const registerTurn = (id: string, el: HTMLDivElement | null) => {
     if (el) turnRefs.current.set(id, el);
@@ -706,6 +704,79 @@ export function TracePanel({
     });
   }, [turns, activities]);
 
+  // 列表视图虚拟化（§19.6）：把「轮标题 + 该轮活动行」拍平成一维 items。
+  // 图视图每个活动一个 SVG 节点，活动一多必然卡死，所以超过阈值时禁用图视图。
+  const playersById = useMemo(() => new Map(players.map((x) => [x.id, x])), [players]);
+
+  const listItems = useMemo(() => {
+    const items: Array<
+      { kind: "turn"; turn: TraceTurn; index: number } | { kind: "activity"; activity: Activity }
+    > = [];
+    listGroups.forEach(({ turn, activities: rows }, index) => {
+      items.push({ kind: "turn", turn, index });
+      for (const activity of rows) items.push({ kind: "activity", activity });
+    });
+    return items;
+  }, [listGroups]);
+
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
+  // 这两个回调必须稳定：每次渲染换新函数会让虚拟化库以为「估算规则变了」，
+  // 于是每帧重算全部条目 —— 真机 4 万条时滚动 p50 从 10ms 涨到 22ms 就是它。
+  const estimateListItem = useCallback(
+    (index: number) => (listItems[index]?.kind === "turn" ? 44 : 36),
+    [listItems],
+  );
+  const listKeyOf = useCallback(
+    (index: number) => {
+      const item = listItems[index];
+      if (!item) return `x:${index}`;
+      return item.kind === "turn" ? `t:${item.turn.id}` : `a:${item.activity.id}`;
+    },
+    [listItems],
+  );
+  const {
+    rows: virtualListRows,
+    totalSize: listTotalSize,
+    measureRow: measureListRow,
+    scrollToIndex: scrollListToIndex,
+  } = useVirtualList({
+    count: listItems.length,
+    keyOf: listKeyOf,
+    estimate: estimateListItem,
+    scrollRef: listScrollRef,
+  });
+
+  const indexOfTurn = (turnId: string) =>
+    listItems.findIndex((item) => item.kind === "turn" && item.turn.id === turnId);
+  const indexOfActivity = (activityId: string) =>
+    listItems.findIndex((item) => item.kind === "activity" && item.activity.id === activityId);
+
+  useEffect(() => {
+    if (graphTooHeavy && view === "graph") setView("list");
+  }, [graphTooHeavy, view]);
+
+  useEffect(() => {
+    if (!open || !focusId) return;
+    if (view === "list") {
+      const index = indexOfActivity(focusId);
+      if (index >= 0) scrollListToIndex(index, "center");
+      return;
+    }
+    const el = rowRefs.current.get(focusId);
+    if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [open, focusId, focusTick, view, listItems, scrollListToIndex]);
+
+  useEffect(() => {
+    if (!open || !locateTurnId) return;
+    if (view === "list") {
+      const index = indexOfTurn(locateTurnId);
+      if (index >= 0) scrollListToIndex(index, "center");
+      return;
+    }
+    const el = turnRefs.current.get(locateTurnId);
+    if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [open, locateTurnId, locateTick, turns, view, listItems, scrollListToIndex]);
+
   return (
     <div
       className={cn(
@@ -721,14 +792,17 @@ export function TracePanel({
             {turns.length} 轮 · {actionCount} 动作
           </span>
           <div className="ml-auto flex items-center gap-0.5 rounded-mark bg-surface-3/35 p-0.5">
-            <Tooltip label="图形">
+            <Tooltip label={graphTooHeavy ? "图形（轨迹过多，已省略）" : "图形"}>
               <button
                 type="button"
                 aria-label="图形"
+                aria-disabled={graphTooHeavy}
+                disabled={graphTooHeavy}
                 onClick={() => setView("graph")}
                 className={cn(
                   "grid size-5 place-items-center rounded-mark transition-colors",
                   view === "graph" ? "bg-surface-3/85 text-ink-1" : "text-ink-3 hover:text-ink-2",
+                  graphTooHeavy && "cursor-not-allowed opacity-40 hover:text-ink-3",
                 )}
               >
                 <Waypoints className="size-3" />
@@ -773,6 +847,12 @@ export function TracePanel({
           思考过程只保留开头 8KB；轨迹超过 5 万条或 90 天会在消息流末尾提示，不会自动删除。
         </div>
 
+        {graphTooHeavy && (
+          <div className="shrink-0 border-b border-line-1/40 px-3 py-1 text-caption text-ink-3">
+            轨迹过多（{actionCount} 条活动），图视图已省略，只能在列表里看。
+          </div>
+        )}
+
         {backfill?.error && (
           <div className="shrink-0 border-b border-line-1/40 px-3 py-1 text-caption text-danger-1">
             {backfill.error}
@@ -786,38 +866,47 @@ export function TracePanel({
         )}
 
         {view === "list" && (
-          <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1">
-            {turns.length === 0 && (
+          <div ref={listScrollRef} className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1">
+            {turns.length === 0 ? (
               <div className="py-8 text-center text-caption text-ink-3">没有活动</div>
+            ) : (
+              <div className="relative" style={{ height: listTotalSize }}>
+                {virtualListRows.map((row) => {
+                  const item = listItems[row.index];
+                  if (!item) return null;
+                  return (
+                    <div
+                      key={row.key}
+                      ref={measureListRow}
+                      data-index={row.index}
+                      data-turn-id={item.kind === "turn" ? item.turn.id : undefined}
+                      data-activity-id={item.kind === "activity" ? item.activity.id : undefined}
+                      className="absolute inset-x-0 top-0 pb-1"
+                      style={{
+                        transform: `translateY(${row.start}px)`,
+                        minHeight: estimateListItem(row.index),
+                      }}
+                    >
+                      {item.kind === "turn" ? (
+                        <TurnListHeader
+                          heading={turnHeading(item.turn, item.index, turnOutcome(item.turn).label)}
+                          outcome={turnOutcome(item.turn)}
+                          at={item.turn.at}
+                          label={turnLabel(item.index)}
+                          target={locateTargetOf(item.turn.id)}
+                          onLocate={onLocateMessage}
+                        />
+                      ) : (
+                        <ActivityListRow
+                          activity={item.activity}
+                          player={item.activity.playerId ? playersById.get(item.activity.playerId) : undefined}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             )}
-            {listGroups.map(({ turn, activities: rows }, index) => {
-              const outcome = turnOutcome(turn);
-              const heading = turnHeading(turn, index, outcome.label);
-              return (
-                <div
-                  key={turn.id}
-                  ref={(el) => registerTurn(turn.id, el)}
-                  data-turn-id={turn.id}
-                  className="mb-1"
-                >
-                  <TurnListHeader
-                    heading={heading}
-                    outcome={outcome}
-                    at={turn.at}
-                    label={turnLabel(index)}
-                    target={locateTargetOf(turn.id)}
-                    onLocate={onLocateMessage}
-                  />
-                  {rows.map((a) => (
-                    <ActivityListRow
-                      key={a.id}
-                      activity={a}
-                      player={players.find((x) => x.id === a.playerId)}
-                    />
-                  ))}
-                </div>
-              );
-            })}
           </div>
         )}
 
