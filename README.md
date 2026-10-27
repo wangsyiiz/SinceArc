@@ -49,6 +49,10 @@ instead of four window switches.
   merges back into the trunk when it answers, and its messages stay attributable to it.
 - **One trace per session** collects what *all* members did — filters by player, so you can read just the
   reviewer's tool calls, or the whole picture.
+- **Each agent's `/` commands are discovered automatically.** Agents announce their own command list over ACP
+  (`session/update`), and the client keeps it per ACP session — so the `/` menu follows the agent you are
+  addressing. In a group chat, the planner and the coder each offer their own set; no hardcoded list, nothing
+  to configure.
 - **Approvals, MCP servers and storage** are managed in the same window, not in five shell configs.
 
 **2. A GitHub desktop client** — *planned.* PRs, issues and reviews in the same window, with agents taking part
@@ -66,6 +70,7 @@ agent did it instead of scrolling through one endless message stream.
 | Aggregate agents | Multiple profiles; a session picks its agent; local / WSL / SSH launch kinds |
 | Group chat with sub-agents | `@` a member to run it on its own branch in parallel, merging back to the trunk |
 | One trace for everyone | Per-player lanes and filtering; virtualized list; graph view degrades above 1500 activities |
+| Per-agent `/` commands | Discovered from the agent over ACP, kept per session — the menu follows whoever you address |
 | Approvals | Per-kind permission requests, plus "allow same kind for this turn" (in-memory, expires at turn end) |
 | Streaming replies | Tweened output, seal-first (aligns to full text the moment a turn ends); can be turned off |
 | Markdown | Fenced code, inline code, lists, tables, links — parsed into elements, never injected as HTML |
