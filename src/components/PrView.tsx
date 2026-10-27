@@ -1,4 +1,5 @@
 import { ArrowUpRight, CheckCircle2, GitBranch, Loader2, Plus, User, XCircle } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { GithubPR, GithubRepo } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -10,9 +11,9 @@ const STATE: Record<GithubPR["state"], { className: string; label: string }> = {
 };
 
 const CHECKS = {
-  passing: { icon: CheckCircle2, label: "checks 通过", className: "text-ok-1" },
-  failing: { icon: XCircle, label: "checks 失败", className: "text-danger-1" },
-  pending: { icon: Loader2, label: "checks 进行中", className: "text-warn-1 animate-spin" },
+  passing: { icon: CheckCircle2, labelKey: "pr.checks.passing", className: "text-ok-1" },
+  failing: { icon: XCircle, labelKey: "pr.checks.failing", className: "text-danger-1" },
+  pending: { icon: Loader2, labelKey: "pr.checks.pending", className: "text-warn-1 animate-spin" },
 } as const;
 
 interface PrViewProps {
@@ -22,6 +23,7 @@ interface PrViewProps {
 }
 
 export function PrView({ pr, repo, onQuote }: PrViewProps) {
+  const { t } = useTranslation();
   const st = STATE[pr.state];
   const checks = CHECKS[pr.checks];
   const CheckIcon = checks.icon;
@@ -58,7 +60,7 @@ export function PrView({ pr, repo, onQuote }: PrViewProps) {
             </span>
             <span className="flex items-center gap-1">
               <CheckIcon className={cn("size-2.5", checks.className)} />
-              {checks.label}
+              {t(checks.labelKey)}
             </span>
             <span>{pr.updatedAt}</span>
           </div>
@@ -71,7 +73,7 @@ export function PrView({ pr, repo, onQuote }: PrViewProps) {
 
           <div className="mt-3 rounded-control border border-line-1/60 p-3">
             <div className="flex items-baseline justify-between font-mono text-micro text-ink-3">
-              <span>{pr.files} 个文件</span>
+              <span>{t("pr.files", { count: pr.files })}</span>
               <span>
                 <span className="text-ok-1">+{pr.additions}</span>{" "}
                 <span className="text-danger-1">−{pr.deletions}</span>
@@ -88,7 +90,7 @@ export function PrView({ pr, repo, onQuote }: PrViewProps) {
               className="flex items-center gap-1.5 rounded-mark bg-accent-1 px-2.5 py-1.5 text-caption font-medium text-accent-ink transition-[filter] hover:brightness-110"
             >
               <Plus className="size-3" />
-              加入对话
+              {t("pr.quote")}
             </button>
             <button className="flex items-center gap-1 rounded-mark px-2.5 py-1.5 text-caption text-ink-2 transition-colors hover:bg-surface-3/55">
               gh
@@ -97,15 +99,14 @@ export function PrView({ pr, repo, onQuote }: PrViewProps) {
           </div>
 
           <div className="mt-4 rounded-control bg-surface-2/30 px-3 py-2 text-caption leading-relaxed text-ink-3">
-            视图内容只读。「加入对话」把这条 PR 的摘要作为引用塞进会话，由 agent 自己去读 diff ——
-            客户端不代跑 gh 的写操作。
+            {t("pr.readonly")}
           </div>
         </div>
       </div>
 
       <footer className="flex h-7 shrink-0 items-center gap-1.5 border-t border-line-1/60 px-3 font-mono text-micro text-ink-3">
-        <span className="truncate">gh cwd: {repo.path}</span>
-        <span className="ml-auto shrink-0">缓存 30s</span>
+        <span className="truncate">{t("pr.ghCwd", { path: repo.path })}</span>
+        <span className="ml-auto shrink-0">{t("pr.cache")}</span>
       </footer>
     </div>
   );

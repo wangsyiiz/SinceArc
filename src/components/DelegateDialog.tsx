@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { asCmdError } from "@/lib/ipc";
 import type { AgentCaps } from "@/lib/ipc/types";
@@ -27,6 +28,7 @@ export function DelegateDialog({
   onSubmit: (task: string) => Promise<void>;
   onDelegated: () => void;
 }) {
+  const { t } = useTranslation();
   const [task, setTask] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -64,27 +66,27 @@ export function DelegateDialog({
     <Dialog
       open={open}
       onClose={requestClose}
-      title={`派活给 ${targetName}`}
+      title={t("delegate.title", { name: targetName })}
       footer={
         <>
           <Button variant="ghost" size="sm" disabled={submitting} onClick={requestClose}>
-            取消
+            {t("ui.button.cancel")}
           </Button>
           <Button
             variant="primary"
             size="sm"
             loading={submitting}
-            loadingText="派活中…"
+            loadingText={t("delegate.submitting")}
             disabled={!canSubmit}
             onClick={() => void submit()}
           >
-            派活
+            {t("settings.memberDetail.delegate")}
           </Button>
         </>
       }
     >
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className="text-caption text-ink-3">档位</span>
+        <span className="text-caption text-ink-3">{t("delegate.level")}</span>
         <span className="text-caption text-ink-3">{delegateCapsLabel(caps)}</span>
       </div>
       {note && <p className="mt-1 text-caption text-ink-3">{note}</p>}
@@ -94,8 +96,8 @@ export function DelegateDialog({
         rows={3}
         value={task}
         disabled={submitting}
-        aria-label="任务正文"
-        placeholder="让 TA 做什么？这段文字就是任务全文。"
+        aria-label={t("delegate.task.aria")}
+        placeholder={t("delegate.task.placeholder")}
         className="mt-3 max-h-48"
         onChange={(event) => setTask(event.target.value)}
         onKeyDown={(event) => {
@@ -112,7 +114,7 @@ export function DelegateDialog({
         </p>
       )}
 
-      <p className="mt-2 text-micro text-ink-3">Ctrl/Cmd+Enter 派活 · Esc 关闭</p>
+      <p className="mt-2 text-micro text-ink-3">{t("delegate.shortcut")}</p>
     </Dialog>
   );
 }

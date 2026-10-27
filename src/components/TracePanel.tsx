@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlignLeft, FileText, PencilLine, Play, Search, SendHorizontal, Sparkles, ShieldAlert, ShieldCheck, ShieldX, Waypoints, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import type { Activity, ActivityKind, Player, TraceTurn } from "@/types";
 import type { TraceBackfillDto } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
@@ -52,7 +54,12 @@ interface TraceEdge {
   dashed?: boolean;
 }
 
-function buildTrace(turns: TraceTurn[], activities: Activity[], players: Player[]) {
+function buildTrace(
+  turns: TraceTurn[],
+  activities: Activity[],
+  players: Player[],
+  translate: TFunction,
+) {
   const byId = new Map(activities.map((a) => [a.id, a]));
   const rows: TraceRow[] = [];
   const edges: TraceEdge[] = [];
@@ -63,7 +70,7 @@ function buildTrace(turns: TraceTurn[], activities: Activity[], players: Player[
     // §19.6：0 活动且无回复的轮不占行；编号仍按原始轮序传下去，不能让「第 N 轮」串位。
     if (!turnHasDrawableContent(t, (id) => byId.has(id))) continue;
     const p0 = players.find((x) => x.id === t.branches[0]?.playerId);
-    const outcome = turnOutcome(t);
+    const outcome = turnOutcome(t, translate);
     const heading = turnHeading(t, index, outcome.label);
 
     rows.push({
@@ -126,7 +133,7 @@ function buildTrace(turns: TraceTurn[], activities: Activity[], players: Player[
           x,
           y: cursor,
           kind: "reply",
-          title: "回复",
+          title: translate("trace.reply"),
           meta: b.reply,
           at: "",
           color,
@@ -200,27 +207,31 @@ function statusDotClass(status: TraceRow["status"]): string | undefined {
   return undefined;
 }
 
-function turnOutcome(turn: TraceTurn): {
+function turnOutcome(turn: TraceTurn, t: TFunction): {
   label: string;
   dot?: TraceRow["status"];
   title?: string;
 } {
   switch (turn.status) {
     case "running":
-      return { label: "进行中", dot: "running" };
+      return { label: t("trace.status.running"), dot: "running" };
     case "waiting_approval":
-      return { label: "等你批准", dot: "waiting" };
+      return { label: t("trace.status.waitingApproval"), dot: "waiting" };
     case "failed":
-      return { label: "失败", dot: "error", title: turn.stopReason };
+      return { label: t("trace.status.failed"), dot: "error", title: turn.stopReason };
     case "finished":
       if (isTurnCancelled(turn.status, turn.stopReason)) {
-        return { label: "已停止", dot: "cancelled" };
+        return { label: t("trace.status.stopped"), dot: "cancelled" };
       }
       return turn.stopReason && turn.stopReason !== "end_turn"
-        ? { label: `已结束（${turn.stopReason}）`, dot: "ok", title: turn.stopReason }
-        : { label: "已结束", dot: "ok" };
+        ? {
+            label: t("trace.status.endedWithReason", { reason: turn.stopReason }),
+            dot: "ok",
+            title: turn.stopReason,
+          }
+        : { label: t("trace.status.ended"), dot: "ok" };
     default:
-      return { label: "结局未知" };
+      return { label: t("trace.status.unknown") };
   }
 }
 
@@ -230,20 +241,23 @@ function turnStatusTextClass(status: TraceRow["status"]): string {
   return "text-ink-3";
 }
 
-function backfillResultText(result: TraceBackfillDto): string {
-  let text =
-    result.captured === 0
-      ? "agent 没有重放出轨迹事件。"
-      : result.added === 0 && result.skipped > 0
-        ? `没有新轨迹（${result.skipped} 条重复已跳过）。`
-        : `已补录 ${result.added} 条轨迹，跳过重复 ${result.skipped} 条。`;
-  if (result.timedOut) {
-    text += "（重放超时，已按收到的部分补录）";
+function backfillResultText(result: TraceBackfillDto, t: TFunction): string {
+  const note = result.timedOut ? t("trace.backfill.result.timedOut") : "";
+  if (result.captured === 0) {
+    return t("trace.backfill.result.none", { note });
   }
-  return text;
+  if (result.added === 0 && result.skipped > 0) {
+    return t("trace.backfill.result.noNew", { count: result.skipped, note });
+  }
+  return t("trace.backfill.result.added", {
+    added: result.added,
+    skipped: result.skipped,
+    note,
+  });
 }
 
 function HoverContent({ row }: { row: TraceRow }) {
+  const { t } = useTranslation();
   const activity = row.activity;
   const Icon = activityIcon(activity);
 
@@ -252,17 +266,17 @@ function HoverContent({ row }: { row: TraceRow }) {
      看起来就像卡片里的内容也被截了；所以抬头只写「思考」，全文进正文（后端保留 8KB，含换行）。 */
   const headline =
     row.kind === "user"
-      ? "这一轮"
+      ? t("trace.hover.thisTurn")
       : row.kind === "reply"
-        ? `${row.playerName ?? "玩家"} 回复`
+        ? t("trace.hover.reply", { player: row.playerName ?? t("trace.player") })
         : activity?.kind === "thinking"
-          ? "思考"
+          ? t("trace.hover.thinking")
           : (activity?.title ?? row.title);
   const body =
     row.kind === "user"
       ? row.title
       : row.kind === "reply"
-        ? (row.meta || "回复正文在聊天区")
+        ? (row.meta || t("trace.hover.replyBodyInChat"))
         : (activity?.body ?? activity?.detail ?? row.meta);
 
   return (
@@ -293,7 +307,9 @@ function HoverContent({ row }: { row: TraceRow }) {
       {activity?.truncated && (
         <div className="mt-2 text-micro text-ink-3">
           {/* 两种上限不一样：思考正文 8KB，工具调用的 rawInput / content 各 16KB（docs/acp-notes.md） */}
-          {activity.kind === "thinking" ? "已截断，仅保留最早 8KB" : "已截断，仅保留前 16KB"}
+          {activity.kind === "thinking"
+            ? t("trace.truncated.thinking")
+            : t("trace.truncated.tool")}
         </div>
       )}
     </div>
@@ -307,11 +323,12 @@ function TurnLocateControl({
   target: LocateTarget;
   onLocate: (messageId: string) => void;
 }) {
+  const { t } = useTranslation();
   const reason =
     target.kind === "legacy"
-      ? "这一轮没有记录正文归属（M1 之前的数据）"
+      ? t("trace.locate.legacy")
       : target.kind === "empty"
-        ? "这一轮没有正文"
+        ? t("trace.locate.empty")
         : null;
   return (
     <span className="flex min-w-0 items-center gap-1">
@@ -320,14 +337,14 @@ function TurnLocateControl({
         variant="ghost"
         size="sm"
         disabled={target.kind !== "ok"}
-        aria-label="定位到正文"
+        aria-label={t("trace.locate.action")}
         onClick={() => {
           if (target.kind === "ok") onLocate(target.messageId);
         }}
         className="h-auto shrink-0 gap-1 rounded-mark px-1.5 py-1 text-caption"
       >
         <AlignLeft className="size-3" />
-        定位到正文
+        {t("trace.locate.action")}
       </Button>
     </span>
   );
@@ -498,6 +515,7 @@ function GraphLabelRow({
   locateOf: (turnId: string) => LocateTarget;
   onLocate: (messageId: string) => void;
 }) {
+  const { t } = useTranslation();
   const [el, setEl] = useState<HTMLDivElement | null>(null);
   const hover = useHoverCard();
   const Icon = r.activity ? KIND_ICON[r.activity.kind] : null;
@@ -550,7 +568,9 @@ function GraphLabelRow({
               {r.playerName}
             </span>
             <RemovedBadge player={r} />
-            <span className="truncate text-caption text-ink-2">{r.meta ?? "回复"}</span>
+            <span className="truncate text-caption text-ink-2">
+              {r.meta ?? t("trace.reply")}
+            </span>
           </span>
         ) : (
           <>
@@ -674,6 +694,7 @@ export function TracePanel({
   animate,
   backfill,
 }: TracePanelProps) {
+  const { t } = useTranslation();
   const [backfillEl, setBackfillEl] = useState<HTMLButtonElement | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const turnRefs = useRef(new Map<string, HTMLDivElement>());
@@ -686,9 +707,9 @@ export function TracePanel({
   const { rows, edges, height, width: svgWidth } = useMemo(
     () =>
       graphWanted
-        ? buildTrace(turns, activities, players)
+        ? buildTrace(turns, activities, players, t)
         : { rows: [], edges: [], height: 0, width: 0 },
-    [graphWanted, turns, activities, players],
+    [graphWanted, turns, activities, players, t],
   );
 
   const registerTurn = (id: string, el: HTMLDivElement | null) => {
@@ -790,15 +811,17 @@ export function TracePanel({
     >
       <div style={{ width }} className="sc-pane flex h-full flex-col overflow-hidden">
         <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line-1/60 px-3">
-          <span className="text-ui-tight font-medium text-ink-1">轨迹</span>
+          <span className="text-ui-tight font-medium text-ink-1">{t("trace.title")}</span>
           <span className="font-mono text-micro text-ink-3">
-            {turns.length} 轮 · {actionCount} 动作
+            {t("trace.header.count", { turns: turns.length, actions: actionCount })}
           </span>
           <div className="ml-auto flex items-center gap-0.5 rounded-mark bg-surface-3/35 p-0.5">
-            <Tooltip label={graphTooHeavy ? "图形（轨迹过多，已省略）" : "图形"}>
+            <Tooltip
+              label={graphTooHeavy ? t("trace.view.graphDisabled") : t("trace.view.graph")}
+            >
               <button
                 type="button"
-                aria-label="图形"
+                aria-label={t("trace.view.graph")}
                 aria-disabled={graphTooHeavy}
                 disabled={graphTooHeavy}
                 onClick={() => setView("graph")}
@@ -811,10 +834,10 @@ export function TracePanel({
                 <Waypoints className="size-3" />
               </button>
             </Tooltip>
-            <Tooltip label="列表">
+            <Tooltip label={t("trace.view.list")}>
               <button
                 type="button"
-                aria-label="列表"
+                aria-label={t("trace.view.list")}
                 onClick={() => setView("list")}
                 className={cn(
                   "grid size-5 place-items-center rounded-mark transition-colors",
@@ -834,7 +857,7 @@ export function TracePanel({
               disabled={!backfill.canRun || backfill.running}
               className="ml-1 shrink-0 rounded-mark px-1.5 py-1 text-caption text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-1 disabled:cursor-not-allowed disabled:opacity-45"
             >
-              补录
+              {t("trace.backfill.action")}
             </button>
           )}
           <button
@@ -847,12 +870,12 @@ export function TracePanel({
 
         {/* design-language §11：主动截断/清理的数据必须在界面上讲清楚，否则看起来像 bug */}
         <div className="shrink-0 border-b border-line-1/40 px-3 py-1 text-micro leading-relaxed text-ink-3">
-          思考过程只保留开头 8KB；轨迹超过 5 万条或 90 天会在消息流末尾提示，不会自动删除。
+          {t("trace.retentionNotice")}
         </div>
 
         {graphTooHeavy && (
           <div className="shrink-0 border-b border-line-1/40 px-3 py-1 text-caption text-ink-3">
-            轨迹过多（{actionCount} 条活动），图视图已省略，只能在列表里看。
+            {t("trace.tooHeavy", { count: actionCount })}
           </div>
         )}
 
@@ -864,14 +887,16 @@ export function TracePanel({
 
         {backfill?.result && (
           <div className="shrink-0 border-b border-line-1/40 px-3 py-1 text-caption text-ink-3">
-            {backfillResultText(backfill.result)}
+            {backfillResultText(backfill.result, t)}
           </div>
         )}
 
         {view === "list" && (
           <div ref={listScrollRef} className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1">
             {turns.length === 0 ? (
-              <div className="py-8 text-center text-caption text-ink-3">没有活动</div>
+              <div className="py-8 text-center text-caption text-ink-3">
+                {t("trace.empty.list")}
+              </div>
             ) : (
               <div className="relative" style={{ height: listTotalSize }}>
                 {virtualListRows.map((row) => {
@@ -892,8 +917,12 @@ export function TracePanel({
                     >
                       {item.kind === "turn" ? (
                         <TurnListHeader
-                          heading={turnHeading(item.turn, item.index, turnOutcome(item.turn).label)}
-                          outcome={turnOutcome(item.turn)}
+                          heading={turnHeading(
+                            item.turn,
+                            item.index,
+                            turnOutcome(item.turn, t).label,
+                          )}
+                          outcome={turnOutcome(item.turn, t)}
                           at={item.turn.at}
                           label={turnLabel(item.index)}
                           target={locateTargetOf(item.turn.id)}
@@ -917,12 +946,12 @@ export function TracePanel({
         <div className="min-h-0 flex-1 overflow-y-auto">
           {rows.length === 0 && (
             <div className="px-4 py-10 text-center text-caption leading-relaxed text-ink-3">
-              {turns.length === 0 ? "这个会话还没有轨迹" : "这些轮没有记录到活动"}
+              {turns.length === 0 ? t("trace.empty.noTurns") : t("trace.empty.noActivities")}
               <br />
               <span className="text-micro">
                 {turns.length === 0
-                  ? "@ 一个玩家开始"
-                  : "纯对话轮不会留下轨迹（没有思考、没有工具调用）"}
+                  ? t("trace.empty.noTurnsHint")
+                  : t("trace.empty.noActivitiesHint")}
               </span>
             </div>
           )}
@@ -982,16 +1011,18 @@ export function TracePanel({
         {backfill &&
           backfillHover.card(
             <div className="space-y-1">
-              <p className="text-caption font-medium text-ink-1">补录轨迹</p>
-              <p>从 agent 重放补全本会话轨迹。只补轨迹，不动正文。</p>
+              <p className="text-caption font-medium text-ink-1">{t("trace.backfill.title")}</p>
+              <p>{t("trace.backfill.description")}</p>
             </div>,
           )}
 
         <footer className="shrink-0 border-t border-line-1/60 px-3 py-2 text-micro leading-relaxed text-ink-3">
           {resumeGap !== null && resumeGap > 0 && (
-            <div className="mb-1 text-warn-1">恢复后可能丢了 {resumeGap} 条事件（事件水位断档）</div>
+            <div className="mb-1 text-warn-1">
+              {t("trace.resumeGap", { count: resumeGap })}
+            </div>
           )}
-          主干是你的时间轴；一轮里被 @ 的玩家各开一条支线并行跑，答完弯回主干，虚线头表示还在答。
+          {t("trace.legend")}
         </footer>
       </div>
     </div>

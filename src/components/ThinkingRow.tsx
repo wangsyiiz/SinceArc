@@ -1,4 +1,5 @@
 import { Waypoints } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { Activity, Player } from "@/types";
 import { PlayerAvatar } from "./PlayerAvatar";
@@ -14,6 +15,8 @@ interface ThinkingRowProps {
 }
 
 export function ThinkingRow({ player, activity, onOpenTrace, queued }: ThinkingRowProps) {
+  const { t } = useTranslation();
+
   return (
     <div className="flex gap-2.5">
       <PlayerAvatar player={player} size={22} className="mt-0.5" />
@@ -32,13 +35,13 @@ export function ThinkingRow({ player, activity, onOpenTrace, queued }: ThinkingR
             <span className="sc-dot size-1 rounded-full" style={{ background: player.color }} />
           </span>
           <span className={cn("truncate text-caption", queued ? "text-ink-3" : "text-ink-2")}>
-            {queued ? `等待写入 · ${queued.holder} 正在写` : activity.title}
+            {queued ? t("thinking.waiting", { holder: queued.holder }) : activity.title}
           </span>
           {activity.detail && (
             <span className="min-w-0 truncate font-mono text-micro text-ink-3">{activity.detail}</span>
           )}
 
-          <Tooltip label="在轨迹里定位这个动作">
+          <Tooltip label={t("thinking.locate")}>
             <Button
               variant="ghost"
               size="sm"
@@ -47,7 +50,7 @@ export function ThinkingRow({ player, activity, onOpenTrace, queued }: ThinkingR
               style={{ color: player.color }}
             >
               <Waypoints className="size-3" />
-              轨迹
+              {t("thinking.trace")}
             </Button>
           </Tooltip>
         </div>

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { AlertTriangle, ChevronDown } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { ModeOption } from "@/lib/ipc";
 import { useHoverCard } from "./ui/HoverCard";
 import { Menu, type MenuItem } from "./ui/Menu";
@@ -33,7 +34,7 @@ export function ModeSelect({
   current,
   available,
   following,
-  followLabel = "跟随连接默认",
+  followLabel,
   fallbackLabel,
   warning,
   onChoose,
@@ -41,18 +42,22 @@ export function ModeSelect({
   compact = false,
   variant = "session",
 }: ModeSelectProps) {
+  const { t } = useTranslation();
+  const followLabelText = followLabel ?? t("mode.follow.default");
   const unsupported = available.length === 0;
   const locked = disabled || unsupported;
-  const currentLabel = (available.find((mode) => mode.id === current)?.name ?? current) || "未上报";
+  const currentLabel =
+    (available.find((mode) => mode.id === current)?.name ?? current) ||
+    t("mode.current.unreported");
   const [warningEl, setWarningEl] = useState<HTMLSpanElement | null>(null);
   const warningHover = useHoverCard({ disabled: !warning || locked });
 
   const items: MenuItem[] = [
     {
       id: "follow",
-      label: followLabel,
+      label: followLabelText,
       // 曾经挂在 hint（右侧），和同一条目的对勾抢位置（§3.3）。它是解释不是值，走下行。
-      description: fallbackLabel ?? "agent 默认",
+      description: fallbackLabel ?? t("mode.fallback.agentDefault"),
       checked: following,
       onSelect: () => onChoose(null),
     },
@@ -67,7 +72,7 @@ export function ModeSelect({
       ? [
           {
             id: "warning",
-            label: "注意",
+            label: t("mode.warning"),
             description: warning,
             icon: <AlertTriangle className="size-3 shrink-0 text-warn-1" />,
             disabled: true,
@@ -80,19 +85,23 @@ export function ModeSelect({
   return (
     <>
       <Menu
-        ariaLabel="文件编辑审批模式"
+        ariaLabel={t("mode.aria")}
         align="end"
         compact={compact}
         triggerVariant="ghost"
         className="max-w-60"
         disabled={locked}
         disabledReason={
-          unsupported ? "该连接没有报上来可选模式" : disabled ? "当前不可选择模式" : undefined
+          unsupported
+            ? t("mode.disabled.unsupported")
+            : disabled
+              ? t("mode.disabled.current")
+              : undefined
         }
-        section={variant === "session" ? "文件编辑审批" : undefined}
+        section={variant === "session" ? t("mode.section") : undefined}
         description={
           variant === "session"
-            ? "只管文件编辑；命令是否询问由 agent 自己的审批策略决定"
+            ? t("mode.description")
             : undefined
         }
         items={items}
@@ -102,10 +111,12 @@ export function ModeSelect({
             {...warningHover.triggerProps(warningEl)}
             className="flex min-w-0 items-center gap-1.5"
           >
-            <span className="truncate">{unsupported ? "不支持" : currentLabel}</span>
+            <span className="truncate">
+              {unsupported ? t("mode.unsupported") : currentLabel}
+            </span>
             {following && !unsupported && (
               <span className="shrink-0 rounded-mark border border-line-1 px-1 text-caption text-ink-3">
-                跟随
+                {t("mode.following")}
               </span>
             )}
             <ChevronDown className="size-3 shrink-0 text-ink-3" aria-hidden="true" />

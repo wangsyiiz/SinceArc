@@ -1,6 +1,7 @@
 import { BrandMark } from "@/components/BrandMark";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { useTranslation } from "react-i18next";
 
 interface ConnectErrorStateProps {
   code?: string;
@@ -24,6 +25,7 @@ export function ConnectErrorState({
   onNewSession,
   onOpenSettings,
 }: ConnectErrorStateProps) {
+  const { t } = useTranslation();
   const detail = [code, message].filter(Boolean).join(" ");
 
   // 不要 title：这块占满消息区，鼠标一挪进来就弹原生 tip，又大又没必要。
@@ -34,7 +36,7 @@ export function ConnectErrorState({
       className="flex flex-1 flex-col justify-center py-12 [&_p]:max-h-24 [&_p]:overflow-y-auto [&_p]:break-words [&_p]:font-mono"
     >
       <EmptyState
-        heading="连不上这个会话"
+        heading={t("connectError.heading")}
         description={detail}
         icon={
           <div className="grid size-12 place-items-center rounded-card border border-line-1 bg-surface-1 text-accent-1">
@@ -48,11 +50,11 @@ export function ConnectErrorState({
               <Button
                 variant="primary"
                 loading={retrying}
-                loadingText="正在重连…"
+                loadingText={t("connectError.reconnecting")}
                 disabled={retrying}
                 onClick={onRetry}
               >
-                重试
+                {t("ui.emptyState.retry")}
               </Button>
               {resumeUnavailable && onNewSession && (
                 <Button
@@ -60,12 +62,12 @@ export function ConnectErrorState({
                   disabled={newSessionBusy || retrying}
                   onClick={onNewSession}
                 >
-                  新建会话
+                  {t("sidebar.newSession")}
                 </Button>
               )}
               {onOpenSettings && (
                 <Button variant="secondary" disabled={retrying} onClick={onOpenSettings}>
-                  打开设置
+                  {t("ui.button.openSettings")}
                 </Button>
               )}
             </div>

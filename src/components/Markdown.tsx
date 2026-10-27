@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement, ReactNode } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import type { Block, Inline } from "@/lib/markdown";
 import { parseMarkdown } from "@/lib/markdown";
 import { openExternal } from "@/lib/ipc";
@@ -23,6 +25,7 @@ async function copyText(text: string): Promise<void> {
 }
 
 function LinkButton({ href, children }: { href: string; children: ReactNode }) {
+  const { t } = useTranslation();
   const [hint, setHint] = useState<"copied" | "failed" | null>(null);
   const timerRef = useRef<number | null>(null);
 
@@ -56,7 +59,7 @@ function LinkButton({ href, children }: { href: string; children: ReactNode }) {
   };
 
   return (
-    <Tooltip label="单击复制 · Ctrl+点击打开浏览器">
+    <Tooltip label={t("markdown.link.tooltip")}>
       <button
         type="button"
         role="link"
@@ -74,8 +77,8 @@ function LinkButton({ href, children }: { href: string; children: ReactNode }) {
         className="cursor-pointer text-accent-1 underline underline-offset-2 hover:text-ink-1"
       >
         {children}
-        {hint === "copied" && <span className="text-ink-3"> · 已复制</span>}
-        {hint === "failed" && <span className="text-danger-1"> · 打不开</span>}
+        {hint === "copied" && <span className="text-ink-3"> · {t("ui.button.copied")}</span>}
+        {hint === "failed" && <span className="text-danger-1"> · {t("markdown.link.openFailed")}</span>}
       </button>
     </Tooltip>
   );
@@ -147,7 +150,7 @@ function caretParagraph(key: string) {
   );
 }
 
-function renderBlock(block: Block, key: number, caret = false): ReactNode {
+function renderBlock(block: Block, key: number, t: TFunction, caret = false): ReactNode {
   switch (block.kind) {
     case "paragraph":
       return renderParagraph(block, key, false, caret);
@@ -164,7 +167,12 @@ function renderBlock(block: Block, key: number, caret = false): ReactNode {
       const label =
         highlighted.omittedLines === null
           ? block.lang
-          : `${block.lang ? `${block.lang} · ` : ""}高亮已省略（${highlighted.omittedLines} 行）`;
+          : block.lang
+            ? t("markdown.code.omittedWithLang", {
+                lang: block.lang,
+                count: highlighted.omittedLines,
+              })
+            : t("markdown.code.omitted", { count: highlighted.omittedLines });
       const content: ReactNode = highlighted.highlighted
         ? highlighted.spans.map((span, index) => (
             <span key={index} className="sc-token" data-token={span.theme}>
@@ -207,7 +215,7 @@ function renderBlock(block: Block, key: number, caret = false): ReactNode {
                       const childCaret = itemCarriesCaret && childIndex === item.length - 1;
                       return block.task && childIndex === 0 && child.kind === "paragraph"
                         ? renderParagraph(child, childIndex, true, childCaret)
-                        : renderBlock(child, childIndex, childCaret);
+                        : renderBlock(child, childIndex, t, childCaret);
                     })}
               </li>
             );
@@ -216,7 +224,7 @@ function renderBlock(block: Block, key: number, caret = false): ReactNode {
       );
     }
     case "quote":
-      return <blockquote key={key}>{renderBlocks(block.blocks, caret)}</blockquote>;
+      return <blockquote key={key}>{renderBlocks(block.blocks, t, caret)}</blockquote>;
     case "table":
       return (
         <Fragment key={key}>
@@ -261,9 +269,9 @@ function renderBlock(block: Block, key: number, caret = false): ReactNode {
   }
 }
 
-function renderBlocks(blocks: Block[], caret = false): ReactNode[] {
+function renderBlocks(blocks: Block[], t: TFunction, caret = false): ReactNode[] {
   return blocks.map((block, index) =>
-    renderBlock(block, index, caret && index === blocks.length - 1),
+    renderBlock(block, index, t, caret && index === blocks.length - 1),
   );
 }
 
@@ -274,7 +282,8 @@ export function Markdown({
   source: string;
   caret?: boolean;
 }): ReactElement | null {
+  const { t } = useTranslation();
   const blocks = useMemo(() => parseMarkdown(source), [source]);
   if (blocks.length === 0) return caret ? <div className="sc-prose min-w-0"><p><CaretMark /></p></div> : null;
-  return <div className="sc-prose min-w-0">{renderBlocks(blocks, caret)}</div>;
+  return <div className="sc-prose min-w-0">{renderBlocks(blocks, t, caret)}</div>;
 }

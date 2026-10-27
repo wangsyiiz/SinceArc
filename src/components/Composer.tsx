@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Square, Paperclip, ChevronDown } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { AgentProfile, Player } from "@/types";
 import type { AutoApproveLevel } from "@/lib/auto-approve";
 import { permissionKindLabel } from "@/lib/permission-kind";
@@ -56,6 +57,7 @@ export function Composer({
   sessionProfile,
   onReconnectMcp,
 }: ComposerProps) {
+  const { t } = useTranslation();
   const [value, setValue] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
   const inputBoxRef = useRef<HTMLDivElement>(null);
@@ -163,20 +165,21 @@ export function Composer({
   const autoApproveItems: MenuItem[] = [
     {
       id: "off",
-      label: "关",
+      label: t("composer.autoApprove.off"),
       checked: autoApprove === "off",
-      description: "agent 每次提问都交给你决定",
+      description: t("composer.autoApprove.offDescription"),
       onSelect: () => onAutoApproveChange?.("off"),
     },
     {
       id: "edits",
-      label: "编辑类",
+      label: t("settings.chat.autoApprove.edits"),
       checked: autoApprove === "edits",
-      description: "改文件 / 删除 / 移动替你答；命令与读取仍交给你",
+      description: t("composer.autoApprove.editsDescription"),
       onSelect: () => onAutoApproveChange?.("edits"),
     },
   ];
-  const autoApproveText = autoApprove === "edits" ? "编辑类" : "关";
+  const autoApproveText =
+    autoApprove === "edits" ? t("settings.chat.autoApprove.edits") : t("composer.autoApprove.off");
 
   const submit = () => {
     if (busy) {
@@ -235,8 +238,8 @@ export function Composer({
           ) : (
             <p className="px-2 py-1 text-micro leading-relaxed text-ink-3">
               {players.length === 0
-                ? "群里还没有成员 —— 点左栏的 + 把人拉进来，才能 @ 到"
-                : `没有匹配 @${mention.query} 的成员`}
+                ? t("composer.mention.emptyGroup")
+                : t("composer.mention.noMatch", { query: mention.query })}
             </p>
           )}
         </div>
@@ -253,7 +256,7 @@ export function Composer({
         value={value}
         rows={1}
         spellCheck={false}
-        placeholder={placeholder ?? "输入消息，Enter 发送，Shift+Enter 换行"}
+        placeholder={placeholder ?? t("composer.placeholder")}
         onChange={(e) => {
           const next = e.target.value;
           setValue(next);
@@ -317,18 +320,18 @@ export function Composer({
         className="sc-selectable max-h-50 w-full resize-none bg-transparent px-3.5 pt-3 pb-0.5 text-ui leading-relaxed text-ink-1 focus-visible:outline-0 placeholder:text-ink-3"
       />
       <div className="flex items-center gap-1 px-2 pb-1.5">
-        <Tooltip label="添加附件（未接线）">
+        <Tooltip label={t("ui.button.addAttachment")}>
           <Button
             variant="ghost"
             size="sm"
-            aria-label="添加附件（未接线）"
+            aria-label={t("ui.button.addAttachment")}
             className="size-7 gap-0 p-0"
           >
             <Paperclip className="size-3.5" />
           </Button>
         </Tooltip>
         <span className="ml-0.5 font-mono text-micro text-ink-3">
-          {busy ? "agent 正在输出" : "ACP · stdio"}
+          {busy ? t("composer.agentOutput") : "ACP · stdio"}
         </span>
 
         <div className="ml-auto flex items-center gap-1">
@@ -341,29 +344,31 @@ export function Composer({
             />
           )}
           {turnPolicyKinds.length > 0 && onRevokeTurnPolicy && (
-            <Tooltip label="点击撤销本轮同类放行">
+            <Tooltip label={t("composer.revoke")}>
               <button
                 type="button"
                 className="flex items-center gap-1 rounded-full bg-surface-2 px-2 py-1 text-caption text-ink-2 transition-colors hover:bg-surface-3"
                 onClick={onRevokeTurnPolicy}
               >
-                本轮 · {turnPolicyKinds.map(permissionKindLabel).join(" / ")} · 已放行
+                {t("composer.turnPolicy", {
+                  kinds: turnPolicyKinds.map(permissionKindLabel).join(" / "),
+                })}
               </button>
             </Tooltip>
           )}
           <Menu
-            ariaLabel="自动同意：agent 发来的权限请求要不要替你答"
+            ariaLabel={t("composer.autoApprove.aria")}
             align="end"
             compact
             disabled={autoApproveCovered}
             disabledReason={
               autoApproveCovered
-                ? "agent 档已是 accept_edits / dont_ask，本来就少问；这道闸当前不起作用"
+                ? t("composer.autoApprove.disabled")
                 : undefined
             }
             trigger={
               <>
-                <span className="text-micro text-ink-3">自动同意</span>
+                <span className="text-micro text-ink-3">{t("composer.autoApprove.label")}</span>
                 <span className="text-caption">{autoApproveText}</span>
                 <ChevronDown className="size-3.5 text-ink-3" aria-hidden="true" />
               </>
@@ -375,12 +380,12 @@ export function Composer({
           )}
           {busy ? (
             <>
-              <Tooltip label="停止">
+              <Tooltip label={t("ui.button.stop")}>
                 <Button
                   variant="secondary"
                   size="sm"
                   onClick={onStop}
-                  aria-label="停止"
+                  aria-label={t("ui.button.stop")}
                   className="size-7 gap-0 bg-surface-3/75 p-0 hover:bg-surface-3"
                 >
                   <Square className="size-3 fill-current" />
@@ -392,13 +397,13 @@ export function Composer({
                 onClick={submit}
                 disabled={!canSteerSend}
                 disabledReason={
-                  steerReason ?? (!canSteerSend ? "先输入内容再插话" : undefined)
+                  steerReason ?? (!canSteerSend ? t("composer.steer.empty") : undefined)
                 }
-                aria-label="插话"
+                aria-label={t("ui.button.steer")}
                 className="h-7 gap-1 px-2 text-caption"
               >
                 <ArrowUp className="size-3.5" />
-                插话
+                {t("ui.button.steer")}
               </Button>
             </>
           ) : (
@@ -407,8 +412,8 @@ export function Composer({
               size="sm"
               onClick={submit}
               disabled={!canSend}
-              disabledReason={!canSend ? "先输入内容再发送" : undefined}
-              aria-label="发送"
+              disabledReason={!canSend ? t("composer.send.empty") : undefined}
+              aria-label={t("ui.button.send")}
               className="size-7 gap-0 p-0"
             >
               <ArrowUp className="size-3.5" />

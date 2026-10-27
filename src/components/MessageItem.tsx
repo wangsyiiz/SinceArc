@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   CircleDot,
   FileText,
@@ -79,6 +80,7 @@ export function MessageItem({
   onCancelDelegate?: (handleId: string) => void | Promise<void>;
   onLocateTrace?: (turnId: string) => void;
 }) {
+  const { t } = useTranslation();
   const chatKind = chatVisibilityOf(message);
   const displayed = useTweenedText({
     text: message.text,
@@ -125,18 +127,20 @@ export function MessageItem({
               onClick={() => setDelegateExpanded((expanded) => !expanded)}
               className="min-w-0 flex-1 truncate text-left"
             >
-              派活给 {message.delegate.targetName} ·{" "}
-              {delegateCapsDetail(message.delegate.context, message.delegate.reason)}
+              {t("chat.delegate.summary", {
+                target: message.delegate.targetName,
+                detail: delegateCapsDetail(message.delegate.context, message.delegate.reason),
+              })}
             </button>
-            {action === "停止" ? (
+            {action === "停止" ? ( // i18n-ignore: delegateActionLabel returns UI text
               <button
                 type="button"
-                aria-label="停止这次派活"
+                aria-label={t("chat.delegate.stopAria")}
                 onClick={() => void onCancelDelegate?.(handleId)}
                 className="flex shrink-0 items-center gap-1 text-caption text-ink-3 hover:text-ink-1"
               >
                 <Square size={12} />
-                停止
+                {t("ui.button.stop")}
               </button>
             ) : action ? (
               <span className="shrink-0 text-caption text-ink-3">{action}</span>
@@ -188,7 +192,7 @@ export function MessageItem({
           {traceTurnId && onLocateTrace && (
             <button
               type="button"
-              aria-label="在轨迹里看这一轮"
+              aria-label={t("chat.delegate.locateTurnAria")}
               onClick={() => onLocateTrace(traceTurnId)}
               className="inline-flex shrink-0 self-center items-center text-ink-3 transition-colors hover:text-ink-1"
             >
@@ -203,7 +207,7 @@ export function MessageItem({
         {message.stopped && (
           <div className="mt-1 flex items-center gap-1.5 text-caption text-ink-3">
             <span className="inline-block size-1 rounded-full bg-ink-3" />
-            已停止（这一轮没答完）
+            {t("chat.delegate.stoppedIncomplete")}
           </div>
         )}
       </div>

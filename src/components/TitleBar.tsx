@@ -1,4 +1,5 @@
 import { Minus, Square, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { AgentProfile } from "@/types";
 import { BrandMark } from "./BrandMark";
@@ -24,6 +25,7 @@ interface TitleBarProps {
 }
 
 export function TitleBar({ profile, cwd }: TitleBarProps) {
+  const { t } = useTranslation();
   const drag = { "data-tauri-drag-region": "" } as const;
 
   return (
@@ -43,19 +45,19 @@ export function TitleBar({ profile, cwd }: TitleBarProps) {
           <StatusDot status={profile?.connected ? "connected" : "untested"} />
         </span>
         <span className="truncate font-mono text-caption text-ink-3" {...drag}>
-          {profile ? profile.detail : "未连接"} · {cwd}
+          {profile ? profile.detail : t("statusbar.profile.statusDisconnected")} · {cwd}
         </span>
       </div>
 
       {/* 仿 Windows 原生：46×36、贴边、无圆角、无间距 */}
       <div className="flex items-stretch">
-        <WinButton label="最小化" onClick={() => void withWindow((w) => w.minimize())}>
+        <WinButton label={t("ui.titleBar.minimize")} onClick={() => void withWindow((w) => w.minimize())}>
           <Minus className="size-3" strokeWidth={1.6} />
         </WinButton>
-        <WinButton label="最大化" onClick={() => void withWindow((w) => w.toggleMaximize())}>
+        <WinButton label={t("ui.titleBar.maximize")} onClick={() => void withWindow((w) => w.toggleMaximize())}>
           <Square className="size-2.5" strokeWidth={1.6} />
         </WinButton>
-        <WinButton label="关闭" close onClick={() => void withWindow((w) => w.close())}>
+        <WinButton label={t("ui.titleBar.close")} close onClick={() => void withWindow((w) => w.close())}>
           <X className="size-3" strokeWidth={1.6} />
         </WinButton>
       </div>

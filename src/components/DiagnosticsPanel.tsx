@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Activity, Check, Copy } from "lucide-react";
+import { Trans, useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/Button";
 import { useAnchoredLayer } from "./ui/Menu";
@@ -10,6 +11,7 @@ export function DiagnosticsPanel({
 }: {
   eventLog: { at: number; text: string }[];
 }) {
+  const { t } = useTranslation();
   const { triggerRef, panelRef, open, toggle, style } = useAnchoredLayer({
     align: "end",
     prefer: "below",
@@ -43,12 +45,12 @@ export function DiagnosticsPanel({
 
   return (
     <>
-      <Tooltip label="诊断">
+      <Tooltip label={t("diagnostics.trigger")}>
         <Button
           ref={triggerRef}
           variant="ghost"
           size="sm"
-          aria-label="诊断"
+          aria-label={t("diagnostics.trigger")}
           aria-haspopup="dialog"
           aria-expanded={open}
           onClick={toggle}
@@ -67,16 +69,20 @@ export function DiagnosticsPanel({
         <div
           ref={panelRef}
           role="dialog"
-          aria-label="诊断"
+          aria-label={t("diagnostics.trigger")}
           style={{ ...style, animation: "sc-pop 150ms var(--ease-pop)" }}
           className="sc-glass sc-z-popover w-96 rounded-card p-3"
         >
           <div className="flex items-start justify-between gap-3">
             <p className="text-caption text-ink-3">
-              最近收到的 agent 事件。连接后应该先看到{" "}
-              <span className="font-mono">hello</span>；发消息后应出现{" "}
-              <span className="font-mono">notification:session/update</span> 与{" "}
-              <span className="font-mono">promptResult</span>。
+              <Trans
+                i18nKey="diagnostics.description"
+                components={{
+                  hello: <span className="font-mono" />,
+                  notification: <span className="font-mono" />,
+                  promptResult: <span className="font-mono" />,
+                }}
+              />
             </p>
             <Button
               variant="ghost"
@@ -86,13 +92,13 @@ export function DiagnosticsPanel({
               disabled={eventLog.length === 0}
             >
               {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-              {copied ? "已复制" : "复制"}
+              {copied ? t("ui.button.copied") : t("ui.button.copy")}
             </Button>
           </div>
 
           <div className="mt-2 max-h-52 overflow-y-auto border-t border-line-1/50 pt-2 font-mono text-micro text-ink-3">
             {eventLog.length === 0 ? (
-              <div>还没有事件</div>
+              <div>{t("diagnostics.empty")}</div>
             ) : (
               eventLog.map((event, index) => (
                 <div key={index} className="flex gap-2 py-px">
