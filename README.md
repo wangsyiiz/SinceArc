@@ -93,8 +93,7 @@ agent did it instead of scrolling through one endless message stream.
 
 1. From [Releases](https://github.com/wangsyiiz/SinceArc/releases) grab `SinceArc-win-x64.zip` (portable)
    or `SinceArc_x64-setup.exe` (installer). Those file names are version-less on purpose: they always point at
-   the newest stable release. Want the newest `main` instead? Use the `continuous` pre-release
-   ([`releases/download/continuous/`](https://github.com/wangsyiiz/SinceArc/releases/download/continuous/SinceArc-win-x64.zip)).
+   the newest release, so the link never goes stale.
 2. Portable: extract anywhere (do not double-click inside the zip), then run `SinceArc.exe`;
 3. If SmartScreen warns, choose "More info → Run anyway" (unsigned);
 4. WebView2 Runtime is required: Windows 11 and recent Windows 10 ship it. If missing, install the

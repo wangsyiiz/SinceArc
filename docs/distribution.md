@@ -53,6 +53,27 @@ Tauri 的 `downloadBootstrapper` 在安装时联网装。
 - 版本号单一来源：`src-tauri/tauri.conf.json` 的 `version`（当前 `0.0.0`，**从 0 起算**：首个可用预览版就是 0.0.0，不占 1.x），前端与包名都从它派生，不另设一份。
 - exe 的 `ProductVersion` / `FileVersion` 由 Tauri 写入，验收时看文件属性。
 - 便携包文件名带版本，同一目录不覆盖旧包（`SinceArc-0.0.0-win-x64.zip`、`SinceArc-0.0.1-win-x64.zip` 并存）。
+  另有一份不带版本号的稳定文件名（`SinceArc-win-x64.zip`），给 `releases/latest/download/` 用。
+
+### 5.1 发版流程（一键打 tag）
+
+发版只认 tag：合并到 main 不自动发版，避免每次合并都堆一个版本号。
+
+1. 改 `src-tauri/tauri.conf.json` 的 `version`（顺手把 `package.json` 改成同一个号，CI 会校验两者一致）；
+2. Actions → **tag-release** → Run workflow（**不需要填任何输入**）；
+3. 该工作流从配置读版本号 → 建 `v<version>` tag 并推送 → 派发 `release.yml` 在该 tag 上构建 → 建 Release。
+
+手动 `git tag -a v0.0.1 && git push origin v0.0.1` 依旧有效，两条路进的是同一个流水线。
+
+守卫（都在 `release.yml` 里，不绿不出包）：
+
+| 校验 | 不一致时 |
+| --- | --- |
+| `package.json` 版本 == `tauri.conf.json` 版本 | 直接失败，报两个数字 |
+| tag 名 == `v` + `tauri.conf.json` 版本 | 直接失败。**这条必须有**：否则 Release 名、附件名、客户端自报版本互相打架，自动更新会认为「已是最新」而静默失效 |
+| tag 已存在（远端） | `tag-release` 在推之前就失败，提醒先递增版本号 |
+
+同一 tag 重跑是安全的：建 Release 那步是幂等的（已存在就覆盖资产与说明）。
 
 ## 6. NSIS 安装包：当前为什么做不出来
 
