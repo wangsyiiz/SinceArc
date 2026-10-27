@@ -190,5 +190,6 @@ python3 -c "from PIL import Image; Image.open('header-4x.png').convert('RGB').re
 ```
 
 **验收（下一个版本的 setup.exe）**：拆包后 `installerIcon` 那几档 RT_ICON 应与 `icon.ico` 逐档
-像素相等（v0.0.1 就是不等才发现的）；`$PLUGINSDIR/modern-wizard.bmp` 应消失，换成我们的侧图；
-向导页右上角有头图。看外观这件事仍归所有者，代码侧只保证「用的是我们的文件」。
+像素相等（v0.0.1 就是不等才发现的）；侧图与头图应与 `icons/installer/*.bmp` 字节相等 ——
+注意 NSIS 包里的文件名不变（Tauri 模板把它们放在 `$PLUGINSDIR/modern-wizard.bmp`、
+`modern-header.bmp`），**看内容不看名字**。看外观这件事仍归所有者，代码侧只保证「用的是我们的文件」。
