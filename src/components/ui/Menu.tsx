@@ -9,6 +9,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { Check } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { computeLayerPosition, type Placement } from "@/lib/anchored";
 import { cn } from "@/lib/utils";
 
@@ -187,9 +188,11 @@ export function Menu({
   disabled = false,
   disabledReason,
   className,
-  ariaLabel = "菜单",
+  ariaLabel,
   triggerRef,
 }: MenuProps) {
+  const { t } = useTranslation();
+  const resolvedAriaLabel = ariaLabel ?? t("ui.menu.ariaLabel");
   const layer = useAnchoredLayer({ align, triggerRef });
   const { panelRef, open, setOpen, toggle, style, triggerRef: resolvedTriggerRef } = layer;
   const wasOpen = useRef(false);
@@ -241,7 +244,7 @@ export function Menu({
         ref={layer.triggerRef}
         type="button"
         disabled={disabled}
-        aria-label={ariaLabel}
+        aria-label={resolvedAriaLabel}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-description={disabled ? disabledReason : undefined}
@@ -276,7 +279,7 @@ export function Menu({
           <div
           ref={panelRef}
           role="menu"
-          aria-label={ariaLabel}
+          aria-label={resolvedAriaLabel}
           style={{ ...style, animation: "sc-pop 150ms var(--ease-pop)" }}
           onKeyDown={onPanelKeyDown}
           className={cn(

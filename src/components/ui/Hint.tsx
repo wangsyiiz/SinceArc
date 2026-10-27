@@ -1,5 +1,6 @@
 import { Info } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, type ReactElement } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { hintReducer, INITIAL_HINT_STATE } from "@/lib/hint-state";
 import { useTooltip } from "./Tooltip";
@@ -12,6 +13,7 @@ export function Hint(props: {
   className?: string;
 }): ReactElement {
   const { text, label, className } = props;
+  const { t } = useTranslation();
   const [state, dispatch] = useReducer(hintReducer, INITIAL_HINT_STATE);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
 
@@ -74,7 +76,7 @@ export function Hint(props: {
       <button
         ref={triggerRef}
         type="button"
-        aria-label={`${label} 说明`}
+        aria-label={t("ui.hint.ariaLabel", { label })}
         aria-expanded={state.pinned}
         aria-controls={tooltipId}
         {...triggerProps}

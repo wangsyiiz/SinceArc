@@ -40,31 +40,51 @@ const CJK = /[\u3400-\u4dbf\u4e00-\u9fff\uff00-\uffef\u3000-\u303f]/;
 const SKIP_DIRS = new Set(["node_modules", "dist", "dist-dev", "target", ".git", "i18n"]);
 const skipFile = (file) => /\.test\.tsx?$/.test(file) || /\.d\.ts$/.test(file);
 
-function stripComments(line) {
+/** 去掉行尾 `//` 注释（引号内的 `//` 不算）。块注释由调用方的循环处理。 */
+function stripLineComments(line) {
   let out = "";
-  let i = 0;
   let quote = null;
-  while (i < line.length) {
+  for (let i = 0; i < line.length; i += 1) {
     const ch = line[i];
     const next = line[i + 1];
     if (quote) {
       out += ch;
-      if (ch === "\\") { out += next ?? ""; i += 2; continue; }
+      if (ch === "\\") { out += next ?? ""; i += 1; continue; }
       if (ch === quote) quote = null;
-      i += 1;
       continue;
     }
-    if (ch === '"' || ch === "'" || ch === "`") { quote = ch; out += ch; i += 1; continue; }
+    if (ch === '"' || ch === "'" || ch === "`") { quote = ch; out += ch; continue; }
     if (ch === "/" && next === "/") break;
-    if (ch === "/" && next === "*") {
-      const end = line.indexOf("*/", i + 2);
-      i = end === -1 ? line.length : end + 2;
-      continue;
-    }
     out += ch;
-    i += 1;
   }
   return out;
+}
+
+/**
+ * 去掉块注释，返回 [code, 是否还在块注释里]。
+ *
+ * 早先的实现靠「stripComments 后是否还含 `/*`」判断跨行，那是错的：剥离函数已经把注释扔了，
+ * 于是多行文档注释体被当代码扫描，计数虚高。这里显式跟踪。
+ */
+function stripBlockComments(line, inBlock) {
+  let rest = line;
+  let code = "";
+  let stillInBlock = inBlock;
+  if (stillInBlock) {
+    const end = rest.indexOf("*/");
+    if (end === -1) return ["", true];
+    rest = rest.slice(end + 2);
+    stillInBlock = false;
+  }
+  for (;;) {
+    const start = rest.indexOf("/*");
+    if (start === -1) { code += rest; break; }
+    const end = rest.indexOf("*/", start + 2);
+    if (end === -1) { code += rest.slice(0, start); stillInBlock = true; break; }
+    code += rest.slice(0, start);
+    rest = rest.slice(end + 2);
+  }
+  return [code, stillInBlock];
 }
 
 function* walk(dir) {
@@ -83,15 +103,11 @@ for (const file of walk(join(root, "src"))) {
   const rel = relative(root, file);
   const lines = readFileSync(file, "utf8").split("\n");
   let inBlockComment = false;
-  lines.forEach((raw, idx) => {
-    if (inBlockComment) {
-      const end = raw.indexOf("*/");
-      if (end === -1) return;
-      inBlockComment = false;
-    }
+  lines.forEach((raw) => {
     if (raw.includes("i18n-ignore")) return;
-    const code = stripComments(raw);
-    if (code.includes("/*")) inBlockComment = true;
+    const [noBlock, stillInBlock] = stripBlockComments(raw, inBlockComment);
+    inBlockComment = stillInBlock;
+    const code = stripLineComments(noBlock);
     if (CJK.test(code)) {
       residue += 1;
       byFile.set(rel, (byFile.get(rel) ?? 0) + 1);

@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { ChevronDown, Waypoints } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { AgentProfile, SessionResumeState } from "@/types";
 import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
@@ -55,14 +56,17 @@ export function StatusBar({
   connectError,
   connecting = false,
 }: StatusBarProps) {
+  const { t } = useTranslation();
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line-1/60 px-3">
-      <Tooltip label={traceOpen ? "收起轨迹" : "展开轨迹"}>
+      <Tooltip
+        label={traceOpen ? t("statusbar.trace.collapse") : t("statusbar.trace.expand")}
+      >
         <Button
           variant="ghost"
           size="sm"
           onClick={onToggleTrace}
-          aria-label={traceOpen ? "收起轨迹" : "展开轨迹"}
+          aria-label={traceOpen ? t("statusbar.trace.collapse") : t("statusbar.trace.expand")}
           className={cn(
             "size-7 shrink-0 gap-0 rounded-mark p-0",
             traceOpen ? "bg-surface-3/65 text-ink-1" : "text-ink-2 hover:bg-surface-3/55 hover:text-ink-1",
@@ -113,6 +117,7 @@ export function StatusBar({
 }
 
 function ResumeStatus({ resume }: { resume: SessionResumeState }) {
+  const { t } = useTranslation();
   const [el, setEl] = useState<HTMLSpanElement | null>(null);
   const hover = useHoverCard({ disabled: resume.kind !== "resumed" });
   return (
@@ -126,13 +131,19 @@ function ResumeStatus({ resume }: { resume: SessionResumeState }) {
         )}
       >
         {resume.kind === "unavailable"
-          ? `续不上：${resume.reason ?? "原因不明"}`
-          : `续上（${resume.acpSessionId.slice(0, 12)}）${resume.note ? " · 注意" : ""}`}
+          ? t("statusbar.resume.unavailable", {
+              reason: resume.reason ?? t("statusbar.resume.unknownReason"),
+            })
+          : resume.note
+            ? t("statusbar.resume.resumedWithNote", {
+                id: resume.acpSessionId.slice(0, 12),
+              })
+            : t("statusbar.resume.resumed", { id: resume.acpSessionId.slice(0, 12) })}
       </span>
       {hover.card(
         <div>
           <div className="break-all font-mono text-caption text-ink-1">
-            续上（{resume.acpSessionId}）
+            {t("statusbar.resume.resumed", { id: resume.acpSessionId })}
           </div>
           {resume.note && (
             <div className="mt-1 break-words text-caption text-ink-2">{resume.note}</div>
@@ -144,6 +155,7 @@ function ResumeStatus({ resume }: { resume: SessionResumeState }) {
 }
 
 function SessionTag({ sessionId }: { sessionId: string }) {
+  const { t } = useTranslation();
   const [el, setEl] = useState<HTMLSpanElement | null>(null);
   const hover = useHoverCard();
   return (
@@ -153,10 +165,12 @@ function SessionTag({ sessionId }: { sessionId: string }) {
         {...hover.triggerProps(el)}
         className="mr-1 font-mono text-micro text-ink-3"
       >
-        s:{sessionId.slice(0, 8)}
+        {t("statusbar.sessionShort", { id: sessionId.slice(0, 8) })}
       </span>
       {hover.card(
-        <span className="break-all font-mono">session {sessionId}</span>,
+        <span className="break-all font-mono">
+          {t("statusbar.sessionTag", { id: sessionId })}
+        </span>,
       )}
     </>
   );
@@ -169,6 +183,7 @@ function EventStats({
   eventCount: number;
   lastEvent?: string;
 }) {
+  const { t } = useTranslation();
   const [el, setEl] = useState<HTMLSpanElement | null>(null);
   const hover = useHoverCard();
   return (
@@ -178,14 +193,15 @@ function EventStats({
         {...hover.triggerProps(el)}
         className="mr-1 max-w-40 truncate font-mono text-micro text-ink-3"
       >
-        ev {eventCount}
-        {lastEvent ? ` · ${lastEvent}` : ""}
+        {lastEvent
+          ? t("statusbar.events.shortWithLast", { eventCount, lastEvent })
+          : t("statusbar.events.short", { eventCount })}
       </span>
       {hover.card(
         <div>
-          <div>收到的 ACP 事件：{eventCount}</div>
+          <div>{t("statusbar.events.received", { eventCount })}</div>
           <div className="mt-1 break-all font-mono text-caption text-ink-2">
-            最后一条：{lastEvent ?? "-"}
+            {t("statusbar.events.last", { lastEvent: lastEvent ?? "-" })}
           </div>
         </div>,
       )}
@@ -202,15 +218,22 @@ function ProfileStatus({
   connectError: StatusBarProps["connectError"];
   connecting: boolean;
 }) {
+  const { t } = useTranslation();
   const [el, setEl] = useState<HTMLSpanElement | null>(null);
   const hover = useHoverCard();
   const detail = connectError
-    ? `连接失败：${connectError.code} ${connectError.message}`
+    ? t("statusbar.profile.connectError", {
+        code: connectError.code,
+        message: connectError.message,
+      })
     : profile.connected
-      ? `${profile.agentName ?? "agent"} · 协议 v${profile.protocolVersion ?? 1}`
+      ? t("statusbar.profile.connected", {
+          agent: profile.agentName ?? "agent",
+          version: profile.protocolVersion ?? 1,
+        })
       : connecting
-        ? "正在连接 agent…"
-        : "这个会话还没有连上 agent（打开会话会自动连）";
+        ? t("statusbar.profile.connecting")
+        : t("statusbar.profile.disconnected");
 
   return (
     <>
@@ -233,12 +256,12 @@ function ProfileStatus({
           }
           label={
             connectError
-              ? "连接失败"
+              ? t("statusbar.profile.statusFailed")
               : profile.connected
-                ? "已连接"
+                ? t("statusbar.profile.statusConnected")
                 : connecting
-                  ? "连接中…"
-                  : "未连接"
+                  ? t("statusbar.profile.statusConnecting")
+                  : t("statusbar.profile.statusDisconnected")
           }
         />
       </span>
