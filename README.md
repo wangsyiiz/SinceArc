@@ -5,7 +5,8 @@
 <h1 align="center">SinceArc</h1>
 
 <p align="center">
-  Windows 桌面上的 ACP 客户端：把 agent 的思考与工具调用从对话里拆出来，做成一条能回看的泳道。
+  An ACP client for Windows desktop that lifts the agent's thinking and tool calls out of the chat
+  and turns them into a swimlane you can look back at.
 </p>
 
 <p align="center">
@@ -15,111 +16,123 @@
   <a href="https://github.com/wangsyiiz/SinceArc/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/wangsyiiz/SinceArc/actions/workflows/release.yml/badge.svg"></a>
 </p>
 
+<p align="center">
+  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
+</p>
+
 ---
 
-## 这是什么
+## What this is
 
-SinceArc 是一个用 [ACP（Agent Client Protocol）](https://agentclientprotocol.com) 连 agent 的桌面客户端，
-Tauri 2 + React 19 + TypeScript + Rust，数据落本地 SQLite，不上传。
+SinceArc is a desktop client for agents speaking [ACP (Agent Client Protocol)](https://agentclientprotocol.com).
+Built with Tauri 2, React 19, TypeScript and Rust; everything is stored in a local SQLite database and never uploaded.
 
-它只做一件与别的客户端不一样的事：**过程与正文分家**。回答是回答，思考与工具调用进轨迹面板，
-两者靠锚点互相跳转——出了问题能回查「它当时为什么这么干」，而不用在一屏滚动里翻。
+It does one thing differently: **process is separated from prose.** Replies stay in the chat; thinking and
+tool calls go into a trace panel, and the two cross-link by anchor. When something goes wrong you can look back
+at *why* the agent did it, instead of scrolling through one endless message stream.
 
-<!-- 截图位：把图放到 assets/screenshots/ 后取消注释
+<!-- Screenshots: drop images into assets/screenshots/ and uncomment
 <p align="center"><img src="assets/screenshots/main.png" width="720"></p>
 -->
 
-## 为什么做这个
+## Why
 
-现有 agent 客户端大多把思考、工具调用、回答揉在一条消息流里，过程被正文淹没。我们的四条取舍：
+Most existing agent clients fold thinking, tool calls and answers into a single message stream, where process
+is drowned by prose. Our four trade-offs:
 
-1. **过程与正文分离** —— 正文只讲人话，过程进轨迹，互不污染；
-2. **本地优先** —— 会话、轨迹、设置全在 `%APPDATA%\com.sincearc.app`，不上传；
-3. **不替用户处置数据** —— 删账号、删文件这类不可逆操作必须显式授权，没有「贴心」的自动清理；
-4. **可诊断** —— 每一屏的性能都用 CDP 量得出来（滚动帧时间、虚拟行数、面板打开延迟），不靠「感觉快了」。
+1. **Process separated from prose** — the chat only says human things; the trace holds what happened;
+2. **Local first** — sessions, traces and settings live in `%APPDATA%\com.sincearc.app`; nothing is uploaded;
+3. **We never dispose of your data** — irreversible actions (deleting an account or a file) require explicit
+   authorization; there is no "helpful" automatic cleanup;
+4. **Diagnosable** — every screen's performance is measured over CDP (frame times, virtualized row counts,
+   panel open latency), not asserted as "feels fast".
 
-## 能力与边界
+## Capabilities and limits
 
-| 能做 | 说明 |
+| What it does | Notes |
 | --- | --- |
-| 连接 ACP agent | 本机进程或 WSL 里的进程 |
-| 流式回答 | 补间过渡、收口优先（轮结束立刻对齐全文），可在设置里关掉 |
-| markdown 渲染 | 围栏代码块 / 行内 code / 列表 / 表格 / 链接；只解析成元素，不注入 HTML |
-| 代码高亮 | Prism，五套主题，行内 code 同主题；默认 SinceArc 配色 |
-| 轨迹面板 | 列表虚拟化、图视图泳道、活动数 > 1500 自动降级、与正文互跳定位 |
-| 多 agent 群聊 | `@` 成员让它单开一条支线并行跑，答完弯回主干 |
-| 审批 | 按类型分档，支持「本轮同类自动允许」（内存策略，轮末失效） |
-| 外链安全打开 | scheme 白名单，前后端各校验一次 |
-| 存储提示 | 只统计、只提示，不自动删任何东西 |
+| Connects to ACP agents | Local processes, or processes inside WSL |
+| Streaming replies | Tweened output, seal-first (aligns to full text the moment a turn ends); can be turned off in Settings |
+| Markdown | Fenced code, inline code, lists, tables, links — parsed into elements, never injected as HTML |
+| Syntax highlighting | Prism, five themes, inline code uses the same theme; SinceArc palette by default |
+| Trace panel | Virtualized list, graph swimlanes, auto-degrades above 1500 activities, cross-jump with the chat |
+| Multi-agent group chat | `@` a member to run it on its own branch in parallel, merging back to the trunk |
+| Approvals | Per-kind permission requests, with "allow same kind for this turn" (in-memory, expires at turn end) |
+| External links | Scheme allowlist, validated on both sides of the IPC boundary |
+| Storage notice | Counts and warns only; nothing is ever deleted automatically |
 
-**明确没做的**（写在这里，省得装了才发现）：
+**What it does not do** (so you don't find out after installing):
 
-- 只有 **Windows x64**；macOS / Linux / ARM64 都没做，也没有未验证的产物；
-- **没有代码签名**，首次运行 SmartScreen 会提示「未知发布者」；
-- **没有自动更新**，升级靠手动下新包；
-- **没有单实例 / `sincearc .` 反向入口**；
-- 轨迹面板一次只取 50 轮（服务端上限 200 轮），**翻不到更早的轨迹**——分页在 Roadmap 里。
+- **Windows x64 only** — no macOS, no Linux, no ARM64, and no unverified artifacts;
+- **No code signing** — SmartScreen will warn about an unknown publisher on first run;
+- **No auto-update** — upgrades are a manual download;
+- **No single-instance mode / `sincearc .` reverse entry**;
+- The trace panel loads 50 turns at a time (server cap: 200), so **you cannot page back to older traces yet** —
+  pagination is on the roadmap.
 
-## 安装
+## Install
 
-> 首个版本 `v0.0.0` 还没有打 tag，下面描述的是发布后的路径。
+> The first release `v0.0.0` is not tagged yet; the path below describes what it will look like.
 
-1. 到 [Releases](https://github.com/wangsyiiz/SinceArc/releases) 下载 `SinceArc-<version>-win-x64.zip`（便携）或 `SinceArc_<version>_x64-setup.exe`（安装）；
-2. 便携版解压到任意目录（别在压缩包里直接双击），双击 `SinceArc.exe`；
-3. SmartScreen 提示时点「更多信息 → 仍要运行」（未签名）；
-4. 需要 WebView2 运行时：Win11 与较新的 Win10 自带；缺的话装
-   [Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。
+1. From [Releases](https://github.com/wangsyiiz/SinceArc/releases) grab `SinceArc-<version>-win-x64.zip` (portable)
+   or `SinceArc_<version>_x64-setup.exe` (installer);
+2. Portable: extract anywhere (do not double-click inside the zip), then run `SinceArc.exe`;
+3. If SmartScreen warns, choose "More info → Run anyway" (unsigned);
+4. WebView2 Runtime is required: Windows 11 and recent Windows 10 ship it. If missing, install the
+   [Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/).
 
-数据在 `%APPDATA%\com.sincearc.app`（`sincearc.db` + `logs\`）。删程序文件夹不会删数据，
-要彻底清干净就删这个目录。完整口径见 [`docs/distribution.md`](docs/distribution.md)。
+Data lives in `%APPDATA%\com.sincearc.app` (`sincearc.db` and `logs\`). Deleting the program folder does **not**
+delete your data; delete that directory to wipe everything. Full details in
+[`docs/distribution.md`](docs/distribution.md) (Chinese).
 
-## 从源码构建
+## Build from source
 
-需要：Windows、Node 20+、Rust stable（`rust-version = 1.77.2` 起）、WebView2 Runtime。
+Requires Windows, Node 20+, Rust stable (`rust-version = 1.77.2` or newer) and WebView2 Runtime.
 
 ```powershell
 npm ci
-npm run tauri -- build --no-bundle     # 产物：src-tauri/target/release/sincearc.exe
-npm run package:win                    # 产物：artifacts/windows/SinceArc-<version>-win-x64.zip
+npm run tauri -- build --no-bundle     # -> src-tauri/target/release/sincearc.exe
+npm run package:win                    # -> artifacts/windows/SinceArc-<version>-win-x64.zip
 ```
 
-开发：
+For development:
 
 ```powershell
-npm run tauri dev    # 前端 vite + Rust 壳（debug 版从 http://localhost:5173 取页面）
-npm run dev          # 只跑前端
+npm run tauri dev    # vite frontend + Rust shell (debug build loads http://localhost:5173)
+npm run dev          # frontend only
 ```
 
-> `npm install` / `npm ci` 必须用 **Windows 侧 Node**。在 WSL 里装会把 lockfile 的 rolldown 原生绑定
-> 写成 Linux 版，之后 `vite build` 报 `Cannot find native binding`。
+> Run `npm install` / `npm ci` with **Windows Node**. Installing from WSL writes the Linux build of the rolldown
+> native binding into the lockfile, and `vite build` then fails with `Cannot find native binding`.
 
-发布走 CI：推 `v*` tag 或手动跑 `release` workflow，Windows runner 上同时产出便携包与 NSIS 安装包
-（本地做不出安装包——Tauri 首次打包要从 GitHub 下 NSIS，见 [`docs/distribution.md`](docs/distribution.md) §6）。
+Releases are built in CI: push a `v*` tag or run the `release` workflow manually; the Windows runner produces
+both the portable zip and an NSIS installer. (You cannot build the installer locally — on first bundling Tauri
+downloads NSIS from GitHub; see [`docs/distribution.md`](docs/distribution.md) §6.)
 
-## 架构
+## Architecture
 
 ```
-src/                      前端：React 19 + TS + Tailwind 4（Vite 构建，产物内嵌进 exe）
-  lib/ipc/                命令封装（组件里禁止写命令字符串）
-  lib/virtual/            虚拟列表（唯一 import @tanstack/react-virtual 的地方）
-  lib/highlight/          Prism 适配 + 主题表
-  lib/markdown.ts         marked.lexer → 自己的块/行内模型（不产出 HTML 字符串）
+src/                      Frontend: React 19 + TS + Tailwind 4 (Vite; the bundle is embedded into the exe)
+  lib/ipc/                Command wrappers (no command strings inside components)
+  lib/virtual/            Virtual list (the only place allowed to import @tanstack/react-virtual)
+  lib/highlight/          Prism adapter + theme table
+  lib/markdown.ts         marked.lexer -> our own block/inline model (never emits HTML strings)
 src-tauri/src/
-  acp/                    ACP 连接、进程管理（Local / WSL 两种启动形态）、事件采集
-  db/                     SQLite（atoms 单一权威 + turns/sessions；编号迁移）
-  commands.rs             IPC 命令层（业务计算都在 Rust，前端只做展示）
-docs/                     规范（先写规范再写代码）
+  acp/                    ACP connection, process management (Local / WSL launch), event capture
+  db/                     SQLite (atoms as the single authority + turns/sessions; numbered migrations)
+  commands.rs             IPC command layer (business logic lives in Rust; the frontend only renders)
+docs/                     Specifications (Chinese) — written before the code
 ```
 
-改代码前必须知道的几条（详见 [`docs/dev-rules.md`](docs/dev-rules.md) 与 [`docs/architecture.md`](docs/architecture.md)）：
+Rules to know before touching code (details in [`docs/dev-rules.md`](docs/dev-rules.md), [`docs/architecture.md`](docs/architecture.md)):
 
-- ACP 类型只出现在 `src-tauri/src/acp/`，前端只吃 DTO；
-- 流式 token 进 zustand，不进 React Query cache；
-- 正文渲染**全程不碰 `dangerouslySetInnerHTML`**，链接只放行 `http` / `https` / `mailto`；
-- 轨迹只收通知类事件（thought / tool_call / mode / usage），对话正文不进轨迹；
-- 长列表行高由内容决定，估算值只喂虚拟化器，不写死 `height`。
+- ACP types exist only under `src-tauri/src/acp/`; the frontend consumes DTOs;
+- Streaming tokens go into zustand, not the React Query cache;
+- Message rendering **never touches `dangerouslySetInnerHTML`**; links allow `http` / `https` / `mailto` only;
+- The trace captures notification events only (thought / tool_call / mode / usage) — chat text never enters it;
+- Long-list row height is content-driven; estimates feed the virtualizer, never a fixed `height`.
 
-## 开发与门禁
+## Development and gates
 
 ```powershell
 npm run build                                      # tsc -b && vite build
@@ -128,51 +141,58 @@ cd src-tauri; cargo test --lib
 cd src-tauri; cargo clippy --all-targets -- -D warnings
 ```
 
-当前基线（`0.0.0`）：cargo **277** / node **228** / tsc 0 / vite ≈ 3s。
+Current baseline (`0.0.0`): cargo **277** / node **228** / tsc 0 / vite ~3s.
 
-> `kill_tree_reaps_forked_child_on_windows` 在机器忙时会超时变红：先查有没有残留 `powershell.exe`
-> （`tasklist /FI "IMAGENAME eq powershell.exe"`），清掉再跑；汇报时把「全量」与「单跑」两个读数都写出来。
+> `kill_tree_reaps_forked_child_on_windows` times out when the machine is busy: check for leftover
+> `powershell.exe` (`tasklist /FI "IMAGENAME eq powershell.exe"`) and clear them before re-running. Report both
+> the full-suite and the single-test numbers instead of a blanket "all green".
 
-## 文档
+## Documentation
 
-| 文档 | 内容 |
+The specs are written in Chinese; each line below links to the file.
+
+| Document | Content |
 | --- | --- |
-| [`docs/architecture.md`](docs/architecture.md) | 分层与数据流 |
-| [`docs/dev-rules.md`](docs/dev-rules.md) | 开发禁令与约定 |
-| [`docs/design-language.md`](docs/design-language.md) | 设计语言（面阶、材质、状态过渡一律补间） |
-| [`docs/desktop-ux.md`](docs/desktop-ux.md) | 桌面交互逐条口径（补间 / markdown / tooltip / 高亮 / 虚拟列表） |
-| [`docs/message-model.md`](docs/message-model.md) | 原子事件 → 块 → 消息 → 轮 |
-| [`docs/ipc-contract.md`](docs/ipc-contract.md) | 前后端契约与错误码 |
-| [`docs/permissions-spec.md`](docs/permissions-spec.md) | 审批与自动同意 |
-| [`docs/distribution.md`](docs/distribution.md) | 打包与分发（平台口径、产物、签名） |
-| [`docs/licensing.md`](docs/licensing.md) | 免费与订阅的边界、三条红线 |
+| [`docs/architecture.md`](docs/architecture.md) | Layers and data flow |
+| [`docs/dev-rules.md`](docs/dev-rules.md) | Development prohibitions and conventions |
+| [`docs/design-language.md`](docs/design-language.md) | Design language (surface steps, materials, all state transitions tweened) |
+| [`docs/desktop-ux.md`](docs/desktop-ux.md) | Per-case desktop UX rules (tween, markdown, tooltip, highlighting, virtual list) |
+| [`docs/message-model.md`](docs/message-model.md) | Atom → block → message → turn |
+| [`docs/ipc-contract.md`](docs/ipc-contract.md) | Frontend/backend contract and error codes |
+| [`docs/permissions-spec.md`](docs/permissions-spec.md) | Approvals and auto-consent |
+| [`docs/distribution.md`](docs/distribution.md) | Packaging and distribution (platform scope, artifacts, signing) |
+| [`docs/licensing.md`](docs/licensing.md) | Free vs. subscription boundary, three red lines |
 
-## 贡献
+## Contributing
 
-读 [`CONTRIBUTING.md`](CONTRIBUTING.md)，最小集是两条：
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) (Chinese). The minimum:
 
-1. **规范先行**：改行为先改 `docs/*.md`；写着「暂时就这样」「已知未收口」的地方是有意留的，别顺手改；
-2. **一个实现只做一份**：开工前确认没人在同一条线上做同一件事。
+1. **Spec first** — change `docs/*.md` before changing behaviour; passages marked as "kept for now" or
+   "known gap" are deliberate, don't quietly fix them;
+2. **One implementation, one copy** — check nobody is working the same line before you start.
 
-提交用 `git commit -s`（DCO），CI 会校验 `Signed-off-by`。PR 描述里贴读数，不要只写「跑过了」。
+Commits must be signed off (`git commit -s`, DCO); CI verifies `Signed-off-by`. Put measured numbers in the PR
+description, not "tested locally".
 
 ## Roadmap
 
-| 方向 | 内容 |
+| Area | Content |
 | --- | --- |
-| 分发 | 打首个 tag → 自动更新（tauri-plugin-updater）→ 官网 |
-| 功能 | 项目与位置（repos / worktree 隔离，E14）；会话打开态拓扑与错误态矩阵（E15） |
-| 体验 | 轨迹分页翻得到更早、消息行高度地板、长列表体感（E18） |
+| Distribution | First tag → auto-update (tauri-plugin-updater) → website |
+| Features | Projects and locations (repos / worktree isolation, E14); session-open state topology and error matrix (E15) |
+| UX | Trace pagination to reach older turns, message row height floor, long-list feel (E18) |
 
-## 许可
+## License
 
-[Apache-2.0](LICENSE)。客户端的一切功能永久免费且开源，不联我们的服务也能跑完整功能；
-将来若做订阅，卖的是**服务端能力**（账号同步 / 托管 agent / 团队协作），不是解锁客户端里的代码 ——
-边界与自我约束见 [`docs/licensing.md`](docs/licensing.md)。
+[Apache-2.0](LICENSE). Every client feature is free and open source, permanently, and works without connecting
+to our servers. If subscriptions arrive later, they sell **server-side capabilities** (account sync, hosted
+agents, team collaboration) — not the unlocking of code that already ships in the client. The boundary and our
+self-imposed red lines are written down in [`docs/licensing.md`](docs/licensing.md).
 
-`SinceArc` 名称与图标不随代码授权，fork 请改名换标（[`TRADEMARK.md`](TRADEMARK.md)）。
+The `SinceArc` name and logo are not licensed with the code; forks must rename and re-brand
+(see [`TRADEMARK.md`](TRADEMARK.md)).
 
-## 联系
+## Links
 
-- 仓库：<https://github.com/wangsyiiz/SinceArc>
-- 问题：<https://github.com/wangsyiiz/SinceArc/issues>
+- Repository: <https://github.com/wangsyiiz/SinceArc>
+- Issues: <https://github.com/wangsyiiz/SinceArc/issues>
