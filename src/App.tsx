@@ -16,6 +16,8 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DelegateDialog } from "@/components/DelegateDialog";
 import { MemberDetailPanel } from "@/components/MemberDetailPanel";
 import { MAIN_AGENT_ID } from "@/hooks/usePrompt";
+import { initI18n } from "@/i18n";
+import { normalizeLanguage } from "@/i18n/normalize";
 import { autoApproveCovered, type AutoApproveLevel } from "@/lib/auto-approve";
 import { settingsKey } from "@/lib/settings-key";
 import { normalizeCodeThemeId } from "@/lib/highlight/themes";
@@ -136,6 +138,11 @@ export default function App() {
    */
   const savedSettings = useRef(settingsKey(DEFAULT_THREAD_SETTINGS));
   useTheme(settings.theme);
+  // 语言跟着设置走：切换即时生效，不用重启（docs/i18n.md §2.3）。
+  // 首帧由 main.tsx 按系统语言先初始化，落库值读回来之后覆盖它。
+  useEffect(() => {
+    initI18n(settings.language ?? normalizeLanguage(navigator.language));
+  }, [settings.language]);
   useEffect(() => {
     document.documentElement.dataset.codeTheme = normalizeCodeThemeId(settings.codeTheme);
   }, [settings.codeTheme]);
@@ -519,8 +526,11 @@ export default function App() {
     settingsLoad()
       .then((report) => {
         if (!alive) return;
+        // 首启判定（docs/i18n.md §2.1）：库里没有 language（脏值也按「没有」处理）→ 按系统语言归一化；
+        // 判定结果交给保存副作用写库 —— savedSettings 用读回来的原值，键变了才会触发那一次保存。
+        const language = report.settings.language ?? normalizeLanguage(navigator.language);
         savedSettings.current = settingsKey(report.settings);
-        setSettings(report.settings);
+        setSettings({ ...report.settings, language });
         // 脏值不许静默：后端已经写了日志，这里再推进诊断面板，让用户当场看得见
         report.issues.forEach((issue) => diag(issue));
       })
@@ -1824,6 +1834,7 @@ export default function App() {
               onChangeCodeTheme={(codeTheme) =>
                 setSettings((s) => ({ ...s, codeTheme }))
               }
+              onChangeLanguage={(language) => setSettings((s) => ({ ...s, language }))}
             />
           )}
           {activeTab?.kind === "pr" && activePr && activeRepo && (

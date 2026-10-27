@@ -16,4 +16,9 @@ tweenEnabled: boolean,
 /**
  * markdown 代码块配色 id；未知值读回时回落 sincearc。
  */
-codeTheme: string, };
+codeTheme: string, 
+/**
+ * 界面语言：`zh-CN` | `en`。`None` = 库里还没有这个值（首启未判定，前端按系统语言判定后回写）；
+ * 脏值读回时也按 `None` 处理 —— 脏值不算用户的选择（docs/i18n.md §2.1）。
+ */
+language: string | null, };

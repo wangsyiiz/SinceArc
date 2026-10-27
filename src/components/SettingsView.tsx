@@ -28,6 +28,7 @@ import { CONTEXT_MESSAGES_DEFAULT, CONTEXT_MESSAGES_MAX } from "@/types";
 import { cn } from "@/lib/utils";
 import { newId } from "@/lib/ids";
 import type { CodeThemeId } from "@/lib/highlight/themes";
+import { normalizeLanguage, type Language } from "@/i18n/normalize";
 import {
   canSaveConnection,
   createEmptyConnection,
@@ -101,6 +102,8 @@ interface SettingsViewProps {
   onChangeTweenEnabled: (value: boolean) => void;
   /** markdown 代码块配色（独立于界面主题） */
   onChangeCodeTheme: (value: CodeThemeId) => void;
+  /** 界面语言（docs/i18n.md §2.3）：改完立即生效，同时落库 */
+  onChangeLanguage: (value: Language) => void;
   /** agent 发现（docs/discovery.md）：缓存结果、是否在扫、手动重扫 */
   discovery?: DiscoveryOutcome | null;
   discoveryScanning?: boolean;
@@ -130,6 +133,12 @@ const THEME_OPTIONS = THEMES.map((theme) => ({
   label: theme.label,
   icon: THEME_ICONS[theme.id],
 }));
+
+/** 语言档位：选项名用各自语言书写（切到英文后这一行仍然可读）。 */
+const LANGUAGE_OPTIONS: { value: Language; label: string }[] = [
+  { value: "zh-CN", label: "中文" },
+  { value: "en", label: "English" },
+];
 
 const DISCARD_UNSAVED_HEADING = "放弃未保存的修改";
 const DELETE_CONNECTION_HEADING = "删除连接";
@@ -282,6 +291,7 @@ export function SettingsView({
   onChangeMcpInheritDefault,
   onChangeTweenEnabled,
   onChangeCodeTheme,
+  onChangeLanguage,
   discovery = null,
   discoveryScanning = false,
   discoveryError = null,
@@ -1339,6 +1349,23 @@ export function SettingsView({
                           options={THEME_OPTIONS}
                           value={theme}
                           onChange={onCycleTheme}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-6 py-4">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-ui text-ink-1">语言</span>
+                            <Hint
+                              label="语言"
+                              text="界面文案与时间格式跟着切换，改完立即生效并落库。"
+                            />
+                          </div>
+                        </div>
+                        <Segmented
+                          ariaLabel="语言"
+                          options={LANGUAGE_OPTIONS}
+                          value={settings.language ?? normalizeLanguage(navigator.language)}
+                          onChange={onChangeLanguage}
                         />
                       </div>
                       <div className="py-4">

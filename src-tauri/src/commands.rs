@@ -477,6 +477,13 @@ pub fn is_valid_auto_approve(level: &str) -> bool {
     matches!(level, "off" | "edits")
 }
 
+/// 界面语言的**唯一来源**（docs/i18n.md §2）：前端 `src/i18n/normalize.ts` 的 `LANGUAGES` 必须与它一致。
+pub const LANGUAGE_IDS: [&str; 2] = ["zh-CN", "en"];
+
+pub fn is_valid_language(language: &str) -> bool {
+    LANGUAGE_IDS.contains(&language)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
@@ -494,6 +501,10 @@ pub struct AppSettingsDto {
     /// markdown 代码块配色 id；未知值读回时回落 sincearc。
     #[serde(default = "default_code_theme")]
     pub code_theme: String,
+    /// 界面语言：`zh-CN` | `en`。`None` = 库里还没有这个值（首启未判定，前端按系统语言判定后回写）；
+    /// 脏值读回时也按 `None` 处理 —— 脏值不算用户的选择（docs/i18n.md §2.1）。
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -513,6 +524,7 @@ impl Default for AppSettingsDto {
             mcp_inherit_default: true,
             tween_enabled: true,
             code_theme: DEFAULT_CODE_THEME.into(),
+            language: None,
         }
     }
 }
@@ -538,6 +550,15 @@ impl AppSettingsDto {
         }
         if !is_valid_auto_approve(&self.auto_approve_default) {
             return Err(CmdError::new(50001, "未知的自动同意档"));
+        }
+        // 显式报错而不是静默归一：写了不认识的语言就是调用方错了（docs/i18n.md §2）
+        if let Some(language) = &self.language {
+            if !is_valid_language(language) {
+                return Err(CmdError::new(
+                    50001,
+                    format!("未知语言 `{language}`（应为 {}）", LANGUAGE_IDS.join("/")),
+                ));
+            }
         }
         Ok(())
     }
@@ -5260,6 +5281,7 @@ mod settings_tests {
             mcp_inherit_default: true,
             tween_enabled: true,
             code_theme: DEFAULT_CODE_THEME.into(),
+            language: None,
         };
         let err = settings.validate().expect_err("99 必须被拒");
         assert_eq!(err.code, 50001);
@@ -5275,6 +5297,7 @@ mod settings_tests {
             mcp_inherit_default: true,
             tween_enabled: true,
             code_theme: DEFAULT_CODE_THEME.into(),
+            language: None,
         };
         let err = settings.validate().expect_err("未知主题必须被拒");
         assert_eq!(err.code, 50001);

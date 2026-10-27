@@ -3,12 +3,21 @@ import type { AutoApproveLevel } from "@/lib/auto-approve";
 import type { ThemeMode, ThreadSettings } from "@/types";
 import { invokeCmd } from "../client";
 import { normalizeCodeThemeId } from "@/lib/highlight/themes";
+import { isSupportedLanguage, type Language } from "@/i18n/normalize";
 
 const THEMES: readonly string[] = ["dark", "light", "system"];
 
 /** 后端的 theme 是 `String`（它自己校验过），这里收窄成前端的三值联合，兜底 dark。 */
 function asTheme(value: string): ThemeMode {
   return THEMES.includes(value) ? (value as ThemeMode) : "dark";
+}
+
+/**
+ * 后端返回的语言只可能是登记过的值或 `null`（`null` = 库里没有，或存的是脏值）：
+ * 脏值也按"未判定"处理，交回前端按系统语言重新判定（docs/i18n.md §2.1）。
+ */
+function asLanguage(value: string | null): Language | null {
+  return isSupportedLanguage(value) ? value : null;
 }
 
 /** 后端存的是字符串（它自己校验过），这里收窄成两值联合，兜底 off —— 拿不准就不替用户答。 */
@@ -35,6 +44,7 @@ export async function settingsLoad(): Promise<{
       mcpInheritDefault: report.settings.mcpInheritDefault,
       tweenEnabled: report.settings.tweenEnabled,
       codeTheme: normalizeCodeThemeId(report.settings.codeTheme),
+      language: asLanguage(report.settings.language),
     },
     issues: report.issues,
   };

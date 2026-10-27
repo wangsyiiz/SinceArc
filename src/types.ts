@@ -1,5 +1,6 @@
 import type { AgentCaps } from "@/lib/ipc/types.gen/AgentCaps";
 import { DEFAULT_CODE_THEME_ID, type CodeThemeId } from "./lib/highlight/themes.ts";
+import type { Language } from "./i18n/normalize";
 
 export type ThemeMode = "dark" | "light" | "system";
 
@@ -294,6 +295,8 @@ export interface ThreadSettings {
   tweenEnabled: boolean;
   /** markdown 代码块配色；与界面主题正交 */
   codeTheme: CodeThemeId;
+  /** 界面语言；`null` = 库里还没判定过（首启按系统语言判定后回写，docs/i18n.md §2.1） */
+  language: Language | null;
 }
 
 export const CONTEXT_MESSAGES_MAX = 20;
@@ -305,4 +308,5 @@ export const DEFAULT_THREAD_SETTINGS: ThreadSettings = {
   mcpInheritDefault: true,
   tweenEnabled: true,
   codeTheme: DEFAULT_CODE_THEME_ID,
+  language: null,
 };

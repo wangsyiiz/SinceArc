@@ -17,7 +17,8 @@ use crate::acp::AgentCaps;
 use serde::{Deserialize, Serialize};
 
 use crate::commands::{
-    is_valid_auto_approve, is_valid_code_theme, is_valid_theme, normalize_code_theme,
+    is_valid_auto_approve, is_valid_code_theme, is_valid_language, is_valid_theme,
+    normalize_code_theme,
     AppSettingsDto, ProfileDto, CONTEXT_MESSAGES_MAX, DEFAULT_CODE_THEME,
 };
 
@@ -31,6 +32,7 @@ const SETTINGS_KEY_AUTO_APPROVE: &str = "autoApproveDefault";
 const SETTINGS_KEY_MCP_INHERIT_DEFAULT: &str = "mcp_inherit_default";
 const SETTINGS_KEY_TWEEN: &str = "tween_enabled";
 const SETTINGS_KEY_CODE_THEME: &str = "code_theme";
+const SETTINGS_KEY_LANGUAGE: &str = "language";
 
 /// 结构版本：与 schema.sql 不符时整表重建（自用工具，会话数据可再生）
 const SCHEMA_VERSION: i64 = 6;
@@ -1011,6 +1013,18 @@ impl Db {
                     tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
                     issues.push(note);
                 }
+                SETTINGS_KEY_LANGUAGE if is_valid_language(&value) => {
+                    settings.language = Some(value)
+                }
+                SETTINGS_KEY_LANGUAGE => {
+                    // 脏值当「没判定过」：留 note，但不当成用户的选择 —— 前端会按系统语言重新判定并回写
+                    let note = format!(
+                        "设置项 {key} 的值 `{value}` 不认识（应为 {}），已按未设置处理",
+                        crate::commands::LANGUAGE_IDS.join("/")
+                    );
+                    tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
+                    issues.push(note);
+                }
                 _ => {}
             }
         }
@@ -1060,6 +1074,14 @@ impl Db {
                 normalize_code_theme(&settings.code_theme)
             ],
         )?;
+        // language 是 Option：`None` = 还没判定过，就不写这一行（脏值/未设置的语义保持一致）
+        if let Some(language) = &settings.language {
+            tx.execute(
+                "INSERT INTO settings(key, value) VALUES(?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![SETTINGS_KEY_LANGUAGE, language.as_str()],
+            )?;
+        }
         tx.commit()
     }
 
@@ -2580,6 +2602,7 @@ mod tests {
             mcp_inherit_default: true,
             tween_enabled: true,
             code_theme: "solarized".into(),
+            language: None,
         })
         .expect("save settings");
         assert_eq!(
@@ -2600,6 +2623,7 @@ mod tests {
             mcp_inherit_default: false,
             tween_enabled: false,
             code_theme: "github-dark".into(),
+            language: None,
         })
         .expect("save settings");
 
@@ -2685,6 +2709,7 @@ mod tests {
             mcp_inherit_default: true,
             tween_enabled: true,
             code_theme: "github-dark".into(),
+            language: None,
         })
         .expect("save settings");
         let loaded = db.load_settings().expect("load settings");
@@ -2734,10 +2759,67 @@ mod tests {
             mcp_inherit_default: true,
             tween_enabled: true,
             code_theme: "github-dark".into(),
+            language: None,
         })
         .expect("save settings");
         let (_, clean) = db.load_settings_report().expect("load report");
         assert!(clean.is_empty(), "合法值不该被报成脏值：{clean:?}");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn settings_language_is_none_until_judged() {
+        let (db, path) = temp_db();
+        assert_eq!(
+            db.load_settings().expect("load settings").language,
+            None,
+            "新库没有 language，就是「还没判定过」"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn settings_language_round_trip() {
+        let (db, path) = temp_db();
+        db.save_settings(&AppSettingsDto {
+            language: Some("zh-CN".into()),
+            ..Default::default()
+        })
+        .expect("save settings");
+        assert_eq!(
+            db.load_settings().expect("load settings").language.as_deref(),
+            Some("zh-CN")
+        );
+
+        // None 表示「没判定过」，不该把已有的值冲掉
+        db.save_settings(&AppSettingsDto {
+            language: None,
+            ..Default::default()
+        })
+        .expect("save settings");
+        assert_eq!(
+            db.load_settings().expect("load settings").language.as_deref(),
+            Some("zh-CN"),
+            "None 不写库，已有值保持"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn settings_language_dirty_value_is_reported_and_left_unset() {
+        let (db, path) = temp_db();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute_batch("INSERT INTO settings(key, value) VALUES ('language', 'fr-FR');")
+            .expect("seed settings");
+
+        let (settings, issues) = db.load_settings_report().expect("load report");
+        assert_eq!(settings.language, None, "脏值不算用户的选择，前端会重新判定");
+        assert!(
+            issues.iter().any(|i| i.contains("language") && i.contains("fr-FR")),
+            "脏值要有说明：{issues:?}"
+        );
         std::fs::remove_file(&path).ok();
     }
 
@@ -2758,6 +2840,7 @@ mod tests {
             mcp_inherit_default: false,
             tween_enabled: false,
             code_theme: "github-dark".into(),
+            language: None,
         })
         .expect("save settings");
 
@@ -2790,6 +2873,7 @@ mod tests {
             mcp_inherit_default: false,
             tween_enabled: false,
             code_theme: "github-dark".into(),
+            language: None,
         })
         .expect("save settings");
 

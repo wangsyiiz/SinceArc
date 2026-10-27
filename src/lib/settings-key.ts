@@ -16,5 +16,6 @@ export function settingsKey(settings: ThreadSettings): string {
     settings.mcpInheritDefault,
     settings.tweenEnabled,
     settings.codeTheme,
+    settings.language,
   ]);
 }
