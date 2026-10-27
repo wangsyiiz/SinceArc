@@ -12,7 +12,7 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20x64-lightgrey.svg">
   <img alt="Version" src="https://img.shields.io/badge/version-0.0.0-orange.svg">
-  <a href="../../actions/workflows/release.yml"><img alt="Release build" src="../../actions/workflows/release.yml/badge.svg"></a>
+  <a href="https://github.com/wangsyiiz/SinceArc/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/wangsyiiz/SinceArc/actions/workflows/release.yml/badge.svg"></a>
 </p>
 
 ---
@@ -64,7 +64,7 @@ Tauri 2 + React 19 + TypeScript + Rust，数据落本地 SQLite，不上传。
 
 > 首个版本 `v0.0.0` 还没有打 tag，下面描述的是发布后的路径。
 
-1. 到 [Releases](../../releases) 下载 `SinceArc-<version>-win-x64.zip`（便携）或 `SinceArc_<version>_x64-setup.exe`（安装）；
+1. 到 [Releases](https://github.com/wangsyiiz/SinceArc/releases) 下载 `SinceArc-<version>-win-x64.zip`（便携）或 `SinceArc_<version>_x64-setup.exe`（安装）；
 2. 便携版解压到任意目录（别在压缩包里直接双击），双击 `SinceArc.exe`；
 3. SmartScreen 提示时点「更多信息 → 仍要运行」（未签名）；
 4. 需要 WebView2 运行时：Win11 与较新的 Win10 自带；缺的话装
