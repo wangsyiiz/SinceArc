@@ -136,10 +136,11 @@ npm test                                           # node --test "src/**/*.test.
 | [`docs/ipc-contract.md`](docs/ipc-contract.md) | 前后端契约与错误码 |
 | [`docs/permissions-spec.md`](docs/permissions-spec.md) | 审批与自动同意 |
 | [`docs/distribution.md`](docs/distribution.md) | 打包与分发（平台口径、产物、签名） |
+| [`docs/licensing.md`](docs/licensing.md) | 免费与订阅的边界、三条红线、DCO 的取舍 |
 
 ## 贡献
 
-欢迎 issue 与 PR，但请先看两条硬规矩：
+完整规矩见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。最少要知道两条：
 
 1. **规范先行**：改行为先改 `docs/*.md`，规范里写着「暂时就这样」的地方不要顺手改掉；
 2. **一个实现只做一份**：开工前先看有没有人在同一条线上做同一件事（分支 / 看板卡）。
@@ -151,7 +152,7 @@ npm test                                           # node --test "src/**/*.test.
 - 新依赖要在 PR 里说清理由（体积 / 许可证 / 维护活跃度），并更新 `package-lock.json`（Windows 侧生成）。
 
 PR 要求：`cargo test --lib`、`cargo clippy --all-targets -- -D warnings`、`npm run build`、`npm test` 全绿，
-并在描述里贴读数（不是「跑过了」）。
+并在描述里贴读数（不是「跑过了」）。**每个提交带 `-s`（DCO）**，CI 会校验 `Signed-off-by`。
 
 ## Roadmap
 
@@ -164,7 +165,13 @@ PR 要求：`cargo test --lib`、`cargo clippy --all-targets -- -D warnings`、`
 
 ## 许可
 
-待定（见 issue / 看板 E19.2）。在 LICENSE 落地前，默认按「保留所有权利」处理，请先开 issue 沟通。
+**Apache-2.0**（见 [`LICENSE`](LICENSE) / [`NOTICE`](NOTICE)）。客户端的一切功能永久免费且开源，
+不联我们的服务也能跑完整功能；将来若做订阅，卖的是**服务端能力**（账号同步 / 托管 agent / 团队协作），
+不是解锁客户端里的代码。这条边界写在 [`docs/licensing.md`](docs/licensing.md)，包括我们给自己的三条红线。
+
+`SinceArc` 名称与图标不随代码授权：fork 请改名换标（[`TRADEMARK.md`](TRADEMARK.md)）。
+
+贡献用 **DCO**（`git commit -s`），不用签 CLA；细节见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
 
 ## 联系
 

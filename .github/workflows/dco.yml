@@ -1,0 +1,43 @@
+name: dco
+
+# DCO 校验：每个提交都要有 Signed-off-by（docs/licensing.md §6）。
+# 用 DCO 而不是 CLA 是有意的：贡献门槛最低，代价是不能整仓换协议。
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  signed-off:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 校验每个提交都有 Signed-off-by
+        shell: bash
+        run: |
+          set -uo pipefail
+          base='${{ github.event.pull_request.base.sha }}'
+          head='${{ github.event.pull_request.head.sha }}'
+          fail=0
+          count=0
+          for c in $(git rev-list "$base..$head"); do
+            count=$((count + 1))
+            msg=$(git log -1 --format=%B "$c")
+            if ! printf '%s\n' "$msg" | grep -qEi '^Signed-off-by: .+ <[^ ]+@[^ ]+>$'; then
+              subject=$(git log -1 --format=%s "$c")
+              echo "::error::提交 $c 缺少 Signed-off-by（用 git commit -s）: $subject"
+              fail=1
+            fi
+          done
+          echo "检查了 $count 个提交"
+          if [ "$fail" -ne 0 ]; then
+            echo "按 CONTRIBUTING.md §三 补上签名：git rebase --signoff <base> 或 git commit --amend -s"
+            exit 1
+          fi
+          echo "全部提交都有 Signed-off-by"

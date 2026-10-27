@@ -1,0 +1,17 @@
+SinceArc
+Copyright 2026 wangsyiiz
+
+This product includes software developed at third parties. The full set of
+third-party components and their licenses is described by the runtime
+dependency manifests shipped with this repository (`package-lock.json` for the
+frontend, `src-tauri/Cargo.lock` for the Rust side). Components that require it
+keep their own notice files in place.
+
+主依赖的许可（供快速核对）：
+  tauri / @tauri-apps/*            MIT OR Apache-2.0
+  react / react-dom               MIT
+  marked                          MIT
+  prismjs                         MIT
+  @tanstack/react-virtual         MIT
+  agent-client-protocol (Rust)    Apache-2.0
+  rusqlite                        MIT
