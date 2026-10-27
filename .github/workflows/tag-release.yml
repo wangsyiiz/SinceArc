@@ -1,0 +1,87 @@
+# 一键发版：点 Actions → tag-release → Run workflow。
+#
+# 它做三件事，全部从配置文件读，不需要人工输入版本号：
+#   1. 从 src-tauri/tauri.conf.json 读 version，校验它与 package.json 一致、格式是 x.y.z
+#   2. 建 annotated tag v<version> 并推上去（tag 已存在就直接失败，提醒改版本号）
+#   3. 派发 release.yml 在该 tag 上构建并建 Release
+#
+# 为什么要显式派发：用 GITHUB_TOKEN 推的 tag 不会触发其它工作流（GitHub 防递归），
+# 所以推完 tag 必须自己调一次 workflow_dispatch。
+# 重复派发不会出事：release.yml 的建 Release 步骤是幂等的（已存在就覆盖资产）。
+
+name: tag-release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 读版本号并校验
+        id: ver
+        run: |
+          set -euo pipefail
+          v=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          pkg=$(python3 -c "import json;print(json.load(open('package.json'))['version'])")
+
+          if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tauri.conf.json 的 version「$v」不是 x.y.z 形式，先把版本号改对"
+            exit 1
+          fi
+          if [ "$pkg" != "$v" ]; then
+            echo "::error::版本不一致：tauri.conf.json=$v，package.json=$pkg —— 改成同一个号再点一次"
+            exit 1
+          fi
+
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "读到版本号 v$v（package.json 一致）"
+
+      - name: 建 tag 并推送
+        id: tag
+        run: |
+          set -euo pipefail
+          v="${{ steps.ver.outputs.version }}"
+          tag="v$v"
+
+          # 本地与远端都查一遍：远端可能已经有同名 tag（之前发过），不能悄悄覆盖
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::tag $tag 已存在（本地）——发新版请先把 tauri.conf.json 的 version 递增"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::tag $tag 已存在（远端）——发新版请先把 tauri.conf.json 的 version 递增"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "SinceArc $tag"
+          git push origin "refs/tags/$tag"
+          echo "已推送 tag $tag（指向 ${{ github.sha }}）"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: 派发 release 工作流
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          # GITHUB_TOKEN 推的 tag 不触发 push 事件，这里显式开一次构建
+          gh workflow run release.yml --ref "$tag"
+          sleep 8
+          gh run list --workflow=release.yml --limit 3 \
+            --json databaseId,status,headBranch,url \
+            -q '.[] | select(.headBranch=="'"$tag"'") | "构建已排队：\(.url)（\(.status)）"' | head -1

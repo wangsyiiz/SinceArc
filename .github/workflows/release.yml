@@ -5,9 +5,13 @@ name: release
 # 为什么在 CI 上能出 NSIS、本地不能：Tauri 首次打包要从 GitHub 下载 nsis-3.11.zip，
 # 本机到 GitHub 不通（§6），而 runner 本身就在 GitHub 网络里，下载没问题。
 #
-# 触发：
-#   - 推 tag v*        → 出产物 + 建 GitHub Release 并挂附件
-#   - 手动 workflow_dispatch → 只出产物（不建 Release），用来自检流水线
+# 触发（两条）：
+#   - push tag v*        → 正式版：出产物 + 建 GitHub Release（带版号，成为 latest）
+#   - workflow_dispatch  → 手动跑：ref 是 tag 就照样建 Release；ref 是分支就只出产物（自检流水线）
+#
+# 发版只认 tag —— 合并到 main 不自动发版。日常发版不用手敲 git tag：
+# 用 Actions 里的「tag-release」工作流点一下 Run workflow，它从 tauri.conf.json 读版本号建 tag
+# 再派发本工作流（见 docs/distribution.md §5）。
 
 on:
   push:
@@ -16,6 +20,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   windows:
@@ -36,6 +44,25 @@ jobs:
           $v = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "version = $v"
+
+      - name: 校验版本一致性（tag 名 / tauri.conf.json / package.json）
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($pkg -ne $v) {
+            throw "版本不一致：tauri.conf.json=$v，package.json=$pkg —— 改成同一个号再重跑"
+          }
+          # tag 构建必须 tag 名与配置版本一致，否则 Release 名/附件名/客户端自报版本会互相打架，
+          # 自动更新会认为「已是最新」直接静默失效
+          if ("${{ github.ref }}" -like "refs/tags/*") {
+            if ("${{ github.ref_name }}" -ne "v$v") {
+              throw "tag 与版本不一致：tag=${{ github.ref_name }}，配置版本=v$v。要么删掉这个 tag 重打，要么把 tauri.conf.json 的 version 改成与 tag 相符的号"
+            }
+            Write-Host "版本一致性 OK：v$v"
+          } else {
+            Write-Host "非 tag 构建（${{ github.ref }}），只校验 package.json 与 tauri.conf.json 一致"
+          }
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -95,14 +122,14 @@ jobs:
           path: out/*
           if-no-files-found: error
 
-      - name: 建 Release 并挂附件（仅 tag）
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: 建/更新 Release（tag）
+        if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 用字符串数组拼发布说明：here-string 在 YAML 里会带上缩进，正文会变成代码块
           $v = "${{ steps.ver.outputs.version }}"
+          $tag = "${{ github.ref_name }}"
           $lines = @(
             "Windows x64 预览版（v$v）。",
             "",
@@ -118,7 +145,14 @@ jobs:
             "细节见 docs/distribution.md。"
           )
           ($lines -join "`n") | Set-Content -Path out/RELEASE_NOTES.md -Encoding utf8
-          gh release create "${{ github.ref_name }}" `
-            (Get-ChildItem out/* -File | Where-Object { $_.Name -ne 'RELEASE_NOTES.md' } | ForEach-Object { $_.FullName }) `
-            --title "SinceArc $v" `
-            --notes-file out/RELEASE_NOTES.md
+          $assets = Get-ChildItem out/* -File | Where-Object { $_.Name -ne 'RELEASE_NOTES.md' } | ForEach-Object { $_.FullName }
+
+          # 幂等：同一个 tag 重跑（构建失败重试、或派发与 tag push 都触发了）不该红
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $tag 已存在，覆盖同名资产与说明"
+            gh release upload $tag $assets --clobber
+            gh release edit $tag --title "SinceArc $v" --notes-file out/RELEASE_NOTES.md
+          } else {
+            gh release create $tag $assets --title "SinceArc $v" --notes-file out/RELEASE_NOTES.md
+          }

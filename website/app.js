@@ -90,7 +90,7 @@
     const item = current();
     dlLabel.textContent = isZh() ? "下载 Windows 版" : "Download for Windows";
     dlSub.textContent = pick(SUBTITLE);
-    dlMain.href = REL + item.file;
+    dlMain.href = item.url ?? REL + item.file;
     dlMain.setAttribute("download", item.file);
     dlMore.setAttribute("aria-label", isZh() ? "其他安装包" : "Other downloads");
     if (docLink) {
