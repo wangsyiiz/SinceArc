@@ -117,6 +117,10 @@ TTL 不进命令层，也不进 adapter。
 
 `gh_status` 返回：`{ available, version?, loggedIn, host, cwdOk, ghPath? }`。
 
+> **分期（2026-10-28）**：E9.1 只交付 `{ available, version?, loggedIn, ghPath? }` 四项。
+> `host`（存在多个 host 时的默认 host）与 `cwdOk`（当前工作目录能否跑 gh）语义还没定清楚，
+> 留到 E9.2 定义之后再补；**本卡不写空字段、不返回占位值**。
+
 探测顺序（找到即停）：
 
 1. `PATH` 里的 `gh`
