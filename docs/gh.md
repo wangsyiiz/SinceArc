@@ -208,6 +208,16 @@ interface GhPullRequest {
    不许当必然存在（否则已合并的 PR 渲染会崩）。
 3. `files` 是 `[{path, additions, deletions, changeType}]`，**没有 patch 内容**。
 
+`checks` 的汇总口径（2026-10-28 定，别处不另立说法）：
+
+- `statusCheckRollup` 里每条要么是 `CheckRun`（有 `status`/`conclusion`），要么是 `StatusContext`（有 `state`）；
+- 只要有一条 `conclusion ∈ {FAILURE, CANCELLED, TIMED_OUT, ACTION_REQUIRED, STARTUP_FAILURE}` 或 `state ∈ {FAILURE, ERROR}`
+  → `failing`；
+- 否则只要有一条 `status != COMPLETED` 或 `conclusion` 为空，或 `state` 为 `PENDING` → `pending`；
+- 其余（全部 SUCCESS / NEUTRAL / SKIPPED）→ `passing`；
+- **`statusCheckRollup` 为空（仓库没配 CI）也记 `pending`**，不记 `passing` —— 界面宁可显示「未完成」，
+  也不能给一个假的绿勾。
+
 ## 5. diff 与分页
 
 GitHub 没有「按行取 patch」的口子（REST 的 `pulls/{n}/files` 也没有 patch），所以：
