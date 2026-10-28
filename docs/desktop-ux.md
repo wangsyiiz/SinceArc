@@ -1241,3 +1241,45 @@ payload 形状：`{ toolCallId, title, kind, status, rawInput?, content?, locati
 4. 外层 `box-shadow` 含 `inset`（内边高光没被吃掉），`backdrop-filter` 含 `blur`。
 5. 输入 60 个字符不换行时，文字右端与发送按钮左端不重叠（比较 `scrollWidth` 与可用宽度）。
 6. `busy = true` 时停止键与插话键同时在右下，且停止键 x 更小。
+
+## 23. 输入区按「窗口卡片」语言收敛（2026-10-29 定）
+
+参考源：reactbits.dev 首页 `.lh-window` —— 从它构建产物 `index-*.css` 里读到的实测值，不是印象：
+
+```css
+.lh-window{
+  border-radius:18px;
+  background:rgba(24,21,30,.8);
+  box-shadow: 0 30px 70px rgba(0,0,0,.36), 0 14px 32px rgba(0,0,0,.26),   /* 外投影 */
+              inset 0 0 0 1px rgba(255,255,255,.08),                       /* 内描边 */
+              inset 0 1px 0 rgba(255,255,255,.07);                          /* 顶部高光 */
+  backdrop-filter:blur(24px) saturate(1.5);
+  padding:0 6px 6px;          /* 标题栏贴顶，内容三边内缩 6px */
+}
+.lh-window-bar{height:36px}   /* 标题栏 */
+.lh-window-status{height:32px}/* 底栏 */
+```
+
+**取**：半径 18px、`blur(24px) saturate(1.5)`、工具行 32px 的高度节奏、「内容三边内缩 6px」。
+**不取**：外投影（输入框在消息流里、不是浮层，压 70px 投影会让整条消息区发脏）；
+**不取**暗色下的 `inset 0 0 0 1px`（与 §1.8「暗色靠内边高光划界」冲突 —— 浅色侧 `--glass-border` 本来就是 1px，两个主题各自守住自己的分界方式）；
+**暂不取**半透明底色 `.8`：那要等窗口 `transparent` + Mica 定了一起做（§22 结尾），单独改 `--glass-1` 只会把不透明底搅浑。
+
+### 23.1 四条改动
+
+1. **外层**：`sc-glass rounded-card`（12px / blur 16 / saturate 1.6）→ `sc-window rounded-window`（18px / blur 24 / saturate 1.5）。新增 `--radius-window: 18px` 与 `.sc-window`，不动 `sc-glass`（全站浮层在用）。
+2. **删「ACP · stdio」**：连同 busy 时的「agent 正在输出」，i18n key `composer.agentOutput` 两侧一并删除。理由：这行原来在说「这条通道是什么」和「agent 在输出」——前者是常量（谁都知道自己在用 ACP），后者 §21 之后已经由活动行自己说。
+3. **上下文用量进工具行**：原来它是输入区上方一条独立的 `sc-glass` 卡片（`App.tsx` 里渲染），现在并进工具行左段，跟在附件按钮后面；`text-micro font-mono`，超宽 `truncate` + Tooltip 全文，`warn` 时 `text-warn-1`。输入区上方那条卡片删除。
+4. **自动批准去玻璃态**：触发器从 `triggerVariant="control"`（`sc-control` 带 `inset 0 1px 0` 内高光 + `bg-surface-2` + 1px 边）改成 `"ghost"`，与 MCP 按钮同一种形态 —— 无底、无边、无内高光，hover 才有面。
+
+### 23.2 为什么用量该在工具行
+
+用量是「这一轮还剩多少余量」的静态读数，不是事件 —— 它不该在消息流与输入区之间占一整行（那一条 `mb-2 px-3 py-1.5` 的玻璃卡把输入区往上顶了 30 多 px，而信息量只有一个数字）。放进工具行后，它和「附件 / MCP / 自动批准」这些「这一轮的配置项」在同一层，语义反而更准。
+
+### 23.3 验收（DOM 数值）
+
+1. 外层 `border-radius` = 18px；`backdrop-filter` 含 `blur(24px)` 与 `saturate(1.5)`。
+2. 工具行文本不含 `ACP`、不含 `stdio`（两种状态都查）。
+3. 用量文本所在元素的 rect 在输入卡片 rect 之内；文档里不再有输入区上方那条独立用量卡（`usage.line.*` 文本只出现一次）。
+4. 自动批准触发器的 `box-shadow` 为 `none`，与 MCP 按钮一致；两者 hover 前的 `background-color` 相同（透明）。
+5. busy 状态下不出现「agent 正在输出」文案。
