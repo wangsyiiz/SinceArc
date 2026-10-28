@@ -259,7 +259,56 @@ async function askPermission() {
   return { kind: permissionKind, options: options.map((o) => o.optionId), outcome, elapsedMs: Date.now() - startedAt };
 }
 
+async function runPromptMode(promptId, mode) {
+  const marker = process.env.FAKE_PROMPT_MARKER;
+  if (marker) {
+    fs.writeFileSync(marker, "prompt");
+  }
+  if (mode === "exit") {
+    process.exit(0);
+  }
+  if (mode === "silent") {
+    await new Promise(() => {});
+    return;
+  }
+  if (mode === "delay") {
+    const delayMs = Number(process.env.FAKE_PROMPT_DELAY_MS ?? 1500);
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    reply(promptId, { stopReason: "end_turn" });
+    return;
+  }
+  if (mode === "long") {
+    const totalMs = Number(process.env.FAKE_PROMPT_LONG_MS ?? 660000);
+    const intervalMs = Number(process.env.FAKE_PROMPT_INTERVAL_MS ?? 30000);
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < totalMs) {
+      const remaining = totalMs - (Date.now() - startedAt);
+      await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, remaining)));
+      send({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: activeSessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "tick" },
+          },
+        },
+      });
+    }
+    reply(promptId, { stopReason: "end_turn" });
+    return;
+  }
+  reply(promptId, { stopReason: "end_turn" });
+}
+
 async function runPrompt(promptId) {
+  const promptMode = process.env.FAKE_PROMPT_MODE ?? "full";
+  if (promptMode !== "full") {
+    log("session/prompt mode " + promptMode);
+    await runPromptMode(promptId, promptMode);
+    return;
+  }
   const requests = [
     { id: 100, path: "inside.txt" },
     { id: 101, path: "C:\\Windows\\win.ini" },

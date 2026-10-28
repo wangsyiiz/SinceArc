@@ -618,6 +618,9 @@ impl AgentProcess {
     }
 
     /// 等一条已发出的请求的响应；超时会从 pending 表摘掉，避免泄漏。
+    ///
+    /// 有界等待只用于握手 / load / steer 回执这类「一次短交互」。
+    /// 单轮 `session/prompt` 必须走 `await_response_unbounded`，不能靠传大数冒充无界。
     pub async fn await_response(
         &self,
         pending: PendingResponse,
@@ -626,9 +629,7 @@ impl AgentProcess {
         let PendingResponse { id, rx } = pending;
 
         match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(Ok(v))) => Ok(v),
-            Ok(Ok(Err(e))) => Err(TransportError::Agent(e)),
-            Ok(Err(_)) => Err(TransportError::Closed),
+            Ok(result) => Self::decode_response(result),
             Err(_) => {
                 self.pending
                     .lock()
@@ -636,6 +637,29 @@ impl AgentProcess {
                     .remove(&id);
                 Err(TransportError::Timeout(timeout.as_secs()))
             }
+        }
+    }
+
+    /// 等一条已发出的请求的响应，**不设墙钟上限**。
+    ///
+    /// 唯二能叫醒它的是：peer 回包（成功或 agent error）、或 pending sender 被 drop
+    /// （stdout 读循环结束时的 `map.clear()`）→ `TransportError::Closed`。
+    /// 单轮 prompt 与 delegate 子轮只走这条路径。
+    pub async fn await_response_unbounded(
+        &self,
+        pending: PendingResponse,
+    ) -> Result<Value, TransportError> {
+        let PendingResponse { rx, .. } = pending;
+        Self::decode_response(rx.await)
+    }
+
+    fn decode_response(
+        response: Result<Result<Value, Value>, oneshot::error::RecvError>,
+    ) -> Result<Value, TransportError> {
+        match response {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(TransportError::Agent(e)),
+            Err(_) => Err(TransportError::Closed),
         }
     }
 
@@ -651,6 +675,21 @@ impl AgentProcess {
     ) -> Result<Value, TransportError> {
         let pending = self.request_detached(method, params).await?;
         self.await_response(pending, timeout).await
+    }
+
+    /// 发一条请求并**无墙钟上限**地等响应。单轮 prompt 只用这条。
+    pub async fn request_unbounded(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, TransportError> {
+        let pending = self.request_detached(method, params).await?;
+        self.await_response_unbounded(pending).await
+    }
+
+    #[cfg(test)]
+    fn pending_count(&self) -> usize {
+        self.pending.lock().expect("pending map poisoned").len()
     }
 
     /// 回一条响应给 agent（用于 client 侧实现的 `fs/*`、`session/request_permission` 等）。
@@ -899,6 +938,29 @@ mod tests {
         panic!("timed out waiting for {}", path.display());
     }
 
+    async fn wait_for_nonempty_file(path: &std::path::Path) {
+        for _ in 0..500 {
+            if std::fs::read_to_string(path)
+                .map(|body| !body.is_empty())
+                .unwrap_or(false)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("timed out waiting for non-empty {}", path.display());
+    }
+
+    async fn wait_for_pending(proc: &AgentProcess) {
+        for _ in 0..500 {
+            if proc.pending_count() > 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("timed out waiting for a pending request");
+    }
+
     /// 读 pid 文件。**不 panic**：Windows 上 PowerShell 的 Set-Content 还在写时，
     /// 读取会撞共享冲突（os error 32）。这里把它当成"还没有结果"，交给调用方重试。
     fn read_pids(path: &std::path::Path) -> Vec<u32> {
@@ -922,6 +984,224 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         Vec::new()
+    }
+
+    fn fake_agent_profile(
+        dir: &std::path::Path,
+        mode: &str,
+        marker: &std::path::Path,
+        extra_env: &[(&str, &str)],
+    ) -> AgentProfile {
+        let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../scripts/fake-acp-agent.mjs");
+        assert!(
+            script.exists(),
+            "missing fake agent script at {}",
+            script.display()
+        );
+
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("FAKE_PROMPT_MODE".to_string(), mode.to_string());
+        env.insert(
+            "FAKE_PROMPT_MARKER".to_string(),
+            marker.to_string_lossy().into_owned(),
+        );
+        for (key, value) in extra_env {
+            env.insert((*key).to_string(), (*value).to_string());
+        }
+
+        #[cfg(windows)]
+        let default_node = "node.exe";
+        #[cfg(not(windows))]
+        let default_node = "node";
+
+        AgentProfile {
+            id: "test-prompt-timeout".into(),
+            name: "fake acp agent".into(),
+            launch: super::super::launch::Launch::Local,
+            program: std::env::var("SINCEARC_NODE").unwrap_or_else(|_| default_node.into()),
+            args: vec![script.to_string_lossy().into_owned()],
+            env,
+            default_cwd: dir.to_path_buf(),
+        }
+    }
+
+    async fn start_fake_agent(
+        dir: &std::path::Path,
+        mode: &str,
+        marker: &std::path::Path,
+        extra_env: &[(&str, &str)],
+    ) -> (
+        AgentProcess,
+        mpsc::Receiver<Incoming>,
+        mpsc::Receiver<String>,
+    ) {
+        let profile = fake_agent_profile(dir, mode, marker, extra_env);
+        let (proc, incoming, stderr) =
+            spawn(&profile, dir.to_str().expect("utf-8 temp dir")).expect("spawn fake agent");
+        let initialized = proc
+            .request(
+                "initialize",
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": {},
+                }),
+                Duration::from_secs(10),
+            )
+            .await;
+        if let Err(error) = initialized {
+            proc.kill().await;
+            panic!("fake agent initialize failed: {error}");
+        }
+        (proc, incoming, stderr)
+    }
+
+    async fn new_fake_session(proc: &AgentProcess, dir: &std::path::Path) -> String {
+        let created = proc
+            .request(
+                "session/new",
+                serde_json::json!({
+                    "cwd": dir.to_string_lossy().into_owned(),
+                    "mcpServers": [],
+                }),
+                Duration::from_secs(10),
+            )
+            .await
+            .expect("session/new");
+        created["sessionId"]
+            .as_str()
+            .expect("sessionId")
+            .to_string()
+    }
+
+    fn fake_prompt(session_id: &str) -> Value {
+        serde_json::json!({
+            "sessionId": session_id,
+            "prompt": [{ "type": "text", "text": "timeout test" }],
+        })
+    }
+
+    /// A 的安全底线：prompt 已经发出并收下，外部杀掉进程后，无界等待必须在秒级
+    /// 变成 `Closed`，而不是一直悬着或等某个墙钟阈值。
+    #[tokio::test]
+    async fn killing_agent_wakes_unbounded_prompt_with_closed() {
+        let dir = test_dir("prompt-closed");
+        let marker = dir.join("prompt-started");
+        let (proc, incoming, stderr) = start_fake_agent(&dir, "silent", &marker, &[]).await;
+        let session_id = new_fake_session(&proc, &dir).await;
+        let proc = Arc::new(proc);
+
+        let prompt_proc = Arc::clone(&proc);
+        let prompt = tokio::spawn(async move {
+            prompt_proc
+                .request_unbounded("session/prompt", fake_prompt(&session_id))
+                .await
+        });
+
+        wait_for_pending(&proc).await;
+        proc.kill().await;
+
+        let result = tokio::time::timeout(Duration::from_secs(8), prompt)
+            .await
+            .expect("the prompt must wake within seconds of the agent exiting")
+            .expect("prompt task panicked");
+        assert!(
+            matches!(result, Err(TransportError::Closed)),
+            "killing the agent must wake the main turn with Closed, got {result:?}"
+        );
+
+        let _keep_channels_alive = (incoming, stderr);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 长时间沉默不是失败：stub 收下 prompt 后 1.5s 才回结果，无界等待必须拿到 Ok。
+    /// `commands.rs` 的 Ok 分支把它收成 finished；这里证明传输层不会自行判死。
+    #[tokio::test]
+    async fn unbounded_prompt_survives_long_silence_then_returns_ok() {
+        let dir = test_dir("prompt-delay");
+        let marker = dir.join("prompt-started");
+        let (proc, incoming, stderr) = start_fake_agent(
+            &dir,
+            "delay",
+            &marker,
+            &[("FAKE_PROMPT_DELAY_MS", "1500")],
+        )
+        .await;
+        let session_id = new_fake_session(&proc, &dir).await;
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(6),
+            proc.request_unbounded("session/prompt", fake_prompt(&session_id)),
+        )
+        .await
+        .expect("a 1.5s silent stretch must not be treated as a failure")
+        .expect("silent prompt should still complete");
+        assert_eq!(result["stopReason"], "end_turn");
+
+        proc.kill().await;
+        let _keep_channels_alive = (incoming, stderr);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// steer 回执仍然有界：50ms 内没有回包就是 `Timeout`，且它只影响投递确认。
+    #[tokio::test]
+    async fn bounded_steer_ack_times_out_without_agent_reply() {
+        let dir = test_dir("steer-ack-timeout");
+        let marker = dir.join("prompt-started");
+        let (proc, incoming, stderr) = start_fake_agent(&dir, "silent", &marker, &[]).await;
+        let session_id = new_fake_session(&proc, &dir).await;
+
+        let pending = proc
+            .request_detached("session/prompt", fake_prompt(&session_id))
+            .await
+            .expect("write prompt");
+        wait_for_nonempty_file(&marker).await;
+        let started = tokio::time::Instant::now();
+        let result = proc
+            .await_response(pending, Duration::from_millis(50))
+            .await;
+        assert!(
+            matches!(result, Err(TransportError::Timeout(_))),
+            "a silent steer ack must time out, got {result:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        proc.kill().await;
+        let _keep_channels_alive = (incoming, stderr);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 手动长跑：11 分钟、每 30 秒一条 update，证明超过旧 600s 上限仍是 Ok。
+    ///   cargo test --lib acp::transport::tests::unbounded_prompt_survives_eleven_minutes -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "manual: keeps one prompt open for 11 minutes"]
+    async fn unbounded_prompt_survives_eleven_minutes() {
+        let dir = test_dir("prompt-eleven-minutes");
+        let marker = dir.join("prompt-started");
+        let (proc, incoming, stderr) = start_fake_agent(
+            &dir,
+            "long",
+            &marker,
+            &[
+                ("FAKE_PROMPT_LONG_MS", "660000"),
+                ("FAKE_PROMPT_INTERVAL_MS", "30000"),
+            ],
+        )
+        .await;
+        let session_id = new_fake_session(&proc, &dir).await;
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(720),
+            proc.request_unbounded("session/prompt", fake_prompt(&session_id)),
+        )
+        .await
+        .expect("11-minute prompt should not be killed by any wall-clock limit")
+        .expect("11-minute prompt should finish");
+        assert_eq!(result["stopReason"], "end_turn");
+
+        proc.kill().await;
+        let _keep_channels_alive = (incoming, stderr);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[cfg(unix)]
