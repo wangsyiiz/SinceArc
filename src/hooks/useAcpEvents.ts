@@ -18,6 +18,7 @@ import { denyPermission, parsePermissionOptions } from "@/hooks/usePermissions";
 import { now } from "@/lib/format";
 import { clog } from "@/lib/log";
 import { applyLock } from "@/lib/locks";
+import { applyToolCallFields, reduceToolCall, type ToolCallState } from "@/lib/tool-call";
 import { newId } from "@/lib/ids";
 import {
   LATE_SETTLE_QUIET_MS,
@@ -265,6 +266,8 @@ export function useAcpEvents({
   const lateTimers = useRef<Record<string, number>>({});
   /** ACP 会话 -> 最近一段迟到正文到达时间。 */
   const lateLastChunkAt = useRef<Record<string, number>>({});
+  /** ACP 会话 -> 最近一次 tool_call 的合并状态（`tool_call_update` 是增量）。 */
+  const toolCalls = useRef<Record<string, ToolCallState>>({});
   const acpToTurn = useRef<Record<string, string>>({});
   const flushDiag = useRef(0);
 
@@ -626,6 +629,30 @@ export function useAcpEvents({
         return;
       }
 
+      // 工具调用写进该 agent 自己的活动行（docs/desktop-ux.md §21.3）。
+      // `tool_call_update` 是增量：null 不覆盖，沿用后端 merge_tool_call 的语义。
+      // 终态（completed / failed）不重置行 —— 继续显示最后一次调用，直到下一次
+      // tool_call 覆盖或这一轮收口；否则短工具连着跑时标签会来回跳。
+      {
+        const reduced = reduceToolCall(
+          acpSid ? (toolCalls.current[acpSid] ?? null) : null,
+          su?.update as Record<string, unknown> | undefined,
+        );
+        if (reduced) {
+          if (acpSid) toolCalls.current[acpSid] = reduced.nextState;
+          const fields = reduced.fields;
+          if (uiSid && acpSid && fields) {
+            const actId = `act-stream-${acpSid}`;
+            patchSession(uiSid, (s) => {
+              const next = applyToolCallFields(s.acts, actId, fields);
+              // 找不到该行（事件不属于当前界面会话 / 这一轮已收口）就不新建行
+              return next ? { ...s, acts: next } : s;
+            });
+          }
+          return;
+        }
+      }
+
       // 思考块和正文块用的是同一个 messageId 分配器：它们带 id 就足以证明
       // 「这个 agent 会给一段输出打 id」，插话回执正是靠这个区分（无需等正文首字）。
       if (su?.update?.sessionUpdate === "agent_thought_chunk") {
@@ -710,6 +737,8 @@ export function useAcpEvents({
         settleLateStream(acpSid, "next-prompt");
         delete lateUntil.current[acpSid];
         awaiting.current[acpSid] = true;
+        // 新一轮：上一条工具调用是上一轮的事，别让第一条 tool_call_update 继承它。
+        delete toolCalls.current[acpSid];
         // 这里**不清** messageId 的证据：它说的是「这个 agent 会不会给正文分组」这个属性，
         // 不是「这一轮有没有分过组」。每轮清掉会让每轮开头几秒都判定成「不能插话」，
         // 而 hermes 是先想后写，正好整段时间都插不进去。

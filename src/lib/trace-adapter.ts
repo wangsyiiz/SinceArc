@@ -350,7 +350,8 @@ function rawInputValue(value: unknown): string {
   return typeof value === "string" ? value : (JSON.stringify(value) ?? String(value));
 }
 
-function rawInputLines(value: unknown): string[] {
+/** 把 ACP 的 `rawInput` 展开成逐行文本。活动行与轨迹卡片共用同一套展开。 */
+export function rawInputLines(value: unknown): string[] {
   if (typeof value === "string") return value.split("\n");
   if (Array.isArray(value)) return value.map(rawInputValue);
   const obj = recordOf(value);
