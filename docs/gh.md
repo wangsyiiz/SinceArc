@@ -332,19 +332,36 @@ E9 原卡里「单页 ≤ 200 行」据此改成「客户端对 patch 切片，�
 
 ## 7. 验收与冒烟映射
 
-| 验收点 | 怎么验 | 期望读数（真实） |
-| --- | --- | --- |
-| gh 未安装 → 50710 + 安装指引 | 把 `PATH` 与 4 个探测路径都弄空（临时改目录或重命名） | 栏内出现三步指引，命令可复制，无崩溃 |
-| gh 已安装 → `available=true` | 真机点「重新检测」（Windows，2026-10-28） | `available=true`；`version=2.103.3`；`ghPath=C:\Program Files\GitHub CLI\gh.exe`（`where.exe gh` 无输出 ⇒ 命中的是第 2 条固定路径）；`loggedIn=true`，账号 `wangsyiiz` |
-| 未登录 → 50711 | `GH_TOKEN=bad` 或 `gh auth logout` | 只显示「登录」一步 |
-| 列表可用 | `gh pr list --state all --limit 30 --json …` | 5 条 PR，1022–1130 ms，1,765 B |
-| 已合并 PR 可渲染 | 打开 `#5`（merged） | `mergeable=unknown` 不崩，checks 显示 signed-off |
-| 详情 | `gh pr view <n> --json …` | ~1.1 s，3,174 B |
-| diff 切片 | `gh_pr_diff(3, 0, 200)` | 首页 200 行，整包 39,766 B 落缓存 |
-| 仓库不存在 → 50713 | 指向 `wangsyiiz/nope-xyz-123` | 人话错误，不显示空列表 |
-| 目录不是 git 仓库 → 50717 | 选一个非仓库目录（如 `C:\Users\picke`）当项目 | 栏内「还不是 git 仓库」，与「没有 PR」区分得开 |
-| 身份解析 | `gh_repo_resolve("C:\\source\\sincearc")` | `host=github.com`、`owner=wangsyiiz`、`name=SinceArc` |
-| 不写 token | 全仓搜 `gh auth token` | 0 处 |
+场景号对应 `scripts/smoke-gh.mjs`：`A*` 跑真实 `gh` 取后端读数，`B*` 用仓库里的 fixtures 打桩读 DOM。
+
+| 验收点 | 怎么验 | 期望读数（真实） | 冒烟场景 |
+| --- | --- | --- | --- |
+| gh 未安装 → 50710 + 安装指引 | 把 `PATH` 与 4 个探测路径都弄空（临时改目录或重命名） | 栏内出现三步指引，命令可复制，无崩溃 | B1；段 A1 缺失时其余 A 项 skip |
+| gh 已安装 → `available=true` | 真机点「重新检测」（Windows，2026-10-28） | `available=true`；`version=2.103.3`；`ghPath=C:\Program Files\GitHub CLI\gh.exe`（`where.exe gh` 无输出 ⇒ 命中的是第 2 条固定路径）；`loggedIn=true`，账号 `wangsyiiz` | A1 / A2 |
+| 未登录 → 50711 | `GH_TOKEN=bad` 或 `gh auth logout` | 只显示「登录」一步 | A7 / B2 |
+| 列表可用 | `gh pr list --state all --limit 30 --json …` | 5 条 PR，1022–1130 ms，1,765 B | A3 / B3 |
+| 已合并 PR 可渲染 | 打开 `#5`（merged） | `mergeable=unknown` 不崩，checks 显示 signed-off | A4 / B4 |
+| 详情 | `gh pr view <n> --json …` | ~1.1 s，3,174 B | A4 / B5 |
+| diff 切片 | `gh_pr_diff(3, 0, 200)` | 首页 200 行，整包 39,766 B 落缓存 | A5 / B6 |
+| 仓库不存在 → 50713 | 指向 `wangsyiiz/nope-xyz-123` | 人话错误，不显示空列表 | A6 / B7 |
+| 目录不是 git 仓库 → 50717 | 选一个非仓库目录（如 `C:\Users\picke`）当项目 | 栏内「还不是 git 仓库」，与「没有 PR」区分得开 | B8 |
+| 身份解析 | `gh_repo_resolve("C:\\source\\sincearc")` | `host=github.com`、`owner=wangsyiiz`、`name=SinceArc` | B3（打桩返回同一身份） |
+| 不写 token | 全仓搜 `gh auth token` | 0 处 | —（本脚本不覆盖，另跑搜索） |
+
+跑法（先构建 `dist`；Chromium 与 playwright 路径按本机实际值替换）：
+
+```
+python3 -m http.server 4181 --directory dist &
+PW_MODULE=/home/jerry/.local/lib/node_modules/playwright/index.mjs \
+  node scripts/smoke-gh.mjs --base http://127.0.0.1:4181/index.html \
+  --chromium /usr/sbin/chromium-browser --json <scratch>/smoke-gh.json
+```
+
+**段 A 的数字会随环境与仓库状态漂移**，脚本每次打印的是当次实测：上面「期望读数」列是 2026-10-28 的
+Windows 首测基线（`gh 2.103.3` / 5 条 PR / diff 974 行）。同一脚本在 WSL 侧跑时命中 Linux 的 `gh 2.97.0`，
+PR 条数按当时仓库状态（2026-10-28 晚实测 17 条：2 open / 14 merged / 1 closed，2,036 ms，12,070 B），
+A4/A5 取列表里第一条 merged 的 PR。这些差异是数据源的差异，不是回归 —— 判回归只看「✔/✖」与 `50713 / 50711`
+这两个信号是否仍为 true。
 
 ## 8. 不做
 
