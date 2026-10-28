@@ -50,7 +50,7 @@ Tauri 的 `downloadBootstrapper` 在安装时联网装。
 ## 5. 版本与命名
 
 - 版本号口径：**从 0.0.0 起**，只递增末尾位直到功能面稳定再动次版本；Git tag 用 `v0.0.0` 对应同一个号。
-- 版本号单一来源：`src-tauri/tauri.conf.json` 的 `version`（当前 `0.0.0`，**从 0 起算**：首个可用预览版就是 0.0.0，不占 1.x），前端与包名都从它派生，不另设一份。
+- 版本号单一来源：`src-tauri/tauri.conf.json` 的 `version`（**从 0 起算**：首个可用预览版是 0.0.0，不占 1.x；当前号看文件本身），前端与包名都从它派生，不另设一份。
 - exe 的 `ProductVersion` / `FileVersion` 由 Tauri 写入，验收时看文件属性。
 - 便携包文件名带版本，同一目录不覆盖旧包（`SinceArc-0.0.0-win-x64.zip`、`SinceArc-0.0.1-win-x64.zip` 并存）。
   另有一份不带版本号的稳定文件名（`SinceArc-win-x64.zip`），给 `releases/latest/download/` 用。
