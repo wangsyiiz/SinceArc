@@ -622,7 +622,6 @@ export const en: Record<MessageKey, string> = {
   "composer.mention.emptyGroup": "No members in this group yet — use + in the left sidebar to add people before @-mentioning",
   "composer.mention.noMatch": "No member matches @{{query}}",
   "composer.placeholder": "Type a message; Enter to send, Shift+Enter for a new line",
-  "composer.agentOutput": "agent is responding",
   "composer.revoke": "Click to revoke allow-all for this turn",
   "composer.turnPolicy": "This turn · {{kinds}} · allowed",
   "composer.autoApprove.aria": "Auto-approve: whether to answer permission requests from the agent for you",

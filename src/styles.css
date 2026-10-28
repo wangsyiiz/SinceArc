@@ -278,6 +278,8 @@
   --color-warn-1: var(--warn);
 
   --radius-card: 12px;
+  /* 输入区卡片（§23）：参考 reactbits `.lh-window` 的 18px 半径 */
+  --radius-window: 18px;
 
   /* 字号（§1.6）：text-caption / text-small / text-ui / text-body / text-lead / text-title */
   --text-micro: var(--fs-micro);
@@ -348,6 +350,18 @@ body {
   background: var(--glass-1);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--edge-highlight);
+}
+
+/*
+ * 输入区卡片（§23）：取 reactbits `.lh-window` 的半径与失焦深度
+ * （18px / blur 24px saturate 1.5），不取它的外投影 —— 它在消息流里，不是浮层。
+ */
+.sc-window {
+  background: var(--glass-1);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
   border: 1px solid var(--glass-border);
   box-shadow: var(--edge-highlight);
 }

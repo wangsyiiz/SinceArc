@@ -1893,19 +1893,6 @@ export default function App() {
                         </button>
                       )}
                       <div className="pointer-events-auto">
-                        {usageLine && (
-                          <div
-                            className={`sc-glass mb-2 flex items-center gap-2 rounded-md px-3 py-1.5 ${
-                              usageLine.warn ? "text-warn-1" : "text-ink-3"
-                            }`}
-                            style={{
-                              fontSize: "var(--fs-caption)",
-                              lineHeight: "var(--lh-caption)",
-                            }}
-                          >
-                            <span className="truncate">{usageLine.text}</span>
-                          </div>
-                        )}
                         {isStopping && (
                           <div className="sc-glass mb-2 flex items-center gap-2 rounded-card px-3 py-1.5 text-caption text-ink-2">
                             <span className="size-1.5 animate-pulse rounded-full bg-warn-1" />
@@ -1914,6 +1901,7 @@ export default function App() {
                         )}
                         <Composer
                           busy={state.busy}
+                          usage={usageLine}
                           onSend={sendInGroup}
                           onSteer={sendSteer}
                           steerGate={steerMode}

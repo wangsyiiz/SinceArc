@@ -622,7 +622,6 @@ export const zhCN = {
   "composer.mention.emptyGroup": "群里还没有成员 —— 点左栏的 + 把人拉进来，才能 @ 到",
   "composer.mention.noMatch": "没有匹配 @{{query}} 的成员",
   "composer.placeholder": "输入消息，Enter 发送，Shift+Enter 换行",
-  "composer.agentOutput": "agent 正在输出",
   "composer.revoke": "点击撤销本轮同类放行",
   "composer.turnPolicy": "本轮 · {{kinds}} · 已放行",
   "composer.autoApprove.aria": "自动同意：agent 发来的权限请求要不要替你答",

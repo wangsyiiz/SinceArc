@@ -38,6 +38,8 @@ interface ComposerProps {
   sessionProfile?: AgentProfile;
   /** 会话名单减少后的显式重连 */
   onReconnectMcp?: () => Promise<void>;
+  /** 本轮上下文用量（§23）：并进工具行，替代原来输入区上方那条独立玻璃卡 */
+  usage?: { text: string; warn: boolean } | null;
 }
 
 export function Composer({
@@ -57,6 +59,7 @@ export function Composer({
   sessionId,
   sessionProfile,
   onReconnectMcp,
+  usage,
 }: ComposerProps) {
   const { t } = useTranslation();
   const [value, setValue] = useState("");
@@ -251,12 +254,12 @@ export function Composer({
       <div
       ref={inputBoxRef}
       className={cn(
-        "sc-glass rounded-card transition-colors focus-within:border-accent-1",
+        "sc-window rounded-window transition-colors focus-within:border-accent-1",
         busy && "border-accent-1/25",
       )}
     >
-      {/* 工具行（上，§22）：附件 / 状态标识 ｜ MCP / 撤销 / 自动批准。发送键不在这里 —— 它浮动在输入框右下角 */}
-      <div className="flex items-center gap-1 px-2 pt-1.5 pb-1">
+      {/* 工具行（上，§22/§23）：附件 / 上下文用量 ｜ MCP / 撤销 / 自动批准。发送键不在这里 —— 它浮动在输入框右下角 */}
+      <div className="flex h-8 items-center gap-1 px-2">
         <Tooltip label={t("ui.button.addAttachment")}>
           <Button
             variant="ghost"
@@ -267,9 +270,18 @@ export function Composer({
             <Paperclip className="size-3.5" />
           </Button>
         </Tooltip>
-        <span className="ml-0.5 font-mono text-micro text-ink-3">
-          {busy ? t("composer.agentOutput") : "ACP · stdio"}
-        </span>
+        {usage && (
+          <Tooltip label={usage.text}>
+            <span
+              className={cn(
+                "ml-1 min-w-0 truncate font-mono text-micro",
+                usage.warn ? "text-warn-1" : "text-ink-3",
+              )}
+            >
+              {usage.text}
+            </span>
+          </Tooltip>
+        )}
 
         <div className="ml-auto flex items-center gap-1">
           {sessionId && (
@@ -299,6 +311,7 @@ export function Composer({
             ariaLabel={t("composer.autoApprove.aria")}
             align="end"
             compact
+            triggerVariant="ghost"
             disabled={autoApproveCovered}
             disabledReason={
               autoApproveCovered
