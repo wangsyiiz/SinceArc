@@ -255,75 +255,8 @@ export function Composer({
         busy && "border-accent-1/25",
       )}
     >
-      <textarea
-        ref={ref}
-        value={value}
-        rows={1}
-        spellCheck={false}
-        placeholder={placeholder ?? t("composer.placeholder")}
-        onChange={(e) => {
-          const next = e.target.value;
-          setValue(next);
-          syncMention(next, e.target.selectionStart ?? 0);
-          syncSlash(next);
-        }}
-        onClick={(e) => syncMention(value, e.currentTarget.selectionStart ?? 0)}
-        onKeyDown={(e) => {
-          if (slashVisible) {
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setSlashActive((i) => (i + 1) % slashItems.length);
-              return;
-            }
-            if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setSlashActive((i) => (i - 1 + slashItems.length) % slashItems.length);
-              return;
-            }
-            if ((e.key === "Enter" || e.key === "Tab") && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              pickSlash(slashItems[Math.min(slashActive, slashItems.length - 1)]);
-              return;
-            }
-            if (e.key === "Escape") {
-              e.preventDefault();
-              setSlashOpen(false);
-              return;
-            }
-          }
-          // 补全列表开着的时候，方向键/回车/Tab 归它用
-          if (mention && candidates.length > 0) {
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setActive((i) => (i + 1) % candidates.length);
-              return;
-            }
-            if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setActive((i) => (i - 1 + candidates.length) % candidates.length);
-              return;
-            }
-            if ((e.key === "Enter" || e.key === "Tab") && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              pick(candidates[Math.min(active, candidates.length - 1)].handle);
-              return;
-            }
-          }
-          if (e.key === "Escape" && mention) {
-            e.preventDefault();
-            setMention(null);
-            return;
-          }
-          if (e.key === "Enter" && !e.shiftKey) {
-            // 中文输入法组合期间不要发送
-            if (e.nativeEvent.isComposing) return;
-            e.preventDefault();
-            submit();
-          }
-        }}
-        className="sc-selectable max-h-50 w-full resize-none bg-transparent px-3.5 pt-3 pb-0.5 text-ui leading-relaxed text-ink-1 focus-visible:outline-0 placeholder:text-ink-3"
-      />
-      <div className="flex items-center gap-1 px-2 pb-1.5">
+      {/* 工具行（上，§22）：附件 / 状态标识 ｜ MCP / 撤销 / 自动批准。发送键不在这里 —— 它浮动在输入框右下角 */}
+      <div className="flex items-center gap-1 px-2 pt-1.5 pb-1">
         <Tooltip label={t("ui.button.addAttachment")}>
           <Button
             variant="ghost"
@@ -384,6 +317,86 @@ export function Composer({
           {busy && steerReason && (
             <span className="mr-1 text-micro text-ink-3">{steerReason}</span>
           )}
+        </div>
+      </div>
+
+      {/* 输入区（下，§22）：只加 1px 暗淡描边，底仍透出外层玻璃的内边高光 */}
+      <div className="relative px-1.5 pb-1.5">
+        <textarea
+          ref={ref}
+          value={value}
+          rows={1}
+          spellCheck={false}
+          placeholder={placeholder ?? t("composer.placeholder")}
+          onChange={(e) => {
+            const next = e.target.value;
+            setValue(next);
+            syncMention(next, e.target.selectionStart ?? 0);
+            syncSlash(next);
+          }}
+          onClick={(e) => syncMention(value, e.currentTarget.selectionStart ?? 0)}
+          onKeyDown={(e) => {
+            if (slashVisible) {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setSlashActive((i) => (i + 1) % slashItems.length);
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setSlashActive((i) => (i - 1 + slashItems.length) % slashItems.length);
+                return;
+              }
+              if ((e.key === "Enter" || e.key === "Tab") && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                pickSlash(slashItems[Math.min(slashActive, slashItems.length - 1)]);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setSlashOpen(false);
+                return;
+              }
+            }
+            // 补全列表开着的时候，方向键/回车/Tab 归它用
+            if (mention && candidates.length > 0) {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setActive((i) => (i + 1) % candidates.length);
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setActive((i) => (i - 1 + candidates.length) % candidates.length);
+                return;
+              }
+              if ((e.key === "Enter" || e.key === "Tab") && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                pick(candidates[Math.min(active, candidates.length - 1)].handle);
+                return;
+              }
+            }
+            if (e.key === "Escape" && mention) {
+              e.preventDefault();
+              setMention(null);
+              return;
+            }
+            if (e.key === "Enter" && !e.shiftKey) {
+              // 中文输入法组合期间不要发送
+              if (e.nativeEvent.isComposing) return;
+              e.preventDefault();
+              submit();
+            }
+          }}
+          className={cn(
+            "sc-selectable max-h-50 min-h-19 w-full resize-none rounded-control border border-line-1 bg-transparent px-3 py-2.5 text-ui leading-relaxed text-ink-1 focus-visible:outline-0 placeholder:text-ink-3",
+            // 右下浮动键的避让（§22.3）：busy 时多一个带文字的插话键
+            busy ? "pr-26" : "pr-19",
+          )}
+        />
+
+        {/* 浮动键（§22）：absolute 不占布局，bottom-2 right-2 与输入框右下角对齐 */}
+        <div className="absolute right-3 bottom-3 flex items-center gap-1">
           {busy ? (
             <>
               <Tooltip label={t("ui.button.stop")}>
