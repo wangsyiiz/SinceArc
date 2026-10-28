@@ -1322,3 +1322,20 @@ payload 形状：`{ toolCallId, title, kind, status, rawInput?, content?, locati
 3. 环 `<svg>` 存在且 `stroke-dashoffset` 随 `percent` 变化（2% 与 82% 两个用例读数不同）。
 4. 环中央有 `Layers` 图标元素。
 5. `percent ≥ 80` 时环的 `stroke` = `--warn`。
+
+### 24.3 焦点归属与工具行内缩
+
+**聚焦框必须落在输入框自己身上**，不能由外层卡片 `focus-within` 顶替。原来的写法有两个毛病，
+实测都量到了：
+
+1. 点进输入框时亮的是**整张卡片**的 1px 边框（`focus-within:border-accent-1`），看起来像「整块控件被选中」；
+2. 同时 `textarea` 自己冒出浏览器默认 outline（`outline: solid`）—— 因为 `focus-visible:outline-0`
+   只管键盘聚焦，鼠标点进去不触发 `:focus-visible`，于是两层框一起出现。
+
+改成：外层卡片不再响应 focus；`.sc-well:focus` 把自己的 inset 描边换成 `--a1`；
+`textarea` 写 `focus:outline-0 focus-visible:outline-0` —— 不能用裸的 `outline-0`/`outline-none`，
+样式棘轮只放行「同一 className 里带 `focus-visible:`」的写法（保留键盘焦点的语义）。
+
+**工具行内缩与输入区取同一个值**：原来工具行 `px-2`（8px）、输入区 `p-1`（4px），
+附件按钮左边缘 x=9、输入框左边缘 x=5，差 4px —— 视觉上就是「上面那行比输入框缩进去一点」。
+两处统一 4px 后都是 x=5。（垂直方向本来就齐：工具行 32px 内所有子元素中心线都在 cy=17。）

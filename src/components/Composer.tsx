@@ -255,12 +255,12 @@ export function Composer({
       <div
       ref={inputBoxRef}
       className={cn(
-        "sc-window rounded-window transition-colors focus-within:border-accent-1",
+        "sc-window rounded-window transition-colors",
         busy && "border-accent-1/25",
       )}
     >
       {/* 工具行（上，§22/§23）：附件 / 上下文用量 ｜ MCP / 撤销 / 自动批准。发送键不在这里 —— 它浮动在输入框右下角 */}
-      <div className="flex h-8 items-center gap-1 px-2">
+      <div className="flex h-8 items-center gap-1 px-1">
         <Tooltip label={t("ui.button.addAttachment")}>
           <Button
             variant="ghost"
@@ -404,7 +404,7 @@ export function Composer({
             }
           }}
           className={cn(
-            "sc-selectable sc-well block max-h-50 min-h-19 w-full resize-none rounded-card px-3 py-2.5 text-ui leading-relaxed text-ink-1 focus-visible:outline-0 placeholder:text-ink-3",
+            "sc-selectable sc-well block max-h-50 min-h-19 w-full resize-none rounded-card px-3 py-2.5 text-ui leading-relaxed text-ink-1 focus:outline-0 focus-visible:outline-0 placeholder:text-ink-3",
             // 右下浮动键的避让（§22.3）：busy 时多一个带文字的插话键
             busy ? "pr-26" : "pr-19",
           )}
