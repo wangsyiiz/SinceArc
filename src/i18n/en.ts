@@ -108,7 +108,7 @@ export const en: Record<MessageKey, string> = {
   "app.messages.loadEarlier": "Load earlier",
   "app.composer.stoppingNotice": "Stopping… (cancel request sent, waiting for the agent to finish)",
   "app.composer.stopping": "Stopping…",
-  "app.composer.placeholder": "Type a message, @ a player to ask…",
+  "app.composer.placeholder": "Type a message, @ a group member to ask…",
   "app.composer.noSession": "Missing session or connection profile",
   "app.delegate.failed": "This delegation did not succeed: {{reason}}",
   "app.delete.title": "Delete session \"{{title}}\"?",

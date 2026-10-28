@@ -1260,7 +1260,9 @@ payload 形状：`{ toolCallId, title, kind, status, rawInput?, content?, locati
 .lh-window-status{height:32px}/* 底栏 */
 ```
 
-**取**：半径 18px、`blur(24px) saturate(1.5)`、工具行 32px 的高度节奏、「内容三边内缩 6px」。
+**取**：半径 18px、`blur(24px) saturate(1.5)`、工具行 32px 的高度节奏。
+**改**：参考的三边内缩 6px 收到 **4px** —— 18px 圆角 + 32px 工具行之下，6px 的下边与左右看起来都比
+视觉重量更宽（所有者 2026-10-29 判定）；三边仍保持同一个值，不分别调。
 **不取**：外投影（输入框在消息流里、不是浮层，压 70px 投影会让整条消息区发脏）；
 **不取**暗色下的 `inset 0 0 0 1px`（与 §1.8「暗色靠内边高光划界」冲突 —— 浅色侧 `--glass-border` 本来就是 1px，两个主题各自守住自己的分界方式）；
 **暂不取**半透明底色 `.8`：那要等窗口 `transparent` + Mica 定了一起做（§22 结尾），单独改 `--glass-1` 只会把不透明底搅浑。
@@ -1269,7 +1271,8 @@ payload 形状：`{ toolCallId, title, kind, status, rawInput?, content?, locati
 
 1. **外层**：`sc-glass rounded-card`（12px / blur 16 / saturate 1.6）→ `sc-window rounded-window`（18px / blur 24 / saturate 1.5）。新增 `--radius-window: 18px` 与 `.sc-window`，不动 `sc-glass`（全站浮层在用）。
 2. **删「ACP · stdio」**：连同 busy 时的「agent 正在输出」，i18n key `composer.agentOutput` 两侧一并删除。理由：这行原来在说「这条通道是什么」和「agent 在输出」——前者是常量（谁都知道自己在用 ACP），后者 §21 之后已经由活动行自己说。
-3. **上下文用量进工具行**：原来它是输入区上方一条独立的 `sc-glass` 卡片（`App.tsx` 里渲染），现在并进工具行左段，跟在附件按钮后面；`text-micro font-mono`，超宽 `truncate` + Tooltip 全文，`warn` 时 `text-warn-1`。输入区上方那条卡片删除。
+3. **上下文用量进工具行**：原来它是输入区上方一条独立的 `sc-glass` 卡片（`App.tsx` 里渲染），现在并进工具行左段，跟在附件按钮后面；`text-micro`（黑体，见 §24）超宽 `truncate`，**不加 Tooltip** —— 号码本身可读，悬停浮层反而挡视线；
+`warn` 时 `text-warn-1`。输入区上方那条卡片删除。
 4. **自动批准去玻璃态**：触发器从 `triggerVariant="control"`（`sc-control` 带 `inset 0 1px 0` 内高光 + `bg-surface-2` + 1px 边）改成 `"ghost"`，与 MCP 按钮同一种形态 —— 无底、无边、无内高光，hover 才有面。
 
 ### 23.2 为什么用量该在工具行
@@ -1307,7 +1310,7 @@ payload 形状：`{ toolCallId, title, kind, status, rawInput?, content?, locati
 3. **用量文字转黑体**：`font-mono` → 去掉（走 `--font-sans`）。理由是它是给人读的一句自然语言，
    不是需要对齐的等宽读数 —— 等宽留给代码和路径。
 4. **加 18px 环**：track 用 20% 线色、fill `accent-1`（`percent ≥ 80` 转 `warn-1`）、
-   `stroke-linecap: round`，中央 `Layers` 10px 图标。
+   `stroke-linecap: round`，中央 `Layers` 8px 图标 —— 环内径 14px，图标与环之间留 3px（10px 时只余 2px，挤）。
 5. **`describeUsage` 返回值加 `percent`**：后端已算好 0–100（`UsageDto.percent`），
    前端只传不重算 —— 这行仍然不做除法。
 

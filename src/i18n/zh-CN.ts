@@ -108,7 +108,7 @@ export const zhCN = {
   "app.messages.loadEarlier": "加载更早",
   "app.composer.stoppingNotice": "正在停止…（已发送取消请求，等待 agent 收尾）",
   "app.composer.stopping": "正在停止…",
-  "app.composer.placeholder": "输入消息，@ 玩家提问…",
+  "app.composer.placeholder": "输入消息，@ 群成员提问…",
   "app.composer.noSession": "缺少会话或连接配置",
   "app.delegate.failed": "这条派活没成功：{{reason}}",
   "app.delete.title": "删除会话「{{title}}」？",

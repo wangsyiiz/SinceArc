@@ -34,7 +34,7 @@ export function UsageRing({ percent, warn }: { percent: number; warn: boolean })
           style={{ stroke: warn ? "var(--warn)" : "var(--a1)" }}
         />
       </svg>
-      <Layers className="size-2.5 text-ink-3" aria-hidden="true" />
+      <Layers className="size-2 text-ink-3" aria-hidden="true" />
     </span>
   );
 }

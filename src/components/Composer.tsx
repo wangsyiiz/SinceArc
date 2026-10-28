@@ -272,19 +272,17 @@ export function Composer({
           </Button>
         </Tooltip>
         {usage && (
-          <Tooltip label={usage.text}>
-            <span className="ml-1 flex min-w-0 items-center gap-1.5">
-              <UsageRing percent={usage.percent} warn={usage.warn} />
-              <span
-                className={cn(
-                  "min-w-0 truncate text-micro",
-                  usage.warn ? "text-warn-1" : "text-ink-3",
-                )}
-              >
-                {usage.text}
-              </span>
+          <span className="ml-1 flex min-w-0 items-center gap-1.5">
+            <UsageRing percent={usage.percent} warn={usage.warn} />
+            <span
+              className={cn(
+                "min-w-0 truncate text-micro",
+                usage.warn ? "text-warn-1" : "text-ink-3",
+              )}
+            >
+              {usage.text}
             </span>
-          </Tooltip>
+          </span>
         )}
 
         <div className="ml-auto flex items-center gap-1">
@@ -338,7 +336,7 @@ export function Composer({
       </div>
 
       {/* 输入区（下，§22）：只加 1px 暗淡描边，底仍透出外层玻璃的内边高光 */}
-      <div className="relative px-1.5 pb-1.5">
+      <div className="relative p-1">
         <textarea
           ref={ref}
           value={value}
@@ -406,7 +404,7 @@ export function Composer({
             }
           }}
           className={cn(
-            "sc-selectable sc-well max-h-50 min-h-19 w-full resize-none rounded-card px-3 py-2.5 text-ui leading-relaxed text-ink-1 focus-visible:outline-0 placeholder:text-ink-3",
+            "sc-selectable sc-well block max-h-50 min-h-19 w-full resize-none rounded-card px-3 py-2.5 text-ui leading-relaxed text-ink-1 focus-visible:outline-0 placeholder:text-ink-3",
             // 右下浮动键的避让（§22.3）：busy 时多一个带文字的插话键
             busy ? "pr-26" : "pr-19",
           )}
