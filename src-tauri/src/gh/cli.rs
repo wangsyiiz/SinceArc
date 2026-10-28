@@ -143,7 +143,7 @@ fn parse_version(stdout: &str) -> Option<String> {
     let first = stdout.lines().next()?.trim().trim_start_matches('\u{feff}');
     let rest = first.strip_prefix("gh version ")?;
     let version = rest.split_whitespace().next()?;
-    let core = version.split(|c: char| c == '-' || c == '+').next()?;
+    let core = version.split(['-', '+']).next()?;
     let parts: Vec<&str> = core.split('.').collect();
     let numeric = parts
         .iter()
@@ -681,9 +681,11 @@ fn env_dir(name: &str) -> Option<PathBuf> {
     }
 }
 
-#[cfg(test)]
+// 测试要串行化进程级环境变量（ENV_LOCK），持锁跨 await 是有意的：
+// 锁保护的是「设 env → 跑假 gh → 断言」整个序列，中途放开就失去意义。
+#[cfg(all(test, windows))]
+#[allow(clippy::await_holding_lock)]
 mod tests {
-    #![cfg(windows)]
 
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
