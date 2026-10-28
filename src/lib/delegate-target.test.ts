@@ -31,48 +31,61 @@ function caps(sessionFork: boolean): AgentCaps {
 test("从没握手 → 档位未知", () => {
   assert.equal(delegateTargetCaps(undefined), "unknown");
   assert.equal(delegateTargetCaps({ caps: null }), "unknown");
-  assert.equal(delegateCapsLabel("unknown"), "档位未知");
-  assert.match(delegateCapsNote("unknown"), /按只带任务描述派/);
+  assert.equal(delegateCapsLabel("unknown"), "settings.memberDetail.delegateCaps.unknown");
+  assert.equal(delegateCapsNote("unknown"), "delegate.caps.note.unknown");
 });
 
 test("sessionFork 为真 → 带 TA 的上下文，正常态不写额外说明", () => {
   assert.equal(delegateTargetCaps({ caps: caps(true) }), "member_fork");
-  assert.equal(delegateCapsLabel("member_fork"), "带 TA 的上下文");
-  assert.equal(delegateCapsNote("member_fork"), "");
+  assert.equal(
+    delegateCapsLabel("member_fork"),
+    "settings.memberDetail.delegateCaps.memberFork",
+  );
+  assert.equal(delegateCapsNote("member_fork"), null);
 });
 
 test("sessionFork 为假 → 只带任务描述", () => {
   assert.equal(delegateTargetCaps({ caps: caps(false) }), "task_only");
-  assert.equal(delegateCapsLabel("task_only"), "只带任务描述");
-  assert.equal(
-    delegateCapsNote("task_only"),
-    "子任务看不到本会话历史，只拿到这段文字",
-  );
+  assert.equal(delegateCapsLabel("task_only"), "settings.memberDetail.delegateCaps.taskOnly");
+  assert.equal(delegateCapsNote("task_only"), "delegate.caps.note.taskOnly");
 });
 
 test("降级成因逐条说人话，fork 是正常态不返回原因", () => {
-  assert.equal(delegateReasonNote("fork"), "");
-  assert.equal(delegateReasonNote("fork_unsupported"), "这个 agent 没报 fork 能力");
-  assert.equal(delegateReasonNote("fork_failed"), "fork 失败，已按只带任务描述重跑");
-  assert.equal(delegateReasonNote("caps_unknown"), "从没握手，不知道它支不支持");
-  assert.equal(delegateReasonNote("member_missing"), "这个成员还没有可 fork 的会话");
-  assert.equal(delegateReasonNote("未来新增的成因"), "", "不认识的原因不许编一句");
+  assert.equal(delegateReasonNote("fork"), null);
+  assert.equal(delegateReasonNote("fork_unsupported"), "delegate.caps.reason.forkUnsupported");
+  assert.equal(delegateReasonNote("fork_failed"), "delegate.caps.reason.forkFailed");
+  assert.equal(delegateReasonNote("caps_unknown"), "delegate.caps.reason.capsUnknown");
+  assert.equal(delegateReasonNote("member_missing"), "delegate.caps.reason.memberMissing");
+  assert.equal(delegateReasonNote("未来新增的成因"), null, "不认识的原因不许编一句");
 
   // 轨迹里那一行：档位 + 成因；带上下文时只有档位
-  assert.equal(
-    delegateCapsDetail("task_only", "fork_unsupported"),
-    "只带任务描述 · 这个 agent 没报 fork 能力",
-  );
-  assert.equal(delegateCapsDetail("task_only", null), "只带任务描述");
-  assert.equal(delegateCapsDetail("member_fork", "fork"), "带 TA 的上下文");
+  assert.deepEqual(delegateCapsDetail("task_only", "fork_unsupported"), {
+    labelKey: "settings.memberDetail.delegateCaps.taskOnly",
+    reasonKey: "delegate.caps.reason.forkUnsupported",
+  });
+  assert.deepEqual(delegateCapsDetail("task_only", null), {
+    labelKey: "settings.memberDetail.delegateCaps.taskOnly",
+  });
+  assert.deepEqual(delegateCapsDetail("member_fork", "fork"), {
+    labelKey: "settings.memberDetail.delegateCaps.memberFork",
+  });
 });
 
 test("六个错误码都说人话，未列出的码保留码兜底", () => {
-  assert.equal(delegateErrorMessage(50700, "Kimi"), "Kimi 不在这个群里");
-  assert.equal(delegateErrorMessage(50701, "Kimi"), "任务正文为空或太长（上限 8KB）");
-  assert.equal(delegateErrorMessage(50702, "Kimi"), "子任务不能再派活");
-  assert.equal(delegateErrorMessage(50703, "Kimi"), "同时最多 3 个在跑，等一个回来再派");
-  assert.equal(delegateErrorMessage(50704, "Kimi"), "这个派活已经结束或不属于当前会话");
-  assert.equal(delegateErrorMessage(50300, "Kimi"), "Kimi 的连接没连上");
-  assert.equal(delegateErrorMessage(59999, "Kimi"), "派活失败（59999）");
+  assert.deepEqual(delegateErrorMessage(50700, "Kimi"), {
+    key: "delegate.error.notInGroup",
+    params: { target: "Kimi" },
+  });
+  assert.deepEqual(delegateErrorMessage(50701, "Kimi"), { key: "delegate.error.taskEmpty" });
+  assert.deepEqual(delegateErrorMessage(50702, "Kimi"), { key: "delegate.error.nested" });
+  assert.deepEqual(delegateErrorMessage(50703, "Kimi"), { key: "delegate.error.limit" });
+  assert.deepEqual(delegateErrorMessage(50704, "Kimi"), { key: "delegate.error.ended" });
+  assert.deepEqual(delegateErrorMessage(50300, "Kimi"), {
+    key: "delegate.error.connect",
+    params: { target: "Kimi" },
+  });
+  assert.deepEqual(delegateErrorMessage(59999, "Kimi"), {
+    key: "delegate.error.generic",
+    params: { code: 59999 },
+  });
 });

@@ -1,3 +1,5 @@
+import type { MessageKey } from "@/i18n/zh-CN";
+
 /**
  * 内置 agent 预设。
  *
@@ -17,12 +19,13 @@ export interface AgentPreset {
   program: string;
   args: string[];
   /** 命令的出处，界面上给用户看，方便自己核对 */
-  origin: string;
+  originKey: MessageKey;
+  originParams?: Record<string, string>;
   /** 前置条件；缺了就会在探测时报错 */
-  requires?: string;
+  requiresKey?: MessageKey;
 }
 
-const REGISTRY_ORIGIN = "ACP Registry 2026-10-21";
+const REGISTRY_DATE = "2026-10-21";
 
 export const AGENT_PRESETS: AgentPreset[] = [
   {
@@ -30,55 +33,61 @@ export const AGENT_PRESETS: AgentPreset[] = [
     name: "Hermes Agent",
     program: "hermes",
     args: ["acp"],
-    origin: "本机 hermes（实测 0.22.2 支持 ACP）",
+    originKey: "settings.agentPreset.origin.hermes",
   },
   {
     id: "claude-acp",
     name: "Claude Agent",
     program: "npx",
     args: ["-y", "@agentclientprotocol/claude-agent-acp@0.94.0"],
-    origin: REGISTRY_ORIGIN,
-    requires: "node / npx",
+    originKey: "settings.agentPreset.origin.registry",
+    originParams: { date: REGISTRY_DATE },
+    requiresKey: "settings.agentPreset.requires.nodeNpx",
   },
   {
     id: "codex-acp",
     name: "Codex",
     program: "npx",
     args: ["-y", "@agentclientprotocol/codex-acp@2.2.2"],
-    origin: REGISTRY_ORIGIN,
-    requires: "node / npx",
+    originKey: "settings.agentPreset.origin.registry",
+    originParams: { date: REGISTRY_DATE },
+    requiresKey: "settings.agentPreset.requires.nodeNpx",
   },
   {
     id: "gemini",
     name: "Gemini CLI",
     program: "npx",
     args: ["-y", "@google/gemini-cli@0.65.0", "--acp"],
-    origin: REGISTRY_ORIGIN,
-    requires: "node / npx",
+    originKey: "settings.agentPreset.origin.registry",
+    originParams: { date: REGISTRY_DATE },
+    requiresKey: "settings.agentPreset.requires.nodeNpx",
   },
   {
     id: "qwen-code",
     name: "Qwen Code",
     program: "npx",
     args: ["-y", "@qwen-code/qwen-code@0.25.3", "--acp", "--experimental-skills"],
-    origin: REGISTRY_ORIGIN,
-    requires: "node / npx",
+    originKey: "settings.agentPreset.origin.registry",
+    originParams: { date: REGISTRY_DATE },
+    requiresKey: "settings.agentPreset.requires.nodeNpx",
   },
   {
     id: "opencode",
     name: "OpenCode",
     program: "opencode",
     args: ["acp"],
-    origin: `${REGISTRY_ORIGIN}（binary 分发，需先自己安装）`,
-    requires: "已安装 opencode",
+    originKey: "settings.agentPreset.origin.registryBinary",
+    originParams: { date: REGISTRY_DATE },
+    requiresKey: "settings.agentPreset.requires.opencode",
   },
   {
     id: "goose",
     name: "Goose",
     program: "goose",
     args: ["acp"],
-    origin: `${REGISTRY_ORIGIN}（binary 分发，需先自己安装）`,
-    requires: "已安装 goose",
+    originKey: "settings.agentPreset.origin.registryBinary",
+    originParams: { date: REGISTRY_DATE },
+    requiresKey: "settings.agentPreset.requires.goose",
   },
 ];
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
+import { Trans, useTranslation } from "react-i18next";
 import { ActivityRail } from "@/components/ActivityRail";
 import { Composer } from "@/components/Composer";
 import { ConnectErrorState } from "@/components/ConnectErrorState";
@@ -16,12 +17,16 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DelegateDialog } from "@/components/DelegateDialog";
 import { MemberDetailPanel } from "@/components/MemberDetailPanel";
 import { MAIN_AGENT_ID } from "@/hooks/usePrompt";
+import { initI18n } from "@/i18n";
+import { normalizeLanguage } from "@/i18n/normalize";
 import { autoApproveCovered, type AutoApproveLevel } from "@/lib/auto-approve";
 import { settingsKey } from "@/lib/settings-key";
 import { normalizeCodeThemeId } from "@/lib/highlight/themes";
 import { profileLabel } from "@/lib/format";
+import { localizeText, translateKey } from "@/lib/i18n-text";
+import { errorText } from "@/lib/errors";
 import { pushSystemNotice } from "@/lib/notices";
-import { delegateCancelFailureMessage, type DelegatePhase } from "@/lib/delegate-status";
+import { delegateCancelFailureKey, type DelegatePhase } from "@/lib/delegate-status";
 import { mergeMessages } from "@/lib/messages-merge";
 import { buildPlayers } from "@/lib/players";
 import { steerGate, type SteerGate } from "@/lib/steer-availability";
@@ -125,6 +130,7 @@ interface TurnPolicy {
 }
 
 export default function App() {
+  const { t } = useTranslation();
   const [settings, setSettings] = useState<ThreadSettings>(DEFAULT_THREAD_SETTINGS);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
@@ -136,6 +142,11 @@ export default function App() {
    */
   const savedSettings = useRef(settingsKey(DEFAULT_THREAD_SETTINGS));
   useTheme(settings.theme);
+  // 语言跟着设置走：切换即时生效，不用重启（docs/i18n.md §2.3）。
+  // 首帧由 main.tsx 按系统语言先初始化，落库值读回来之后覆盖它。
+  useEffect(() => {
+    initI18n(settings.language ?? normalizeLanguage(navigator.language));
+  }, [settings.language]);
   useEffect(() => {
     document.documentElement.dataset.codeTheme = normalizeCodeThemeId(settings.codeTheme);
   }, [settings.codeTheme]);
@@ -211,11 +222,11 @@ export default function App() {
           if (seq !== settingsSaveSeq.current) return;
           settingsPendingKey.current = null;
           const err = asCmdError(e);
-          setSettingsError(`设置没保存成功：${err.msg}`);
+          setSettingsError(t("app.settings.saveFailed", { msg: errorText(err.code, err.msg, t) }));
         });
     }, SETTINGS_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [settings, settingsLoaded]);
+  }, [settings, settingsLoaded, t]);
 
   const { profiles, activeProfile, addProfile, updateProfile, removeProfile } = useProfileStore();
   const discovery = useDiscovery(profiles);
@@ -232,13 +243,13 @@ export default function App() {
     const prof = activeProfile;
     return {
       id: MAIN_AGENT_ID,
-      name: prof ? profileLabel(prof) : "agent",
+      name: prof ? profileLabel(prof, t) : "agent",
       handle: "agent",
       color: "var(--i3)",
       profileId: prof?.id ?? "",
       busy: false,
     };
-  }, [activeProfile]);
+  }, [activeProfile, t]);
 
   const { sessions, setSessions, reload: reloadSessions } = useSessionList();
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab } = useTabs(sessions);
@@ -514,20 +525,30 @@ export default function App() {
   );
 
   /* 设置读取放在 useAcpEvents 之后：脏值要推进它的事件流（诊断面板）。 */
+  // 依赖必须是空数组：`t` 的标识随语言切换而变，若把它列进依赖，切语言会让这个 effect 重新
+  // 读一次库、把刚改的 settings 覆盖回库里的旧值 —— 表现就是「点 English 又弹回中文」。
+  // 需要最新 `t` / `diag` 的地方走 ref，effect 本身只跑一次。
+  const tRef = useRef(t);
+  const diagRef = useRef(diag);
+  tRef.current = t;
+  diagRef.current = diag;
   useEffect(() => {
     let alive = true;
     settingsLoad()
       .then((report) => {
         if (!alive) return;
+        // 首启判定（docs/i18n.md §2.1）：库里没有 language（脏值也按「没有」处理）→ 按系统语言归一化；
+        // 判定结果交给保存副作用写库 —— savedSettings 用读回来的原值，键变了才会触发那一次保存。
+        const language = report.settings.language ?? normalizeLanguage(navigator.language);
         savedSettings.current = settingsKey(report.settings);
-        setSettings(report.settings);
+        setSettings({ ...report.settings, language });
         // 脏值不许静默：后端已经写了日志，这里再推进诊断面板，让用户当场看得见
-        report.issues.forEach((issue) => diag(issue));
+        report.issues.forEach((issue) => diagRef.current(issue));
       })
       .catch((e) => {
         if (!alive) return;
         const err = asCmdError(e);
-        setSettingsError(err.msg);
+        setSettingsError(localizeText(err.msg, tRef.current));
       })
       .finally(() => {
         if (alive) setSettingsLoaded(true);
@@ -535,7 +556,7 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [diag]);
+  }, []);
   const activeSession = sessions.find((s) => s.id === lastSessionId);
   // 归属跟会话走，不再跟一个全局「选中连接」走：全局选中项的唯一入口（左下角列表）
   // 已经移除，靠它就等于靠一个永远空着的值
@@ -584,9 +605,9 @@ export default function App() {
     const profileId = activeSession?.profileId ?? sessionProfile?.id;
     const acpSessionId = activeAcpSid;
     const turnId = acpSessionId ? acp.acpToTurn.current[acpSessionId] : undefined;
-    if (!request?.kind) throw { code: 50300, msg: "当前请求没有可放行的权限类别" };
+    if (!request?.kind) throw { code: 50300, msg: t("app.permission.allowTurn.noKind") };
     if (!lastSessionId || !profileId || !acpSessionId || !turnId) {
-      throw { code: 50300, msg: "没有本轮可放行" };
+      throw { code: 50300, msg: t("app.permission.allowTurn.noTurn") };
     }
     await permissionAllowTurn(profileId, acpSessionId, turnId, request.kind);
     const kind = request.kind;
@@ -602,7 +623,7 @@ export default function App() {
         [lastSessionId]: { profileId, acpSessionId, turnId, kinds },
       };
     });
-  }, [acp, activeAcpSid, activeSession?.profileId, lastSessionId, sessionProfile?.id, state.pendingPerm]);
+  }, [acp, activeAcpSid, activeSession?.profileId, lastSessionId, sessionProfile?.id, state.pendingPerm, t]);
 
   const revokeTurnPolicy = useCallback(async () => {
     const policy = lastSessionId ? turnPoliciesRef.current[lastSessionId] : undefined;
@@ -617,11 +638,11 @@ export default function App() {
       dropTurnPolicy(lastSessionId);
       if (!removed) diag(`TURN-POLICY revoke found nothing ui=${lastSessionId}`);
     } catch (e) {
-      const message = (e as { msg?: string })?.msg ?? String(e);
+      const message = localizeText((e as { msg?: string })?.msg ?? String(e), t);
       diag(`TURN-POLICY revoke failed ui=${lastSessionId} · ${message}`);
       clog("TURN-POLICY-REVOKE-ERR", `ui=${lastSessionId} ${message}`);
     }
-  }, [diag, dropTurnPolicy, lastSessionId]);
+  }, [diag, dropTurnPolicy, lastSessionId, t]);
 
   // 换会话即失效：不把上一页的授权带到新页面，也通知后端撤销。
   const prevPolicyUiRef = useRef<string | null>(null);
@@ -633,10 +654,10 @@ export default function App() {
     if (!policy) return;
     dropTurnPolicy(prev);
     void permissionRevokeTurn(policy.profileId, policy.acpSessionId, policy.turnId).catch((e) => {
-      const message = (e as { msg?: string })?.msg ?? String(e);
+      const message = localizeText((e as { msg?: string })?.msg ?? String(e), t);
       diag(`TURN-POLICY revoke on switch failed ui=${prev} · ${message}`);
     });
-  }, [diag, dropTurnPolicy, lastSessionId]);
+  }, [diag, dropTurnPolicy, lastSessionId, t]);
 
   // 轮终态/换轮后后端已清；界面必须同步收起 chip，不能在下一轮继续显示。
   useEffect(() => {
@@ -654,11 +675,11 @@ export default function App() {
    * 一次性列三行会把输入框顶得老高，而这条本来就只是提示。
    */
   const writeHint = useMemo(() => summarizeLocks(state.locks ?? {}), [state.locks]);
-  const usageLine = state.usage ? describeUsage(state.usage) : null;
+  const usageLine = state.usage ? describeUsage(state.usage, t) : null;
   const connectProblem: { code?: string; message: string } | null = state.connectError
     ? { code: state.connectError.code, message: state.connectError.message }
     : state.resume?.kind === "unavailable"
-      ? { message: state.resume.reason ?? "原因不明" }
+      ? { message: state.resume.reason ?? t("app.unknownReason") }
       : null;
 
   useEffect(() => {
@@ -755,10 +776,10 @@ export default function App() {
       .catch((e) => {
         const err = asCmdError(e);
         diag(`RESUME new failed ui=${sid} · ${err.code} ${err.msg}`);
-        pushSystemNotice(patchSession, sid, `新建会话失败：${err.code} ${err.msg}`);
+        pushSystemNotice(patchSession, sid, t("app.session.newFailed", { code: err.code, msg: localizeText(err.msg, t) }));
       })
       .finally(() => setResumeBusy(false));
-  }, [cwd, diag, lastSessionId, onSession, patchSession, reportResume, sessionProfile?.id]);
+  }, [cwd, diag, lastSessionId, onSession, patchSession, reportResume, sessionProfile?.id, t]);
 
   const activeModeView = modesBySid[lastSessionId] ?? null;
   const activeDefaultModeLabel = sessionProfile?.defaultMode
@@ -911,10 +932,10 @@ export default function App() {
       handleConnectResult(uiSid, result);
       if (result.error) throw result.error;
       if (!result.acpSid) {
-        throw { code: 50403, msg: "重连后 agent 没有给出会话" };
+        throw { code: 50403, msg: t("app.connect.reconnectNoSession") };
       }
     },
-    [disconnect, ensureConnected, handleConnectResult],
+    [disconnect, ensureConnected, handleConnectResult, t],
   );
 
   const autoTried = useRef<Map<string, string>>(new Map());
@@ -951,7 +972,7 @@ export default function App() {
       if (sid) {
         patchSession(sid, (s) => ({
           ...s,
-          connectError: { code: "50100", message: "这个会话没有可用的连接配置" },
+          connectError: { code: "50100", message: t("app.connect.noProfile") },
         }));
       }
       return;
@@ -982,6 +1003,7 @@ export default function App() {
     markConnecting,
     patchSession,
     diag,
+    t,
   ]);
 
   /**
@@ -998,7 +1020,7 @@ export default function App() {
       onRetry={retryConnection}
       onNewSession={startFreshSession}
       onOpenSettings={
-        state.connectError ? () => openTab({ kind: "settings", title: "设置" }) : undefined
+        state.connectError ? () => openTab({ kind: "settings", title: t("app.tab.settings") }) : undefined
       }
     />
   ) : null;
@@ -1009,14 +1031,14 @@ export default function App() {
       const existing = tabs.find((t) => t.kind === "session");
       const sid = existing?.sessionId ?? "s-1";
       if (existing) setActiveTabId(existing.id);
-      else openTab({ kind: "session", title: sessions.find((s) => s.id === sid)?.title ?? "会话", sessionId: sid });
+      else openTab({ kind: "session", title: sessions.find((s) => s.id === sid)?.title ?? t("app.tab.session"), sessionId: sid });
       setLastSessionId(sid);
       patchSession(sid, (s) => ({
         ...s,
-        msgs: [...s.msgs, { id: newId("u"), role: "user", atomKind: "text.user", at: now(), text: "@claude 看一下这个 PR", quoted: { kind: "pr", label: `#${pr.number} ${pr.title}`, detail: `${repo.slug} · ${pr.head} → ${pr.base} · +${pr.additions} −${pr.deletions} · ${pr.files} 文件` } }],
+        msgs: [...s.msgs, { id: newId("u"), role: "user", atomKind: "text.user", at: now(), text: t("app.quotePr.message"), quoted: { kind: "pr", label: `#${pr.number} ${pr.title}`, detail: t("app.quotePr.detail", { slug: repo.slug, head: pr.head, base: pr.base, additions: pr.additions, deletions: pr.deletions, files: pr.files }) } }],
       }));
     },
-    [openTab, patchSession, tabs],
+    [openTab, patchSession, tabs, t],
   );
 
   // 轨迹拉取：只读库，失败留日志（面板空着比整页报错好）。
@@ -1057,7 +1079,7 @@ export default function App() {
       setTraceBackfill({ sessionId: targetSessionId, running: false, result, error: null });
       setTraceTick((tick) => tick + 1);
     } catch (e) {
-      const message = String((e as { msg?: string })?.msg ?? e);
+      const message = localizeText(String((e as { msg?: string })?.msg ?? e), t);
       setTraceBackfill((current) =>
         current.sessionId === targetSessionId
           ? { ...current, running: false, error: message }
@@ -1073,6 +1095,7 @@ export default function App() {
     diag,
     lastSessionId,
     sessionProfile?.id,
+    t,
   ]);
 
   /** 轨迹 → 正文：滚到该轮第一条消息，并短暂用 accent 环标一下。 */
@@ -1122,9 +1145,9 @@ export default function App() {
       const err = asCmdError(e);
       // 应答没写出去时队头仍在，界面继续显示请求；这条是「当前状态坏了」，必须留痕，
       // 而且要走落库版提示，否则重开会话它又会换位置。
-      pushSystemNotice(patchSession, uiSid, `权限决定失败：${err.code} ${err.msg}`);
+      pushSystemNotice(patchSession, uiSid, t("app.permission.decideFailed", { code: err.code, msg: localizeText(err.msg, t) }));
     }
-  }, [lastSessionId, patchSession, permissions.decide]);
+  }, [lastSessionId, patchSession, permissions.decide, t]);
 
   const closeSessionTab = useCallback((id: string) => {
     const tab = tabs.find((t) => t.id === id);
@@ -1151,12 +1174,12 @@ export default function App() {
       (profileIdChoice ? profiles.find((p) => p.id === profileIdChoice) : undefined) ??
       profiles.find((p) => p.id === activeSession?.profileId) ??
       activeProfile;
-    const summary: SessionSummary = { id, title: "新会话", cwd: inheritProfile?.cwd ?? "", updatedAt: "刚刚", updatedAtSec: Math.floor(Date.now() / 1000), group: "今天", playerIds: [], acpSessionId: null, profileId: inheritProfile?.id };
+    const summary: SessionSummary = { id, title: t("app.session.newTitle"), cwd: inheritProfile?.cwd ?? "", updatedAt: t("app.session.justNow"), updatedAtSec: Math.floor(Date.now() / 1000), group: "今天", playerIds: [], acpSessionId: null, profileId: inheritProfile?.id }; // i18n-ignore
     setSessions((prev) => [summary, ...prev]);
     sessionUpsert({ id, acpSessionId: null, profileId: inheritProfile?.id ?? null, title: summary.title, cwd: summary.cwd, createdAt: summary.updatedAtSec!, updatedAt: summary.updatedAtSec! }).catch((e) => console.warn("[db] upsert session failed", e));
-    openTab({ kind: "session", title: "新会话", sessionId: id });
+    openTab({ kind: "session", title: t("app.session.newTitle"), sessionId: id });
     setLastSessionId(id);
-  }, [activeProfile, activeSession, profiles, initSession, openTab, setSessions]);
+  }, [activeProfile, activeSession, profiles, initSession, openTab, setSessions, t]);
 
   const badgeOf = useCallback((t: Tab) => {
     if (t.kind !== "session" || !t.sessionId) return null;
@@ -1190,7 +1213,7 @@ export default function App() {
     } catch (e) {
       const err = asCmdError(e);
       // 失败就留在框里说清楚：没删成，别让用户以为删了
-      setDeleteError(`${err.code} ${err.msg}`);
+      setDeleteError(`${err.code} ${errorText(err.code, err.msg, t)}`);
     }
   };
 
@@ -1215,13 +1238,13 @@ export default function App() {
         resolved = await mentionResolve(lastSessionId, raw);
       } catch (e) {
         const err = asCmdError(e);
-        pushSystemNotice(patchSession, lastSessionId, err.msg);
+        pushSystemNotice(patchSession, lastSessionId, localizeText(err.msg, t));
         return;
       }
 
       if (resolved.memberId) {
         if (!resolved.profileId || !resolved.acpSessionId) {
-          pushSystemNotice(patchSession, lastSessionId, "成员信息不完整，这条消息没有发出去");
+          pushSystemNotice(patchSession, lastSessionId, t("app.notice.memberIncomplete"));
           return;
         }
         const r = await send(raw, {
@@ -1238,7 +1261,7 @@ export default function App() {
         pushSystemNotice(
           patchSession,
           lastSessionId,
-          `@${resolved.token} 不在这个群里 —— 这条消息没有发出去（要加人请到左栏的 + 或设置 → 成员）`,
+          t("app.notice.memberNotInGroup", { token: resolved.token }),
         );
         return;
       }
@@ -1246,7 +1269,7 @@ export default function App() {
       await send(raw);
       refreshTitles();
     },
-    [send, lastSessionId, patchSession, refreshTitles],
+    [send, lastSessionId, patchSession, refreshTitles, t],
   );
 
   const sendSteer = useCallback(
@@ -1274,7 +1297,7 @@ export default function App() {
         patchSession(sid, (s) => ({ ...s, msgs: s.msgs.filter((m) => m.id !== aside.id) }));
         const err = asCmdError(e);
         clog("ASIDE-ERR", `ui=${sid} acp=${acpSid} ${err.code} ${err.msg}`);
-        pushSystemNotice(patchSession, sid, `插话没有发出：${err.msg}`);
+        pushSystemNotice(patchSession, sid, t("app.notice.steerFailed", { msg: localizeText(err.msg, t) }));
         return;
       }
 
@@ -1291,7 +1314,7 @@ export default function App() {
         clog("ASIDE-DB-ERR", `ui=${sid} id=${aside.id} ${String(e)}`);
       });
     },
-    [acp, activeAcpSid, lastSessionId, patchSession],
+    [acp, activeAcpSid, lastSessionId, patchSession, t],
   );
 
   /**
@@ -1312,7 +1335,7 @@ export default function App() {
         : undefined;
     if (runningAct && runningAct.playerId !== MAIN_AGENT_ID && !member) {
       patchSession(sid, (s) => ({ ...s, busy: false }));
-      pushSystemNotice(patchSession, sid, "停止失败：找不到这条群成员连接的配置");
+      pushSystemNotice(patchSession, sid, t("app.notice.stopNoMemberConfig"));
       return;
     }
     const profileId = member?.profileId ?? activeSession?.profileId ?? sessionProfile?.id;
@@ -1324,7 +1347,7 @@ export default function App() {
 
     if (!profileId || !acpSessionId) {
       patchSession(sid, (s) => ({ ...s, busy: false }));
-      pushSystemNotice(patchSession, sid, "停止失败：找不到可取消的 agent 会话");
+      pushSystemNotice(patchSession, sid, t("app.notice.stopNoSession"));
       return;
     }
 
@@ -1336,7 +1359,7 @@ export default function App() {
       const err = asCmdError(e);
       setCancelling((prev) => ({ ...prev, [sid]: false }));
       patchSession(sid, (s) => ({ ...s, busy: false }));
-      pushSystemNotice(patchSession, sid, `停止失败：${err.code} ${err.msg}`);
+      pushSystemNotice(patchSession, sid, t("app.notice.stopFailed", { code: err.code, msg: localizeText(err.msg, t) }));
     }
   }, [
     activeAcpSid,
@@ -1347,6 +1370,7 @@ export default function App() {
     patchSession,
     sessionProfile?.id,
     state.acts,
+    t,
   ]);
 
   /** 停一次派活：先进入「正在停止…」，失败必须删 key，否则会一直卡在停止中。 */
@@ -1368,12 +1392,14 @@ export default function App() {
           pushSystemNotice(
             patchSession,
             lastSessionId,
-            `停止失败：${delegateCancelFailureMessage(err.code)}`,
+            t("app.notice.stopDelegateFailed", {
+              reason: translateKey(t, delegateCancelFailureKey(err.code), { code: err.code }),
+            }),
           );
         }
       }
     },
-    [delegateRunning, lastSessionId, patchSession],
+    [delegateRunning, lastSessionId, patchSession, t],
   );
 
   /**
@@ -1411,10 +1437,10 @@ export default function App() {
           className="sc-glass mx-1 mb-1 flex items-center gap-2 rounded-card px-3 py-1.5 text-caption text-danger-1"
         >
           <span className="min-w-0 flex-1 break-words">{settingsError}</span>
-          <Tooltip label="关闭">
+          <Tooltip label={t("app.settingsError.dismiss")}>
             <button
               type="button"
-              aria-label="关闭"
+              aria-label={t("app.settingsError.dismiss")}
               onClick={() => setSettingsError(null)}
               className="shrink-0 rounded-mark p-1 text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
             >
@@ -1435,10 +1461,16 @@ export default function App() {
           players={players}
           repos={repoList}
           prsByRepo={EMPTY_PRS}
-          onSelect={(id) => openTab({ kind: "session", sessionId: id })}
+          onSelect={(id) =>
+            openTab({
+              kind: "session",
+              title: sessions.find((s) => s.id === id)?.title ?? t("app.tab.session"),
+              sessionId: id,
+            })
+          }
           onNew={() => newSession()}
           onNewWithProfile={(pid) => newSession(pid)}
-          onOpenSettings={() => openTab({ kind: "settings", title: "设置" })}
+          onOpenSettings={() => openTab({ kind: "settings", title: t("app.tab.settings") })}
           onDeleteSession={(x) => {
             setDeleteError(null);
             setPendingDelete(x);
@@ -1446,7 +1478,7 @@ export default function App() {
           isSessionBusy={(id) => !!sessionState[id]?.busy}
           onOpenRepo={(repoId) => {
             const repo = repoList.find((r) => r.id === repoId);
-            openTab({ kind: "repo", title: repo?.name ?? "项目", repoId });
+            openTab({ kind: "repo", title: repo?.name ?? t("app.tab.repo"), repoId });
           }}
           onAddRepo={addRepo}
         />
@@ -1584,7 +1616,7 @@ export default function App() {
                           onClick={requestOlder}
                           className="mx-auto mb-3.5 rounded-md px-2 py-1 text-caption text-ink-3 transition-colors hover:bg-surface-3/55 hover:text-ink-2"
                         >
-                          {loadingOlder ? "正在加载更早消息…" : "加载更早"}
+                          {loadingOlder ? t("app.messages.loadingOlder") : t("app.messages.loadEarlier")}
                         </button>
                       )}
                       {state.msgs.length === 0 ? (
@@ -1594,9 +1626,9 @@ export default function App() {
                           /* 打开 → 可用这一段：骨架屏（原语自带 300ms 延迟，快的时候看不到）
                              + 一行阶段说明 —— 冷启动时连接可能要几秒，光有条在跳说不出在等什么 */
                           <div className="flex min-h-full flex-col items-center justify-center gap-2">
-                            <LoadingState kind="loading" heading="正在打开会话" />
+                            <LoadingState kind="loading" heading={t("app.session.opening")} />
                             <p className="text-caption text-ink-3">
-                              {opening ? "正在读取会话历史…" : "正在连接 agent…"}
+                              {opening ? t("app.session.readingHistory") : t("app.session.connecting")}
                             </p>
                           </div>
                         ) : (
@@ -1708,9 +1740,12 @@ export default function App() {
                               "agent"}
                           </span>
                           <span className="truncate text-ink-2">
-                            请求权限：{state.pendingPerm.title.replace(/？$/, "")}
+                            {t("app.permission.request", {
+                              // 剥掉标题末尾的问号（中文全角 / 英文半角都算）；这是判据不是文案
+                              title: state.pendingPerm.title.replace(/？\?\s*$/, ""), // i18n-ignore
+                            })}
                           </span>
-                          <span className="ml-auto shrink-0 text-ink-3">查看</span>
+                          <span className="ml-auto shrink-0 text-ink-3">{t("app.permission.view")}</span>
                         </button>
                       )}
                       <div className="pointer-events-auto">
@@ -1730,13 +1765,17 @@ export default function App() {
                         {writeHint && (
                           <div className="sc-glass mb-2 flex items-center gap-2 rounded-md px-3 py-1.5 text-xs text-ink-3">
                             <span className="truncate">
-                              {renderPlayers.find((p) => p.id === (writeHint.playerId ?? MAIN_AGENT_ID))
-                                ?.name ?? "agent"}
-                              正在写：{writeHint.title}
+                              {t("app.writeHint.current", {
+                                name:
+                                  renderPlayers.find(
+                                    (p) => p.id === (writeHint.playerId ?? MAIN_AGENT_ID),
+                                  )?.name ?? "agent",
+                                title: writeHint.title,
+                              })}
                             </span>
                             {writeHint.extra > 0 && (
                               <span className="ml-auto shrink-0 text-ink-3">
-                                另有 {writeHint.extra} 个进行中
+                                {t("app.writeHint.extra", { extra: writeHint.extra })}
                               </span>
                             )}
                           </div>
@@ -1744,7 +1783,7 @@ export default function App() {
                         {isStopping && (
                           <div className="sc-glass mb-2 flex items-center gap-2 rounded-card px-3 py-1.5 text-caption text-ink-2">
                             <span className="size-1.5 animate-pulse rounded-full bg-warn-1" />
-                            正在停止…（已发送取消请求，等待 agent 收尾）
+                            {t("app.composer.stoppingNotice")}
                           </div>
                         )}
                         <Composer
@@ -1755,7 +1794,9 @@ export default function App() {
                           commands={acpCommands}
                           onStop={stopGeneration}
                           placeholder={
-                            isStopping ? "正在停止…" : "输入消息，@ 玩家提问…"
+                            isStopping
+                              ? t("app.composer.stopping")
+                              : t("app.composer.placeholder")
                           }
                           players={players.filter((player) => !player.removed)}
                           autoApprove={activeAutoApprove}
@@ -1768,7 +1809,7 @@ export default function App() {
                           onReconnectMcp={() =>
                             lastSessionId && sessionProfile
                               ? reconnectMcp(lastSessionId, sessionProfile.id)
-                              : Promise.reject({ code: 50300, msg: "缺少会话或连接配置" })
+                              : Promise.reject({ code: 50300, msg: t("app.composer.noSession") })
                           }
                         />
                       </div>
@@ -1824,6 +1865,7 @@ export default function App() {
               onChangeCodeTheme={(codeTheme) =>
                 setSettings((s) => ({ ...s, codeTheme }))
               }
+              onChangeLanguage={(language) => setSettings((s) => ({ ...s, language }))}
             />
           )}
           {activeTab?.kind === "pr" && activePr && activeRepo && (
@@ -1882,7 +1924,9 @@ export default function App() {
                   pushSystemNotice(
                     patchSession,
                     sid,
-                    `这条派活没成功：${outcome.stopReason ?? "原因不明"}`,
+                    t("app.delegate.failed", {
+                      reason: outcome.stopReason ?? t("app.unknownReason"),
+                    }),
                   );
                 }
                 if (outcome.status === "cancelled") {
@@ -1923,23 +1967,25 @@ export default function App() {
 
         <ConfirmDialog
           open={!!pendingDelete}
-          title={`删除会话「${pendingDelete?.title ?? ""}」？`}
+          title={t("app.delete.title", { title: pendingDelete?.title ?? "" })}
           body={
             <ul className="list-disc space-y-0.5 pl-4">
-              <li>会删掉本软件里的这条会话记录和它的全部消息（不可恢复）。</li>
-              <li>群成员关系一并消失；其他会话不受影响。</li>
+              <li>{t("app.delete.body1")}</li>
+              <li>{t("app.delete.body2")}</li>
               <li>
-                <span className="text-ink-1">agent 那一侧的会话不会被删</span>
-                ，你在别处仍然能接着用它。
+                <Trans
+                  i18nKey="app.delete.body3"
+                  components={{ span: <span className="text-ink-1" /> }}
+                />
               </li>
               {deleteError && (
                 <li className="list-none break-all font-mono text-caption text-danger-1">
-                  没删成：{deleteError}
+                  {t("app.delete.failed", { msg: deleteError })}
                 </li>
               )}
             </ul>
           }
-          confirmLabel="删除"
+          confirmLabel={t("app.delete.confirm")}
           onConfirm={confirmDeleteSession}
           onCancel={() => {
             setPendingDelete(null);

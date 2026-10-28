@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { agentRespondRequest, type RespondOutcome } from "@/lib/ipc";
 import { pickAllowOption, shouldAutoApprove, type AutoApproveLevel } from "@/lib/auto-approve";
 import { clog } from "@/lib/log";
-import { permissionKindLabel } from "@/lib/permission-kind";
+import { permissionKindKey } from "@/lib/permission-kind";
+import { i18nText } from "@/lib/i18n-text";
 import type { PermissionOption, PermissionRequest } from "@/types";
 
 export interface QueueItem {
@@ -58,9 +59,11 @@ function normalizeNote(note: string | null | undefined): string | null {
 
 /** 开了自动同意却没动手时，要让人看得出是哪一种「没满足」。 */
 function autoSkippedReason(kind: string | null): string {
-  return permissionKindLabel(kind) === "未分类"
-    ? "未分类，需要你决定"
-    : "这条没法自动同意";
+  return i18nText(
+    permissionKindKey(kind) === "permission.kind.uncategorized"
+      ? "permission.skipped.uncategorized"
+      : "permission.skipped.noAuto",
+  );
 }
 
 function toneOf(kind: string | undefined): PermissionOption["tone"] {
@@ -116,11 +119,16 @@ function parsePermissionRequest(
   if (kind === "edit") {
     // 真实 payload 的路径在 content[0].path；缺失时退回 rawInput.arguments.path。
     const path = nonEmptyString(firstContent?.path) ?? nonEmptyString(args?.path);
-    detail = `修改 ${path ?? "文件"}`;
+    detail = path
+      ? i18nText("permission.detail.edit", { path })
+      : i18nText("permission.detail.editFallback");
   } else if (kind === "execute") {
-    detail = "执行命令";
+    detail = i18nText("permission.kind.execute");
   } else {
-    detail = `工具调用（${tool ?? kind ?? "未知工具"}）`;
+    const toolName = tool ?? kind;
+    detail = toolName
+      ? i18nText("permission.detail.tool", { tool: toolName })
+      : i18nText("permission.detail.toolUnknown");
   }
 
   const options = parsePermissionOptions(params);
@@ -130,7 +138,7 @@ function parsePermissionRequest(
     // App 按 playerId 找玩家；拿不到就如实留空，不能拿第一个玩家顶替。
     playerId: playerId ?? "",
     kind: kind ?? null,
-    title: nonEmptyString(toolCall.title) ?? "请求权限",
+    title: nonEmptyString(toolCall.title) ?? i18nText("permission.requestTitle"),
     detail,
     meta: tool,
     options,
@@ -296,18 +304,18 @@ export function usePermissions({
       note: string | null = null,
     ): Promise<PermissionOption | null> => {
       const head = queuesRef.current[uiSid]?.[0];
-      if (!head) throw new Error("没有待回答的权限请求");
+      if (!head) throw { code: 50901, msg: i18nText("permission.guard.noPending") };
 
       // 过期请求不再写回 agent。Esc/关闭只在本机出队，别拿一个已经失效的 id 去试。
       if (head.request.expiredReason !== undefined) {
-        if (optionId !== null) throw new Error("这个请求已过期，不能再作答");
+        if (optionId !== null) throw { code: 50902, msg: i18nText("permission.guard.expired") };
         removeHead(uiSid, head.profileId, head.requestId);
         return null;
       }
 
       const flightKey = `${head.profileId}:${head.requestId}`;
       if (inFlight.current[uiSid] === flightKey) {
-        throw new Error("这条权限请求还在处理中");
+        throw { code: 50903, msg: i18nText("permission.guard.inFlight") };
       }
 
       let selected: PermissionOption | null = null;
@@ -321,7 +329,7 @@ export function usePermissions({
           : { outcome: "cancelled" };
       } else {
         selected = head.request.options.find((option) => option.id === optionId) ?? null;
-        if (!selected) throw new Error("这个选项已经失效，请重新选择");
+        if (!selected) throw { code: 50904, msg: i18nText("permission.guard.optionGone") };
         outcome = { outcome: "selected", optionId };
       }
 

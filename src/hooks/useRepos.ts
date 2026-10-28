@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { newId } from "@/lib/ids";
+import { i18nText } from "@/lib/i18n-text";
 import type { GithubPR, GithubRepo, Tab } from "@/types";
 
 export const EMPTY_PRS: Record<string, GithubPR[]> = {};
@@ -8,10 +9,18 @@ export function useRepos(activeTab: Tab | null) {
   const [repoList, setRepoList] = useState<GithubRepo[]>([]);
 
   const addRepo = useCallback((path: string) => {
-    const name = path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "新项目";
+    const folder = path.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+    const name = folder || i18nText("sidebar.newProject");
     setRepoList((prev) => [
       ...prev,
-      { id: newId("repo"), name, slug: `—/${name}`, path, branch: "—", connected: false },
+      {
+        id: newId("repo"),
+        name,
+        slug: `—/${folder || "new-project"}`,
+        path,
+        branch: "—",
+        connected: false,
+      },
     ]);
   }, []);
 

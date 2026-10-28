@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, FolderGit2, MessageSquare, Plus, Settings2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { AgentProfile, GithubPR, GithubRepo, Player, SessionSummary } from "@/types";
+import type { MessageKey } from "@/i18n/zh-CN";
 import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
+import { localizeText } from "@/lib/i18n-text";
 import { SessionMoreMenu } from "./SessionMcpMenu";
 import { StatusDot } from "./ui/Badge";
 import { useHoverCard } from "./ui/HoverCard";
@@ -33,7 +36,23 @@ interface SidebarProps {
   width?: number;
 }
 
-const GROUPS: SessionSummary["group"][] = ["今天", "昨天", "更早"];
+/**
+ * 分组值来自领域模型（`SessionSummary["group"]` 是中文字面量联合，见 `src/types.ts`），
+ * 只用于过滤；显示走 `t(labelKey)`。
+ *
+ * **不要**改成"拿资源里的中文去匹配"：那样以后一改文案，分组过滤会静默失效（会话凭空消失）。
+ * 这几个字面量是领域值、不是界面文案，所以标 `i18n-ignore` 让门禁放行。
+ */
+const GROUPS: readonly { group: SessionSummary["group"]; labelKey: MessageKey }[] = [
+  { group: "今天", labelKey: "sidebar.group.today" }, // i18n-ignore
+  { group: "昨天", labelKey: "sidebar.group.yesterday" }, // i18n-ignore
+  { group: "更早", labelKey: "sidebar.group.earlier" }, // i18n-ignore
+];
+
+const NAV_ITEMS = [
+  ["sessions", "sidebar.nav.sessions", MessageSquare],
+  ["code", "sidebar.nav.code", FolderGit2],
+] as const;
 
 export function Sidebar({
   mode,
@@ -54,14 +73,16 @@ export function Sidebar({
   onAddRepo,
   width = 260,
 }: SidebarProps) {
+  const { t } = useTranslation();
   const [adding, setAdding] = useState(false);
   const [path, setPath] = useState("");
 
   const grouped = useMemo(
     () =>
-      GROUPS.map((g) => ({ group: g, items: sessions.filter((s) => s.group === g) })).filter(
-        (x) => x.items.length > 0,
-      ),
+      GROUPS.map(({ group, labelKey }) => ({
+        labelKey,
+        items: sessions.filter((s) => s.group === group),
+      })).filter((x) => x.items.length > 0),
     [sessions],
   );
 
@@ -80,7 +101,7 @@ export function Sidebar({
         <div
           className="sc-switch"
           role="group"
-          aria-label="一级导航"
+          aria-label={t("sidebar.nav.ariaLabel")}
           style={
             {
               "--switch-index": mode === "sessions" ? 0 : 1,
@@ -89,12 +110,7 @@ export function Sidebar({
           }
         >
           <span className="sc-switch__thumb" aria-hidden="true" />
-          {(
-            [
-              ["sessions", "会话", MessageSquare],
-              ["code", "代码", FolderGit2],
-            ] as const
-          ).map(([id, label, Icon]) => (
+          {NAV_ITEMS.map(([id, labelKey, Icon]) => (
             <button
               key={id}
               aria-pressed={mode === id}
@@ -102,7 +118,7 @@ export function Sidebar({
               className="sc-switch__item"
             >
               <Icon className="size-3.5" />
-              {label}
+              {t(labelKey)}
             </button>
           ))}
         </div>
@@ -115,10 +131,10 @@ export function Sidebar({
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-            {grouped.map(({ group, items }) => (
-              <div key={group} className="mb-0.5">
+            {grouped.map(({ labelKey, items }) => (
+              <div key={labelKey} className="mb-0.5">
                 <div className="px-2 pt-2 pb-1 text-micro font-medium tracking-wide text-ink-3">
-                  {group}
+                  {t(labelKey)}
                 </div>
                 {items.map((s) => {
                   const active = s.id === activeId;
@@ -151,7 +167,7 @@ export function Sidebar({
                         {s.playerIds.slice(0, 3).map((pid) => {
                           const pl = players.find((x) => x.id === pid);
                           return pl ? (
-                            <Tooltip key={pid} label={pl.name}>
+                            <Tooltip key={pid} label={localizeText(pl.name, t)}>
                               <span
                                 className="size-1.5 rounded-full"
                                 style={{ background: pl.color }}
@@ -170,7 +186,7 @@ export function Sidebar({
                               "ml-auto max-w-18 shrink-0 truncate rounded-mark bg-surface-3/35 px-1 py-px font-mono text-micro text-ink-3 transition-colors group-hover:bg-surface-3/55",
                             )}
                           >
-                            {profileLabel(profile)}
+                            {profileLabel(profile, t)}
                           </span>
                         )}
                       </span>
@@ -193,11 +209,11 @@ export function Sidebar({
         <>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
             <div className="px-2 pt-1 pb-1 text-micro font-medium tracking-wide text-ink-3">
-              项目
+              {t("sidebar.projects.heading")}
             </div>
             {repos.length === 0 && (
               <p className="px-2.5 py-1.5 text-micro leading-relaxed text-ink-3">
-                还没有项目。把本地仓库路径粘到下面添加，之后 PR 与分支都会挂在这里。
+                {t("sidebar.projects.empty")}
               </p>
             )}
             {repos.map((r) => {
@@ -216,11 +232,11 @@ export function Sidebar({
                     if (e.key === "Escape") setAdding(false);
                   }}
                   onBlur={() => setAdding(false)}
-                  placeholder="/home/jerry/source/项目"
+                  placeholder={t("sidebar.projects.placeholder")}
                   className="sc-selectable w-full rounded-mark bg-surface-3/45 px-2 py-1 font-mono text-caption text-ink-1 placeholder:text-ink-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
                 />
                 <p className="mt-1 text-micro text-ink-3">
-                  回车添加；执行 gh 时后端把 cwd 切到这个目录
+                  {t("sidebar.projects.addHint")}
                 </p>
               </div>
             ) : (
@@ -229,7 +245,7 @@ export function Sidebar({
                 className="mt-1 flex w-full items-center gap-1.5 rounded-mark px-2.5 py-1.5 text-caption text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink-2"
               >
                 <Plus className="size-3" />
-                添加项目路径
+                {t("sidebar.projects.add")}
               </button>
             )}
           </div>
@@ -242,7 +258,7 @@ export function Sidebar({
           className="mt-0.5 flex w-full items-center gap-2 rounded-mark px-2 py-1.5 text-ui-tight text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink-2"
         >
           <Settings2 className="size-3.5" />
-          设置
+          {t("sidebar.settings")}
         </button>
       </div>
     </aside>
@@ -258,6 +274,7 @@ function RepoButton({
   count: number;
   onOpen: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const [el, setEl] = useState<HTMLButtonElement | null>(null);
   const hover = useHoverCard();
   return (
@@ -271,7 +288,7 @@ function RepoButton({
         <span className="flex items-center gap-1.5">
           <StatusDot status={repo.connected ? "connected" : "untested"} />
           <span className="transition-colors duration-150 truncate text-small text-ink-2 group-hover:text-ink-1">
-            {repo.name}
+            {localizeText(repo.name, t)}
           </span>
           {count > 0 && (
             <span className="ml-auto shrink-0 font-mono text-micro text-ink-3">{count}</span>
@@ -300,6 +317,7 @@ function NewSessionButton({
   onNew: () => void;
   onNewWithProfile: (profileId: string) => void;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const multi = profiles.length > 1;
@@ -328,7 +346,7 @@ function NewSessionButton({
           className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left text-small text-ink-1"
         >
           <Plus className="size-3.5 shrink-0 text-ink-2" />
-          新建会话
+          {t("sidebar.newSession")}
           {!multi && (
             <kbd className="ml-auto rounded-mark border border-line-1/70 px-1.5 py-0.5 font-mono text-micro text-ink-3">
               Ctrl N
@@ -337,7 +355,7 @@ function NewSessionButton({
         </button>
         {multi && (
           <button
-            aria-label="选择 agent 新建会话"
+            aria-label={t("sidebar.newSession.chooseAgent")}
             aria-expanded={open}
             onClick={() => setOpen((v) => !v)}
             className="mr-1 grid size-6 shrink-0 place-items-center rounded-mark text-ink-3 transition-colors hover:bg-surface-3/70 hover:text-ink-1"
@@ -350,7 +368,7 @@ function NewSessionButton({
       {open && multi && (
         <div className="sc-glass absolute top-full right-0 left-0 sc-z-popover mt-1.5 rounded-card p-1">
           <div className="px-2 py-1.5 text-micro text-ink-3">
-            选一个 agent 新建；打开后会按它自动连接
+            {t("sidebar.newSession.agentHint")}
           </div>
           {profiles.map((p) => (
             <button
@@ -362,7 +380,7 @@ function NewSessionButton({
               className="flex w-full items-center gap-2 rounded-mark px-2 py-1.5 text-left transition-colors hover:bg-surface-3"
             >
               <span className="min-w-0 flex-1 truncate text-ui-tight text-ink-1">
-                {profileLabel(p)}
+                {profileLabel(p, t)}
               </span>
               <span className="shrink-0 font-mono text-micro text-ink-3">{p.launch}</span>
             </button>

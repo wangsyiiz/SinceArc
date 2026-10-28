@@ -1,5 +1,6 @@
 import type { AgentCaps } from "@/lib/ipc/types.gen/AgentCaps";
 import { DEFAULT_CODE_THEME_ID, type CodeThemeId } from "./lib/highlight/themes.ts";
+import type { Language } from "./i18n/normalize";
 
 export type ThemeMode = "dark" | "light" | "system";
 
@@ -85,7 +86,7 @@ export interface SessionSummary {
   /** 库里的时间戳（秒）；排序/去重仍用它，不再用它算分组 */
   updatedAtSec?: number;
   /** 由后端按机器本地时区判定，前端只映射成中文 */
-  group: "今天" | "昨天" | "更早";
+  group: "今天" | "昨天" | "更早"; // i18n-ignore
   /** 这个会话里有哪些玩家 */
   playerIds: string[];
   /** 绑定的 ACP 会话 id：事件按它归属，重连时优先复用 */
@@ -294,6 +295,8 @@ export interface ThreadSettings {
   tweenEnabled: boolean;
   /** markdown 代码块配色；与界面主题正交 */
   codeTheme: CodeThemeId;
+  /** 界面语言；`null` = 库里还没判定过（首启按系统语言判定后回写，docs/i18n.md §2.1） */
+  language: Language | null;
 }
 
 export const CONTEXT_MESSAGES_MAX = 20;
@@ -305,4 +308,5 @@ export const DEFAULT_THREAD_SETTINGS: ThreadSettings = {
   mcpInheritDefault: true,
   tweenEnabled: true,
   codeTheme: DEFAULT_CODE_THEME_ID,
+  language: null,
 };

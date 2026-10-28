@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { Check, ChevronDown, Plus, Trash2 } from "lucide-react";
+import type { MessageKey } from "@/i18n/zh-CN";
 import { newId } from "@/lib/ids";
 import type { AgentProfile } from "@/types";
 import { cn } from "@/lib/utils";
@@ -13,6 +15,7 @@ import {
   type AgentUser,
 } from "@/lib/ipc";
 import { profileLabel } from "@/lib/format";
+import { errorText } from "@/lib/errors";
 import { PLAYER_COLORS } from "@/lib/player-colors";
 import { PlayerAvatar } from "./PlayerAvatar";
 import { Badge } from "./ui/Badge";
@@ -35,9 +38,9 @@ import { Tooltip } from "./ui/Tooltip";
 
 const COLORS = PLAYER_COLORS;
 
-const SESSION_SOURCE_OPTIONS: { value: "new" | "existing"; label: string }[] = [
-  { value: "new", label: "新建会话" },
-  { value: "existing", label: "已有会话" },
+const SESSION_SOURCE_OPTIONS: { value: "new" | "existing"; labelKey: MessageKey }[] = [
+  { value: "new", labelKey: "settings.member.source.new" },
+  { value: "existing", labelKey: "settings.member.source.existing" },
 ];
 
 function LongTextHover({
@@ -119,6 +122,7 @@ export function AgentUsersList({
   /** 从详情返回时用：优先聚焦原行，不存在则聚焦首行 */
   focus?: { id: string; tick: number } | null;
 }) {
+  const { t } = useTranslation();
   const [users, setUsers] = useState<AgentUser[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -130,7 +134,8 @@ export function AgentUsersList({
       setUsers(await agentUsersList());
       setError(null);
     } catch (e) {
-      setError(asCmdError(e).msg);
+      const err = asCmdError(e);
+      setError(errorText(err.code, err.msg, t));
     }
   };
 
@@ -155,7 +160,8 @@ export function AgentUsersList({
       await reload();
       onChanged?.();
     } catch (e) {
-      setError(asCmdError(e).msg);
+      const err = asCmdError(e);
+      setError(errorText(err.code, err.msg, t));
     } finally {
       setBusy(null);
     }
@@ -165,14 +171,16 @@ export function AgentUsersList({
     <div>
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h2 className="text-small font-medium text-ink-2">成员</h2>
+          <h2 className="text-small font-medium text-ink-2">
+            {t("settings.sections.members")}
+          </h2>
           <p className="mt-1 text-caption text-ink-3">
-            成员绑定某条连接上的 ACP 会话；保存前会真跑一次恢复。
+            {t("settings.member.description")}
           </p>
         </div>
         <Button variant="secondary" size="sm" onClick={() => onOpen(null)}>
           <Plus className="size-3" />
-          新建成员
+          {t("settings.member.newTitle")}
         </Button>
       </div>
 
@@ -186,15 +194,15 @@ export function AgentUsersList({
         <div className="mt-4">
           <EmptyState
             compact
-            heading="还没有成员"
-            description="先在「连接」里配一条连接，再回来创建成员。"
+            heading={t("settings.member.emptyHeading")}
+            description={t("settings.member.emptyDescription")}
           />
         </div>
       ) : (
         <div className="mt-4 divide-y divide-line-1/50">
           {users.map((u) => {
             const profile = profiles.find((p) => p.id === u.profileId);
-            const deleteLabel = `删除 ${u.name}`;
+            const deleteLabel = t("settings.member.deleteAria", { name: u.name });
             const deleteButton = (
               <Button
                 variant="ghost"
@@ -234,13 +242,17 @@ export function AgentUsersList({
                       <span className="shrink-0 font-mono text-micro text-ink-3">@{u.handle}</span>
                     </span>
                     <span className="mt-0.5 block truncate font-mono text-caption text-ink-3">
-                      {profile ? profileLabel(profile) : "连接已不在"}
+                      {profile ? profileLabel(profile, t) : t("settings.connection.missing")}
                     </span>
                   </span>
                   <Badge
                     compact
                     status={profile?.connected ? "connected" : "untested"}
-                    label={profile?.connected ? "已连接" : "未连接"}
+                    label={
+                      profile?.connected
+                        ? t("statusbar.profile.statusConnected")
+                        : t("statusbar.profile.statusDisconnected")
+                    }
                   />
                 </button>
                 {busy === u.id ? (
@@ -269,6 +281,7 @@ export function AgentUserDetail({
   ensureConnected: (p: AgentProfile) => Promise<void>;
   onSaved: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<Draft>(() =>
     user ? draftOf(user) : emptyDraft(profiles),
   );
@@ -318,7 +331,10 @@ export function AgentUserDetail({
         setDraft((d) => ({ ...d, acpSessionId: sid }));
         setTest({
           state: "ok",
-          detail: `已在 ${profileLabel(profile)} 上新建会话 ${sid.length > 16 ? `${sid.slice(0, 16)}…` : sid}`,
+          detail: t("settings.member.test.newSession", {
+            profile: profileLabel(profile, t),
+            session: sid.length > 16 ? `${sid.slice(0, 16)}…` : sid,
+          }),
         });
         return;
       }
@@ -334,13 +350,18 @@ export function AgentUserDetail({
           ? {
               state: "ok",
               detail:
-                mode === "new" ? `复核通过（沿用已建的会话，不会再新建）· ${r.detail}` : r.detail,
+                mode === "new"
+                  ? t("settings.member.test.reviewed", { detail: r.detail })
+                  : r.detail,
             }
           : { state: "fail", detail: r.detail },
       );
     } catch (e) {
       const err = asCmdError(e);
-      setTest({ state: "fail", detail: `${err.code} ${err.msg}` });
+      setTest({
+        state: "fail",
+        detail: `${err.code} ${errorText(err.code, err.msg, t)}`,
+      });
     }
   };
 
@@ -362,7 +383,7 @@ export function AgentUserDetail({
       onSaved(id);
     } catch (e) {
       const err = asCmdError(e);
-      setError(`${err.code} ${err.msg}`);
+      setError(`${err.code} ${errorText(err.code, err.msg, t)}`);
     } finally {
       setBusy(false);
     }
@@ -374,34 +395,40 @@ export function AgentUserDetail({
     test.state === "ok" && draft.name.trim().length > 0 && draft.handle.trim().length > 0;
 
   const saveBlocker = (() => {
-    if (test.state === "untested") return "先测试通过才能保存";
-    if (test.state === "testing") return "正在测试…";
-    if (test.state === "fail") return "测试没通过，先解决上面的问题";
+    if (test.state === "untested") return t("settings.member.validation.testRequired");
+    if (test.state === "testing") return t("settings.member.validation.testing");
+    if (test.state === "fail") return t("settings.member.validation.testFailed");
     const missing = [
-      !draft.name.trim() ? "名字" : null,
-      !draft.handle.trim() ? "@ 短名" : null,
+      !draft.name.trim() ? t("settings.member.name.label") : null,
+      !draft.handle.trim() ? t("settings.member.handle.label") : null,
     ].filter(Boolean);
-    if (missing.length > 0) return `还缺：${missing.join("、")}`;
+    if (missing.length > 0) {
+      return t("ui.validation.missing", {
+        fields: missing.join(t("ui.list.separator")),
+      });
+    }
     return null;
   })();
 
   return (
     <div className="mt-5 space-y-5">
       <p className="text-caption text-ink-3">
-        成员 = 某条连接上的某个 ACP 会话。要能 @ 到它，这个会话必须能被{" "}
-        <code className="font-mono">session/load</code> 恢复 —— 所以保存前一定会真跑一次恢复。
+        <Trans
+          i18nKey="settings.member.intro"
+          components={{ code: <code className="font-mono" /> }}
+        />
       </p>
 
       <div className="grid gap-4 md:grid-cols-2">
-        <Field label="名字" htmlFor="member-name" required>
+        <Field label={t("settings.member.name.label")} htmlFor="member-name" required>
           <Input
             id="member-name"
             value={draft.name}
             onChange={(e) => edit({ name: e.target.value })}
-            placeholder="后端-2"
+            placeholder={t("settings.member.name.placeholder")}
           />
         </Field>
-        <Field label="@ 短名" htmlFor="member-handle" required>
+        <Field label={t("settings.member.handle.label")} htmlFor="member-handle" required>
           <Input
             id="member-handle"
             value={draft.handle}
@@ -415,7 +442,7 @@ export function AgentUserDetail({
 
       <div className="flex flex-col gap-1.5">
         <span className="text-ui font-medium text-ink-2">
-          连接
+          {t("settings.sections.connection")}
           <Req />
         </span>
         <ProfilePick
@@ -427,14 +454,17 @@ export function AgentUserDetail({
 
       {profiles.length === 0 && (
         <p className="rounded-control bg-warn-1/10 px-2.5 py-2 text-caption text-warn-1">
-          还没有连接配置 —— 先去「连接」加一条，成员必须挂在某条连接上。
+          {t("settings.member.noConnections")}
         </p>
       )}
 
       <Segmented
-        ariaLabel="会话来源"
+        ariaLabel={t("settings.member.sourceAria")}
         compact
-        options={SESSION_SOURCE_OPTIONS}
+        options={SESSION_SOURCE_OPTIONS.map(({ value, labelKey }) => ({
+          value,
+          label: t(labelKey),
+        }))}
         value={mode}
         onChange={(next) => {
           if (next === mode) return;
@@ -446,9 +476,10 @@ export function AgentUserDetail({
 
       {mode === "new" && (
         <p className="rounded-control bg-warn-1/10 px-2.5 py-2 text-caption text-warn-1">
-          点「测试」会<span className="text-ink-1">真的</span>在这条连接上新建一个会话
-          （会占用 agent 的一个 session）。建完不保存就取消的话，那个会话会留在 agent
-          那边，客户端不会偷偷删它。
+          <Trans
+            i18nKey="settings.member.newSessionWarning"
+            components={{ span: <span className="text-ink-1" /> }}
+          />
         </p>
       )}
 
@@ -460,7 +491,7 @@ export function AgentUserDetail({
             onChange={(e) =>
               edit({ acpSessionId: e.target.value }, { affectsSession: true })
             }
-            placeholder="local-… 或 agent 报的 sessionId"
+            placeholder={t("settings.member.sessionId.placeholder")}
             spellCheck={false}
             className="font-mono"
           />
@@ -468,7 +499,7 @@ export function AgentUserDetail({
       ) : (
         draft.acpSessionId.trim().length > 0 && (
           <p className="text-caption text-ink-3">
-            会话 id{" "}
+            {t("settings.member.sessionId.label")}{" "}
             <LongTextHover
               text={draft.acpSessionId}
               disabled={draft.acpSessionId.length <= 28}
@@ -482,7 +513,7 @@ export function AgentUserDetail({
         )
       )}
 
-      <Field label="工作目录（可空，默认用连接的）" htmlFor="member-cwd">
+      <Field label={t("settings.member.cwd.label")} htmlFor="member-cwd">
         <Input
           id="member-cwd"
           value={draft.cwd}
@@ -499,12 +530,12 @@ export function AgentUserDetail({
       </Field>
 
       <div className="flex items-center gap-2">
-        <span className="text-caption text-ink-3">颜色</span>
+        <span className="text-caption text-ink-3">{t("settings.member.color.label")}</span>
         {COLORS.map((color, index) => (
-          <Tooltip key={color} label={`颜色 ${index + 1}`}>
+          <Tooltip key={color} label={t("settings.member.colorAria", { index: index + 1 })}>
             <button
               type="button"
-              aria-label={`颜色 ${index + 1}`}
+              aria-label={t("settings.member.colorAria", { index: index + 1 })}
               onClick={() => setDraft({ ...draft, color })}
               className={cn(
                 "size-4 rounded-full border transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1",
@@ -523,13 +554,21 @@ export function AgentUserDetail({
           onClick={() => void runTest()}
           disabled={!canTest || test.state === "testing"}
         >
-          {test.state === "testing" ? (mode === "new" ? "正在建会话…" : "测试中…") : "测试"}
+          {test.state === "testing"
+            ? mode === "new"
+              ? t("settings.member.test.creating")
+              : t("settings.member.test.testing")
+            : t("settings.member.test.action")}
         </Button>
         {mode === "new" && draft.acpSessionId.trim().length > 0 && (
-          <span className="text-caption text-ink-3">再点只是复核，不会新建</span>
+          <span className="text-caption text-ink-3">
+            {t("settings.member.test.reviewOnly")}
+          </span>
         )}
         {mode === "existing" && !canTest && (
-          <span className="text-caption text-ink-3">先填一个 session id</span>
+          <span className="text-caption text-ink-3">
+            {t("settings.member.sessionId.required")}
+          </span>
         )}
         <Button
           variant="primary"
@@ -537,7 +576,7 @@ export function AgentUserDetail({
           onClick={() => void save()}
           disabled={!canSave || busy}
         >
-          保存
+          {t("ui.button.save")}
         </Button>
         {saveBlocker && <span className="text-caption text-ink-3">{saveBlocker}</span>}
       </div>
@@ -577,26 +616,29 @@ function ProfilePick({
   value: string;
   onChange: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const current = profiles.find((p) => p.id === value);
   return (
     <Menu
-      ariaLabel="选择连接"
+      ariaLabel={t("settings.member.profileSelect.aria")}
       compact
       align="start"
       className="w-full justify-between"
       disabled={profiles.length === 0}
-      disabledReason="还没有连接"
+      disabledReason={t("settings.member.profileSelect.empty")}
       trigger={
         <>
           <span className="min-w-0 truncate">
-            {current ? profileLabel(current) : "选一条连接"}
+            {current
+              ? profileLabel(current, t)
+              : t("settings.member.profileSelect.placeholder")}
           </span>
           <ChevronDown className="size-3 shrink-0 text-ink-3" />
         </>
       }
       items={profiles.map((p) => ({
         id: p.id,
-        label: profileLabel(p),
+        label: profileLabel(p, t),
         checked: p.id === value,
         onSelect: () => onChange(p.id),
       }))}

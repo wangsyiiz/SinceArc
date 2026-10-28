@@ -1,4 +1,5 @@
 import { cloneElement, isValidElement, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 
 export function Field(props: {
@@ -11,6 +12,7 @@ export function Field(props: {
   children: ReactNode;
 }) {
   const { label, htmlFor, required, optional, hint, error, children } = props;
+  const { t } = useTranslation();
   const control =
     required && isValidElement<Record<string, unknown>>(children)
       ? cloneElement(children, { "aria-required": true })
@@ -26,7 +28,7 @@ export function Field(props: {
             *
           </span>
         )}
-        {optional && <span className="ml-1 text-ink-3">（可空）</span>}
+        {optional && <span className="ml-1 text-ink-3">{t("ui.field.optional")}</span>}
       </label>
       {control}
       {hint && <p className="text-caption text-ink-3">{hint}</p>}

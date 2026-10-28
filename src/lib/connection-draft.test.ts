@@ -22,7 +22,7 @@ test("新建草稿使用与入库默认值一致的启动配置", () => {
 
 test("SSH 缺主机与用户名时按顺序报出", () => {
   const p = profile({ launch: "ssh", ssh: { host: "", port: 22, user: "", auth: "key" } });
-  assert.deepEqual(missingFields(p), ["主机", "用户名"]);
+  assert.deepEqual(missingFields(p), ["host", "user"]);
 });
 
 test("WSL 没填发行版也放过", () => {
@@ -32,20 +32,21 @@ test("WSL 没填发行版也放过", () => {
 
 test("空命令算缺字段", () => {
   const p = profile({ launch: "local", program: "   ", ssh: undefined });
-  assert.deepEqual(missingFields(p), ["agent 命令"]);
+  assert.deepEqual(missingFields(p), ["agentCommand"]);
 });
 
 test("canSave 先报缺字段，再报未探测", () => {
   const incomplete = profile({ ssh: { host: "", port: 22, user: "", auth: "key" } });
   assert.deepEqual(canSaveConnection(false, incomplete), {
     ok: false,
-    reason: "还缺：主机、用户名",
+    reason: "missing",
+    fields: ["host", "user"],
   });
 
   const complete = profile({ ssh: { host: "h", port: 22, user: "u", auth: "key" } });
   assert.deepEqual(canSaveConnection(false, complete), {
     ok: false,
-    reason: "先探测通过才能保存",
+    reason: "probeRequired",
   });
   assert.deepEqual(canSaveConnection(true, complete), { ok: true });
 });

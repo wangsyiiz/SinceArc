@@ -6,10 +6,73 @@
  */
 import type { TraceTurnDto } from "./ipc/types";
 import { MAIN_AGENT_ID } from "./main-agent.ts";
-import { permissionKindLabel } from "./permission-kind.ts";
+import { permissionKindKey } from "./permission-kind.ts";
 import type { Activity, ActivityKind, TraceTurn } from "@/types";
 import { delegateCapsDetail as delegateCapsDetailText } from "./delegate-target.ts";
 import { isTurnCancelled } from "./turn-status.ts";
+import { localizeText, translateKey } from "./i18n-text.ts";
+import type { MessageKey } from "@/i18n/zh-CN";
+import type { TFunction } from "i18next";
+
+export interface TraceText {
+  key: MessageKey;
+  values?: Record<string, string | number | TraceText>;
+}
+
+export type TraceTextPart = string | TraceText;
+
+export interface TraceActivity extends Activity {
+  titleText?: TraceText;
+  detailText?: TraceTextPart;
+  bodyText?: TraceTextPart[];
+}
+
+function textOfPart(part: TraceTextPart): string {
+  return typeof part === "string" ? part : part.key;
+}
+
+function textOfParts(parts: TraceTextPart[], separator = "\n"): string {
+  return parts.map(textOfPart).join(separator);
+}
+
+function resolveTextValue(value: string | number | TraceText, t: TFunction): string | number {
+  if (typeof value !== "object") return value;
+  return translateKey(t, value.key, resolveTraceValues(value.values, t));
+}
+
+function resolveTraceValues(
+  values: TraceText["values"],
+  t: TFunction,
+): Record<string, string | number> | undefined {
+  if (!values) return undefined;
+  return Object.fromEntries(
+    Object.entries(values).map(([key, value]) => [key, resolveTextValue(value, t)]),
+  );
+}
+
+function resolveTextPart(part: TraceTextPart, t: TFunction): string {
+  return typeof part === "string" ? part : translateKey(t, part.key, resolveTraceValues(part.values, t));
+}
+
+/** 把适配器挂上的文案元数据翻译成当前语言的 Activity；原始 agent 文本保持不变。 */
+export function localizeTraceActivity(activity: TraceActivity, t: TFunction): Activity {
+  return {
+    ...activity,
+    title: activity.titleText
+      ? resolveTextPart(activity.titleText, t)
+      : localizeText(activity.title, t),
+    detail: activity.detailText
+      ? resolveTextPart(activity.detailText, t)
+      : activity.detail === undefined
+        ? undefined
+        : localizeText(activity.detail, t),
+    body: activity.bodyText
+      ? activity.bodyText.map((part) => resolveTextPart(part, t)).join("\n")
+      : activity.body === undefined
+        ? undefined
+        : localizeText(activity.body, t),
+  };
+}
 
 /** agent 的工具调用类型 → 面板的图标类别。 */
 function activityKindOf(item: TraceTurnDto["items"][number]): ActivityKind | null {
@@ -40,32 +103,63 @@ function numberOf(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function delegateCapsDetail(payload: Record<string, unknown>): string | undefined {
+function delegateCapsDetail(
+  payload: Record<string, unknown>,
+): { detail: string; detailText: TraceText } | undefined {
   const context = stringOf(payload.context);
   if (context !== "member_fork" && context !== "task_only") return undefined;
   // 档位必须带成因：「只带任务描述 · 这个 agent 没报 fork 能力」——这一步就是用户
   // 事后对得上「为什么这个 agent 带了上下文、那个没带」的地方（orchestration.md §3 落点②）。
-  return delegateCapsDetailText(context, stringOf(payload.reason));
+  const detail = delegateCapsDetailText(context, stringOf(payload.reason));
+  if (detail.reasonKey) {
+    const detailText: TraceText = {
+      key: "delegate.caps.detail.withReason",
+      values: { label: { key: detail.labelKey }, reason: { key: detail.reasonKey } },
+    };
+    return { detail: detailText.key, detailText };
+  }
+  return { detail: detail.labelKey, detailText: { key: detail.labelKey } };
 }
 
-function delegateTargetName(payload: Record<string, unknown>): string {
-  return stringOf(payload.targetName) ?? "成员";
+function delegateTargetValue(payload: Record<string, unknown>): string | TraceText {
+  return stringOf(payload.targetName) ?? { key: "trace.delegate.targetFallback" };
 }
 
-function delegateResultTitle(targetName: string, payload: Record<string, unknown>): string {
-  if (stringOf(payload.status) === "cancelled") return `${targetName} 已停止`;
+function delegateResultTitle(
+  target: string | TraceText,
+  payload: Record<string, unknown>,
+): { title: string; titleText: TraceText } {
+  if (stringOf(payload.status) === "cancelled") {
+    return {
+      title: "trace.delegate.result.stopped",
+      titleText: { key: "trace.delegate.result.stopped", values: { target } },
+    };
+  }
   const elapsed = numberOf(payload.elapsedMs);
-  return elapsed === undefined
-    ? `${targetName} 回来了`
-    : `${targetName} 回来了 · ${elapsed}ms`;
+  if (elapsed === undefined) {
+    return {
+      title: "trace.delegate.result.returned",
+      titleText: { key: "trace.delegate.result.returned", values: { target } },
+    };
+  }
+  return {
+    title: "trace.delegate.result.returnedElapsed",
+    titleText: { key: "trace.delegate.result.returnedElapsed", values: { target, elapsed } },
+  };
 }
 
 function delegateResultDetail(
   payload: Record<string, unknown>,
-  fallback: string | undefined,
-): string | undefined {
-  if (stringOf(payload.status) !== "failed") return fallback;
-  return stringOf(payload.stopReason) ?? stringOf(payload.reason) ?? "失败";
+  fallback: TraceTextPart | undefined,
+): { detail?: string; detailText?: TraceTextPart } {
+  if (stringOf(payload.status) !== "failed") {
+    return fallback === undefined
+      ? {}
+      : { detail: textOfPart(fallback), detailText: fallback };
+  }
+  const reason = stringOf(payload.stopReason) ?? stringOf(payload.reason);
+  if (reason) return { detail: reason, detailText: reason };
+  return { detail: "trace.delegate.result.failed", detailText: { key: "trace.delegate.result.failed" } };
 }
 
 function delegateResultStatus(payload: Record<string, unknown>): Activity["status"] {
@@ -121,8 +215,11 @@ interface PermissionOptionMeta {
 
 interface DecisionText {
   title: string;
+  titleText: TraceText;
   body?: string;
+  bodyText: TraceTextPart[];
   detail?: string;
+  detailText?: TraceTextPart;
   verdict: "allow" | "reject";
 }
 
@@ -167,22 +264,49 @@ function decisionTextOf(
       (optionId === undefined ||
         meta?.optionKind?.startsWith("reject") === true ||
         /reject|deny/i.test(`${optionId ?? ""} ${optionLabel ?? ""}`)));
-  const category = meta?.toolKind ? permissionKindLabel(meta.toolKind) : null;
-  const action = reject ? "拒绝" : via === "auto:edits" ? "自动批准" : "批准";
-  const title = note
-    ? `${action}（备注）`
-    : category
-      ? `${action} · ${category}`
-      : action;
-  const body = [
-    optionLabel ? `选项：${optionLabel}` : undefined,
-    note ? `备注：${note}` : undefined,
-    via === "auto:edits" ? "方式：自动同意（编辑）" : "方式：用户",
-  ]
-    .filter((line): line is string => Boolean(line))
-    .join("\n");
-  const detail = (note ?? optionLabel ?? category ?? title).replace(/\s+/g, " ").trim().slice(0, 80);
-  return { title, body, detail: detail || undefined, verdict: reject ? "reject" : "allow" };
+  const categoryKey = meta?.toolKind ? permissionKindKey(meta.toolKind) : null;
+  const actionKey: MessageKey = reject
+    ? "trace.permission.decision.rejected"
+    : via === "auto:edits"
+      ? "trace.permission.decision.autoApproved"
+      : "trace.permission.decision.approved";
+  const titleText: TraceText = note
+    ? {
+        key: "trace.permission.decision.withNote",
+        values: { action: { key: actionKey } },
+      }
+    : categoryKey
+      ? {
+          key: "trace.permission.decision.withKind",
+          values: { action: { key: actionKey }, kind: { key: categoryKey } },
+        }
+      : { key: actionKey };
+
+  const bodyText: TraceTextPart[] = [];
+  if (optionLabel) {
+    bodyText.push({ key: "trace.permission.decision.option", values: { option: optionLabel } });
+  }
+  if (note) {
+    bodyText.push({ key: "trace.permission.decision.note", values: { note } });
+  }
+  bodyText.push({
+    key:
+      via === "auto:edits"
+        ? "trace.permission.decision.viaAuto"
+        : "trace.permission.decision.viaUser",
+  });
+
+  const detailText: TraceTextPart = note ?? optionLabel ?? (categoryKey ? { key: categoryKey } : titleText);
+  const detail = textOfPart(detailText).replace(/\s+/g, " ").trim().slice(0, 80);
+  return {
+    title: titleText.key,
+    titleText,
+    body: textOfParts(bodyText),
+    bodyText,
+    detail: detail || undefined,
+    detailText,
+    verdict: reject ? "reject" : "allow",
+  };
 }
 
 const BODY_SIDE_MAX_BYTES = 2 * 1024;
@@ -214,8 +338,12 @@ function truncatedInfo(value: unknown): { bytes: number; preview?: string } | nu
   return { bytes: numberOf(obj.bytes) ?? 0, preview: stringOf(obj.preview) };
 }
 
-function truncationLine(bytes: number): string {
-  return `…已截断 ${Math.max(1, Math.round(bytes / 1024))} KB`;
+function truncationLine(bytes: number): { text: string; part: TraceText } {
+  const kb = Math.max(1, Math.round(bytes / 1024));
+  return {
+    text: `…已截断 ${kb} KB`, // i18n-ignore: Activity.body 的数据兜底，展示层读 part 翻译
+    part: { key: "trace.truncated.line", values: { kb } },
+  };
 }
 
 function rawInputValue(value: unknown): string {
@@ -232,7 +360,7 @@ function rawInputLines(value: unknown): string[] {
   return [rawInputValue(value)];
 }
 
-function rawInputSide(value: unknown): string | undefined {
+function rawInputSide(value: unknown): { text: string; parts: TraceTextPart[] } | undefined {
   if (value === undefined || value === null) return undefined;
 
   const marker = truncatedInfo(value);
@@ -241,12 +369,16 @@ function rawInputSide(value: unknown): string | undefined {
 
   const bytes = utf8Bytes(text);
   const clipped = bytes > BODY_SIDE_MAX_BYTES ? boundaryPrefix(text, BODY_SIDE_MAX_BYTES) : text;
-  const line = marker
+  const markerLine = marker
     ? truncationLine(marker.bytes)
     : bytes > BODY_SIDE_MAX_BYTES
       ? truncationLine(bytes)
       : undefined;
-  return line ? [clipped, line].filter((part) => part.length > 0).join("\n") : clipped;
+  if (!markerLine) return { text: clipped, parts: [clipped] };
+  const parts: TraceTextPart[] = [];
+  if (clipped.length > 0) parts.push(clipped);
+  parts.push(markerLine.part);
+  return { text: textOfParts(parts), parts };
 }
 
 function rawInputFirstLine(value: unknown): string | undefined {
@@ -272,40 +404,59 @@ function contentLine(value: unknown): string | undefined {
   return summary;
 }
 
-function contentSide(value: unknown): string | undefined {
+function contentSide(value: unknown): { text: string; parts: TraceTextPart[] } | undefined {
   if (value === undefined || value === null) return undefined;
 
   const marker = truncatedInfo(value);
   if (marker) {
-    return [marker.preview ?? "", truncationLine(marker.bytes)]
-      .filter((part) => part.length > 0)
-      .join("\n");
+    const line = truncationLine(marker.bytes);
+    const parts: TraceTextPart[] = [];
+    if (marker.preview) parts.push(marker.preview);
+    parts.push(line.part);
+    return { text: textOfParts(parts), parts };
   }
-  if (typeof value === "string") return stringOf(value);
+  if (typeof value === "string") {
+    const text = stringOf(value);
+    return text ? { text, parts: [text] } : undefined;
+  }
   if (!Array.isArray(value)) {
     const text = stringOf(recordOf(value)?.text);
-    return text ?? contentLine(value);
+    if (text) return { text, parts: [text] };
+    const line = contentLine(value);
+    return line ? { text: line, parts: [line] } : undefined;
   }
 
   const lines: string[] = [];
+  const parts: TraceTextPart[] = [];
   let markerBytes: number | undefined;
   for (const entry of value) {
     const entryMarker = truncatedInfo(entry);
     if (entryMarker) {
-      if (entryMarker.preview) lines.push(entryMarker.preview);
+      if (entryMarker.preview) {
+        lines.push(entryMarker.preview);
+        parts.push(entryMarker.preview);
+      }
       markerBytes = entryMarker.bytes;
       continue;
     }
     const text = stringOf(recordOf(entry)?.text);
     if (text) {
       lines.push(text);
+      parts.push(text);
       continue;
     }
     const line = contentLine(entry);
-    if (line) lines.push(line);
+    if (line) {
+      lines.push(line);
+      parts.push(line);
+    }
   }
-  if (markerBytes !== undefined) lines.push(truncationLine(markerBytes));
-  return lines.length > 0 ? lines.join("\n") : undefined;
+  if (markerBytes !== undefined) {
+    const line = truncationLine(markerBytes);
+    lines.push(line.text);
+    parts.push(line.part);
+  }
+  return lines.length > 0 ? { text: lines.join("\n"), parts } : undefined;
 }
 
 /**
@@ -316,7 +467,7 @@ function contentSide(value: unknown): string | undefined {
 function summaryOf(
   item: TraceTurnDto["items"][number],
   decision?: DecisionText,
-): { body?: string; detail?: string } {
+): { body?: string; bodyText?: TraceTextPart[]; detail?: string; detailText?: TraceTextPart } {
   const payload = (item.payload ?? {}) as Record<string, unknown>;
 
   if (item.kind === "thought") {
@@ -329,11 +480,19 @@ function summaryOf(
   if (item.kind === "tool_call" || item.kind === "tool_call_update") {
     const locations = Array.isArray(payload.locations) ? payload.locations : [];
     const lines = locations.map(locationLine).filter((line): line is string => Boolean(line));
-    const sections = [lines.join("\n"), rawInputSide(payload.rawInput), contentSide(payload.content)]
-      .filter((part): part is string => Boolean(part));
+    const rawInput = rawInputSide(payload.rawInput);
+    const content = contentSide(payload.content);
+    const sections = [lines.join("\n"), rawInput?.text, content?.text].filter(
+      (part): part is string => Boolean(part),
+    );
+    const bodyText: TraceTextPart[] = [];
+    if (lines.length > 0) bodyText.push(lines.join("\n"));
+    if (rawInput) bodyText.push(...rawInput.parts);
+    if (content) bodyText.push(...content.parts);
     const detailSource = stringOf(payload.title) ?? rawInputFirstLine(payload.rawInput);
     return {
       body: sections.length > 0 ? sections.join("\n") : undefined,
+      bodyText: bodyText.length > 0 ? bodyText : undefined,
       detail: detailSource?.replace(/\s+/g, " ").trim().slice(0, 80) || undefined,
     };
   }
@@ -347,34 +506,60 @@ function summaryOf(
   }
 
   if (item.kind === "permission_decision" && decision) {
-    return { body: decision.body, detail: decision.detail };
+    return {
+      body: decision.body,
+      bodyText: decision.bodyText,
+      detail: decision.detail,
+      detailText: decision.detailText,
+    };
   }
 
   if (item.kind === "delegate") {
-    return { detail: delegateCapsDetail(payload) };
+    const detail = delegateCapsDetail(payload);
+    return detail ? { detail: detail.detail, detailText: detail.detailText } : {};
   }
 
   if (item.kind === "delegate_result") {
-    return { detail: delegateResultDetail(payload, undefined) };
+    return delegateResultDetail(payload, undefined);
   }
 
   return {};
 }
 
-function titleOf(item: TraceTurnDto["items"][number], decision?: DecisionText): string {
+function titleOf(
+  item: TraceTurnDto["items"][number],
+  decision?: DecisionText,
+): { title: string; titleText?: TraceText } {
   const p = item.payload as Record<string, unknown>;
   if (item.kind === "permission") {
     const tool = (p.toolCall ?? {}) as Record<string, unknown>;
-    return `请求权限：${String(tool.title ?? "未知操作")}`;
+    const title = stringOf(tool.title);
+    return {
+      title: "trace.permission.request",
+      titleText: {
+        key: "trace.permission.request",
+        values: { tool: title ?? { key: "trace.permission.unknownTool" } },
+      },
+    };
   }
   if (item.kind === "thought") {
     const text = String(p.text ?? "").replace(/\s+/g, " ").trim();
-    return text.length > 0 ? text.slice(0, 42) : "思考";
+    if (text.length > 0) return { title: text.slice(0, 42) };
+    return { title: "trace.thought.fallback", titleText: { key: "trace.thought.fallback" } };
   }
-  if (item.kind === "permission_decision" && decision) return decision.title;
-  if (item.kind === "delegate") return `派活给 ${delegateTargetName(p)}`;
-  if (item.kind === "delegate_result") return delegateResultTitle(delegateTargetName(p), p);
-  return String(p.title ?? "工具调用");
+  if (item.kind === "permission_decision" && decision) {
+    return { title: decision.title, titleText: decision.titleText };
+  }
+  if (item.kind === "delegate") {
+    return {
+      title: "trace.delegate.assigned",
+      titleText: { key: "trace.delegate.assigned", values: { target: delegateTargetValue(p) } },
+    };
+  }
+  if (item.kind === "delegate_result") return delegateResultTitle(delegateTargetValue(p), p);
+  const title = stringOf(p.title);
+  if (title) return { title };
+  return { title: "trace.tool.fallback", titleText: { key: "trace.tool.fallback" } };
 }
 
 function clock(ms: number): string {
@@ -384,7 +569,7 @@ function clock(ms: number): string {
 
 export interface TraceView {
   turns: TraceTurn[];
-  activities: Activity[];
+  activities: TraceActivity[];
 }
 
 /**
@@ -408,11 +593,11 @@ export function turnHasDrawableContent(
  * 这也是把思考和工具调用移出聊天界面之后，它们唯一的落点。
  */
 export function toTraceView(dtos: TraceTurnDto[]): TraceView {
-  const activities: Activity[] = [];
+  const activities: TraceActivity[] = [];
   const turns: TraceTurn[] = [];
   const delegateSteps = new Map<
     string,
-    { activity: Activity; detail?: string; targetName: string }
+    { activity: TraceActivity; detail?: TraceTextPart; target: string | TraceText }
   >();
 
   // 后端按 startedAt 倒序给（最新的先），面板要正序读
@@ -430,8 +615,12 @@ export function toTraceView(dtos: TraceTurnDto[]): TraceView {
         const handleId = stringOf(payload.handleId);
         const prior = handleId ? delegateSteps.get(handleId) : undefined;
         if (prior) {
-          prior.activity.title = delegateResultTitle(prior.targetName, payload);
-          prior.activity.detail = delegateResultDetail(payload, prior.detail);
+          const resultTitle = delegateResultTitle(prior.target, payload);
+          prior.activity.title = resultTitle.title;
+          prior.activity.titleText = resultTitle.titleText;
+          const resultDetail = delegateResultDetail(payload, prior.detail);
+          prior.activity.detail = resultDetail.detail;
+          prior.activity.detailText = resultDetail.detailText;
           prior.activity.status = delegateResultStatus(payload);
           continue;
         }
@@ -448,16 +637,20 @@ export function toTraceView(dtos: TraceTurnDto[]): TraceView {
           ? decisionTextOf(recordOf(item.payload) ?? {}, permissionOptions)
           : undefined;
       const summary = summaryOf(item, decision);
+      const title = titleOf(item, decision);
       // 主 agent 没有 authorId（它就是「这个会话本身」），与聊天里的玩家表用同一个 id
       const playerId = item.authorId ?? MAIN_AGENT_ID;
       const id = `${t.id}-${item.seq}`;
-      const activity: Activity = {
+      const activity: TraceActivity = {
         id,
         playerId,
         kind,
-        title: titleOf(item, decision),
+        title: title.title,
+        titleText: title.titleText,
         detail: summary.detail,
+        detailText: summary.detailText,
         body: summary.body,
+        bodyText: summary.bodyText,
         decision: decision?.verdict,
         truncated: item.truncated,
         at: clock(item.at),
@@ -478,8 +671,8 @@ export function toTraceView(dtos: TraceTurnDto[]): TraceView {
         if (handleId) {
           delegateSteps.set(handleId, {
             activity,
-            detail: summary.detail,
-            targetName: delegateTargetName(payload),
+            detail: summary.detailText,
+            target: delegateTargetValue(payload),
           });
         }
       }

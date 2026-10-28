@@ -1,3 +1,5 @@
+import type { MessageKey } from "@/i18n/zh-CN";
+
 export interface SteerCommand {
   name: string;
 }
@@ -30,9 +32,9 @@ export function steerGate(
   return sawBodyMessageId ? "on" : "waiting";
 }
 
-/** 入口不可用时的说明；可用或与插话无关时返回 null（不占位、不加 title）。 */
-export function steerUnavailableReason(gate: SteerGate): string | null {
-  if (gate === "off") return "这个 agent 不支持插话";
-  if (gate === "waiting") return "正文出现后才能插话";
+/** 入口不可用时的说明 key；可用或与插话无关时返回 null（不占位、不加 title）。 */
+export function steerUnavailableReason(gate: SteerGate): MessageKey | null {
+  if (gate === "off") return "composer.steer.unsupported";
+  if (gate === "waiting") return "composer.steer.waiting";
   return null;
 }

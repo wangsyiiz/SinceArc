@@ -1,4 +1,5 @@
 import { useRef, type KeyboardEvent } from "react";
+import { useTranslation } from "react-i18next";
 
 import { CODE_THEMES, type CodeThemeId, type TokenKind } from "../../lib/highlight/themes.ts";
 
@@ -13,6 +14,9 @@ import { CODE_THEMES, type CodeThemeId, type TokenKind } from "../../lib/highlig
 
 type SampleLine = readonly (readonly [TokenKind, string])[];
 
+/**
+ * 样例代码：这是**代码内容**，不是界面文案 —— 不翻译（docs/i18n.md §0），门禁按 `i18n-ignore` 放行。
+ */
 const SAMPLE: readonly SampleLine[] = [
   // 四行都控制在 21 字符内：卡片缩到 160px 宽时也不会横向被裁（真机量过 scrollWidth）。
   [
@@ -31,9 +35,7 @@ const SAMPLE: readonly SampleLine[] = [
     ["type", "User"],
     ["punct", ")"],
   ],
-  [
-    ["comment", "// 你好，代码"],
-  ],
+  [["comment", "// 你好，代码"]], // i18n-ignore
   [
     ["keyword", "return"],
     ["plain", " "],
@@ -53,6 +55,7 @@ export function CodeThemePicker({
   onChange: (value: CodeThemeId) => void;
   label: string;
 }) {
+  const { t } = useTranslation();
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
 
   const move = (index: number, delta: number) => {
@@ -121,7 +124,9 @@ export function CodeThemePicker({
             </span>
             <span className="mt-2 flex items-center justify-between gap-2">
               <span className="text-ui text-ink-1">{theme.label}</span>
-              {selected && <span className="text-caption text-ink-3">已选</span>}
+              {selected && (
+                <span className="text-caption text-ink-3">{t("ui.codeThemePicker.selected")}</span>
+              )}
             </span>
           </button>
         );

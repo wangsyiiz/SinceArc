@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "node --test \"src/**/*.test.ts\"",
+    "check:i18n": "node scripts/check-i18n.mjs",
+    "smoke:i18n": "node scripts/smoke-i18n.mjs",
     "package:win": "node scripts/package-win.mjs"
   },
   "dependencies": {
@@ -19,11 +21,13 @@
     "@tauri-apps/plugin-updater": "^2.14.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "i18next": "^26.5.11",
     "lucide-react": "^0.468.0",
     "marked": "^18.1.1",
     "prismjs": "^1.30.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "react-i18next": "^17.1.9",
     "tailwind-merge": "^3.0.2",
     "zustand": "^5.0.2"
   },

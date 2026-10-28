@@ -29,7 +29,7 @@ function collectBlockKinds(blocks: readonly MessageBlockLike[], kinds: Set<strin
 
 function inlineHasImage(inlines: readonly Inline[]): boolean {
   for (const inline of inlines) {
-    if (inline.kind === "text" && inline.text.includes("[图片]")) return true;
+    if (inline.kind === "text" && inline.text.includes("[图片]")) return true; // i18n-ignore: 与 markdown 哨兵保持一致
     if ("children" in inline && inlineHasImage(inline.children)) return true;
   }
   return false;

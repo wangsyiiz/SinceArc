@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { filterCommands, type SlashCommand } from "@/lib/slash-filter";
 import { useAnchoredLayer } from "./ui/Menu";
@@ -21,6 +22,7 @@ export function SlashMenu({
   onPick: (command: SlashCommand) => void;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const layer = useAnchoredLayer({ align: "start", prefer: "above" });
   const items = filterCommands(value, commands);
   const visible = open && items.length > 0;
@@ -44,7 +46,7 @@ export function SlashMenu({
           <div
             ref={layer.panelRef}
             role="listbox"
-            aria-label="斜杠命令"
+            aria-label={t("slashMenu.ariaLabel")}
             style={{ ...layer.style, animation: "sc-pop 150ms var(--ease-pop)" }}
             className="sc-glass sc-z-popover max-h-60 w-80 overflow-y-auto rounded-card p-1"
             onKeyDown={(event) => {

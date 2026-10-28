@@ -1,4 +1,5 @@
 import { cva } from "class-variance-authority";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 
 const buttonStyles = cva(
@@ -46,7 +47,7 @@ export const Button: React.FC<ButtonProps> = ({
   size = "md",
   danger = false,
   loading = false,
-  loadingText = "加载中…",
+  loadingText,
   disabledReason,
   reasonText,
   className,
@@ -54,6 +55,8 @@ export const Button: React.FC<ButtonProps> = ({
   type,
   ...props
 }) => {
+  const { t } = useTranslation();
+  const resolvedLoadingText = loadingText ?? t("ui.button.loading");
   const button = (
     <button
       {...props}
@@ -78,7 +81,7 @@ export const Button: React.FC<ButtonProps> = ({
             aria-live="polite"
           >
             <span className="sc-spinner" aria-hidden="true" />
-            {loadingText}
+            {resolvedLoadingText}
           </span>
         )}
       </span>

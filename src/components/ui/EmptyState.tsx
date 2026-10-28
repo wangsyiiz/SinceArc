@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "./Button";
 
 export function EmptyState(props: {
@@ -16,11 +17,13 @@ export function EmptyState(props: {
     heading,
     description,
     action,
-    retryLabel = "重试",
+    retryLabel,
     onRetry,
     compact = false,
     icon,
   } = props;
+  const { t } = useTranslation();
+  const resolvedRetryLabel = retryLabel ?? t("ui.emptyState.retry");
   const [showLoading, setShowLoading] = useState(false);
 
   useEffect(() => {
@@ -70,7 +73,7 @@ export function EmptyState(props: {
       )}
       {kind === "error" && onRetry && (
         <Button size="sm" onClick={onRetry}>
-          {retryLabel}
+          {resolvedRetryLabel}
         </Button>
       )}
       {kind === "empty" && action}

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { AgentProfile } from "@/types";
 import {
   agentDiscover,
@@ -6,6 +7,7 @@ import {
   asCmdError,
   type DiscoveryOutcome,
 } from "@/lib/ipc";
+import { localizeText } from "@/lib/i18n-text";
 
 /**
  * agent 发现（docs/discovery.md）。
@@ -19,6 +21,7 @@ import {
  * 只有 scanning 标记，列表保持上一次的结果。
  */
 export function useDiscovery(profiles: AgentProfile[] = []) {
+  const { t } = useTranslation();
   // 扫描要带上 SSH 连接配置；用 ref 拿最新值，避免 profiles 变化时重建 scan 回调
   const profilesRef = useRef<AgentProfile[]>(profiles);
   profilesRef.current = profiles;
@@ -37,12 +40,12 @@ export function useDiscovery(profiles: AgentProfile[] = []) {
       setOutcome(await agentDiscover(profilesRef.current));
     } catch (e) {
       const err = asCmdError(e);
-      setError(`${err.code} ${err.msg}`);
+      setError(`${err.code} ${localizeText(err.msg, t)}`);
     } finally {
       inFlight.current = false;
       setScanning(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     let alive = true;

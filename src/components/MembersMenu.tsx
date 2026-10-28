@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { Plus, UserMinus, Users } from "lucide-react";
+import { Trans, useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import {
   agentUsersList,
@@ -9,6 +10,7 @@ import {
   type AgentUser,
 } from "@/lib/ipc";
 import { profileLabel } from "@/lib/format";
+import { errorText } from "@/lib/errors";
 import type { AgentProfile } from "@/types";
 import { Tooltip } from "./ui/Tooltip";
 
@@ -33,6 +35,7 @@ export function MembersMenu({
   profiles: AgentProfile[];
   onChanged: () => void;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [users, setUsers] = useState<AgentUser[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -69,8 +72,11 @@ export function MembersMenu({
     setError(null);
     agentUsersList()
       .then(setUsers)
-      .catch((e) => setError(asCmdError(e).msg));
-  }, [open]);
+      .catch((e) => {
+        const err = asCmdError(e);
+        setError(errorText(err.code, err.msg, t));
+      });
+  }, [open, t]);
 
   useEffect(() => {
     if (!open) return;
@@ -102,7 +108,7 @@ export function MembersMenu({
       onChanged();
     } catch (e) {
       const err = asCmdError(e);
-      setError(`${err.code} ${err.msg}`);
+      setError(`${err.code} ${errorText(err.code, err.msg, t)}`);
     } finally {
       setBusy(null);
     }
@@ -110,11 +116,11 @@ export function MembersMenu({
 
   return (
     <div ref={ref} className="relative">
-      <Tooltip label="群成员：拉人进这个会话">
+      <Tooltip label={t("members.trigger")}>
         <button
           ref={btnRef}
           type="button"
-          aria-label="群成员：拉人进这个会话"
+          aria-label={t("members.trigger")}
           onClick={() => setOpen((v) => !v)}
           className={cn(
             "grid size-7 place-items-center rounded-full border border-dashed border-line-1/70 text-ink-3 transition-colors",
@@ -134,20 +140,22 @@ export function MembersMenu({
         >
           <div className="flex items-center gap-1.5 px-1 pb-1.5">
             <Users size={12} className="text-ink-3" />
-            <span className="text-caption text-ink-1">群成员</span>
+            <span className="text-caption text-ink-1">{t("members.title")}</span>
             <span className="ml-auto font-mono text-micro text-ink-3">
-              {members.length} 人
+              {t("members.count", { count: members.length })}
             </span>
           </div>
 
           <p className="px-1 pb-1.5 text-micro text-ink-3">
-            只有这里的成员能被 <span className="font-mono">@</span> 到。成员在「设置 → 成员」里创建，
-            那些是全局玩家；这里决定谁在这个群里。
+            <Trans
+              i18nKey="members.description"
+              components={{ at: <span className="font-mono" /> }}
+            />
           </p>
 
           {users.length === 0 && !error && (
             <p className="px-1 py-1 text-micro text-ink-3">
-              还没有创建过成员 —— 先去「设置 → 成员」建一个，再回来拉进群。
+              {t("members.empty")}
             </p>
           )}
 
@@ -173,7 +181,7 @@ export function MembersMenu({
                     <span className="shrink-0 text-caption text-ink-1">{u.name}</span>
                     <span className="shrink-0 font-mono text-micro text-ink-3">@{u.handle}</span>
                     <span className="min-w-0 flex-1 truncate text-micro text-ink-3">
-                      {p ? profileLabel(p) : "连接已不在"}
+                      {p ? profileLabel(p, t) : t("settings.connection.missing")}
                     </span>
                     {joined ? (
                       <UserMinus size={11} className="shrink-0 text-ink-3" />

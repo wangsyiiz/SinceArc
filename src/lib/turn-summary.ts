@@ -1,8 +1,9 @@
 import type { TraceTurn } from "@/types";
+import type { TFunction } from "i18next";
 
 /** 轮头行内短标签：「第 N 轮」。index 是 turns 数组下标。 */
-export function turnLabel(index: number): string {
-  return `第 ${index + 1} 轮`;
+export function turnLabel(index: number, t: TFunction): string {
+  return t("trace.turn.label", { index: index + 1 });
 }
 
 /**
@@ -15,6 +16,9 @@ export function turnHeading(
   turn: Pick<TraceTurn, "at">,
   index: number,
   outcomeLabel: string,
+  t: TFunction,
 ): string {
-  return [turnLabel(index), turn.at, outcomeLabel].filter((part) => part.length > 0).join(" · ");
+  return [turnLabel(index, t), turn.at, outcomeLabel]
+    .filter((part) => part.length > 0)
+    .join(" · ");
 }

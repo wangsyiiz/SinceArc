@@ -2,10 +2,11 @@ import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } 
 import { sessionsList, type SessionRowDto } from "@/lib/ipc";
 import type { SessionSummary } from "@/types";
 
+// SessionSummary["group"] 是 types.ts 里的领域值，侧栏按这些稳定值分组并在渲染时翻译。
 const GROUP_LABELS: Record<string, SessionSummary["group"]> = {
-  today: "今天",
-  yesterday: "昨天",
-  earlier: "更早",
+  today: "今天", // i18n-ignore: SessionSummary.group domain value
+  yesterday: "昨天", // i18n-ignore: SessionSummary.group domain value
+  earlier: "更早", // i18n-ignore: SessionSummary.group domain value
 };
 
 export function useSessionList(): {
@@ -24,7 +25,7 @@ export function useSessionList(): {
       cwd: r.cwd,
       updatedAt: r.displayTime ?? "",
       updatedAtSec: r.updatedAt,
-      group: GROUP_LABELS[r.dayBucket ?? ""] ?? "更早",
+      group: GROUP_LABELS[r.dayBucket ?? ""] ?? "更早", // i18n-ignore: SessionSummary.group domain value
       playerIds: [],
       acpSessionId: r.acpSessionId ?? null,
       profileId: r.profileId ?? undefined,

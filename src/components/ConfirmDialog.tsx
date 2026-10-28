@@ -1,4 +1,5 @@
 import { AlertTriangle } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "./ui/Button";
 import { Dialog } from "./ui/Dialog";
 
@@ -13,8 +14,8 @@ export function ConfirmDialog({
   open,
   title,
   body,
-  confirmLabel = "删除",
-  cancelLabel = "取消",
+  confirmLabel,
+  cancelLabel,
   danger = true,
   onConfirm,
   onCancel,
@@ -29,6 +30,8 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
+
   return (
     <Dialog
       open={open}
@@ -39,7 +42,7 @@ export function ConfirmDialog({
       footer={
         <>
           <Button variant="ghost" size="sm" onClick={onCancel}>
-            {cancelLabel}
+            {cancelLabel ?? t("ui.button.cancel")}
           </Button>
           <Button
             variant={danger ? "secondary" : "primary"}
@@ -47,7 +50,7 @@ export function ConfirmDialog({
             danger={danger}
             onClick={onConfirm}
           >
-            {confirmLabel}
+            {confirmLabel ?? t("app.delete.confirm")}
           </Button>
         </>
       }

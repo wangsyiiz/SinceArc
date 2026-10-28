@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { newId } from "@/lib/ids";
 import { fromDto, profilesLoad, profilesSave } from "@/lib/ipc";
-import { profileLabel } from "@/lib/format";
+import { LEGACY_DEFAULT_PROFILE_NAME, profileLabel } from "@/lib/format";
+import { i18n } from "@/i18n/instance";
 import type { AgentProfile } from "@/types";
 
 export function useProfileStore() {
@@ -52,8 +53,11 @@ export function useProfileStore() {
         // 永远连不通的假配置，干扰判断（用户明确要求删掉这类噪点）。
         const loaded = stored.map(fromDto);
         // 老的占位名「新连接」对所有连接都一样，读进来就换成能区分的名字
+        // 已知限制：这里算出来的名字是"读入那一刻的语言"，之后切语言不会重算。
+        // 影响面仅限老库里还留着「新连接」占位名的连接；彻底修法是名字不落库、显示时再算
+        // （见 docs/i18n.md §4.2 的同类缺口）。
         loaded.forEach((p) => {
-          if (p.name === "新连接") p.name = profileLabel(p);
+          if (p.name === LEGACY_DEFAULT_PROFILE_NAME) p.name = profileLabel(p, i18n.t);
         });
         setProfiles(loaded);
       } catch {

@@ -1,3 +1,5 @@
+import { i18nText } from "./i18n-text.ts";
+
 export interface PlayerSeed {
   id: string;
   name: string;
@@ -47,7 +49,7 @@ export function buildPlayers(input: {
     } else {
       add({
         id: authorId,
-        name: "已删除的成员",
+        name: i18nText("members.deleted"),
         handle: "",
         color: "var(--i3)",
         profileId: "",

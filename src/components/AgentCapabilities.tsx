@@ -1,7 +1,10 @@
 import { Sparkles } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { AgentProfile } from "@/types";
 import { capsRows, type CapsGroup } from "@/lib/caps-format";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
+import type { MessageKey } from "@/i18n/zh-CN";
+import { currentLocale } from "@/i18n/locale";
 import { cn } from "@/lib/utils";
 import { Hint } from "./ui/Hint";
 import { useAnchoredLayer } from "./ui/Menu";
@@ -12,6 +15,12 @@ interface AgentCapabilitiesProps {
   acpCommands?: CommandDto[];
 }
 
+const GROUP_LABEL_KEYS: Record<CapsGroup, MessageKey> = {
+  input: "caps.group.input",
+  session: "caps.group.session",
+  mcp: "caps.group.mcp",
+};
+
 /**
  * 能力面板。两块内容严格分开，因为它们的来源不同：
  *
@@ -19,17 +28,18 @@ interface AgentCapabilitiesProps {
  * - **命令**：agent 通过 `availableCommands` 主动报上来的 `/+` 命令，只读展示。
  */
 export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabilitiesProps) {
+  const { t } = useTranslation();
   const { triggerRef, panelRef, open, toggle, style } = useAnchoredLayer({
     align: "end",
     prefer: "below",
   });
 
   const rows = capsRows(profile?.caps ?? null);
-  const groups: CapsGroup[] = ["输入", "会话", "MCP"];
+  const groups: CapsGroup[] = ["input", "session", "mcp"];
   const supported = rows.filter((r) => r.on).length;
   const hasCommands = acpCommands.length > 0;
   const handshake = profile?.capsAt
-    ? new Date(profile.capsAt * 1000).toLocaleString("zh-CN", {
+    ? new Date(profile.capsAt * 1000).toLocaleString(currentLocale(), {
         month: "2-digit",
         day: "2-digit",
         hour: "2-digit",
@@ -54,7 +64,7 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
       )}
     >
       <Sparkles className="size-3" />
-      能力
+      {t("caps.trigger")}
       <span className="font-mono text-micro text-ink-3">{supported}</span>
     </button>
   );
@@ -67,7 +77,7 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
         <div
           ref={panelRef}
           role="dialog"
-          aria-label="Agent 能力"
+          aria-label={t("caps.title")}
           style={style}
           className={cn(
             "sc-glass sc-z-popover flex max-h-[min(70vh,34rem)] flex-col rounded-card p-1",
@@ -75,9 +85,11 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
           )}
         >
           <div className="flex shrink-0 items-baseline justify-between gap-3 px-2 py-1.5">
-            <span className="text-micro tracking-wide text-ink-3">Agent 能力</span>
+            <span className="text-micro tracking-wide text-ink-3">{t("caps.title")}</span>
             {handshake && (
-              <span className="shrink-0 text-micro text-ink-3">{`握手 ${handshake}`}</span>
+              <span className="shrink-0 text-micro text-ink-3">
+                {t("caps.handshake", { time: handshake })}
+              </span>
             )}
           </div>
           <div className="flex min-h-0 flex-1">
@@ -89,10 +101,12 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
                   : "min-w-0 flex-1 overflow-y-auto overscroll-contain",
               )}
             >
-              <div className="px-1.5 py-1 text-micro tracking-wide text-ink-3">协议能力</div>
+              <div className="px-1.5 py-1 text-micro tracking-wide text-ink-3">
+                {t("caps.protocol")}
+              </div>
               {rows.length === 0 ? (
                 <p className="px-1.5 py-1 text-micro text-ink-3">
-                  还没连过这个 agent：能力要握手之后才知道。
+                  {t("caps.notHandshaken")}
                 </p>
               ) : (
                 groups.map((group) => {
@@ -100,11 +114,11 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
                   return (
                     <div key={group} className="mt-1 first:mt-0">
                       <div className="flex items-center gap-1.5 px-1.5 py-1 text-micro tracking-wide text-ink-3">
-                        {group}
-                        {group === "MCP" && (
+                        {t(GROUP_LABEL_KEYS[group])}
+                        {group === "mcp" && (
                           <Hint
-                            label="MCP 能力"
-                            text="未声明 ≠ 不支持：有的 agent 不报这三项也照样能连"
+                            label={t("caps.hint.mcpLabel")}
+                            text={t("caps.hint.mcpText")}
                           />
                         )}
                       </div>
@@ -116,13 +130,19 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
                           <span
                             className={cn(
                               "shrink-0 text-center font-mono",
-                              r.group === "MCP" ? "w-10" : "w-3",
+                              r.group === "mcp" ? "w-10" : "w-3",
                               r.on ? "text-ok-1" : "text-ink-3",
                             )}
                           >
-                            {r.display}
+                            {r.display === "undeclared"
+                              ? t("caps.undeclared")
+                              : r.display === "on"
+                                ? "✓"
+                                : "✗"}
                           </span>
-                          <span className={r.on ? "text-ink-1" : "text-ink-3"}>{r.label}</span>
+                          <span className={r.on ? "text-ink-1" : "text-ink-3"}>
+                            {t(r.labelKey)}
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -135,7 +155,9 @@ export function AgentCapabilities({ profile, acpCommands = [] }: AgentCapabiliti
               <>
                 <div className="w-px shrink-0 bg-line-1/60" />
                 <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain pb-1 pl-2 pr-1">
-                  <div className="px-1.5 py-1 text-micro tracking-wide text-ink-3">命令</div>
+                  <div className="px-1.5 py-1 text-micro tracking-wide text-ink-3">
+                    {t("caps.commands")}
+                  </div>
                   {acpCommands.map((command) => (
                     <div key={command.name} className="px-1.5 py-1">
                       <div className="flex min-w-0 items-baseline gap-1.5">

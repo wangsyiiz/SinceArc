@@ -68,8 +68,14 @@ test("长文本保留省略号标记", () => {
 test("能力标注只覆盖 http/sse，且没有握手快照时不猜", () => {
   const noTransport = caps();
   assert.equal(transportSupportNote("stdio", noTransport), null);
-  assert.equal(transportSupportNote("http", noTransport), "agent 未声明支持");
-  assert.equal(transportSupportNote("sse", noTransport), "agent 未声明支持");
+  assert.equal(
+    transportSupportNote("http", noTransport),
+    "settings.sessionMcp.transportUnsupported",
+  );
+  assert.equal(
+    transportSupportNote("sse", noTransport),
+    "settings.sessionMcp.transportUnsupported",
+  );
   assert.equal(transportSupportNote("http", caps({ mcpHttp: true })), null);
   assert.equal(transportSupportNote("sse", caps({ mcpSse: true })), null);
   assert.equal(transportSupportNote("http", null), null);

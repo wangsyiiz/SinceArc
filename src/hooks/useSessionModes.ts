@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   asCmdError,
   sessionApplyMode,
@@ -6,6 +7,7 @@ import {
   type ModeOption,
   type ModesSnapshot,
 } from "@/lib/ipc";
+import { localizeText } from "@/lib/i18n-text";
 
 export interface ModeView {
   available: ModeOption[];
@@ -43,6 +45,7 @@ export function useSessionModes(): {
   /** agent 自己发了 current_mode_update：只更新显示，绝不写存储（规范 §5 最后一行） */
   noteAgentSwitch: (uiSessionId: string, modeId: string) => void;
 } {
+  const { t } = useTranslation();
   const [bySid, setBySid] = useState<Record<string, ModeView>>({});
   const [byProfile, setByProfile] = useState<Record<string, ModesSnapshot>>({});
 
@@ -96,12 +99,12 @@ export function useSessionModes(): {
           const old = prev[uiSessionId] ?? emptyView();
           return {
             ...prev,
-            [uiSessionId]: { ...old, warning: `${err.code} ${err.msg}` },
+            [uiSessionId]: { ...old, warning: `${err.code} ${localizeText(err.msg, t)}` },
           };
         });
       }
     },
-    [],
+    [t],
   );
 
   const choose = useCallback(
@@ -138,12 +141,12 @@ export function useSessionModes(): {
           // 后端失败时不会改库，界面也不能假装 applied/following 已经变了
           return {
             ...prev,
-            [uiSessionId]: { ...old, warning: `${err.code} ${err.msg}` },
+            [uiSessionId]: { ...old, warning: `${err.code} ${localizeText(err.msg, t)}` },
           };
         });
       }
     },
-    [],
+    [t],
   );
 
   const noteAgentSwitch = useCallback((uiSessionId: string, modeId: string) => {

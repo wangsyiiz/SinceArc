@@ -189,7 +189,7 @@ function safeHref(value: unknown): string | null {
 function imageFallback(token: RawToken): Inline {
   const alt = typeof token.text === "string" ? token.text : "";
   const href = typeof token.href === "string" ? token.href.trim() : "";
-  let text = alt ? `[图片] ${alt}` : "[图片]";
+  let text = alt ? `[图片] ${alt}` : "[图片]"; // i18n-ignore: 消息高度哨兵
   if (href) text += ` — ${href}`;
   return { kind: "text", text };
 }

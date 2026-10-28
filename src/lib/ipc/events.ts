@@ -19,18 +19,18 @@ function ensureSubscribed(): Promise<void> {
   if (subscribed) return subscribed;
   subscribed = (async () => {
     if (!isTauri()) {
-      throw { code: 50900, msg: "当前不在 Tauri 运行环境里（浏览器直开无法调用后端）" } as CmdError;
+      throw { code: 50900, msg: "当前不在 Tauri 运行环境里（浏览器直开无法调用后端）" } as CmdError; // i18n-ignore: 非 Tauri 技术错误
     }
     const { Channel } = await import("@tauri-apps/api/core");
     const channel = new Channel<WireEvent>();
     channel.onmessage = (wire) => {
       if (wire.v !== WIRE_VERSION) {
-        clog("WIRE-VERSION", `收到 v${wire.v}，期望 v${WIRE_VERSION}，已忽略`);
+        clog("WIRE-VERSION", `收到 v${wire.v}，期望 v${WIRE_VERSION}，已忽略`); // i18n-ignore: diagnostic log
         return;
       }
       // seq 跳号意味着丢过事件：显式留痕，让上层决定是否重读库对账
       if (lastSeq > 0 && wire.seq !== lastSeq + 1) {
-        clog("EVENT-GAP", `${lastSeq} -> ${wire.seq}（${wire.topic}）`);
+        clog("EVENT-GAP", `${lastSeq} -> ${wire.seq}（${wire.topic}）`); // i18n-ignore: diagnostic log
       }
       lastSeq = wire.seq;
       // 无归属（例如 conn.ready）不属于任何连接，直接跳过

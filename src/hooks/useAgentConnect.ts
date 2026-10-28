@@ -9,6 +9,7 @@ import {
   type ModesSnapshot,
   type ResumeOutcome,
 } from "@/lib/ipc";
+import { i18nText } from "@/lib/i18n-text";
 import type { AgentProfile } from "@/types";
 
 export interface EnsureResult {
@@ -82,7 +83,7 @@ export function useAgentConnect({
     if (!out.sessionId && out.resume.kind !== "unavailable") {
       // 握上手但没会话：后端认为连上了，实际没法发消息，必须当失败处理。
       // Unavailable 是显式结果，由调用方展示「续不上」，不能混成通用连接失败。
-      throw new Error("agent 没有给出会话");
+      throw new Error(i18nText("settings.connection.noSession"));
     }
     if (out.sessionId) {
       s.onSession(p.id, out.sessionId, out.modes ?? null, uiSid);
@@ -149,7 +150,7 @@ export function useAgentConnect({
       if (!profile) {
         return Promise.resolve({
           acpSid: null,
-          error: { code: 50100, msg: "这个会话没有可用的连接配置" },
+          error: { code: 50100, msg: i18nText("app.connect.noProfile") },
           resume: null,
           lastEventSeq: null,
         });

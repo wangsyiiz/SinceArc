@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { BrandMark } from "./BrandMark";
 import { EmptyState } from "./ui/EmptyState";
 import { Button } from "./ui/Button";
@@ -8,9 +9,10 @@ interface WorkspaceEmptyProps {
 
 /** 所有标签都关掉之后的空态：一个会呼吸的 logo */
 export function WorkspaceEmpty({ onNewSession }: WorkspaceEmptyProps) {
+  const { t } = useTranslation();
   return (
     <EmptyState
-      heading="没有打开的标签"
+      heading={t("workspace.empty.heading")}
       icon={
         <div className="relative grid size-32 place-items-center">
           <div className="sc-orbit absolute inset-0 rounded-full border border-dashed border-line-1/40" />
@@ -22,7 +24,7 @@ export function WorkspaceEmpty({ onNewSession }: WorkspaceEmptyProps) {
       }
       action={
         <Button variant="ghost" size="sm" onClick={onNewSession}>
-          从左侧打开一个会话，或新建
+          {t("workspace.empty.action")}
         </Button>
       }
     />
