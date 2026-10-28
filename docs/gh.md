@@ -19,7 +19,12 @@ src-tauri/src/gh/
 
 **门禁边界（硬约束）**
 
-- 不引新依赖：只用 `std::process` + `serde_json`，不引 octocrab / reqwest。
+- **不引新依赖（白名单唯一例外：`async-trait`）**：`GhCli` 必须同时「异步」且「dyn-safe」
+  （`Arc<dyn GhCli>` 要能进 `AppState`），原生 `async fn` in trait 不满足 dyn，故用 `async-trait`
+  （proc-macro，不进二进制；其三个传递依赖 `proc-macro2` / `quote` / `syn` 本已在锁文件里）。
+  **白名单之外一律拒绝**：不引 octocrab / reqwest / 任何 HTTP 客户端。
+- 进程与超时用 `tokio::process` + `tokio::time::timeout`（两者都已在依赖里，不算新增）；
+  **不用 `std::process`** —— 同步跑会阻塞 UI，与下一条「调用走 async」冲突。
 - 不在客户端存任何 token；登录态完全归 `gh` 自己管。
 - 所有 gh 调用必须有超时：列表 10s、详情 10s、diff 20s。
 - 调用走 async，不阻塞 UI 线程。
@@ -65,6 +70,24 @@ adapter（src-tauri/src/gh/cli.rs，实现 trait GhCli：进程、argv、超时�
 3. **错误枚举**（domain 定义）：`GhError { NotInstalled, NotLoggedIn, RateLimited{reset}, RepoUnavailable, Timeout, ParseFailed{version}, CliFailed{stderr} }`，
    码只在一个地方映射：`impl GhError { fn code(&self) -> u16 }`。**adapter 只负责把 stderr 文本判成枚举，不碰数字码**。
 
+### 装配点（守住「删掉 cli.rs 仍能编译」这条线）
+
+`commands` 只认 `Arc<dyn GhCli>`，**不出现 `RealGh`**。装配在 `lib.rs`：构造 `RealGh` 后塞进 `AppState` 的
+`gh: Arc<dyn GhCli>` 字段。这样 `cli.rs` 的增删只波及 `lib.rs`，`domain` 与 `commands` 照旧编译。
+反之，若 `commands` 里出现 `use crate::gh::cli::RealGh`，上面那条硬线就名存实亡。
+
+### 探测的可测性（否则「假 gh 进 PATH」这条验收写不成稳定单测）
+
+`RealGh` 的**探测根**（PATH + 三条固定路径）与可执行名必须是构造参数，默认值才从环境取：
+
+```rust
+RealGh::new()               // 生产：PATH + %ProgramFiles% + %LOCALAPPDATA% + scoop shims
+RealGh::with_roots(roots)   // 测试：tempdir 里放 stub，不碰真实环境
+```
+
+两个原因：改进程级 `PATH` 是全局副作用，测试之间互相污染；Windows 原生 `cargo test` 没有 sh 解释器，
+所以 stub 必须是 `.cmd`（`cmd.exe` 可直接执行），不是 `.sh`。
+
 ### 各层职责一览
 
 | 层 | 有 | 没有 |
@@ -75,12 +98,17 @@ adapter（src-tauri/src/gh/cli.rs，实现 trait GhCli：进程、argv、超时�
 
 **缓存放 domain 而不是 adapter**：这样 adapter 保持无状态，domain 的缓存逻辑可以用假 adapter（fixture JSON）单测，不需要机器上装 gh。
 
+**文件落点**：`model.rs` = domain（模型 + `GhCli` trait + `GhError` + `code()`）；`cli.rs` = adapter；
+`mod.rs` = 命令层（`#[tauri::command]` + DTO + 取码 + 日志）。
+`gh_status` 的 30s 缓存落在 domain（`service.rs::GhService`，持 `Arc<dyn GhCli>`），commands 只调 service ——
+TTL 不进命令层，也不进 adapter。
+
 ### 可测性（这是分层的验收方式，不是口号）
 
 - **domain 测试**：实现一个 `FakeGh`（返回捕获下来的真实 JSON 反序列化后的领域模型 / 直接返回 `GhError`），
   验证缓存命中、TTL 过期、排序、切片边界、错误码映射。**不需要 gh 在场。**
-- **adapter 测试**：用一个 stub 脚本冒充 `gh`（`tests/fixtures/fake-gh.sh`，按 argv 吐捕获的 JSON / 退出码 / stderr），
-  验证探测、版本解析、四类 stderr→枚举、超时。**不需要网络。**
+- **adapter 测试**：用一个 stub 脚本冒充 `gh`（`tests/fixtures/fake-gh.cmd`，按 argv 吐捕获的 JSON / 退出码 / stderr，
+  经 `RealGh::with_roots` 注入），验证探测、版本解析、四类 stderr→枚举、超时。**不需要网络。**
 - **端到端**：真机真 gh，只跑 E9.5 的冒烟脚本。
 
 判断是否解耦成功的一条硬线：**把 `src-tauri/src/gh/cli.rs` 整个删掉，domain 与 commands 应当仍能编译**（trait 与模型都在 domain 侧）。做不到就是解耦没做到。
@@ -95,6 +123,10 @@ adapter（src-tauri/src/gh/cli.rs，实现 trait GhCli：进程、argv、超时�
 2. `%ProgramFiles%\GitHub CLI\gh.exe`
 3. `%LOCALAPPDATA%\Programs\GitHub CLI\gh.exe`
 4. `%USERPROFILE%\scoop\shims\gh.exe`
+
+**实测（2026-10-28，本机 Windows）**：gh `2.103.3` 装在 `C:\Program Files\GitHub CLI\gh.exe`，
+但 `where.exe gh` **无输出**（安装目录不在 PATH）⇒ 第 2 条兜底路径不是可选项，是唯一命中路径。
+所以「有 gh」这条验收必须能覆盖「PATH 探测 miss、固定路径命中」这种组合，不能只测 PATH。
 
 判定：
 
@@ -183,6 +215,7 @@ E9 原卡里「单页 ≤ 200 行」据此改成「客户端对 patch 切片，�
 | 验收点 | 怎么验 | 期望读数（真实） |
 | --- | --- | --- |
 | gh 未安装 → 50710 + 安装指引 | 把 `PATH` 与 4 个探测路径都弄空（临时改目录或重命名） | 栏内出现三步指引，命令可复制，无崩溃 |
+| gh 已安装 → `available=true` | 真机点「重新检测」（Windows，2026-10-28） | `available=true`；`version=2.103.3`；`ghPath=C:\Program Files\GitHub CLI\gh.exe`（`where.exe gh` 无输出 ⇒ 命中的是第 2 条固定路径）；`loggedIn=true`，账号 `wangsyiiz` |
 | 未登录 → 50711 | `GH_TOKEN=bad` 或 `gh auth logout` | 只显示「登录」一步 |
 | 列表可用 | `gh pr list --state all --limit 30 --json …` | 5 条 PR，1022–1130 ms，1,765 B |
 | 已合并 PR 可渲染 | 打开 `#5`（merged） | `mergeable=unknown` 不崩，checks 显示 signed-off |
