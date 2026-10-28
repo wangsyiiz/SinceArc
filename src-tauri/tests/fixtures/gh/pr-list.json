@@ -1,0 +1,152 @@
+[
+  {
+    "author": {
+      "id": "MDQ6VXNlcjQwMzUxNTE1",
+      "is_bot": false,
+      "login": "wangsyiiz",
+      "name": "wangsyiiz"
+    },
+    "baseRefName": "feat/e9",
+    "headRefName": "feat/e9-gh-adapter",
+    "isDraft": false,
+    "mergeable": "UNKNOWN",
+    "number": 12,
+    "reviewDecision": "",
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-28T10:00:40Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wangsyiiz/SinceArc/actions/runs/40668676486/job/122749621381",
+        "name": "signed-off",
+        "startedAt": "2026-10-28T10:00:35Z",
+        "status": "COMPLETED",
+        "workflowName": "dco"
+      }
+    ],
+    "title": "feat(gh): E9.1 gh adapter —— 可用性探测 + 版本/登录 + 50710/50711/50714",
+    "updatedAt": "2026-10-28T10:03:06Z",
+    "url": "https://github.com/wangsyiiz/SinceArc/pull/12"
+  },
+  {
+    "author": {
+      "id": "MDQ6VXNlcjQwMzUxNTE1",
+      "is_bot": false,
+      "login": "wangsyiiz",
+      "name": "wangsyiiz"
+    },
+    "baseRefName": "main",
+    "headRefName": "chore/release-0.0.2",
+    "isDraft": false,
+    "mergeable": "UNKNOWN",
+    "number": 11,
+    "reviewDecision": "",
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-28T07:58:25Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wangsyiiz/SinceArc/actions/runs/40653511690/job/122698948881",
+        "name": "signed-off",
+        "startedAt": "2026-10-28T07:58:21Z",
+        "status": "COMPLETED",
+        "workflowName": "dco"
+      }
+    ],
+    "title": "chore(release): 0.0.2 —— 支持中英双语",
+    "updatedAt": "2026-10-28T08:03:33Z",
+    "url": "https://github.com/wangsyiiz/SinceArc/pull/11"
+  },
+  {
+    "author": {
+      "id": "MDQ6VXNlcjQwMzUxNTE1",
+      "is_bot": false,
+      "login": "wangsyiiz",
+      "name": "wangsyiiz"
+    },
+    "baseRefName": "main",
+    "headRefName": "feat/e20c-error-keys",
+    "isDraft": false,
+    "mergeable": "UNKNOWN",
+    "number": 10,
+    "reviewDecision": "",
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-28T07:52:48Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wangsyiiz/SinceArc/actions/runs/40652908924/job/122696971772",
+        "name": "signed-off",
+        "startedAt": "2026-10-28T07:52:45Z",
+        "status": "COMPLETED",
+        "workflowName": "dco"
+      }
+    ],
+    "title": "feat(i18n): C 方案——CmdError 自带 key/params，错误文案按 key 翻译（120 处 / 103 key）",
+    "updatedAt": "2026-10-28T08:03:31Z",
+    "url": "https://github.com/wangsyiiz/SinceArc/pull/10"
+  },
+  {
+    "author": {
+      "id": "MDQ6VXNlcjQwMzUxNTE1",
+      "is_bot": false,
+      "login": "wangsyiiz",
+      "name": "wangsyiiz"
+    },
+    "baseRefName": "main",
+    "headRefName": "feat/e20-i18n",
+    "isDraft": false,
+    "mergeable": "UNKNOWN",
+    "number": 9,
+    "reviewDecision": "",
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-28T07:01:10Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wangsyiiz/SinceArc/actions/runs/40647380960/job/122679242121",
+        "name": "signed-off",
+        "startedAt": "2026-10-28T07:01:06Z",
+        "status": "COMPLETED",
+        "workflowName": "dco"
+      }
+    ],
+    "title": "feat(i18n): 国际化——zh-CN / en 双语、首启跟随系统、切换即时生效",
+    "updatedAt": "2026-10-28T08:03:29Z",
+    "url": "https://github.com/wangsyiiz/SinceArc/pull/9"
+  },
+  {
+    "author": {
+      "id": "MDQ6VXNlcjQwMzUxNTE1",
+      "is_bot": false,
+      "login": "wangsyiiz",
+      "name": "wangsyiiz"
+    },
+    "baseRefName": "main",
+    "headRefName": "feat/release-branding",
+    "isDraft": false,
+    "mergeable": "UNKNOWN",
+    "number": 8,
+    "reviewDecision": "",
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-27T14:24:41Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wangsyiiz/SinceArc/actions/runs/40520815866/job/122247085522",
+        "name": "signed-off",
+        "startedAt": "2026-10-27T14:24:35Z",
+        "status": "COMPLETED",
+        "workflowName": "dco"
+      }
+    ],
+    "title": "fix(release): 安装包换成本项目标识，release 构建屏蔽右键菜单",
+    "updatedAt": "2026-10-27T14:24:59Z",
+    "url": "https://github.com/wangsyiiz/SinceArc/pull/8"
+  }
+]

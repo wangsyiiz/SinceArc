@@ -435,6 +435,8 @@ export const zhCN = {
   "err.gh.notInstalled": "没找到 GitHub CLI（gh）",
   "err.gh.notLoggedIn": "gh 还没登录 GitHub",
   "err.gh.failed": "gh 执行失败：{{detail}}",
+  "err.gh.badState": "未知的 PR 状态：{{detail}}（应为 open / closed / merged / all）",
+  "err.gh.repoRequired": "仓库的 owner 和 name 不能为空",
   "err.member.loadAgentUserFailed": "读 agent user 失败：{{detail}}",
   "err.member.loadMembersFailed": "读群成员失败：{{detail}}",
   "err.member.handleTaken": "@{{handle}} 已经被占用了",
