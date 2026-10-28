@@ -1118,3 +1118,74 @@ Windows 上 WebView2 自带右键菜单：重新加载 / 另存为 / 打印 / �
 **边界**：只屏蔽 ContextMenu，不影响键盘、拖放、输入框内的粘贴（Ctrl+V 照旧）。
 验收：release 包里右键无菜单、dev 里右键有菜单；`src/lib/release-ui.test.ts` 断言
 `contextmenu` 的 `defaultPrevented === true` 且其它事件不受影响。
+
+## 21. 进行中的一轮：活动行自述（2026-10-28 定）
+
+**决定**：删掉输入区上方那条全局写提示（`app.writeHint.*`），把「谁在写什么」并进消息流里
+**每个 agent 自己的活动行**。输入区上方不再留任何调用状态条。
+
+**为什么**：那条提示是「消息流之外只能用一条代表多个 agent」的妥协 —— `summarizeLocks` 取 `locks`
+的第一条作代表、`extra = 条目数 - 1` 凑出「另有 N 个进行中」。而每个 agent 本来就有**且只有一条**
+running 活动行（`activity.id === "act-stream-<acpSessionId>"`，起轮时先 filter 同 id 再 push），
+所以「每人一行、各自自述」是现成的结构，不需要那条全局摘要。
+
+### 21.1 每行四段
+
+| 段 | 内容 | 规则 |
+| --- | --- | --- |
+| 左 | 状态标签 | **切换，不是并列**：ACP `tool_call.kind` 缺省或 `think` → 「思考中」；其余（`read` / `edit` / `execute` / `search` / …）→ 「调用工具中」。同一时刻只有一个标签在 DOM 里 |
+| 中·主行 | `title` | 取 ACP `tool_call.title`（如 `Edit src/App.tsx`）；thinking 时是「思考中」那类标题 |
+| 中·次行 | `activity.body` 的首行 | 即 `rawInput` 展开后的首行，等宽、单行截断（`truncate`）。`body` 缺失、空串、或全空行 → **整行不渲染**（不留空白行） |
+| 右 | `FileLock` 图标 + `×N` | 只在该 agent **有写锁**时出现；`count > 1` 才跟 `×N`；Tooltip 显示锁的文件（长路径显示尾段） |
+
+**`detail` 不再承载 rawInput**：`tool_call` 处理时写 `title` 与 `body`（`body = rawInputLines(rawInput).join("\n")`），
+不写 `detail` —— 否则主行与次行会把同一条命令显示两遍。`detail` 只留给思考类活动使用（有才显示，没有不占位）。
+
+`rawInput` 展开复用 `src/lib/trace-adapter.ts` 的 `rawInputLines()`，不要在前端另写一套；
+后端已把 `rawInput` 单字段截断到 16 KB（`docs/acp-notes.md`「轨迹 payload」），这里只按显示宽度截断，不做二次丢弃。
+
+### 21.2 写锁归属
+
+- 从 `activity.id` 取 `acpSessionId`（`act-stream-` 之后的部分），查 `session.locks[acpSid]`。
+- **只显示该 agent 自己的锁**，不再有跨成员的「另有 N 个」。
+- 当前活动是 `read`、但该 agent 手上压着一条 `edit` 的写锁 → **照常显示锁图标**。这是融合的主要收益：
+  以前提示条与活动行各说各的，这种组合态看不见。
+- `locks` 里没有该 `acpSid` → 不渲染图标、不占位。
+
+### 21.3 数据来源
+
+活动行的 `title` / `detail` / `rawInput` 来自 ACP 的 `session/update`：`tool_call` 与
+`tool_call_update`（后者是增量，合并语义见 `docs/acp-notes.md`：`null` 不覆盖）。
+payload 形状：`{ toolCallId, title, kind, status, rawInput?, content?, locations? }`。
+`kind` 是 ACP 的枚举（`read` / `edit` / `delete` / `move` / `search` / `execute` / `think` / `fetch` / `other`），
+映射到前端 `ActivityKind` 时**只用于决定「思考中 / 调用工具中」这一处判断**，不改变轨迹面板的分类口径。
+
+**`status` 的处理**：`pending` / `in_progress` 更新活动行；`completed` / `failed` **不重置**活动行 ——
+它继续显示最后一次调用的 `title` 与 `rawInput`，直到下一次 `tool_call` 覆盖或这一轮终态。
+理由是短工具连续调用时重置会让标签在「思考中 ↔ 调用工具中」之间来回跳；
+而「刚跑完什么」比「现在大概在思考」信息量更大。轮终态由既有路径收口，这里不碰。
+
+### 21.4 配色
+
+- 锁图标 `text-ink-3`，**不用** `warn-1` —— 写锁是状态，不是告警。
+- 标签、次行沿用现有 `text-caption` / `font-mono text-micro`，不新造颜色、不新增令牌。
+
+### 21.5 不动的部分
+
+- 已结束的历史活动行（`status !== "running"`）与 `TracePanel` 的渲染路径。
+- 输入区其它元素（用量行、停止提示、`isStopping` 条）。
+
+### 21.6 验收（DOM 数值，不看图）
+
+1. 一行里状态标签数量 = 1；`thinking` 时为「思考中」，工具调用时为「调用工具中」。
+2. 带 `rawInput` 的工具行有次行且 CSS 为 `text-overflow: ellipsis`；无 `rawInput` 的行次行不存在（不是空 div）。
+3. 有锁时 `FileLock` 图标出现；`count = 1` 时无 `×N`，`count = 2` 时有。
+4. 悬停图标出现 Tooltip 且含文件名。
+5. 输入区上方不再有 `app.writeHint.current` / `app.writeHint.extra` 渲染出的元素。
+6. 两个 agent 同时 running（群聊）→ 两条行各自显示自己的标签与锁，互不串。
+
+### 21.7 不做
+
+- 不做全局「另有 N 个进行中」计数（跨成员并发由「多行同时亮着」自己表达）。
+- 不把多个 agent 的活动合并成一条。
+- 不给锁图标加文字标签（图标 + Tooltip 足够，避免整行三段文字）。
