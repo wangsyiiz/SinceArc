@@ -34,6 +34,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const STEER_INVALID: u32 = 50001;
 /// 插话回执的认领窗口：响应之后再等这么久，等那条「无 messageId」的 chunk 到。
 const STEER_RECLAIM_WINDOW: Duration = Duration::from_secs(2);
+/// steer 回执只表示 agent 收下这次投递，不代表整轮终态。
+const STEER_ACK_TIMEOUT: Duration = Duration::from_secs(10);
 const STEER_NO_COMMAND: u32 = 50404;
 
 #[derive(Debug, Clone, Serialize)]
@@ -4042,7 +4044,7 @@ pub async fn delegate_task(
             },
         );
         let result = proc
-            .request("session/prompt", prompt_params, PROMPT_TIMEOUT)
+            .request_unbounded("session/prompt", prompt_params)
             .await;
         // 终态是 request 的响应，可能比最后一批正文 chunk 先到转发 task；
         // 给一小段宽限再收 buffer，否则摘要会少掉结尾甚至整个为空。
@@ -4199,8 +4201,6 @@ pub async fn delegate_cancel(
         stop_reason: None,
     })
 }
-
-const PROMPT_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// 发一轮消息。**立即返回** —— 流式内容走 `session/update` 通知，
 /// 结束信号走 `PromptResult` / `PromptFailed` 事件。
@@ -4404,7 +4404,7 @@ pub async fn session_prompt(
             },
         );
 
-        match proc.request("session/prompt", params, PROMPT_TIMEOUT).await {
+        match proc.request_unbounded("session/prompt", params).await {
             Ok(result) => {
                 let cancelled_by_user = cancels.take(&sid).await;
                 let stop_reason = result
@@ -4568,7 +4568,7 @@ pub async fn session_steer(
     );
     tokio::spawn(async move {
         // 响应必须吃掉：它只表示 agent 收下了这次投递，不是当前那一轮的终态。
-        if let Err(e) = proc.await_response(pending, PROMPT_TIMEOUT).await {
+        if let Err(e) = proc.await_response(pending, STEER_ACK_TIMEOUT).await {
             tracing::warn!(target: "sincearc::ipc", session = %sid, error = %e, "steer request failed");
         }
         // **不要**在这里结算：回执那条 chunk 和这个响应是两条独立的报文，谁先被处理没有保证
@@ -5624,6 +5624,14 @@ mod turn_state_tests {
             prompt_success_outcome(false, Some("max_tokens".to_string()));
         assert_eq!(status, "finished");
         assert_eq!(reason.as_deref(), Some("max_tokens"));
+    }
+
+    #[test]
+    fn normal_prompt_completion_is_finished_not_failed() {
+        let (status, reason) =
+            prompt_success_outcome(false, Some("end_turn".to_string()));
+        assert_eq!(status, "finished");
+        assert_eq!(reason.as_deref(), Some("end_turn"));
     }
 
     #[test]
