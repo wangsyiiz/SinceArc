@@ -42,6 +42,9 @@
   /* 分段控件：暗色档 轨道 n-3 / 滑块 n-4；
      浅色档反过来 —— 轨道是淡黑水洗、滑块纯白（同 sincecloud 的
      --switch-track-bg / --switch-thumb-bg，用 light-dark 表达） */
+  /* 输入框凹槽（§24）：比卡片底更深的一层半透明，边靠极淡内描边 —— 不是实心面 */
+  --well: rgb(8 6 12 / 0.3);
+  --well-edge: rgb(255 255 255 / 0.055);
   /* 浮层边界：暗色靠内边高光（边框透明），浅色靠 1px 边框（高光 none） */
   --glass-border: transparent;
   /* 控件边界：暗色透明（只靠上内边缘高光），浅色 1px l1。
@@ -208,6 +211,8 @@
 
   --row-active: #e6e6e6;
   --glass-border: var(--l1);
+  --well: rgb(255 255 255 / 0.62);
+  --well-edge: var(--l1);
   --control-border: var(--l1);
 
   --switch-track: color-mix(in srgb, #060606 5%, transparent);
@@ -239,6 +244,8 @@
     --ai: #ffffff;
     --row-active: #e6e6e6;
     --glass-border: var(--l1);
+  --well: rgb(255 255 255 / 0.62);
+  --well-edge: var(--l1);
 
   --switch-track: color-mix(in srgb, #060606 5%, transparent);
   --switch-thumb: #ffffff;
@@ -278,6 +285,8 @@
   --color-warn-1: var(--warn);
 
   --radius-card: 12px;
+  /* 输入区卡片（§23）：参考 reactbits `.lh-window` 的 18px 半径 */
+  --radius-window: 18px;
 
   /* 字号（§1.6）：text-caption / text-small / text-ui / text-body / text-lead / text-title */
   --text-micro: var(--fs-micro);
@@ -350,6 +359,32 @@ body {
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   border: 1px solid var(--glass-border);
   box-shadow: var(--edge-highlight);
+}
+
+/*
+ * 输入区卡片（§23）：取 reactbits `.lh-window` 的半径与失焦深度
+ * （18px / blur 24px saturate 1.5），不取它的外投影 —— 它在消息流里，不是浮层。
+ */
+/* 凹槽（§24）：输入框的「内陷」底，参考 reactbits `.lh-well` */
+.sc-well {
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px var(--well-edge);
+}
+
+/* 聚焦框落在输入框自己身上，不再由外层卡片 focus-within 顶替（§24.3） */
+.sc-well:focus {
+  box-shadow: inset 0 0 0 1px var(--a1);
+}
+
+.sc-window {
+  display: flex;
+  flex-direction: column;
+  background: var(--glass-1);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  /* 描边用 inset 阴影而不是 border：1px border 会占布局，让工具行的上边距比下边距少 1px（§24.4） */
+  border: 0;
+  box-shadow: var(--edge-highlight), inset 0 0 0 1px var(--glass-border);
 }
 .sc-tooltip {
   /* 平铺实心面 + 1px 边框：短提示要「被看见」，是 §1.8「暗色靠内高光划界」的唯一例外 */

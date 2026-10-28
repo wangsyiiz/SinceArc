@@ -1189,3 +1189,173 @@ payload 形状：`{ toolCallId, title, kind, status, rawInput?, content?, locati
 - 不做全局「另有 N 个进行中」计数（跨成员并发由「多行同时亮着」自己表达）。
 - 不把多个 agent 的活动合并成一条。
 - 不给锁图标加文字标签（图标 + Tooltip 足够，避免整行三段文字）。
+
+## 22. 输入区两行化：工具栏在上、输入框在下（2026-10-29 定）
+
+**决定**：把 `Composer` 从「输入框 + 底栏」的上下顺序反过来 —— **上排工具、下排输入**，
+整体拉高，外层玻璃底（`sc-glass` 的 `--edge-highlight` 内边高光）**保留不动**；
+发送键从工具行里拿出来，**浮动在输入框右下角**。
+
+### 22.1 结构
+
+```
+┌ sc-glass rounded-card ──────────────────────────── 外层（玻璃底 + 内边高光，保留）┐
+│ ⌘ 附件   ACP · stdio            [MCP] [撤销 chip] [自动批准 ▾]   ← 工具行（上）    │
+│ ┌ 1px border-line-1 ─────────────────────────────┐                               │
+│ │ textarea（多行，可换行）                                    [■] [↑]            │ ← 发送浮动右下
+│ └────────────────────────────────────────────────┘                               │
+└───────────────────────────────────────────────────────────────────────────────────┘
+```
+
+| 元素 | 规格 |
+| --- | --- |
+| 外层 | 沿用 `sc-glass rounded-card`（`--glass-1` + `--glass-border` + `--edge-highlight`）；**不改**这三样 |
+| 工具行 | 高约 28px，`px-2 pt-1.5 pb-1`；左：附件 → 状态标识（`ACP · stdio` / agent 输出）；右（`ml-auto`）：MCP → 撤销 chip → 自动批准档位 |
+| 输入框 | `border border-line-1 rounded-control`，底色通透（不另铺实心，让玻璃底透出来）；`min-h-[76px]`、`max-h-50`（200px）保留 |
+| 发送 | `absolute bottom-2 right-2`，不占布局；`size-7` 圆形，`variant="glass"` |
+| busy 态 | 停止键（`Square`）在插话键**左侧**，两者同组浮动在右下 |
+
+### 22.2 为什么不给输入框铺实心底
+
+外层玻璃是「内边高光划界」的那一层（§1.8）。输入框再铺一层实心面 = 双层底，
+高光就被埋在第二层下面，看起来像嵌了一个洞。所以输入框只加 **1px 暗淡描边**（`--l1`）
+把编辑区域划出来，底仍透出玻璃。这也正是「保留内边高光的底色」的字面意思。
+
+### 22.3 浮动键的避让
+
+`textarea` 右侧留 `pr-[76px]`（busy 时含插话文字，留 `pr-[104px]`），保证长行文字不钻到按钮底下；
+按钮组本身 `pointer-events` 照常，`textarea` 不被覆盖 —— 用 `absolute` 而不是负 margin。
+
+### 22.4 不动的部分
+
+- `mention`（@ 补全）、`slash`（/ 命令）、IME 组合期不发送、`Enter`/`Shift+Enter`、`submit()` 全部逻辑零改动。
+- `SlashMenu`、`@` 候选浮层的位置（`bottom-full` 相对外层）—— 外层仍是同一个定位祖先。
+- 撤销 chip、自动批准菜单、MCP 按钮的行为与顺序。
+- 不做拖拽上传、不做附件真实读取（附件按钮仍是占位，与现状一致）。
+
+### 22.5 验收（DOM 数值，不看图）
+
+1. 工具行 `getBoundingClientRect().top` **小于** `textarea` 的 top（工具在上）。
+2. `textarea` 计算样式 `border-top-width === "1px"`，颜色等于 `--l1` 的计算值；`min-height ≥ 76px`。
+3. 发送按钮计算样式 `position === "absolute"`，其右边缘与输入框右边缘间距 ≤ 8px，底边同理。
+4. 外层 `box-shadow` 含 `inset`（内边高光没被吃掉），`backdrop-filter` 含 `blur`。
+5. 输入 60 个字符不换行时，文字右端与发送按钮左端不重叠（比较 `scrollWidth` 与可用宽度）。
+6. `busy = true` 时停止键与插话键同时在右下，且停止键 x 更小。
+
+## 23. 输入区按「窗口卡片」语言收敛（2026-10-29 定）
+
+参考源：reactbits.dev 首页 `.lh-window` —— 从它构建产物 `index-*.css` 里读到的实测值，不是印象：
+
+```css
+.lh-window{
+  border-radius:18px;
+  background:rgba(24,21,30,.8);
+  box-shadow: 0 30px 70px rgba(0,0,0,.36), 0 14px 32px rgba(0,0,0,.26),   /* 外投影 */
+              inset 0 0 0 1px rgba(255,255,255,.08),                       /* 内描边 */
+              inset 0 1px 0 rgba(255,255,255,.07);                          /* 顶部高光 */
+  backdrop-filter:blur(24px) saturate(1.5);
+  padding:0 6px 6px;          /* 标题栏贴顶，内容三边内缩 6px */
+}
+.lh-window-bar{height:36px}   /* 标题栏 */
+.lh-window-status{height:32px}/* 底栏 */
+```
+
+**取**：半径 18px、`blur(24px) saturate(1.5)`、工具行 32px 的高度节奏。
+**改**：参考的三边内缩 6px 收到 **4px** —— 18px 圆角 + 32px 工具行之下，6px 的下边与左右看起来都比
+视觉重量更宽（所有者 2026-10-29 判定）；三边仍保持同一个值，不分别调。
+**不取**：外投影（输入框在消息流里、不是浮层，压 70px 投影会让整条消息区发脏）；
+**不取**暗色下的 `inset 0 0 0 1px`（与 §1.8「暗色靠内边高光划界」冲突 —— 浅色侧 `--glass-border` 本来就是 1px，两个主题各自守住自己的分界方式）；
+**暂不取**半透明底色 `.8`：那要等窗口 `transparent` + Mica 定了一起做（§22 结尾），单独改 `--glass-1` 只会把不透明底搅浑。
+
+### 23.1 四条改动
+
+1. **外层**：`sc-glass rounded-card`（12px / blur 16 / saturate 1.6）→ `sc-window rounded-window`（18px / blur 24 / saturate 1.5）。新增 `--radius-window: 18px` 与 `.sc-window`，不动 `sc-glass`（全站浮层在用）。
+2. **删「ACP · stdio」**：连同 busy 时的「agent 正在输出」，i18n key `composer.agentOutput` 两侧一并删除。理由：这行原来在说「这条通道是什么」和「agent 在输出」——前者是常量（谁都知道自己在用 ACP），后者 §21 之后已经由活动行自己说。
+3. **上下文用量进工具行**：原来它是输入区上方一条独立的 `sc-glass` 卡片（`App.tsx` 里渲染），现在并进工具行左段，跟在附件按钮后面；`text-micro`（黑体，见 §24）超宽 `truncate`，**不加 Tooltip** —— 号码本身可读，悬停浮层反而挡视线；
+`warn` 时 `text-warn-1`。输入区上方那条卡片删除。
+4. **自动批准去玻璃态**：触发器从 `triggerVariant="control"`（`sc-control` 带 `inset 0 1px 0` 内高光 + `bg-surface-2` + 1px 边）改成 `"ghost"`，与 MCP 按钮同一种形态 —— 无底、无边、无内高光，hover 才有面。
+
+### 23.2 为什么用量该在工具行
+
+用量是「这一轮还剩多少余量」的静态读数，不是事件 —— 它不该在消息流与输入区之间占一整行（那一条 `mb-2 px-3 py-1.5` 的玻璃卡把输入区往上顶了 30 多 px，而信息量只有一个数字）。放进工具行后，它和「附件 / MCP / 自动批准」这些「这一轮的配置项」在同一层，语义反而更准。
+
+### 23.3 验收（DOM 数值）
+
+1. 外层 `border-radius` = 18px；`backdrop-filter` 含 `blur(24px)` 与 `saturate(1.5)`。
+2. 工具行文本不含 `ACP`、不含 `stdio`（两种状态都查）。
+3. 用量文本所在元素的 rect 在输入卡片 rect 之内；文档里不再有输入区上方那条独立用量卡（`usage.line.*` 文本只出现一次）。
+4. 自动批准触发器的 `box-shadow` 为 `none`，与 MCP 按钮一致；两者 hover 前的 `background-color` 相同（透明）。
+5. busy 状态下不出现「agent 正在输出」文案。
+
+## 24. 输入框内陷底 + 用量环形读数（2026-10-29 定）
+
+参考源：reactbits `.lh-well`（同样读自构建产物 CSS）：
+
+```css
+.lh-well{ border-radius:12px; background:var(--lh-well); box-shadow:inset 0 0 0 1px var(--lh-well-edge) }
+/* 暗色 */ --lh-well: rgba(8,6,12,.3);        --lh-well-edge: rgba(255,255,255,.055);
+/* 浅色 */ --lh-well: rgba(255,255,255,.62);  --lh-well-edge: rgba(24,24,27,.06);
+```
+
+**它和 §22.2「不铺实心面」不矛盾**：well 是比卡片底更深、**半透明**的一层（30% 黑），
+凹槽的边靠 `inset 0 0 0 1px` 划；实心面会把 §23 卡片边缘的内边高光埋掉，半透明凹槽不会 ——
+高光在卡片边上，凹槽在卡片里面，两者不在同一层。
+
+### 24.1 改动
+
+1. **输入框换成凹槽**：去掉 `border border-line-1`（1px 实线），改 `.sc-well`
+   （`--well` 底 + `inset 0 0 0 1px var(--well-edge)`），半径 12px（`rounded-card`）。
+2. **浅色主题守 §1.8**：`--well-edge` 取 `--l1`（浅色靠 1px 边框分界），不用 reactbits 的 6% 黑 ——
+   6% 在浅色下等于没有边界。
+3. **用量文字转黑体**：`font-mono` → 去掉（走 `--font-sans`）。理由是它是给人读的一句自然语言，
+   不是需要对齐的等宽读数 —— 等宽留给代码和路径。
+4. **加 18px 环**：track 用 20% 线色、fill `accent-1`（`percent ≥ 80` 转 `warn-1`）、
+   `stroke-linecap: round`，中央 `Layers` 8px 图标 —— 环内径 14px，图标与环之间留 3px（10px 时只余 2px，挤）。
+5. **`describeUsage` 返回值加 `percent`**：后端已算好 0–100（`UsageDto.percent`），
+   前端只传不重算 —— 这行仍然不做除法。
+
+### 24.2 验收（DOM 数值）
+
+1. 输入框 `border-width` 为 0；`box-shadow` 含 `inset 0 0 0 1px`；`background-color` 的 alpha < 1，
+   且与卡片底色不同（凹槽更深）。
+2. 用量文字元素 `font-family` 不含 `mono`。
+3. 环 `<svg>` 存在且 `stroke-dashoffset` 随 `percent` 变化（2% 与 82% 两个用例读数不同）。
+4. 环中央有 `Layers` 图标元素。
+5. `percent ≥ 80` 时环的 `stroke` = `--warn`。
+
+### 24.3 焦点归属与工具行内缩
+
+**聚焦框必须落在输入框自己身上**，不能由外层卡片 `focus-within` 顶替。原来的写法有两个毛病，
+实测都量到了：
+
+1. 点进输入框时亮的是**整张卡片**的 1px 边框（`focus-within:border-accent-1`），看起来像「整块控件被选中」；
+2. 同时 `textarea` 自己冒出浏览器默认 outline（`outline: solid`）—— 因为 `focus-visible:outline-0`
+   只管键盘聚焦，鼠标点进去不触发 `:focus-visible`，于是两层框一起出现。
+
+改成：外层卡片不再响应 focus；`.sc-well:focus` 把自己的 inset 描边换成 `--a1`；
+`textarea` 写 `focus:outline-0 focus-visible:outline-0` —— 不能用裸的 `outline-0`/`outline-none`，
+样式棘轮只放行「同一 className 里带 `focus-visible:`」的写法（保留键盘焦点的语义）。
+
+**工具行内缩与输入区取同一个值**：原来工具行 `px-2`（8px）、输入区 `p-1`（4px），
+附件按钮左边缘 x=9、输入框左边缘 x=5，差 4px —— 视觉上就是「上面那行比输入框缩进去一点」。
+两处统一 4px 后都是 x=5。（垂直方向本来就齐：工具行 32px 内所有子元素中心线都在 cy=17。）
+
+### 24.4 工具行上下留白相等（不是「居中」两字能说清的那种）
+
+所有者报「工具行视觉偏上」。量出来是：**工具行顶距卡片外缘 1px、工具行底距输入框 4px**，
+差在卡片那圈 1px `border` —— 暗色下 `--glass-border` 是透明的，看不见但**照样占布局**。
+
+三件事一起改才齐：
+
+1. **描边改 inset 阴影**：`.sc-window` 的 `border: 1px` → `box-shadow: … inset 0 0 0 1px var(--glass-border)`。
+   描边不再占布局，也不再制造 1px 的隐形偏差。这也正是 reactbits `.lh-window` 的写法。
+2. **卡片必须是 `display: flex; flex-direction: column`**：否则工具行的 `margin-top` 会与父元素**折叠**，
+   卡片整体被推下去、相对间距仍是 0（实测：先加 `mt-1` 后上方还是 0，加 flex 才变 4）。
+3. **上下各 4px**：工具行 `mt-1`、输入区 `p-1`。
+
+实测（暗色，卡片外缘算起）：
+
+```
+上（卡片→工具行） 4    中（工具行→输入框） 4    左 4    右 4    下 4
+工具行左缘 4        卡片高 120（= 4+32+4+76+4）
+```
