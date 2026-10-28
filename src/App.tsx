@@ -22,6 +22,7 @@ import { normalizeLanguage } from "@/i18n/normalize";
 import { autoApproveCovered, type AutoApproveLevel } from "@/lib/auto-approve";
 import { settingsKey } from "@/lib/settings-key";
 import { normalizeCodeThemeId } from "@/lib/highlight/themes";
+import { copyText } from "@/lib/clipboard";
 import { profileLabel } from "@/lib/format";
 import { localizeText, translateKey } from "@/lib/i18n-text";
 import { errorTextOf } from "@/lib/errors";
@@ -54,7 +55,6 @@ import { describeUsage } from "@/lib/usage-format";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
 import type {
   AgentProfile,
-  GithubPR,
   GithubRepo,
   Message,
   PermissionRequest,
@@ -75,6 +75,7 @@ import {
   mentionResolve,
   permissionAllowTurn,
   permissionRevokeTurn,
+  openExternal,
   settingsLoad,
   settingsSave,
   sessionDelete,
@@ -85,10 +86,17 @@ import {
   messagesAppend,
   sessionSteer,
   sessionUpsert,
+  ghPrDetail,
+  ghPrDiff,
   type AgentUser,
+  type CmdError,
+  type DiffPageDto,
   type DiscoveryCandidate,
   type DiscoveryHit,
   type ModesSnapshot,
+  type PrDetailDto,
+  type PrDto,
+  type RepoRefDto,
   type ResumeOutcome,
 } from "@/lib/ipc";
 import { now } from "@/lib/format";
@@ -104,7 +112,10 @@ import { useAgentConnect, type EnsureResult } from "@/hooks/useAgentConnect";
 import { useDiscovery } from "@/hooks/useDiscovery";
 import { useProfileStore } from "@/hooks/useProfileStore";
 import { usePrompt } from "@/hooks/usePrompt";
-import { EMPTY_PRS, useRepos } from "@/hooks/useRepos";
+import { useRepos } from "@/hooks/useRepos";
+import { useGhRepo } from "@/hooks/useGhRepo";
+import type { DiffPhase, GhPhase } from "@/lib/gh-repo-flow";
+import { PR_STATE_LABEL } from "@/lib/pr-state";
 import { useScrollFade } from "@/hooks/useScrollFade";
 import { useSessionList } from "@/hooks/useSessionList";
 import { useSessionState } from "@/hooks/useSessionState";
@@ -752,7 +763,24 @@ export default function App() {
     onResume: reportResume,
   });
   const { sidebarW, setSidebarW, traceW, setTraceW, dragging, setDragging, layoutRef, mainMin, sidebarMax, traceMax } = usePaneLayout(traceOpen);
-  const { repoList, addRepo, activeRepo, activePr } = useRepos(activeTab);
+  const { repoList, addRepo, activeRepo } = useRepos(activeTab);
+
+  /**
+   * gh 三态的权威存储在 App：按 repoId 记住 phase，切走再切回不重闪骨架。
+   * `prsByRepo` 单独存列表，供侧栏计数（侧栏不需要 identity 之外的东西）。
+   */
+  const [ghPhases, setGhPhases] = useState<Record<string, GhPhase>>({});
+  const [prsByRepo, setPrsByRepo] = useState<Record<string, PrDto[]>>({});
+  /** PR 详情缓存：`repoId:number` → 详情或错误。 */
+  const [prDetails, setPrDetails] = useState<
+    Record<string, { detail?: PrDetailDto; error?: CmdError }>
+  >({});
+  /** diff 每页缓存（键 = `repoId:number:page`）与失败。 */
+  const [diffPages, setDiffPages] = useState<Record<string, DiffPageDto>>({});
+  const [diffErrors, setDiffErrors] = useState<Record<string, CmdError>>({});
+  const [diffPageByPr, setDiffPageByPr] = useState<Record<string, number>>({});
+  /** 自增 → 侧栏展开添加项目输入框（代码视图「重新选择目录」）。 */
+  const [addRepoSignal, setAddRepoSignal] = useState(0);
 
   const cwd = activeSession?.cwd ?? sessionProfile?.cwd ?? "";
   const resumeGap = useMemo(() => {
@@ -1044,7 +1072,7 @@ export default function App() {
 
   /** 把 PR 作为引用塞进会话：优先复用已打开的会话标签 */
   const quotePr = useCallback(
-    (pr: GithubPR, repo: GithubRepo) => {
+    (pr: PrDto, repo: GithubRepo, detail?: PrDetailDto) => {
       const existing = tabs.find((t) => t.kind === "session");
       const sid = existing?.sessionId ?? "s-1";
       if (existing) setActiveTabId(existing.id);
@@ -1052,11 +1080,111 @@ export default function App() {
       setLastSessionId(sid);
       patchSession(sid, (s) => ({
         ...s,
-        msgs: [...s.msgs, { id: newId("u"), role: "user", atomKind: "text.user", at: now(), text: t("app.quotePr.message"), quoted: { kind: "pr", label: `#${pr.number} ${pr.title}`, detail: t("app.quotePr.detail", { slug: repo.slug, head: pr.head, base: pr.base, additions: pr.additions, deletions: pr.deletions, files: pr.files }) } }],
+        msgs: [...s.msgs, { id: newId("u"), role: "user", atomKind: "text.user", at: now(), text: t("app.quotePr.message"), quoted: { kind: "pr", label: `#${pr.number} ${pr.title}`, detail: t("app.quotePr.detail", { slug: repo.name, head: pr.head, base: pr.base, state: t(PR_STATE_LABEL[pr.state]), files: detail?.changedFiles ?? 0, additions: detail?.additions ?? 0, deletions: detail?.deletions ?? 0 }) } }],
       }));
     },
-    [openTab, patchSession, tabs, t],
+    [openTab, patchSession, sessions, setActiveTabId, setLastSessionId, tabs, t],
   );
+
+  // repo 标签与 pr 标签都要解析身份：PR 详情/ diff 需要 `host/owner/name`。
+  const ghRepoId = activeTab?.repoId;
+  const repoPhase = ghRepoId ? ghPhases[ghRepoId] : undefined;
+  const { redetect: redetectGhRepo } = useGhRepo({
+    repoId: ghRepoId,
+    repoPath: activeRepo?.path,
+    enabled: activeTab?.kind === "repo" || activeTab?.kind === "pr",
+    phase: repoPhase,
+    onPhase: (repoId, phase) => setGhPhases((prev) => ({ ...prev, [repoId]: phase })),
+    onPrs: (repoId, prs) => setPrsByRepo((prev) => ({ ...prev, [repoId]: prs })),
+  });
+
+  /** 侧栏计数与仓库头用的是同一份 identity：从已就绪的 phase 里取，不额外请求。 */
+  const identityByRepo = useMemo(() => {
+    const map: Record<string, RepoRefDto | undefined> = {};
+    for (const repo of repoList) {
+      const phase = ghPhases[repo.id];
+      map[repo.id] = phase?.kind === "ready" ? phase.identity : undefined;
+    }
+    return map;
+  }, [ghPhases, repoList]);
+
+  const prKey =
+    activeTab?.kind === "pr" && activeTab.repoId && activeTab.prNumber != null
+      ? `${activeTab.repoId}:${activeTab.prNumber}`
+      : null;
+  const prIdentity = activeTab?.repoId ? identityByRepo[activeTab.repoId] : undefined;
+  const activePrNumber = activeTab?.kind === "pr" ? activeTab.prNumber : undefined;
+  const activePrDetail = prKey ? prDetails[prKey] : undefined;
+
+  /** 已发起过的请求：标签开关不重复拉，但详情本身仍留在内存。 */
+  const requestedDetails = useRef<Set<string>>(new Set());
+  const requestedDiffs = useRef<Set<string>>(new Set());
+
+  const loadPrDetail = useCallback(
+    (identity: RepoRefDto, number: number, key: string) => {
+      if (requestedDetails.current.has(key)) return;
+      requestedDetails.current.add(key);
+      // 先清掉上一次的错误，界面回到骨架而不是一直挂着失败。
+      setPrDetails((prev) =>
+        prev[key]?.error ? { ...prev, [key]: {} } : prev,
+      );
+      void ghPrDetail(identity, number)
+        .then((detail) => setPrDetails((prev) => ({ ...prev, [key]: { detail } })))
+        .catch((e) => setPrDetails((prev) => ({ ...prev, [key]: { error: asCmdError(e) } })));
+    },
+    [],
+  );
+
+  const retryPrDetail = useCallback(
+    (identity: RepoRefDto, number: number, key: string) => {
+      // 「重试」是一次显式请求：清掉记录，允许重新发起。
+      requestedDetails.current.delete(key);
+      loadPrDetail(identity, number, key);
+    },
+    [loadPrDetail],
+  );
+
+  useEffect(() => {
+    if (!prKey || !prIdentity || activePrNumber == null) return;
+    loadPrDetail(prIdentity, activePrNumber, prKey);
+  }, [activePrNumber, loadPrDetail, prIdentity, prKey]);
+
+  const activeDiffPage = prKey ? diffPageByPr[prKey] ?? 0 : 0;
+  const activeDiffKey = prKey ? `${prKey}:${activeDiffPage}` : null;
+
+  const loadDiffPage = useCallback(
+    (identity: RepoRefDto, number: number, page: number, key: string, force: boolean) => {
+      if (!force && (requestedDiffs.current.has(key) || diffErrors[key])) return;
+      requestedDiffs.current.add(key);
+      if (force) {
+        setDiffErrors((prev) => {
+          if (!(key in prev)) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      }
+      void ghPrDiff(identity, number, page)
+        .then((result) => setDiffPages((prev) => ({ ...prev, [key]: result })))
+        .catch((e) => setDiffErrors((prev) => ({ ...prev, [key]: asCmdError(e) })));
+    },
+    [diffErrors],
+  );
+
+  useEffect(() => {
+    if (!prKey || activeDiffKey == null || !prIdentity || activePrNumber == null) return;
+    loadDiffPage(prIdentity, activePrNumber, activeDiffPage, activeDiffKey, false);
+  }, [activeDiffKey, activeDiffPage, activePrNumber, loadDiffPage, prIdentity, prKey]);
+
+  const activeDiff: DiffPageDto | undefined = activeDiffKey
+    ? diffPages[activeDiffKey]
+    : undefined;
+  const activeDiffError = activeDiffKey ? diffErrors[activeDiffKey] : undefined;
+  const activeDiffPhase: DiffPhase = activeDiffError
+    ? "failed"
+    : activeDiff
+      ? "ready"
+      : "loading";
 
   // 轨迹拉取：只读库，失败留日志（面板空着比整页报错好）。
   // 轮数上限跟服务端一致（服务端会把 limit 夹到 200 轮、事件 limit×200）——只在面板打开时拉。
@@ -1477,7 +1605,9 @@ export default function App() {
           profiles={profiles}
           players={players}
           repos={repoList}
-          prsByRepo={EMPTY_PRS}
+          prsByRepo={prsByRepo}
+          identityByRepo={identityByRepo}
+          focusAddSignal={addRepoSignal}
           onSelect={(id) =>
             openTab({
               kind: "session",
@@ -1839,12 +1969,18 @@ export default function App() {
           {activeTab?.kind === "repo" && activeRepo && (
             <RepoBrowser
               repo={activeRepo}
-              prs={EMPTY_PRS[activeRepo.id] ?? []}
+              phase={ghPhases[activeRepo.id] ?? { kind: "checking" }}
+              onRedetect={redetectGhRepo}
+              onCopy={(text) => void copyText(text)}
+              onChooseRepo={() => {
+                setMode("code");
+                setAddRepoSignal((signal) => signal + 1);
+              }}
               onOpenPr={(pr) =>
                 openTab({
                   kind: "pr",
                   title: `#${pr.number} ${pr.title}`,
-                  subtitle: `${activeRepo.slug} · ${pr.head} → ${pr.base}`,
+                  subtitle: `${identityByRepo[activeRepo.id]?.owner ?? activeRepo.name}/${identityByRepo[activeRepo.id]?.name ?? ""} · ${pr.head} → ${pr.base}`,
                   repoId: activeRepo.id,
                   prNumber: pr.number,
                 })
@@ -1885,8 +2021,54 @@ export default function App() {
               onChangeLanguage={(language) => setSettings((s) => ({ ...s, language }))}
             />
           )}
-          {activeTab?.kind === "pr" && activePr && activeRepo && (
-            <PrView pr={activePr} repo={activeRepo} onQuote={() => quotePr(activePr, activeRepo)} />
+          {activeTab?.kind === "pr" && activeRepo && activePrNumber != null && prIdentity && (
+            <PrView
+              repo={activeRepo}
+              identity={prIdentity}
+              prNumber={activePrNumber}
+              detail={activePrDetail?.detail}
+              detailError={activePrDetail?.error}
+              diff={activeDiff}
+              diffPhase={activeDiffPhase}
+              diffError={activeDiffError}
+              onDiffPage={(page) =>
+                setDiffPageByPr((prev) => ({ ...prev, [prKey ?? ""]: page }))
+              }
+              onRetryDiff={() => {
+                if (prIdentity && activePrNumber != null && activeDiffKey) {
+                  loadDiffPage(prIdentity, activePrNumber, activeDiffPage, activeDiffKey, true);
+                }
+              }}
+              onRetryDetail={() => {
+                if (prIdentity && activePrNumber != null && prKey) {
+                  retryPrDetail(prIdentity, activePrNumber, prKey);
+                }
+              }}
+              onQuote={() => {
+                const sourcePr =
+                  activePrDetail?.detail?.pr ??
+                  prsByRepo[activeRepo.id]?.find((item) => item.number === activePrNumber);
+                if (sourcePr) quotePr(sourcePr, activeRepo, activePrDetail?.detail);
+              }}
+              onOpenExternal={(url) => {
+                if (url) void openExternal(url);
+              }}
+            />
+          )}
+          {/* PR 标签先于仓库身份就绪（直接打开历史标签）：显示骨架，等三步回来再渲染。 */}
+          {activeTab?.kind === "pr" && activeRepo && activePrNumber != null && !prIdentity && (
+            <div className="flex h-full flex-col">
+              <header className="shrink-0 border-b border-line-1/60 px-4 py-3">
+                <div className="mx-auto max-w-3xl font-mono text-body text-ink-3">#{activePrNumber}</div>
+              </header>
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <div className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-3.5">
+                  <span className="h-3 w-2/3 animate-pulse rounded-control bg-surface-2" />
+                  <span className="h-3 w-full animate-pulse rounded-control bg-surface-2" />
+                  <span className="h-20 w-full animate-pulse rounded-control bg-surface-2" />
+                </div>
+              </div>
+            </div>
           )}
         </main>
       </div>

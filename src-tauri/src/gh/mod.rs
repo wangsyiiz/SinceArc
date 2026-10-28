@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod model;
+pub mod repo;
 pub mod service;
 
 use std::collections::BTreeMap;
@@ -51,8 +52,19 @@ impl From<GhStatus> for GhStatusDto {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+impl From<RepoRef> for RepoRefDto {
+    fn from(repo: RepoRef) -> Self {
+        Self {
+            host: repo.host,
+            owner: repo.owner,
+            name: repo.name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
 pub struct RepoRefDto {
     pub host: Option<String>,
     pub owner: String,
@@ -395,6 +407,31 @@ pub async fn gh_status(
     }
 }
 
+/// 从本地目录解析仓库身份（docs/gh.md §2.1）。纯文件读，不调 gh、不起进程。
+#[tauri::command]
+pub fn gh_repo_resolve(path: String) -> Result<RepoRefDto, CmdError> {
+    if path.trim().is_empty() {
+        return Err(CmdError::keyed_with(
+            50000,
+            "err.gh.repoPathRequired",
+            "仓库路径不能为空",
+            BTreeMap::from([("path".to_string(), path)]),
+        ));
+    }
+
+    repo::resolve_repo(&path)
+        .map(RepoRefDto::from)
+        .map_err(|error| {
+            tracing::warn!(
+                target: "sincearc::gh",
+                code = error.code(),
+                error = ?error,
+                "gh repo resolve failed"
+            );
+            to_cmd_error(error)
+        })
+}
+
 fn to_cmd_error(error: GhError) -> CmdError {
     let code = u32::from(error.code());
     match error {
@@ -408,6 +445,18 @@ fn to_cmd_error(error: GhError) -> CmdError {
         GhError::RepoUnavailable => failed(code, "仓库不存在或没有权限"),
         GhError::PrNotFound => pr_not_found(code, None),
         GhError::ParseFailed { version } => failed(code, format!("解析失败（gh {version}）")),
+        GhError::NotGitRepo { path } => CmdError::keyed_with(
+            code,
+            "err.gh.notGitRepo",
+            format!("这个目录还不是 git 仓库：{path}"),
+            BTreeMap::from([("path".to_string(), path)]),
+        ),
+        GhError::NoRemote { path, detail } => CmdError::keyed_with(
+            code,
+            "err.gh.noRemote",
+            format!("没找到可用的 origin 远端：{detail}"),
+            BTreeMap::from([("path".to_string(), path), ("detail".to_string(), detail)]),
+        ),
     }
 }
 

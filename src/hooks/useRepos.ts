@@ -1,9 +1,7 @@
 import { useCallback, useState } from "react";
 import { newId } from "@/lib/ids";
 import { i18nText } from "@/lib/i18n-text";
-import type { GithubPR, GithubRepo, Tab } from "@/types";
-
-export const EMPTY_PRS: Record<string, GithubPR[]> = {};
+import type { GithubRepo, Tab } from "@/types";
 
 export function useRepos(activeTab: Tab | null) {
   const [repoList, setRepoList] = useState<GithubRepo[]>([]);
@@ -16,24 +14,15 @@ export function useRepos(activeTab: Tab | null) {
       {
         id: newId("repo"),
         name,
-        slug: `—/${folder || "new-project"}`,
         path,
-        branch: "—",
-        connected: false,
       },
     ]);
   }, []);
 
+  // repo 与 pr 两种标签都挂在同一个 repo 上：PR 标签也需要 path 去解析身份。
   const activeRepo = activeTab?.repoId
     ? repoList.find((r) => r.id === activeTab.repoId)
     : undefined;
 
-  const activePr =
-    activeTab?.kind === "pr" && activeTab.repoId
-      ? (EMPTY_PRS[activeTab.repoId] ?? []).find(
-          (pr) => pr.number === activeTab.prNumber,
-        )
-      : undefined;
-
-  return { repoList, addRepo, activeRepo, activePr };
+  return { repoList, addRepo, activeRepo };
 }

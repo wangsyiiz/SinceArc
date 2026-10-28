@@ -185,30 +185,14 @@ export interface QuotedRef {
 }
 
 /* ---------- Git / 权限 ---------- */
-/** GitHub 项目：独立于聊天窗口，按路径绑定 gh 的工作目录 */
+/**
+ * GitHub 项目：独立于聊天窗口，按路径绑定 gh 的工作目录。
+ * 身份（host/owner/name）不在这里缓存 —— 由后端的 `gh_repo_resolve` 解析（docs/gh.md §2.1）。
+ */
 export interface GithubRepo {
   id: string;
   name: string;
-  slug: string;
   path: string;
-  branch: string;
-  connected: boolean;
-}
-
-export interface GithubPR {
-  number: number;
-  title: string;
-  author: string;
-  head: string;
-  base: string;
-  state: "open" | "draft" | "merged" | "closed";
-  comments: number;
-  additions: number;
-  deletions: number;
-  files: number;
-  checks: "pending" | "passing" | "failing";
-  updatedAt: string;
-  body: string;
 }
 
 export interface PermissionOption {

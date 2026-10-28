@@ -218,6 +218,7 @@ pub fn run() {
             commands::session_usage,
             commands::agent_list_connected,
             gh::gh_status,
+            gh::gh_repo_resolve,
             gh::gh_pr_list,
             gh::gh_pr_detail,
             gh::gh_pr_diff,

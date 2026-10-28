@@ -110,6 +110,10 @@ pub enum GhError {
     Timeout,
     CliFailed { stderr: String },
     ParseFailed { version: String },
+    /// 从本地路径向上找不到 `.git`（docs/gh.md §2.1 第 1 步）。
+    NotGitRepo { path: String },
+    /// 找到 git 仓库但没有可用远端，或远端地址认不出（§2.1 第 3–4 步）。
+    NoRemote { path: String, detail: String },
 }
 
 impl GhError {
@@ -122,6 +126,8 @@ impl GhError {
             Self::PrNotFound => 50716,
             Self::Timeout | Self::CliFailed { .. } => 50714,
             Self::ParseFailed { .. } => 50715,
+            // 两种身份解析失败共用一个码：界面靠 key 区分「不是仓库」与「没远端」。
+            Self::NotGitRepo { .. } | Self::NoRemote { .. } => 50717,
         }
     }
 }
