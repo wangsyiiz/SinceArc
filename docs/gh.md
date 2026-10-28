@@ -115,11 +115,27 @@ TTL 不进命令层，也不进 adapter。
 
 ## 2. 可用性探测（这是本功能的第一道门）
 
-`gh_status` 返回：`{ available, version?, loggedIn, host, cwdOk, ghPath? }`。
+`gh_status` 返回：`{ available, version?, loggedIn, host?, cwdOk, ghPath? }`。
 
-> **分期（2026-10-28）**：E9.1 只交付 `{ available, version?, loggedIn, ghPath? }` 四项。
-> `host`（存在多个 host 时的默认 host）与 `cwdOk`（当前工作目录能否跑 gh）语义还没定清楚，
-> 留到 E9.2 定义之后再补；**本卡不写空字段、不返回占位值**。
+> **六字段定稿（2026-10-28，所有者选「保留」）**：E9.1 先只交了四项，E9.2 补齐 `host` / `cwdOk`。
+> 两者语义如下，别处不再另立说法。
+
+**`host`：默认用哪个 GitHub 主机**
+
+- 来源：`gh auth status` 的输出（这条命令本来就要跑，不再多起进程）。行形如
+  `✓ Logged in to github.com account <user> (keyring)`。
+- 规则（带兜底）：`github.com` 已登录 → 取它；否则取唯一已登录的 host；多个都登录且都没有
+  `github.com` → 取第一个并 `tracing::warn!` 留痕；一个都没登录 → `None`（此时 `loggedIn=false`，命令层报 50711）。
+- 用途：`RepoRef.host` 缺省时填它。gh 的 `-R` 支持 `[HOST/]OWNER/REPO`，所以跨 host 不用别的手段。
+- 不做：不读 `~/.config/gh/hosts.yml`（§8），不猜没登录过的主机。
+
+**`cwdOk`：当前目录能不能当隐式仓库用**
+
+- 语义：进程 cwd 是否落在 git 工作树内 —— 也就是「不带 `-R` 的 gh 命令能不能自己推断出仓库」。
+- 判定：纯文件系统向上找 `.git`（文件或目录都算，worktree 与 submodule 用 `.git` 文件），
+  O(深度)，**不起进程**，不调 `git`。
+- 用途：E9.4 代码视图里给「当前目录不是仓库」的提示；E14「项目与位置」可以直接拿它当现成信号。
+- 明确不做：不判断该仓库有没有远端、是否属于 gh 认识的 host、工作区是否干净。
 
 探测顺序（找到即停）：
 
@@ -167,6 +183,11 @@ TTL 不进命令层，也不进 adapter。
 ## 4. 领域模型（必须允许可空）
 
 ```ts
+interface GhRepoRef {
+  host?: string;                  // 缺省用 gh_status.host（github.com 优先），见 §2
+  owner: string;
+  name: string;
+}
 interface GhAuthor { login: string; name?: string; isBot: boolean }
 interface GhPullRequest {
   number: number; title: string; url: string;
