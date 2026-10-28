@@ -21,11 +21,14 @@ const base = arg("base", "http://127.0.0.1:4181/index.html");
 const chromium = env.PW_CHROMIUM ?? arg("chromium", null);
 const jsonOut = arg("json", null);
 
+// ESM 不认 NODE_PATH：全局装 playwright 时用 PW_MODULE 指到它的入口（如 .../playwright/index.mjs）
+const pwModule = env.PW_MODULE ?? "playwright";
 let chromiumLauncher;
 try {
-  ({ chromium: chromiumLauncher } = await import("playwright"));
-} catch {
-  console.error("缺少 playwright：npm i -D playwright（或装到能 require 的全局路径）");
+  ({ chromium: chromiumLauncher } = await import(pwModule));
+} catch (e) {
+  console.error(`缺少 playwright（试过 ${pwModule}）：npm i -D playwright 或用 PW_MODULE 指定入口`);
+  console.error(String(e).slice(0, 200));
   exit(2);
 }
 if (!chromium && !existsSync("/usr/sbin/chromium-browser")) {
@@ -34,7 +37,7 @@ if (!chromium && !existsSync("/usr/sbin/chromium-browser")) {
 }
 
 /** 把 Tauri IPC 打桩：只关心语言链路需要的几条命令，其余给空结果。 */
-const ipcStub = (savedLanguage, failures = {}) => {
+const ipcStub = ({ savedLanguage, failures = {} }) => {
   window.__smoke = { savedLanguage: null, calls: [] };
   window.__TAURI_INTERNALS__ = {
     invoke: async (cmd, args) => {
@@ -87,9 +90,13 @@ const launch = async (locale, savedLanguage, failures) => {
   const errors = [];
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
   page.on("console", (m) => {
-    if (m.type() === "error") errors.push(`console: ${m.text().slice(0, 160)}`);
+    const text = m.text();
+    // 静态资源 404（本仓没有 favicon）不是应用错误，别把它算成 pageError
+    if (m.type() === "error" && !/Failed to load resource|404/.test(text)) {
+      errors.push(`console: ${text.slice(0, 160)}`);
+    }
   });
-  await page.addInitScript(ipcStub, savedLanguage, failures);
+  await page.addInitScript(ipcStub, { savedLanguage, failures });
   await page.goto(base, { waitUntil: "load" });
   await page.waitForTimeout(2000);
   return { browser, page, errors };
@@ -100,7 +107,7 @@ const sampleText = (page) =>
   page.evaluate(() => {
     const pick = (sel) => document.querySelector(sel)?.textContent?.trim() ?? "";
     return {
-      body: (document.body.innerText || "").slice(0, 400).replace(/\s+/g, " "),
+      body: (document.body.innerText || "").replace(/\s+/g, " ").trim(),
       pick,
     };
   });
@@ -110,10 +117,11 @@ const sampleText = (page) =>
   const { browser, page, errors } = await launch("zh-CN", null);
   const lang = await readLang(page);
   const saved = await page.evaluate(() => window.__smoke.savedLanguage);
+  const text = (await sampleText(page)).body;
   record(
     "系统中文首启",
-    lang === "zh-CN" && saved === "zh-CN" && errors.length === 0,
-    `lang=${lang} saved=${saved} pageErrors=${errors.length}`,
+    lang === "zh-CN" && saved === "zh-CN" && errors.length === 0 && text.includes("会话"),
+    `lang=${lang} saved=${saved} pageErrors=${errors.length} 文案已翻译=${text.includes("会话")}`,
   );
   await browser.close();
 }
@@ -126,8 +134,8 @@ const sampleText = (page) =>
   const text = (await sampleText(page)).body;
   record(
     "英文系统首启",
-    lang === "en" && saved === "en" && errors.length === 0,
-    `lang=${lang} saved=${saved} 前 80 字="${text.slice(0, 80)}"`,
+    lang === "en" && saved === "en" && errors.length === 0 && text.includes("Sessions"),
+    `lang=${lang} saved=${saved} 文案已翻译=${text.includes("Sessions")} 前 80 字="${text.slice(0, 80)}"`,
   );
   await browser.close();
 }
@@ -145,38 +153,24 @@ const sampleText = (page) =>
 {
   const { browser, page, errors } = await launch("zh-CN", "zh-CN");
   const before = await readLang(page);
-  const opened = await page.evaluate(() => {
-    const btn = [...document.querySelectorAll("button")].find(
-      (b) => (b.textContent || "").trim() === "设置" || b.getAttribute("aria-label") === "设置",
-    );
-    if (!btn) return false;
-    btn.click();
-    return true;
-  });
+  await page.getByRole("button", { name: /^(设置|Settings)$/ }).first().click();
   await page.waitForTimeout(600);
-  await page.evaluate(() => {
-    const nav = [...document.querySelectorAll("button")].find((b) =>
-      /^(外观|Appearance)$/.test((b.textContent || "").trim()),
-    );
-    nav?.click();
-  });
-  await page.waitForTimeout(400);
-  const clicked = await page.evaluate(() => {
-    const opt = [...document.querySelectorAll("button")].find(
-      (b) => (b.textContent || "").trim() === "English",
-    );
-    if (!opt) return false;
-    opt.click();
-    return true;
-  });
+  await page.getByRole("button", { name: /^(外观|Appearance)$/ }).first().click();
+  await page.waitForTimeout(500);
+  await page.getByRole("button", { name: /^English$/ }).first().click();
   await page.waitForTimeout(900);
   const after = await readLang(page);
   const saved = await page.evaluate(() => window.__smoke.savedLanguage);
+  const pressed = await page.evaluate(() =>
+    [...document.querySelectorAll("button")]
+      .filter((b) => /^(中文|English)$/.test((b.textContent || "").trim()))
+      .map((b) => `${b.textContent.trim()}:${b.getAttribute("aria-pressed")}`),
+  );
   const text = (await sampleText(page)).body;
   record(
     "切换即时生效 + 落库",
-    opened && clicked && before === "zh-CN" && after === "en" && saved === "en" && errors.length === 0,
-    `打开设置=${opened} 点English=${clicked} ${before}→${after} saved=${saved} 前 80 字="${text.slice(0, 80)}"`,
+    before === "zh-CN" && after === "en" && saved === "en" && errors.length === 0,
+    `${before}→${after} saved=${saved} ${pressed.join(" ")} 前 60 字="${text.slice(0, 60)}"`,
   );
   await browser.close();
 }
@@ -186,19 +180,9 @@ const sampleText = (page) =>
   const { browser, page } = await launch("en-US", "en", {
     mcp_catalog: { code: 50000, msg: "读配置失败：boom（未映射码，应原样保留）" },
   });
-  await page.evaluate(() => {
-    const btn = [...document.querySelectorAll("button")].find(
-      (b) => (b.textContent || "").trim() === "Settings" || b.getAttribute("aria-label") === "Settings",
-    );
-    btn?.click();
-  });
-  await page.waitForTimeout(800);
-  await page.evaluate(() => {
-    const nav = [...document.querySelectorAll("button")].find((b) =>
-      /^(MCP|Appearance)$/.test((b.textContent || "").trim()),
-    );
-    nav?.click();
-  });
+  await page.getByRole("button", { name: /^(设置|Settings)$/ }).first().click();
+  await page.waitForTimeout(700);
+  await page.getByRole("button", { name: /^MCP$/ }).first().click();
   await page.waitForTimeout(1200);
   const text = (await sampleText(page)).body;
   record(

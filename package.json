@@ -10,6 +10,7 @@
     "tauri": "tauri",
     "test": "node --test \"src/**/*.test.ts\"",
     "check:i18n": "node scripts/check-i18n.mjs",
+    "smoke:i18n": "node scripts/smoke-i18n.mjs",
     "package:win": "node scripts/package-win.mjs"
   },
   "dependencies": {

@@ -6,9 +6,12 @@ import { normalizeLanguage, type Language } from "./normalize.ts";
 import { zhCN } from "./zh-CN.ts";
 
 /** 资源只在这里组装一次；语言表由 `zh-CN.ts` 决定（docs/i18n.md §1）。 */
-const resources: Resource = { app: { "zh-CN": zhCN, en } };
+// i18next 的 resources 形状是 `{ [语言]: { [命名空间]: 资源 } }` —— **语言在前**。
+// 写成 `{ app: { "zh-CN": … } }` 会让 i18next 认为语言叫 "app"、命名空间叫 "zh-CN"，
+// 结果每个 key 都查不到，界面上整片显示 key 原文（不报错，只在 console 里 warn）。
+const resources: Resource = { "zh-CN": { app: zhCN }, en: { app: en } };
 
-export { i18n } from "./instance";
+export { i18n } from "./instance.ts";
 
 /**
  * 初始化（幂等）。语言来源是 `settings.language` 或首启判定的系统语言，都先过归一化。

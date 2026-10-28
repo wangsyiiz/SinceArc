@@ -525,6 +525,13 @@ export default function App() {
   );
 
   /* 设置读取放在 useAcpEvents 之后：脏值要推进它的事件流（诊断面板）。 */
+  // 依赖必须是空数组：`t` 的标识随语言切换而变，若把它列进依赖，切语言会让这个 effect 重新
+  // 读一次库、把刚改的 settings 覆盖回库里的旧值 —— 表现就是「点 English 又弹回中文」。
+  // 需要最新 `t` / `diag` 的地方走 ref，effect 本身只跑一次。
+  const tRef = useRef(t);
+  const diagRef = useRef(diag);
+  tRef.current = t;
+  diagRef.current = diag;
   useEffect(() => {
     let alive = true;
     settingsLoad()
@@ -536,12 +543,12 @@ export default function App() {
         savedSettings.current = settingsKey(report.settings);
         setSettings({ ...report.settings, language });
         // 脏值不许静默：后端已经写了日志，这里再推进诊断面板，让用户当场看得见
-        report.issues.forEach((issue) => diag(issue));
+        report.issues.forEach((issue) => diagRef.current(issue));
       })
       .catch((e) => {
         if (!alive) return;
         const err = asCmdError(e);
-        setSettingsError(localizeText(err.msg, t));
+        setSettingsError(localizeText(err.msg, tRef.current));
       })
       .finally(() => {
         if (alive) setSettingsLoaded(true);
@@ -549,7 +556,7 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [diag, t]);
+  }, []);
   const activeSession = sessions.find((s) => s.id === lastSessionId);
   // 归属跟会话走，不再跟一个全局「选中连接」走：全局选中项的唯一入口（左下角列表）
   // 已经移除，靠它就等于靠一个永远空着的值
