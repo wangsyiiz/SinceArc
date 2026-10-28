@@ -1,0 +1,974 @@
+diff --git a/.gitattributes b/.gitattributes
+new file mode 100644
+index 0000000..db7e1d2
+--- /dev/null
++++ b/.gitattributes
+@@ -0,0 +1 @@
++*.cmd text eol=crlf
+diff --git a/docs/gh.md b/docs/gh.md
+index b066a31..a39970b 100644
+--- a/docs/gh.md
++++ b/docs/gh.md
+@@ -19,7 +19,12 @@ src-tauri/src/gh/
+ 
+ **门禁边界（硬约束）**
+ 
+-- 不引新依赖：只用 `std::process` + `serde_json`，不引 octocrab / reqwest。
++- **不引新依赖（白名单唯一例外：`async-trait`）**：`GhCli` 必须同时「异步」且「dyn-safe」
++  （`Arc<dyn GhCli>` 要能进 `AppState`），原生 `async fn` in trait 不满足 dyn，故用 `async-trait`
++  （proc-macro，不进二进制；其三个传递依赖 `proc-macro2` / `quote` / `syn` 本已在锁文件里）。
++  **白名单之外一律拒绝**：不引 octocrab / reqwest / 任何 HTTP 客户端。
++- 进程与超时用 `tokio::process` + `tokio::time::timeout`（两者都已在依赖里，不算新增）；
++  **不用 `std::process`** —— 同步跑会阻塞 UI，与下一条「调用走 async」冲突。
+ - 不在客户端存任何 token；登录态完全归 `gh` 自己管。
+ - 所有 gh 调用必须有超时：列表 10s、详情 10s、diff 20s。
+ - 调用走 async，不阻塞 UI 线程。
+@@ -65,6 +70,24 @@ adapter（src-tauri/src/gh/cli.rs，实现 trait GhCli：进程、argv、超时
+ 3. **错误枚举**（domain 定义）：`GhError { NotInstalled, NotLoggedIn, RateLimited{reset}, RepoUnavailable, Timeout, ParseFailed{version}, CliFailed{stderr} }`，
+    码只在一个地方映射：`impl GhError { fn code(&self) -> u16 }`。**adapter 只负责把 stderr 文本判成枚举，不碰数字码**。
+ 
++### 装配点（守住「删掉 cli.rs 仍能编译」这条线）
++
++`commands` 只认 `Arc<dyn GhCli>`，**不出现 `RealGh`**。装配在 `lib.rs`：构造 `RealGh` 后塞进 `AppState` 的
++`gh: Arc<dyn GhCli>` 字段。这样 `cli.rs` 的增删只波及 `lib.rs`，`domain` 与 `commands` 照旧编译。
++反之，若 `commands` 里出现 `use crate::gh::cli::RealGh`，上面那条硬线就名存实亡。
++
++### 探测的可测性（否则「假 gh 进 PATH」这条验收写不成稳定单测）
++
++`RealGh` 的**探测根**（PATH + 三条固定路径）与可执行名必须是构造参数，默认值才从环境取：
++
++```rust
++RealGh::new()               // 生产：PATH + %ProgramFiles% + %LOCALAPPDATA% + scoop shims
++RealGh::with_roots(roots)   // 测试：tempdir 里放 stub，不碰真实环境
++```
++
++两个原因：改进程级 `PATH` 是全局副作用，测试之间互相污染；Windows 原生 `cargo test` 没有 sh 解释器，
++所以 stub 必须是 `.cmd`（`cmd.exe` 可直接执行），不是 `.sh`。
++
+ ### 各层职责一览
+ 
+ | 层 | 有 | 没有 |
+@@ -75,12 +98,17 @@ adapter（src-tauri/src/gh/cli.rs，实现 trait GhCli：进程、argv、超时
+ 
+ **缓存放 domain 而不是 adapter**：这样 adapter 保持无状态，domain 的缓存逻辑可以用假 adapter（fixture JSON）单测，不需要机器上装 gh。
+ 
++**文件落点**：`model.rs` = domain（模型 + `GhCli` trait + `GhError` + `code()`）；`cli.rs` = adapter；
++`mod.rs` = 命令层（`#[tauri::command]` + DTO + 取码 + 日志）。
++`gh_status` 的 30s 缓存落在 domain（`service.rs::GhService`，持 `Arc<dyn GhCli>`），commands 只调 service ——
++TTL 不进命令层，也不进 adapter。
++
+ ### 可测性（这是分层的验收方式，不是口号）
+ 
+ - **domain 测试**：实现一个 `FakeGh`（返回捕获下来的真实 JSON 反序列化后的领域模型 / 直接返回 `GhError`），
+   验证缓存命中、TTL 过期、排序、切片边界、错误码映射。**不需要 gh 在场。**
+-- **adapter 测试**：用一个 stub 脚本冒充 `gh`（`tests/fixtures/fake-gh.sh`，按 argv 吐捕获的 JSON / 退出码 / stderr），
+-  验证探测、版本解析、四类 stderr→枚举、超时。**不需要网络。**
++- **adapter 测试**：用一个 stub 脚本冒充 `gh`（`tests/fixtures/fake-gh.cmd`，按 argv 吐捕获的 JSON / 退出码 / stderr，
++  经 `RealGh::with_roots` 注入），验证探测、版本解析、四类 stderr→枚举、超时。**不需要网络。**
+ - **端到端**：真机真 gh，只跑 E9.5 的冒烟脚本。
+ 
+ 判断是否解耦成功的一条硬线：**把 `src-tauri/src/gh/cli.rs` 整个删掉，domain 与 commands 应当仍能编译**（trait 与模型都在 domain 侧）。做不到就是解耦没做到。
+@@ -89,6 +117,10 @@ adapter（src-tauri/src/gh/cli.rs，实现 trait GhCli：进程、argv、超时
+ 
+ `gh_status` 返回：`{ available, version?, loggedIn, host, cwdOk, ghPath? }`。
+ 
++> **分期（2026-10-28）**：E9.1 只交付 `{ available, version?, loggedIn, ghPath? }` 四项。
++> `host`（存在多个 host 时的默认 host）与 `cwdOk`（当前工作目录能否跑 gh）语义还没定清楚，
++> 留到 E9.2 定义之后再补；**本卡不写空字段、不返回占位值**。
++
+ 探测顺序（找到即停）：
+ 
+ 1. `PATH` 里的 `gh`
+@@ -96,6 +128,10 @@ adapter（src-tauri/src/gh/cli.rs，实现 trait GhCli：进程、argv、超时
+ 3. `%LOCALAPPDATA%\Programs\GitHub CLI\gh.exe`
+ 4. `%USERPROFILE%\scoop\shims\gh.exe`
+ 
++**实测（2026-10-28，本机 Windows）**：gh `2.103.3` 装在 `C:\Program Files\GitHub CLI\gh.exe`，
++但 `where.exe gh` **无输出**（安装目录不在 PATH）⇒ 第 2 条兜底路径不是可选项，是唯一命中路径。
++所以「有 gh」这条验收必须能覆盖「PATH 探测 miss、固定路径命中」这种组合，不能只测 PATH。
++
+ 判定：
+ 
+ | 步骤 | 命令 | 超时 | 结论 |
+@@ -183,6 +219,7 @@ E9 原卡里「单页 ≤ 200 行」据此改成「客户端对 patch 切片，
+ | 验收点 | 怎么验 | 期望读数（真实） |
+ | --- | --- | --- |
+ | gh 未安装 → 50710 + 安装指引 | 把 `PATH` 与 4 个探测路径都弄空（临时改目录或重命名） | 栏内出现三步指引，命令可复制，无崩溃 |
++| gh 已安装 → `available=true` | 真机点「重新检测」（Windows，2026-10-28） | `available=true`；`version=2.103.3`；`ghPath=C:\Program Files\GitHub CLI\gh.exe`（`where.exe gh` 无输出 ⇒ 命中的是第 2 条固定路径）；`loggedIn=true`，账号 `wangsyiiz` |
+ | 未登录 → 50711 | `GH_TOKEN=bad` 或 `gh auth logout` | 只显示「登录」一步 |
+ | 列表可用 | `gh pr list --state all --limit 30 --json …` | 5 条 PR，1022–1130 ms，1,765 B |
+ | 已合并 PR 可渲染 | 打开 `#5`（merged） | `mergeable=unknown` 不崩，checks 显示 signed-off |
+diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+index c7368b0..d093e9f 100644
+--- a/src-tauri/Cargo.lock
++++ b/src-tauri/Cargo.lock
+@@ -109,6 +109,17 @@ dependencies = [
+  "derive_arbitrary",
+ ]
+ 
++[[package]]
++name = "async-trait"
++version = "0.1.92"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 3.0.9",
++]
++
+ [[package]]
+ name = "atk"
+ version = "0.18.2"
+@@ -3331,6 +3342,7 @@ name = "sincearc"
+ version = "0.0.2"
+ dependencies = [
+  "agent-client-protocol",
++ "async-trait",
+  "rusqlite",
+  "serde",
+  "serde_json",
+diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
+index 17d354d..879bdfc 100644
+--- a/src-tauri/Cargo.toml
++++ b/src-tauri/Cargo.toml
+@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
+ 
+ [dependencies]
+ tauri = { version = "2", features = [] }
++async-trait = "0.1"
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ tokio = { version = "1", features = ["process", "io-util", "sync", "time", "macros", "rt-multi-thread"] }
+diff --git a/src-tauri/src/gh/cli.rs b/src-tauri/src/gh/cli.rs
+new file mode 100644
+index 0000000..9d44b9b
+--- /dev/null
++++ b/src-tauri/src/gh/cli.rs
+@@ -0,0 +1,413 @@
++//! gh adapter：唯一与进程、argv、超时和原始输出打交道的地方。
++
++use std::ffi::OsString;
++use std::path::{Path, PathBuf};
++use std::process::Stdio;
++use std::time::Duration;
++
++use tokio::io::AsyncReadExt;
++use tokio::process::Command;
++
++use super::model::{GhCli, GhError, GhStatus};
++
++const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
++const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
++
++pub struct RealGh {
++    roots: Vec<PathBuf>,
++    exe: OsString,
++}
++
++impl RealGh {
++    pub fn new() -> Self {
++        Self::with_roots_and_exe(production_roots(), default_exe_name())
++    }
++
++    pub fn with_roots(roots: Vec<PathBuf>) -> Self {
++        Self::with_roots_and_exe(roots, default_exe_name())
++    }
++
++    pub fn with_roots_and_exe(roots: Vec<PathBuf>, exe: impl Into<OsString>) -> Self {
++        Self {
++            roots,
++            exe: exe.into(),
++        }
++    }
++
++    fn find(&self) -> Option<PathBuf> {
++        self.roots
++            .iter()
++            .map(|root| root.join(&self.exe))
++            .find(|candidate| candidate.is_file())
++    }
++
++    async fn run(
++        &self,
++        path: &Path,
++        args: &[&str],
++        limit: Duration,
++    ) -> Result<RunOutput, GhError> {
++        let mut command = Command::new(path);
++        command
++            .args(args)
++            .stdout(Stdio::piped())
++            .stderr(Stdio::piped())
++            .kill_on_drop(true);
++
++        let mut child = command.spawn().map_err(|e| GhError::CliFailed {
++            stderr: e.to_string(),
++        })?;
++        let mut stdout = child.stdout.take().ok_or_else(|| GhError::CliFailed {
++            stderr: "stdout pipe unavailable".to_string(),
++        })?;
++        let mut stderr = child.stderr.take().ok_or_else(|| GhError::CliFailed {
++            stderr: "stderr pipe unavailable".to_string(),
++        })?;
++
++        let stdout_task = tokio::spawn(async move {
++            let mut buf = Vec::new();
++            stdout.read_to_end(&mut buf).await.map(|_| buf)
++        });
++        let stderr_task = tokio::spawn(async move {
++            let mut buf = Vec::new();
++            stderr.read_to_end(&mut buf).await.map(|_| buf)
++        });
++
++        let status = match tokio::time::timeout(limit, child.wait()).await {
++            Ok(Ok(status)) => status,
++            Ok(Err(e)) => {
++                let _ = child.kill().await;
++                let _ = child.wait().await;
++                stdout_task.abort();
++                stderr_task.abort();
++                return Err(GhError::CliFailed {
++                    stderr: e.to_string(),
++                });
++            }
++            Err(_) => {
++                tracing::warn!(
++                    target: "sincearc::gh",
++                    timeout_secs = limit.as_secs(),
++                    "gh command timed out"
++                );
++                let _ = child.kill().await;
++                let _ = child.wait().await;
++                stdout_task.abort();
++                stderr_task.abort();
++                return Err(GhError::Timeout);
++            }
++        };
++
++        let stdout = read_task(stdout_task).await?;
++        let stderr = read_task(stderr_task).await?;
++        Ok(RunOutput {
++            status,
++            stdout,
++            stderr,
++        })
++    }
++}
++
++impl Default for RealGh {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
++struct RunOutput {
++    status: std::process::ExitStatus,
++    stdout: String,
++    stderr: String,
++}
++
++async fn read_task(
++    task: tokio::task::JoinHandle<std::io::Result<Vec<u8>>>,
++) -> Result<String, GhError> {
++    let bytes = task
++        .await
++        .map_err(|e| GhError::CliFailed {
++            stderr: e.to_string(),
++        })?
++        .map_err(|e| GhError::CliFailed {
++            stderr: e.to_string(),
++        })?;
++    Ok(String::from_utf8_lossy(&bytes).into_owned())
++}
++
++fn parse_version(stdout: &str) -> Option<String> {
++    let first = stdout.lines().next()?.trim().trim_start_matches('\u{feff}');
++    let rest = first.strip_prefix("gh version ")?;
++    let version = rest.split_whitespace().next()?;
++    let core = version.split(|c: char| c == '-' || c == '+').next()?;
++    let parts: Vec<&str> = core.split('.').collect();
++    let numeric = parts
++        .iter()
++        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
++    if parts.len() == 3 && numeric {
++        Some(version.to_string())
++    } else {
++        None
++    }
++}
++
++#[async_trait::async_trait]
++impl GhCli for RealGh {
++    async fn status(&self) -> Result<GhStatus, GhError> {
++        let Some(path) = self.find() else {
++            return Err(GhError::NotInstalled);
++        };
++        let gh_path = Some(path.display().to_string());
++
++        let version_output = self.run(&path, &["--version"], VERSION_TIMEOUT).await?;
++        if !version_output.status.success() {
++            tracing::warn!(
++                target: "sincearc::gh",
++                path = %path.display(),
++                status = %version_output.status,
++                stdout = %version_output.stdout,
++                stderr = %version_output.stderr,
++                "gh --version failed"
++            );
++            return Ok(GhStatus {
++                available: false,
++                version: None,
++                logged_in: false,
++                gh_path,
++            });
++        }
++        let Some(version) = parse_version(&version_output.stdout) else {
++            tracing::warn!(
++                target: "sincearc::gh",
++                path = %path.display(),
++                stdout = %version_output.stdout,
++                stderr = %version_output.stderr,
++                "could not parse gh version output"
++            );
++            return Ok(GhStatus {
++                available: false,
++                version: None,
++                logged_in: false,
++                gh_path,
++            });
++        };
++
++        let auth_output = self
++            .run(&path, &["auth", "status"], AUTH_TIMEOUT)
++            .await?;
++        let logged_in = auth_output.status.success();
++        if !logged_in {
++            tracing::debug!(
++                target: "sincearc::gh",
++                stderr = %auth_output.stderr,
++                "gh auth status reported a non-zero exit"
++            );
++        }
++
++        Ok(GhStatus {
++            available: true,
++            version: Some(version),
++            logged_in,
++            gh_path,
++        })
++    }
++}
++
++fn default_exe_name() -> OsString {
++    #[cfg(windows)]
++    {
++        OsString::from("gh.exe")
++    }
++    #[cfg(not(windows))]
++    {
++        OsString::from("gh")
++    }
++}
++
++fn production_roots() -> Vec<PathBuf> {
++    let mut roots = Vec::new();
++    if let Ok(path) = std::env::var("PATH") {
++        roots.extend(
++            std::env::split_paths(&path).filter(|root| !root.as_os_str().is_empty()),
++        );
++    }
++
++    if let Some(program_files) = env_dir("ProgramFiles") {
++        roots.push(program_files.join("GitHub CLI"));
++    }
++    if let Some(local_app_data) = env_dir("LOCALAPPDATA") {
++        roots.push(local_app_data.join("Programs").join("GitHub CLI"));
++    }
++    if let Some(user_profile) = env_dir("USERPROFILE") {
++        roots.push(user_profile.join("scoop").join("shims"));
++    }
++    roots
++}
++
++fn env_dir(name: &str) -> Option<PathBuf> {
++    let value = std::env::var(name).ok()?;
++    if value.trim().is_empty() {
++        None
++    } else {
++        Some(PathBuf::from(value))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    #![cfg(windows)]
++
++    use std::path::{Path, PathBuf};
++    use std::sync::atomic::{AtomicUsize, Ordering};
++    use std::sync::{Mutex, MutexGuard};
++
++    use super::*;
++
++    const FAKE_GH: &[u8] = include_bytes!("../../tests/fixtures/fake-gh.cmd");
++    static ENV_LOCK: Mutex<()> = Mutex::new(());
++    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
++
++    struct TestDir(PathBuf);
++
++    impl TestDir {
++        fn new(name: &str) -> Self {
++            let id = NEXT_DIR.fetch_add(1, Ordering::SeqCst);
++            let path = std::env::temp_dir().join(format!(
++                "sincearc-gh-test-{}-{}-{}",
++                std::process::id(),
++                name,
++                id
++            ));
++            let _ = std::fs::remove_dir_all(&path);
++            std::fs::create_dir_all(&path).unwrap();
++            Self(path)
++        }
++
++        fn join(&self, path: impl AsRef<Path>) -> PathBuf {
++            self.0.join(path)
++        }
++    }
++
++    impl Drop for TestDir {
++        fn drop(&mut self) {
++            let _ = std::fs::remove_dir_all(&self.0);
++        }
++    }
++
++    fn lock_env() -> MutexGuard<'static, ()> {
++        ENV_LOCK
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner())
++    }
++
++    fn set_mode(mode: &str) {
++        std::env::set_var("FAKE_GH_MODE", mode);
++    }
++
++    fn write_stub(dir: &Path, name: &str) {
++        std::fs::create_dir_all(dir).unwrap();
++        let mut bytes = Vec::with_capacity(FAKE_GH.len() + FAKE_GH.len() / 16);
++        for &byte in FAKE_GH {
++            if byte == b'\n' && bytes.last() != Some(&b'\r') {
++                bytes.push(b'\r');
++            }
++            bytes.push(byte);
++        }
++        std::fs::write(dir.join(name), bytes).unwrap();
++    }
++
++    #[tokio::test(flavor = "current_thread")]
++    async fn probe_finds_nothing_reports_not_installed() {
++        let _lock = lock_env();
++        set_mode("ok");
++        let temp = TestDir::new("not-installed");
++        let empty = temp.join("empty");
++        std::fs::create_dir_all(&empty).unwrap();
++        let gh = RealGh::with_roots_and_exe(vec![empty], "fake-gh.cmd");
++
++        let error = gh.status().await.unwrap_err();
++        assert_eq!(error, GhError::NotInstalled);
++        assert_eq!(error.code(), 50710);
++    }
++
++    #[tokio::test(flavor = "current_thread")]
++    async fn probe_finds_stub_in_fixed_path_parses_version() {
++        let _lock = lock_env();
++        set_mode("ok");
++        let temp = TestDir::new("fixed-path");
++        let path_root = temp.join("path-root");
++        let fixed_root = temp.join("program-files").join("GitHub CLI");
++        std::fs::create_dir_all(&path_root).unwrap();
++        write_stub(&fixed_root, "fake-gh.cmd");
++        let expected_path = fixed_root.join("fake-gh.cmd");
++        let gh = RealGh::with_roots_and_exe(vec![path_root, fixed_root], "fake-gh.cmd");
++
++        let status = gh.status().await.unwrap();
++        assert!(status.available);
++        assert_eq!(status.version.as_deref(), Some("2.99.1"));
++        assert!(status.logged_in);
++        assert_eq!(status.gh_path, Some(expected_path.display().to_string()));
++    }
++
++    #[tokio::test(flavor = "current_thread")]
++    async fn auth_status_nonzero_means_not_logged_in() {
++        let _lock = lock_env();
++        set_mode("not-logged-in");
++        let temp = TestDir::new("not-logged-in");
++        let root = temp.join("bin");
++        write_stub(&root, "fake-gh.cmd");
++        let gh = RealGh::with_roots_and_exe(vec![root], "fake-gh.cmd");
++
++        let status = gh.status().await.unwrap();
++        assert!(status.available);
++        assert_eq!(status.version.as_deref(), Some("2.99.1"));
++        assert!(!status.logged_in);
++    }
++
++    #[tokio::test(flavor = "current_thread")]
++    async fn garbage_version_output_is_unavailable() {
++        let _lock = lock_env();
++        set_mode("garbage-version");
++        let temp = TestDir::new("garbage-version");
++        let root = temp.join("bin");
++        write_stub(&root, "fake-gh.cmd");
++        let gh = RealGh::with_roots_and_exe(vec![root], "fake-gh.cmd");
++
++        let status = gh.status().await.unwrap();
++        assert!(!status.available);
++        assert!(status.version.is_none());
++        assert!(!status.logged_in);
++    }
++
++    #[tokio::test(flavor = "current_thread")]
++    async fn slow_stub_times_out_without_leaking_child() {
++        let _lock = lock_env();
++        set_mode("slow");
++        let temp = TestDir::new("slow");
++        let root = temp.join("bin");
++        write_stub(&root, "fake-gh.cmd");
++        let gh = RealGh::with_roots_and_exe(vec![root], "fake-gh.cmd");
++
++        let error = gh.status().await.unwrap_err();
++        assert_eq!(error, GhError::Timeout);
++        assert_eq!(error.code(), 50714);
++    }
++
++    #[tokio::test(flavor = "current_thread")]
++    async fn present_but_unusable_exe_is_unavailable_not_a_crash() {
++        let _lock = lock_env();
++        set_mode("ok");
++        // 不用「垃圾 .exe」造这个场景：Windows 上 CreateProcess 撞上非 PE 文件会卡在系统错误弹窗
++        // （实测 300s 不返回），那测的是操作系统的 UX，不是我们的代码 —— 而且能把整条门禁挂住。
++        // 改成拿一个真实存在、但把 `--version` 当非法参数的可执行文件冒充 gh：退出码非 0
++        // ⇒ 判 available=false，且绝不 panic、不阻塞。
++        let me = std::env::current_exe().expect("current_exe");
++        let dir = me.parent().expect("parent").to_path_buf();
++        let name = me.file_name().expect("file_name").to_os_string();
++        let gh = RealGh::with_roots_and_exe(vec![dir], name);
++
++        let status = gh.status().await.expect("不该报错，只是不可用");
++        assert!(!status.available);
++        assert!(status.version.is_none());
++        assert!(!status.logged_in);
++    }
++}
+diff --git a/src-tauri/src/gh/mod.rs b/src-tauri/src/gh/mod.rs
+new file mode 100644
+index 0000000..6d08772
+--- /dev/null
++++ b/src-tauri/src/gh/mod.rs
+@@ -0,0 +1,100 @@
++//! gh 命令层：DTO 映射与错误码/文案映射。
++
++pub mod cli;
++pub mod model;
++pub mod service;
++
++use std::collections::BTreeMap;
++use std::sync::Arc;
++
++use serde::Serialize;
++use tauri::State;
++
++use crate::commands::CmdError;
++
++use self::model::{GhCli, GhError, GhStatus};
++use self::service::GhService;
++
++pub struct GhState(pub GhService);
++
++impl GhState {
++    pub fn new(cli: Arc<dyn GhCli>) -> Self {
++        Self(GhService::new(cli))
++    }
++}
++
++#[derive(Debug, Clone, Serialize, ts_rs::TS)]
++#[serde(rename_all = "camelCase")]
++#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
++pub struct GhStatusDto {
++    pub available: bool,
++    pub version: Option<String>,
++    pub logged_in: bool,
++    pub gh_path: Option<String>,
++}
++
++impl From<GhStatus> for GhStatusDto {
++    fn from(status: GhStatus) -> Self {
++        Self {
++            available: status.available,
++            version: status.version,
++            logged_in: status.logged_in,
++            gh_path: status.gh_path,
++        }
++    }
++}
++
++#[tauri::command]
++pub async fn gh_status(
++    state: State<'_, GhState>,
++    force: Option<bool>,
++) -> Result<GhStatusDto, CmdError> {
++    match state.0.status(force.unwrap_or(false)).await {
++        Ok(status) => Ok(GhStatusDto::from(status)),
++        Err(error) => {
++            tracing::warn!(
++                target: "sincearc::gh",
++                code = error.code(),
++                error = ?error,
++                "gh status check failed"
++            );
++            Err(to_cmd_error(error))
++        }
++    }
++}
++
++fn to_cmd_error(error: GhError) -> CmdError {
++    let code = u32::from(error.code());
++    match error {
++        GhError::NotInstalled => {
++            CmdError::keyed(code, "err.gh.notInstalled", "没找到 GitHub CLI（gh）")
++        }
++        GhError::NotLoggedIn => {
++            CmdError::keyed(code, "err.gh.notLoggedIn", "gh 还没登录 GitHub")
++        }
++        GhError::Timeout => failed(code, "超时（2s/5s）"),
++        GhError::CliFailed { stderr } => failed(code, first_line(&stderr)),
++        GhError::RateLimited { reset } => failed(code, format!("限流，reset {reset}")),
++        GhError::RepoUnavailable => failed(code, "仓库不存在或没有权限"),
++        GhError::ParseFailed { version } => failed(code, format!("解析失败（gh {version}）")),
++    }
++}
++
++fn failed(code: u32, detail: impl Into<String>) -> CmdError {
++    let detail = detail.into();
++    let detail = if detail.trim().is_empty() {
++        "未知错误".to_string()
++    } else {
++        detail
++    };
++    CmdError::keyed_with(
++        code,
++        "err.gh.failed",
++        format!("gh 执行失败：{detail}"),
++        BTreeMap::from([("detail".to_string(), detail)]),
++    )
++}
++
++fn first_line(value: &str) -> String {
++    value.lines().next().unwrap_or("").trim().to_string()
++}
+diff --git a/src-tauri/src/gh/model.rs b/src-tauri/src/gh/model.rs
+new file mode 100644
+index 0000000..5620889
+--- /dev/null
++++ b/src-tauri/src/gh/model.rs
+@@ -0,0 +1,40 @@
++//! gh 领域模型：与命令行参数、进程和 DTO 解耦。
++
++use async_trait::async_trait;
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct GhStatus {
++    pub available: bool,
++    pub version: Option<String>,
++    pub logged_in: bool,
++    pub gh_path: Option<String>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum GhError {
++    NotInstalled,
++    NotLoggedIn,
++    RateLimited { reset: String },
++    RepoUnavailable,
++    Timeout,
++    CliFailed { stderr: String },
++    ParseFailed { version: String },
++}
++
++impl GhError {
++    pub fn code(&self) -> u16 {
++        match self {
++            Self::NotInstalled => 50710,
++            Self::NotLoggedIn => 50711,
++            Self::RateLimited { .. } => 50712,
++            Self::RepoUnavailable => 50713,
++            Self::Timeout | Self::CliFailed { .. } => 50714,
++            Self::ParseFailed { .. } => 50715,
++        }
++    }
++}
++
++#[async_trait]
++pub trait GhCli: Send + Sync {
++    async fn status(&self) -> Result<GhStatus, GhError>;
++}
+diff --git a/src-tauri/src/gh/service.rs b/src-tauri/src/gh/service.rs
+new file mode 100644
+index 0000000..26b765b
+--- /dev/null
++++ b/src-tauri/src/gh/service.rs
+@@ -0,0 +1,137 @@
++//! gh 状态缓存：30 秒 TTL；错误不进入缓存。
++
++use std::sync::Arc;
++use std::time::{Duration, Instant};
++
++use tokio::sync::Mutex;
++
++use super::model::{GhCli, GhError, GhStatus};
++
++const STATUS_TTL: Duration = Duration::from_secs(30);
++
++pub struct GhService {
++    cli: Arc<dyn GhCli>,
++    cache: Mutex<Option<(Instant, GhStatus)>>,
++}
++
++impl GhService {
++    pub fn new(cli: Arc<dyn GhCli>) -> Self {
++        Self {
++            cli,
++            cache: Mutex::new(None),
++        }
++    }
++
++    pub async fn status(&self, force: bool) -> Result<GhStatus, GhError> {
++        let mut cache = self.cache.lock().await;
++        if !force {
++            if let Some((at, status)) = cache.as_ref() {
++                if at.elapsed() < STATUS_TTL {
++                    return Ok(status.clone());
++                }
++            }
++        }
++
++        match self.cli.status().await {
++            Ok(status) => {
++                *cache = Some((Instant::now(), status.clone()));
++                Ok(status)
++            }
++            Err(error) => {
++                *cache = None;
++                Err(error)
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use std::collections::VecDeque;
++    use std::sync::atomic::{AtomicUsize, Ordering};
++    use std::sync::{Arc, Mutex};
++
++    use async_trait::async_trait;
++
++    use super::*;
++
++    struct FakeGh {
++        calls: AtomicUsize,
++        results: Mutex<VecDeque<Result<GhStatus, GhError>>>,
++    }
++
++    impl FakeGh {
++        fn new(results: Vec<Result<GhStatus, GhError>>) -> Arc<Self> {
++            Arc::new(Self {
++                calls: AtomicUsize::new(0),
++                results: Mutex::new(results.into()),
++            })
++        }
++
++        fn calls(&self) -> usize {
++            self.calls.load(Ordering::SeqCst)
++        }
++    }
++
++    #[async_trait]
++    impl GhCli for FakeGh {
++        async fn status(&self) -> Result<GhStatus, GhError> {
++            self.calls.fetch_add(1, Ordering::SeqCst);
++            let mut results = self.results.lock().unwrap();
++            if results.len() > 1 {
++                results.pop_front().unwrap()
++            } else {
++                results.front().cloned().unwrap()
++            }
++        }
++    }
++
++    fn sample_status(version: &str) -> GhStatus {
++        GhStatus {
++            available: true,
++            version: Some(version.to_string()),
++            logged_in: true,
++            gh_path: Some(format!(r"C:\fake\gh-{version}.exe")),
++        }
++    }
++
++    fn service(results: Vec<Result<GhStatus, GhError>>) -> (Arc<FakeGh>, GhService) {
++        let fake = FakeGh::new(results);
++        let service = GhService::new(fake.clone());
++        (fake, service)
++    }
++
++    #[tokio::test]
++    async fn cache_hits_within_ttl() {
++        let expected = sample_status("2.99.1");
++        let (fake, service) = service(vec![Ok(expected.clone())]);
++
++        assert_eq!(service.status(false).await.unwrap(), expected);
++        assert_eq!(service.status(false).await.unwrap(), expected);
++        assert_eq!(fake.calls(), 1);
++    }
++
++    #[tokio::test]
++    async fn force_bypasses_cache() {
++        let first = sample_status("2.99.1");
++        let second = sample_status("2.99.2");
++        let (fake, service) = service(vec![Ok(first), Ok(second.clone())]);
++
++        assert_eq!(
++            service.status(false).await.unwrap().version.as_deref(),
++            Some("2.99.1")
++        );
++        assert_eq!(service.status(true).await.unwrap(), second);
++        assert_eq!(fake.calls(), 2);
++    }
++
++    #[tokio::test]
++    async fn error_is_not_cached() {
++        let expected = sample_status("2.99.1");
++        let (fake, service) = service(vec![Err(GhError::Timeout), Ok(expected.clone())]);
++
++        assert!(service.status(false).await.is_err());
++        assert_eq!(service.status(false).await.unwrap(), expected);
++        assert_eq!(fake.calls(), 2);
++    }
++}
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index 55dd17f..9b36106 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -2,6 +2,7 @@ pub mod acp;
+ pub mod coalesce;
+ pub mod commands;
+ pub mod db;
++pub mod gh;
+ pub mod lock;
+ pub mod mcp;
+ pub mod mention;
+@@ -156,6 +157,9 @@ pub fn run() {
+             let db = db::Db::open(&dir.join("sincearc.db"))?;
+             tracing::info!(target: "sincearc::ipc", path = %dir.join("sincearc.db").display(), "db ready");
+             app.manage(AppState::new(db));
++            app.manage(gh::GhState::new(std::sync::Arc::new(
++                gh::cli::RealGh::new(),
++            )));
+             Ok(())
+         })
+         .invoke_handler(tauri::generate_handler![
+@@ -213,6 +217,7 @@ pub fn run() {
+             commands::messages_load,
+             commands::session_usage,
+             commands::agent_list_connected,
++            gh::gh_status,
+         ])
+         .build(tauri::generate_context!())
+         .expect("error while building SinceArc");
+diff --git a/src-tauri/tests/fixtures/fake-gh.cmd b/src-tauri/tests/fixtures/fake-gh.cmd
+new file mode 100644
+index 0000000..3922ef6
+--- /dev/null
++++ b/src-tauri/tests/fixtures/fake-gh.cmd
+@@ -0,0 +1,45 @@
++@echo off
++rem 假 gh：按 argv 与 FAKE_GH_MODE 模拟 GitHub CLI 的各种形态。
++rem
++rem 为什么用 goto/label 而不是 if ( ... ) 块：批处理里括号块会被 echo 文本中的
++rem ")" 提前闭合（例如 "gh version 2.99.1 (2026-10-28)" 里的右括号），
++rem 结果整段条件被执行成无条件语句 —— 实测表现是 auth status 也返回 0 并打印版本行。
++rem 标签结构没有这个解析陷阱，代价只是多几行。
++setlocal
++
++if "%FAKE_GH_MODE%"=="slow" goto slow
++if "%1"=="--version" goto version
++if "%1"=="auth" if "%2"=="status" goto auth
++if "%1"=="crash" goto crash
++goto unsupported
++
++:slow
++ping -n 6 127.0.0.1 >nul
++
++:version
++if "%FAKE_GH_MODE%"=="garbage-version" goto garbage_version
++echo gh version 2.99.1 (2026-10-28)
++echo https://github.com/cli/cli/releases/tag/v2.99.1
++exit /b 0
++
++:garbage_version
++echo this is not a gh version
++exit /b 0
++
++:auth
++if "%FAKE_GH_MODE%"=="not-logged-in" goto not_logged_in
++echo github.com
++echo   Logged in to github.com account tester
++exit /b 0
++
++:not_logged_in
++>&2 echo You are not logged into any GitHub hosts.
++exit /b 1
++
++:crash
++>&2 echo fake gh crashed
++exit /b 1
++
++:unsupported
++>&2 echo unsupported fake gh command
++exit /b 1
+diff --git a/src/i18n/en.ts b/src/i18n/en.ts
+index 22042d9..c66c5a1 100644
+--- a/src/i18n/en.ts
++++ b/src/i18n/en.ts
+@@ -432,6 +432,9 @@ export const en: Record<MessageKey, string> = {
+   "err.external.createDirFailed": "Could not create the directory: {{detail}}",
+   "err.external.openLogFailed": "Could not open the log file: {{detail}}",
+   "err.external.writeLogFailed": "Could not write to the log file: {{detail}}",
++  "err.gh.notInstalled": "GitHub CLI (gh) not found",
++  "err.gh.notLoggedIn": "gh is not logged in to GitHub",
++  "err.gh.failed": "gh failed: {{detail}}",
+   "err.member.loadAgentUserFailed": "Failed to read agent users: {{detail}}",
+   "err.member.loadMembersFailed": "Failed to read group members: {{detail}}",
+   "err.member.handleTaken": "@{{handle}} is already taken",
+diff --git a/src/i18n/zh-CN.ts b/src/i18n/zh-CN.ts
+index 57ba58c..466eaac 100644
+--- a/src/i18n/zh-CN.ts
++++ b/src/i18n/zh-CN.ts
+@@ -432,6 +432,9 @@ export const zhCN = {
+   "err.external.createDirFailed": "建目录失败：{{detail}}",
+   "err.external.openLogFailed": "打开日志失败：{{detail}}",
+   "err.external.writeLogFailed": "写日志失败：{{detail}}",
++  "err.gh.notInstalled": "没找到 GitHub CLI（gh）",
++  "err.gh.notLoggedIn": "gh 还没登录 GitHub",
++  "err.gh.failed": "gh 执行失败：{{detail}}",
+   "err.member.loadAgentUserFailed": "读 agent user 失败：{{detail}}",
+   "err.member.loadMembersFailed": "读群成员失败：{{detail}}",
+   "err.member.handleTaken": "@{{handle}} 已经被占用了",
+diff --git a/src/lib/ipc/types.gen/GhStatusDto.ts b/src/lib/ipc/types.gen/GhStatusDto.ts
+new file mode 100644
+index 0000000..e81ab2b
+--- /dev/null
++++ b/src/lib/ipc/types.gen/GhStatusDto.ts
+@@ -0,0 +1,3 @@
++// This file was generated by [ts-rs](https://github.com/Aleph-Alpha/ts-rs). Do not edit this file manually.
++
++export type GhStatusDto = { available: boolean, version: string | null, loggedIn: boolean, ghPath: string | null, };
