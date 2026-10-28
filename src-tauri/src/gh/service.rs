@@ -1,4 +1,4 @@
-//! gh domain：状态与 PR 列表的 30 秒 TTL 缓存、列表排序；错误不进入缓存。
+//! gh domain：状态/列表/详情/diff 的 TTL 缓存、列表排序与 diff 切片；错误不进入缓存。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -6,17 +6,31 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-use super::model::{GhCli, GhError, GhStatus, PrState, PullRequest, RepoRef};
+use super::model::{DiffPage, GhCli, GhError, GhStatus, PrDetail, PrState, PullRequest, RepoRef};
 
 const STATUS_TTL: Duration = Duration::from_secs(30);
 const LIST_TTL: Duration = Duration::from_secs(30);
+const DETAIL_TTL: Duration = Duration::from_secs(5 * 60);
+const DIFF_TTL: Duration = Duration::from_secs(5 * 60);
+
+pub const DEFAULT_PAGE_SIZE: u32 = 200;
+pub const MAX_PAGE_SIZE: u32 = 200;
 
 type ListCacheKey = (String, String, String, PrState);
+type PrCacheKey = (String, String, String, u32);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffPageError {
+    BadPageSize(u32),
+    Gh(GhError),
+}
 
 pub struct GhService {
     cli: Arc<dyn GhCli>,
     cache: Mutex<Option<(Instant, GhStatus)>>,
     list_cache: Mutex<HashMap<ListCacheKey, (Instant, Vec<PullRequest>)>>,
+    detail_cache: Mutex<HashMap<PrCacheKey, (Instant, PrDetail)>>,
+    diff_cache: Mutex<HashMap<PrCacheKey, (Instant, String)>>,
 }
 
 impl GhService {
@@ -25,6 +39,8 @@ impl GhService {
             cli,
             cache: Mutex::new(None),
             list_cache: Mutex::new(HashMap::new()),
+            detail_cache: Mutex::new(HashMap::new()),
+            diff_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -87,6 +103,127 @@ impl GhService {
             }
         }
     }
+
+    pub async fn pr_detail(
+        &self,
+        repo: &RepoRef,
+        number: u32,
+        force: bool,
+    ) -> Result<PrDetail, GhError> {
+        let key = pr_cache_key(repo, number);
+
+        let mut cache = self.detail_cache.lock().await;
+        if !force {
+            if let Some((at, detail)) = cache.get(&key) {
+                if at.elapsed() < DETAIL_TTL {
+                    return Ok(detail.clone());
+                }
+            }
+        }
+
+        match self.cli.pr_detail(repo, number).await {
+            Ok(detail) => {
+                cache.insert(key, (Instant::now(), detail.clone()));
+                Ok(detail)
+            }
+            Err(error) => {
+                cache.remove(&key);
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn pr_diff_page(
+        &self,
+        repo: &RepoRef,
+        number: u32,
+        page: u32,
+        page_size: Option<u32>,
+        force: bool,
+    ) -> Result<DiffPage, DiffPageError> {
+        let page_size = page_size.unwrap_or(DEFAULT_PAGE_SIZE);
+        if !(1..=MAX_PAGE_SIZE).contains(&page_size) {
+            return Err(DiffPageError::BadPageSize(page_size));
+        }
+
+        let raw = self
+            .pr_diff_raw(repo, number, force)
+            .await
+            .map_err(DiffPageError::Gh)?;
+        slice_diff(&raw, page, page_size).map_err(DiffPageError::BadPageSize)
+    }
+
+    async fn pr_diff_raw(
+        &self,
+        repo: &RepoRef,
+        number: u32,
+        force: bool,
+    ) -> Result<String, GhError> {
+        let key = pr_cache_key(repo, number);
+
+        let mut cache = self.diff_cache.lock().await;
+        if !force {
+            if let Some((at, diff)) = cache.get(&key) {
+                if at.elapsed() < DIFF_TTL {
+                    return Ok(diff.clone());
+                }
+            }
+        }
+
+        match self.cli.pr_diff(repo, number).await {
+            Ok(diff) => {
+                cache.insert(key, (Instant::now(), diff.clone()));
+                Ok(diff)
+            }
+            Err(error) => {
+                cache.remove(&key);
+                Err(error)
+            }
+        }
+    }
+}
+
+fn pr_cache_key(repo: &RepoRef, number: u32) -> PrCacheKey {
+    (
+        repo.host.clone().unwrap_or_default(),
+        repo.owner.clone(),
+        repo.name.clone(),
+        number,
+    )
+}
+
+/// 按 `\n` 切行；`\r\n` 先归一，末尾换行不产生多余的空页。
+fn diff_lines(raw: &str) -> Vec<String> {
+    let normalized = raw.replace("\r\n", "\n");
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+    let normalized = normalized.strip_suffix('\n').unwrap_or(&normalized);
+    normalized.split('\n').map(str::to_string).collect()
+}
+
+fn slice_diff(raw: &str, page: u32, page_size: u32) -> Result<DiffPage, u32> {
+    if !(1..=MAX_PAGE_SIZE).contains(&page_size) {
+        return Err(page_size);
+    }
+    let lines = diff_lines(raw);
+    let total_lines = lines.len();
+    let total_pages = total_lines.div_ceil(page_size as usize) as u32;
+    let start = (page as usize).saturating_mul(page_size as usize);
+    let page_lines = if start >= total_lines {
+        Vec::new()
+    } else {
+        let end = (start + page_size as usize).min(total_lines);
+        lines[start..end].to_vec()
+    };
+
+    Ok(DiffPage {
+        lines: page_lines,
+        page,
+        page_size,
+        total_lines,
+        total_pages,
+    })
 }
 
 #[cfg(test)]
@@ -103,8 +240,12 @@ mod tests {
     struct FakeGh {
         status_calls: AtomicUsize,
         list_calls: AtomicUsize,
+        detail_calls: AtomicUsize,
+        diff_calls: AtomicUsize,
         status_results: Mutex<VecDeque<Result<GhStatus, GhError>>>,
         list_results: Mutex<VecDeque<Result<Vec<PullRequest>, GhError>>>,
+        detail_results: Mutex<VecDeque<Result<PrDetail, GhError>>>,
+        diff_results: Mutex<VecDeque<Result<String, GhError>>>,
     }
 
     impl FakeGh {
@@ -112,8 +253,12 @@ mod tests {
             Arc::new(Self {
                 status_calls: AtomicUsize::new(0),
                 list_calls: AtomicUsize::new(0),
+                detail_calls: AtomicUsize::new(0),
+                diff_calls: AtomicUsize::new(0),
                 status_results: Mutex::new(results.into()),
                 list_results: Mutex::new(VecDeque::new()),
+                detail_results: Mutex::new(VecDeque::new()),
+                diff_results: Mutex::new(VecDeque::new()),
             })
         }
 
@@ -121,9 +266,25 @@ mod tests {
             Arc::new(Self {
                 status_calls: AtomicUsize::new(0),
                 list_calls: AtomicUsize::new(0),
+                detail_calls: AtomicUsize::new(0),
+                diff_calls: AtomicUsize::new(0),
                 status_results: Mutex::new(VecDeque::new()),
                 list_results: Mutex::new(results.into()),
+                detail_results: Mutex::new(VecDeque::new()),
+                diff_results: Mutex::new(VecDeque::new()),
             })
+        }
+
+        fn with_details(results: Vec<Result<PrDetail, GhError>>) -> Arc<Self> {
+            let fake = Self::new(Vec::new());
+            *fake.detail_results.lock().unwrap() = results.into();
+            fake
+        }
+
+        fn with_diffs(results: Vec<Result<String, GhError>>) -> Arc<Self> {
+            let fake = Self::new(Vec::new());
+            *fake.diff_results.lock().unwrap() = results.into();
+            fake
         }
 
         fn status_calls(&self) -> usize {
@@ -132,6 +293,14 @@ mod tests {
 
         fn list_calls(&self) -> usize {
             self.list_calls.load(Ordering::SeqCst)
+        }
+
+        fn detail_calls(&self) -> usize {
+            self.detail_calls.load(Ordering::SeqCst)
+        }
+
+        fn diff_calls(&self) -> usize {
+            self.diff_calls.load(Ordering::SeqCst)
         }
     }
 
@@ -154,6 +323,26 @@ mod tests {
         ) -> Result<Vec<PullRequest>, GhError> {
             self.list_calls.fetch_add(1, Ordering::SeqCst);
             let mut results = self.list_results.lock().unwrap();
+            if results.len() > 1 {
+                results.pop_front().unwrap()
+            } else {
+                results.front().cloned().unwrap()
+            }
+        }
+
+        async fn pr_detail(&self, _repo: &RepoRef, _number: u32) -> Result<PrDetail, GhError> {
+            self.detail_calls.fetch_add(1, Ordering::SeqCst);
+            let mut results = self.detail_results.lock().unwrap();
+            if results.len() > 1 {
+                results.pop_front().unwrap()
+            } else {
+                results.front().cloned().unwrap()
+            }
+        }
+
+        async fn pr_diff(&self, _repo: &RepoRef, _number: u32) -> Result<String, GhError> {
+            self.diff_calls.fetch_add(1, Ordering::SeqCst);
+            let mut results = self.diff_results.lock().unwrap();
             if results.len() > 1 {
                 results.pop_front().unwrap()
             } else {
@@ -315,5 +504,181 @@ mod tests {
             expected
         );
         assert_eq!(fake.list_calls(), 2);
+    }
+
+    fn fixture(name: &str) -> String {
+        std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("fixtures")
+                .join("gh")
+                .join(name),
+        )
+        .unwrap()
+    }
+
+    fn diff_fixture() -> String {
+        fixture("pr-diff.txt")
+    }
+
+    #[tokio::test]
+    async fn slice_first_page_200() {
+        let fake = FakeGh::with_diffs(vec![Ok(diff_fixture())]);
+        let service = GhService::new(fake);
+
+        let page = service
+            .pr_diff_page(&repo(), 12, 0, Some(200), false)
+            .await
+            .unwrap();
+        assert_eq!(page.lines.len(), 200);
+        assert_eq!(page.page, 0);
+        assert_eq!(page.page_size, 200);
+        assert_eq!(page.total_lines, 974);
+        assert_eq!(page.total_pages, 5);
+        assert_eq!(
+            page.lines[0],
+            "diff --git a/.gitattributes b/.gitattributes"
+        );
+    }
+
+    #[tokio::test]
+    async fn slice_last_page_174() {
+        let fake = FakeGh::with_diffs(vec![Ok(diff_fixture())]);
+        let service = GhService::new(fake);
+
+        let page = service
+            .pr_diff_page(&repo(), 12, 4, Some(200), false)
+            .await
+            .unwrap();
+        assert_eq!(page.lines.len(), 174);
+        assert_eq!(page.total_pages, 5);
+    }
+
+    #[tokio::test]
+    async fn slice_out_of_range_is_empty_not_error() {
+        let fake = FakeGh::with_diffs(vec![Ok(diff_fixture())]);
+        let service = GhService::new(fake);
+
+        let page = service
+            .pr_diff_page(&repo(), 12, 5, Some(200), false)
+            .await
+            .unwrap();
+        assert!(page.lines.is_empty());
+        assert_eq!(page.total_lines, 974);
+        assert_eq!(page.total_pages, 5);
+    }
+
+    #[tokio::test]
+    async fn slice_rejects_page_size_out_of_range() {
+        let fake = FakeGh::with_diffs(vec![Ok(diff_fixture())]);
+        let service = GhService::new(fake.clone());
+
+        for size in [0, 201] {
+            let error = service
+                .pr_diff_page(&repo(), 12, 0, Some(size), false)
+                .await
+                .unwrap_err();
+            assert_eq!(error, DiffPageError::BadPageSize(size));
+        }
+        assert_eq!(fake.diff_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn slice_normalizes_crlf() {
+        let lf = diff_fixture();
+        let lf = if lf.ends_with('\n') {
+            lf
+        } else {
+            format!("{lf}\n")
+        };
+        let crlf = lf.replace("\r\n", "\n").replace('\n', "\r\n");
+        assert!(crlf.contains("\r\n"));
+        let fake = FakeGh::with_diffs(vec![Ok(crlf)]);
+        let service = GhService::new(fake);
+
+        let page = service
+            .pr_diff_page(&repo(), 12, 0, Some(200), false)
+            .await
+            .unwrap();
+        assert_eq!(page.total_lines, 974);
+        assert_eq!(page.total_pages, 5);
+        assert_eq!(page.lines.len(), 200);
+        assert_eq!(page.lines, diff_lines(&lf)[..200].to_vec());
+        assert!(page.lines.iter().all(|line| !line.contains('\r')));
+    }
+
+    #[tokio::test]
+    async fn slice_trailing_newline_does_not_add_a_page() {
+        let raw = (0..974)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let page = slice_diff(&raw, 4, 200).unwrap();
+        assert_eq!(page.total_lines, 974);
+        assert_eq!(page.total_pages, 5);
+        assert_eq!(page.lines.len(), 174);
+    }
+
+    fn sample_detail(title: &str) -> PrDetail {
+        PrDetail {
+            pr: sample_pr(12, "2026-10-28T10:03:06Z"),
+            body: title.to_string(),
+            created_at: "2026-10-28T10:00:28Z".to_string(),
+            additions: 803,
+            deletions: 3,
+            changed_files: 13,
+            files: Vec::new(),
+            files_truncated: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn detail_cache_hits_and_force_and_error_not_cached() {
+        let first = sample_detail("first");
+        let second = sample_detail("second");
+        let fake = FakeGh::with_details(vec![
+            Ok(first.clone()),
+            Err(GhError::PrNotFound),
+            Ok(second.clone()),
+        ]);
+        let service = GhService::new(fake.clone());
+
+        assert_eq!(service.pr_detail(&repo(), 12, false).await.unwrap(), first);
+        assert_eq!(service.pr_detail(&repo(), 12, false).await.unwrap(), first);
+        assert_eq!(fake.detail_calls(), 1);
+
+        assert_eq!(
+            service.pr_detail(&repo(), 12, true).await.unwrap_err(),
+            GhError::PrNotFound
+        );
+        assert_eq!(fake.detail_calls(), 2);
+
+        assert_eq!(service.pr_detail(&repo(), 12, false).await.unwrap(), second);
+        assert_eq!(fake.detail_calls(), 3);
+    }
+
+    #[tokio::test]
+    async fn diff_cache_hits_and_force() {
+        let fake = FakeGh::with_diffs(vec![Ok(diff_fixture()), Ok("second\n".to_string())]);
+        let service = GhService::new(fake.clone());
+
+        let first = service
+            .pr_diff_page(&repo(), 12, 0, Some(200), false)
+            .await
+            .unwrap();
+        let cached = service
+            .pr_diff_page(&repo(), 12, 0, Some(200), false)
+            .await
+            .unwrap();
+        assert_eq!(first, cached);
+        assert_eq!(fake.diff_calls(), 1);
+
+        let forced = service
+            .pr_diff_page(&repo(), 12, 0, Some(200), true)
+            .await
+            .unwrap();
+        assert_eq!(forced.total_lines, 1);
+        assert_eq!(fake.diff_calls(), 2);
     }
 }

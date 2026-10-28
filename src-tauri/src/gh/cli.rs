@@ -9,15 +9,19 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use super::model::{
-    CheckState, GhCli, GhError, GhStatus, PrState, PrStateView, PullRequest, RepoRef,
+    CheckState, FileChange, GhCli, GhError, GhStatus, PrDetail, PrState, PrStateView, PullRequest,
+    RepoRef,
 };
 use serde::Deserialize;
 
 const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
+const DETAIL_TIMEOUT: Duration = Duration::from_secs(10);
+const DIFF_TIMEOUT: Duration = Duration::from_secs(20);
 const LIST_LIMIT: &str = "30";
 const LIST_JSON_FIELDS: &str = "number,title,state,isDraft,mergeable,reviewDecision,author,updatedAt,headRefName,baseRefName,url,statusCheckRollup";
+const DETAIL_JSON_FIELDS: &str = "number,title,state,isDraft,mergeable,reviewDecision,author,updatedAt,createdAt,headRefName,baseRefName,url,statusCheckRollup,body,additions,deletions,changedFiles,files";
 
 pub struct RealGh {
     roots: Vec<PathBuf>,
@@ -224,6 +228,57 @@ impl RawPr {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawFile {
+    path: String,
+    additions: u32,
+    deletions: u32,
+    change_type: String,
+}
+
+impl RawFile {
+    fn into_model(self) -> FileChange {
+        FileChange {
+            path: self.path,
+            additions: self.additions,
+            deletions: self.deletions,
+            change_type: self.change_type.to_ascii_lowercase(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawDetail {
+    #[serde(flatten)]
+    pr: RawPr,
+    body: String,
+    created_at: String,
+    additions: u32,
+    deletions: u32,
+    changed_files: u32,
+    files: Vec<RawFile>,
+}
+
+impl RawDetail {
+    fn into_model(self) -> PrDetail {
+        let files: Vec<FileChange> = self.files.into_iter().map(RawFile::into_model).collect();
+        let files_truncated = files.len() != self.changed_files as usize;
+
+        PrDetail {
+            pr: self.pr.into_model(),
+            body: self.body,
+            created_at: self.created_at,
+            additions: self.additions,
+            deletions: self.deletions,
+            changed_files: self.changed_files,
+            files,
+            files_truncated,
+        }
+    }
+}
+
 fn normalize_mergeable(value: Option<&str>) -> Option<String> {
     let value = value?.trim();
     if value.is_empty() || value.eq_ignore_ascii_case("UNKNOWN") {
@@ -368,9 +423,11 @@ fn reset_fragment(stderr: &str) -> String {
     stderr.lines().next().unwrap_or("").trim().to_string()
 }
 
-fn map_list_stderr(stderr: &str) -> GhError {
+fn map_stderr(stderr: &str) -> GhError {
     let lower = stderr.to_ascii_lowercase();
-    if lower.contains("could not resolve to a repository") {
+    if lower.contains("could not resolve to a pullrequest") {
+        GhError::PrNotFound
+    } else if lower.contains("could not resolve to a repository") {
         GhError::RepoUnavailable
     } else if lower.contains("http 401") || lower.contains("bad credentials") {
         GhError::NotLoggedIn
@@ -382,6 +439,13 @@ fn map_list_stderr(stderr: &str) -> GhError {
         GhError::CliFailed {
             stderr: stderr.to_string(),
         }
+    }
+}
+
+fn repository_arg(repo: &RepoRef) -> String {
+    match repo.host.as_deref().map(str::trim) {
+        Some(host) if !host.is_empty() => format!("{host}/{}/{}", repo.owner, repo.name),
+        _ => format!("{}/{}", repo.owner, repo.name),
     }
 }
 
@@ -460,12 +524,7 @@ impl GhCli for RealGh {
             return Err(GhError::NotInstalled);
         };
 
-        let repository = match repo.host.as_deref().map(str::trim) {
-            Some(host) if !host.is_empty() => {
-                format!("{host}/{}/{}", repo.owner, repo.name)
-            }
-            _ => format!("{}/{}", repo.owner, repo.name),
-        };
+        let repository = repository_arg(repo);
         let output = self
             .run(
                 &path,
@@ -486,7 +545,7 @@ impl GhCli for RealGh {
             .await?;
 
         if !output.status.success() {
-            return Err(map_list_stderr(&output.stderr));
+            return Err(map_stderr(&output.stderr));
         }
 
         let raw: Vec<RawPr> = match serde_json::from_str(&output.stdout) {
@@ -504,6 +563,72 @@ impl GhCli for RealGh {
         };
 
         Ok(raw.into_iter().map(RawPr::into_model).collect())
+    }
+
+    async fn pr_detail(&self, repo: &RepoRef, number: u32) -> Result<PrDetail, GhError> {
+        let Some(path) = self.find() else {
+            return Err(GhError::NotInstalled);
+        };
+
+        let repository = repository_arg(repo);
+        let number = number.to_string();
+        let output = self
+            .run(
+                &path,
+                &[
+                    "pr",
+                    "view",
+                    &number,
+                    "-R",
+                    &repository,
+                    "--json",
+                    DETAIL_JSON_FIELDS,
+                ],
+                DETAIL_TIMEOUT,
+            )
+            .await?;
+
+        if !output.status.success() {
+            return Err(map_stderr(&output.stderr));
+        }
+
+        let raw: RawDetail = match serde_json::from_str(&output.stdout) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(
+                    target: "sincearc::gh",
+                    error = %error,
+                    "could not parse gh pr view output"
+                );
+                return Err(GhError::ParseFailed {
+                    version: self.version_for_parse_error(&path).await,
+                });
+            }
+        };
+
+        Ok(raw.into_model())
+    }
+
+    async fn pr_diff(&self, repo: &RepoRef, number: u32) -> Result<String, GhError> {
+        let Some(path) = self.find() else {
+            return Err(GhError::NotInstalled);
+        };
+
+        let repository = repository_arg(repo);
+        let number = number.to_string();
+        let output = self
+            .run(
+                &path,
+                &["pr", "diff", &number, "-R", &repository],
+                DIFF_TIMEOUT,
+            )
+            .await?;
+
+        if !output.status.success() {
+            return Err(map_stderr(&output.stderr));
+        }
+
+        Ok(output.stdout)
     }
 }
 
@@ -613,6 +738,10 @@ mod tests {
             .join("fixtures")
             .join("gh")
             .join(name);
+        std::env::set_var("FAKE_GH_FIXTURE", path);
+    }
+
+    fn set_fixture_path(path: &Path) {
         std::env::set_var("FAKE_GH_FIXTURE", path);
     }
 
@@ -784,6 +913,92 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].state, PrStateView::Draft);
         assert_eq!(items[0].checks, CheckState::Pending);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn detail_parses_real_fixture() {
+        let _lock = lock_env();
+        set_fixture("pr-detail.json");
+        let (_temp, gh) = stub_gh("pr-detail", "pr-detail");
+
+        let detail = gh.pr_detail(&sample_repo(), 12).await.unwrap();
+        assert_eq!(detail.pr.number, 12);
+        assert_eq!(detail.files.len(), 13);
+        assert_eq!(detail.changed_files, 13);
+        assert!(!detail.files_truncated);
+        assert_eq!(detail.additions, 803);
+        assert_eq!(detail.deletions, 3);
+        assert_eq!(detail.created_at, "2026-10-28T10:00:28Z");
+        assert_eq!(detail.body.chars().count(), 2376);
+        assert_eq!(detail.pr.mergeable, None);
+        assert_eq!(detail.pr.review_decision, None);
+        assert_eq!(detail.files[0].path, ".gitattributes");
+        assert_eq!(detail.files[0].change_type, "added");
+        assert_eq!(detail.files[0].additions, 1);
+        assert_eq!(detail.files[0].deletions, 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn detail_files_truncated_when_counts_differ() {
+        let _lock = lock_env();
+        let temp = TestDir::new("pr-detail-truncated");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("gh")
+            .join("pr-detail.json");
+        let source = std::fs::read_to_string(&fixture).unwrap();
+        let altered = source.replacen("\"changedFiles\": 13", "\"changedFiles\": 20", 1);
+        assert_ne!(altered, source, "fixture must contain changedFiles=13");
+        let path = temp.join("pr-detail-truncated.json");
+        std::fs::write(&path, altered).unwrap();
+        set_fixture_path(&path);
+        let (_temp, gh) = stub_gh("pr-detail-truncated-gh", "pr-detail");
+
+        let detail = gh.pr_detail(&sample_repo(), 12).await.unwrap();
+        assert_eq!(detail.files.len(), 13);
+        assert_eq!(detail.changed_files, 20);
+        assert!(detail.files_truncated);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn detail_pr_not_found_maps_to_50716() {
+        let _lock = lock_env();
+        let (_temp, gh) = stub_gh("pr-not-found", "pr-not-found");
+
+        let error = gh.pr_detail(&sample_repo(), 1).await.unwrap_err();
+        assert_eq!(error, GhError::PrNotFound);
+        assert_eq!(error.code(), 50716);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn detail_repo_not_found_stays_50713() {
+        let _lock = lock_env();
+        let (_temp, gh) = stub_gh("pr-repo-missing", "repo-missing");
+
+        let error = gh.pr_detail(&sample_repo(), 1).await.unwrap_err();
+        assert_eq!(error, GhError::RepoUnavailable);
+        assert_eq!(error.code(), 50713);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn diff_returns_raw_text_unchanged() {
+        let _lock = lock_env();
+        set_fixture("pr-diff.txt");
+        let (_temp, gh) = stub_gh("pr-diff", "pr-diff");
+        let expected = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("fixtures")
+                .join("gh")
+                .join("pr-diff.txt"),
+        )
+        .unwrap();
+
+        let diff = gh.pr_diff(&sample_repo(), 12).await.unwrap();
+        assert_eq!(diff.as_bytes(), expected.as_slice());
+        assert_eq!(diff.lines().count(), 974);
+        assert!(diff.ends_with('\n'));
     }
 
     #[tokio::test(flavor = "current_thread")]

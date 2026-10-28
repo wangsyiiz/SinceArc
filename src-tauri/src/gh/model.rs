@@ -72,11 +72,41 @@ pub struct GhStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChange {
+    pub path: String,
+    pub additions: u32,
+    pub deletions: u32,
+    pub change_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrDetail {
+    pub pr: PullRequest,
+    pub body: String,
+    pub created_at: String,
+    pub additions: u32,
+    pub deletions: u32,
+    pub changed_files: u32,
+    pub files: Vec<FileChange>,
+    pub files_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffPage {
+    pub lines: Vec<String>,
+    pub page: u32,
+    pub page_size: u32,
+    pub total_lines: usize,
+    pub total_pages: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GhError {
     NotInstalled,
     NotLoggedIn,
     RateLimited { reset: String },
     RepoUnavailable,
+    PrNotFound,
     Timeout,
     CliFailed { stderr: String },
     ParseFailed { version: String },
@@ -89,6 +119,7 @@ impl GhError {
             Self::NotLoggedIn => 50711,
             Self::RateLimited { .. } => 50712,
             Self::RepoUnavailable => 50713,
+            Self::PrNotFound => 50716,
             Self::Timeout | Self::CliFailed { .. } => 50714,
             Self::ParseFailed { .. } => 50715,
         }
@@ -99,4 +130,6 @@ impl GhError {
 pub trait GhCli: Send + Sync {
     async fn status(&self) -> Result<GhStatus, GhError>;
     async fn list_prs(&self, repo: &RepoRef, state: PrState) -> Result<Vec<PullRequest>, GhError>;
+    async fn pr_detail(&self, repo: &RepoRef, number: u32) -> Result<PrDetail, GhError>;
+    async fn pr_diff(&self, repo: &RepoRef, number: u32) -> Result<String, GhError>;
 }
