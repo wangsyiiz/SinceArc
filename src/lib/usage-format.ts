@@ -17,6 +17,8 @@ function trimDecimal(n: number): string {
 export function describeUsage(u: { used: number; size: number; percent: number }, t: TFunction): {
   text: string;
   warn: boolean;
+  /** 原样带出后端算好的 0–100，供用量环用（§24）—— 前端不做第二次除法 */
+  percent: number;
 } {
   const warn = u.percent >= 80;
   const text = t(warn ? "usage.line.warn" : "usage.line.normal", {
@@ -27,5 +29,6 @@ export function describeUsage(u: { used: number; size: number; percent: number }
   return {
     text,
     warn,
+    percent: u.percent,
   };
 }

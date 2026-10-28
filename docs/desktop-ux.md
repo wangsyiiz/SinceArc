@@ -1283,3 +1283,39 @@ payload 形状：`{ toolCallId, title, kind, status, rawInput?, content?, locati
 3. 用量文本所在元素的 rect 在输入卡片 rect 之内；文档里不再有输入区上方那条独立用量卡（`usage.line.*` 文本只出现一次）。
 4. 自动批准触发器的 `box-shadow` 为 `none`，与 MCP 按钮一致；两者 hover 前的 `background-color` 相同（透明）。
 5. busy 状态下不出现「agent 正在输出」文案。
+
+## 24. 输入框内陷底 + 用量环形读数（2026-10-29 定）
+
+参考源：reactbits `.lh-well`（同样读自构建产物 CSS）：
+
+```css
+.lh-well{ border-radius:12px; background:var(--lh-well); box-shadow:inset 0 0 0 1px var(--lh-well-edge) }
+/* 暗色 */ --lh-well: rgba(8,6,12,.3);        --lh-well-edge: rgba(255,255,255,.055);
+/* 浅色 */ --lh-well: rgba(255,255,255,.62);  --lh-well-edge: rgba(24,24,27,.06);
+```
+
+**它和 §22.2「不铺实心面」不矛盾**：well 是比卡片底更深、**半透明**的一层（30% 黑），
+凹槽的边靠 `inset 0 0 0 1px` 划；实心面会把 §23 卡片边缘的内边高光埋掉，半透明凹槽不会 ——
+高光在卡片边上，凹槽在卡片里面，两者不在同一层。
+
+### 24.1 改动
+
+1. **输入框换成凹槽**：去掉 `border border-line-1`（1px 实线），改 `.sc-well`
+   （`--well` 底 + `inset 0 0 0 1px var(--well-edge)`），半径 12px（`rounded-card`）。
+2. **浅色主题守 §1.8**：`--well-edge` 取 `--l1`（浅色靠 1px 边框分界），不用 reactbits 的 6% 黑 ——
+   6% 在浅色下等于没有边界。
+3. **用量文字转黑体**：`font-mono` → 去掉（走 `--font-sans`）。理由是它是给人读的一句自然语言，
+   不是需要对齐的等宽读数 —— 等宽留给代码和路径。
+4. **加 18px 环**：track 用 20% 线色、fill `accent-1`（`percent ≥ 80` 转 `warn-1`）、
+   `stroke-linecap: round`，中央 `Layers` 10px 图标。
+5. **`describeUsage` 返回值加 `percent`**：后端已算好 0–100（`UsageDto.percent`），
+   前端只传不重算 —— 这行仍然不做除法。
+
+### 24.2 验收（DOM 数值）
+
+1. 输入框 `border-width` 为 0；`box-shadow` 含 `inset 0 0 0 1px`；`background-color` 的 alpha < 1，
+   且与卡片底色不同（凹槽更深）。
+2. 用量文字元素 `font-family` 不含 `mono`。
+3. 环 `<svg>` 存在且 `stroke-dashoffset` 随 `percent` 变化（2% 与 82% 两个用例读数不同）。
+4. 环中央有 `Layers` 图标元素。
+5. `percent ≥ 80` 时环的 `stroke` = `--warn`。

@@ -9,6 +9,7 @@ import { localizeText } from "@/lib/i18n-text";
 import { Button } from "./ui/Button";
 import { Menu, type MenuItem } from "./ui/Menu";
 import { SessionMcpButton } from "./SessionMcpMenu";
+import { UsageRing } from "./UsageRing";
 import { SlashMenu } from "./SlashMenu";
 import { Tooltip } from "./ui/Tooltip";
 import { filterCommands, slashQuery, type SlashCommand } from "@/lib/slash-filter";
@@ -39,7 +40,7 @@ interface ComposerProps {
   /** 会话名单减少后的显式重连 */
   onReconnectMcp?: () => Promise<void>;
   /** 本轮上下文用量（§23）：并进工具行，替代原来输入区上方那条独立玻璃卡 */
-  usage?: { text: string; warn: boolean } | null;
+  usage?: { text: string; warn: boolean; percent: number } | null;
 }
 
 export function Composer({
@@ -272,13 +273,16 @@ export function Composer({
         </Tooltip>
         {usage && (
           <Tooltip label={usage.text}>
-            <span
-              className={cn(
-                "ml-1 min-w-0 truncate font-mono text-micro",
-                usage.warn ? "text-warn-1" : "text-ink-3",
-              )}
-            >
-              {usage.text}
+            <span className="ml-1 flex min-w-0 items-center gap-1.5">
+              <UsageRing percent={usage.percent} warn={usage.warn} />
+              <span
+                className={cn(
+                  "min-w-0 truncate text-micro",
+                  usage.warn ? "text-warn-1" : "text-ink-3",
+                )}
+              >
+                {usage.text}
+              </span>
             </span>
           </Tooltip>
         )}
@@ -402,7 +406,7 @@ export function Composer({
             }
           }}
           className={cn(
-            "sc-selectable max-h-50 min-h-19 w-full resize-none rounded-control border border-line-1 bg-transparent px-3 py-2.5 text-ui leading-relaxed text-ink-1 focus-visible:outline-0 placeholder:text-ink-3",
+            "sc-selectable sc-well max-h-50 min-h-19 w-full resize-none rounded-card px-3 py-2.5 text-ui leading-relaxed text-ink-1 focus-visible:outline-0 placeholder:text-ink-3",
             // 右下浮动键的避让（§22.3）：busy 时多一个带文字的插话键
             busy ? "pr-26" : "pr-19",
           )}
