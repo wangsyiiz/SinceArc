@@ -24,6 +24,7 @@ import { settingsKey } from "@/lib/settings-key";
 import { normalizeCodeThemeId } from "@/lib/highlight/themes";
 import { profileLabel } from "@/lib/format";
 import { localizeText, translateKey } from "@/lib/i18n-text";
+import { errorText } from "@/lib/errors";
 import { pushSystemNotice } from "@/lib/notices";
 import { delegateCancelFailureKey, type DelegatePhase } from "@/lib/delegate-status";
 import { mergeMessages } from "@/lib/messages-merge";
@@ -221,7 +222,7 @@ export default function App() {
           if (seq !== settingsSaveSeq.current) return;
           settingsPendingKey.current = null;
           const err = asCmdError(e);
-          setSettingsError(t("app.settings.saveFailed", { msg: localizeText(err.msg, t) }));
+          setSettingsError(t("app.settings.saveFailed", { msg: errorText(err.code, err.msg, t) }));
         });
     }, SETTINGS_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
@@ -1205,7 +1206,7 @@ export default function App() {
     } catch (e) {
       const err = asCmdError(e);
       // 失败就留在框里说清楚：没删成，别让用户以为删了
-      setDeleteError(`${err.code} ${localizeText(err.msg, t)}`);
+      setDeleteError(`${err.code} ${errorText(err.code, err.msg, t)}`);
     }
   };
 

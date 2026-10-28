@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { asCmdError, mcpCatalog, type McpCatalogEntryDto } from "@/lib/ipc";
-import { localizeText } from "@/lib/i18n-text";
+import { errorText } from "@/lib/errors";
 import { McpServerChecklist } from "./McpChecklist";
 import { Segmented } from "./ui/Segmented";
 
@@ -30,7 +30,10 @@ export function McpDefaultPicker({
         if (alive) setCatalog(entries);
       })
       .catch((e) => {
-        if (alive) setError(localizeText(asCmdError(e).msg, t));
+        if (alive) {
+          const err = asCmdError(e);
+          setError(errorText(err.code, err.msg, t));
+        }
       })
       .finally(() => {
         if (alive) setLoading(false);

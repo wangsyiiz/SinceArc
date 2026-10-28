@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useTranslation } from "react-i18next";
 import { localizeText } from "@/lib/i18n-text";
+import { errorText } from "@/lib/errors";
 
 interface ConnectErrorStateProps {
   code?: string;
@@ -27,7 +28,9 @@ export function ConnectErrorState({
   onOpenSettings,
 }: ConnectErrorStateProps) {
   const { t } = useTranslation();
-  const detail = [code, localizeText(message, t)].filter(Boolean).join(" ");
+  const detail = [code, errorText(Number(code), localizeText(message, t), t)]
+    .filter(Boolean)
+    .join(" ");
 
   // 不要 title：这块占满消息区，鼠标一挪进来就弹原生 tip，又大又没必要。
   // 说明也不截断，改成限高可滚 —— 省得「看不全只能靠 tip」。
