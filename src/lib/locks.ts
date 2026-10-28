@@ -35,11 +35,3 @@ export function applyLock(
   return next;
 }
 
-/** 展示用：取一个（按插入顺序第一个）作代表，其余计数 */
-export function summarizeLocks(
-  locks: Record<string, LockInfo>,
-): { playerId: string | null; title: string; extra: number } | null {
-  const all = Object.values(locks);
-  if (all.length === 0) return null;
-  return { playerId: all[0].playerId, title: all[0].title, extra: all.length - 1 };
-}

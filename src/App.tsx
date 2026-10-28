@@ -28,6 +28,7 @@ import { localizeText, translateKey } from "@/lib/i18n-text";
 import { errorTextOf } from "@/lib/errors";
 import { pushSystemNotice } from "@/lib/notices";
 import { delegateCancelFailureKey, type DelegatePhase } from "@/lib/delegate-status";
+import { acpSessionIdOfActivity } from "@/lib/activity-row";
 import { mergeMessages } from "@/lib/messages-merge";
 import { buildPlayers } from "@/lib/players";
 import { steerGate, type SteerGate } from "@/lib/steer-availability";
@@ -50,7 +51,6 @@ import {
   type TraceTurnDto,
 } from "@/lib/ipc";
 import { toTraceView } from "@/lib/trace-adapter";
-import { summarizeLocks } from "@/lib/locks";
 import { describeUsage } from "@/lib/usage-format";
 import { WorkspaceEmpty } from "@/components/WorkspaceEmpty";
 import type {
@@ -680,12 +680,6 @@ export default function App() {
     }
   }, [activeAcpSid, activeTurnId, dropTurnPolicy, lastSessionId, state.busy]);
 
-  /**
-   * 写提示：群聊里每个成员是独立 ACP 会话，各自可能同时在写。
-   * 只显示其中一个（按 title 稳定选择），其余用「另有 N 个」计数 ——
-   * 一次性列三行会把输入框顶得老高，而这条本来就只是提示。
-   */
-  const writeHint = useMemo(() => summarizeLocks(state.locks ?? {}), [state.locks]);
   const usageLine = state.usage ? describeUsage(state.usage, t) : null;
   const connectProblem: {
     code?: string;
@@ -1851,11 +1845,14 @@ export default function App() {
                             .map((a) => {
                               const p = renderPlayers.find((x) => x.id === a.playerId);
                               if (!p) return null;
+                              const rowAcpSid = acpSessionIdOfActivity(a.id);
+                              const lock = rowAcpSid ? state.locks?.[rowAcpSid] : undefined;
                               return (
                                 <div key={a.id} className="pt-3.5">
                                   <ThinkingRow
                                     player={p}
                                     activity={a}
+                                    lock={lock ? { title: lock.title, count: lock.count } : undefined}
                                     onOpenTrace={() => {
                                       setTraceOpen(true);
                                       setFocus((f) => ({ id: a.id, tick: (f?.tick ?? 0) + 1 }));
@@ -1907,24 +1904,6 @@ export default function App() {
                             }}
                           >
                             <span className="truncate">{usageLine.text}</span>
-                          </div>
-                        )}
-                        {writeHint && (
-                          <div className="sc-glass mb-2 flex items-center gap-2 rounded-md px-3 py-1.5 text-xs text-ink-3">
-                            <span className="truncate">
-                              {t("app.writeHint.current", {
-                                name:
-                                  renderPlayers.find(
-                                    (p) => p.id === (writeHint.playerId ?? MAIN_AGENT_ID),
-                                  )?.name ?? "agent",
-                                title: writeHint.title,
-                              })}
-                            </span>
-                            {writeHint.extra > 0 && (
-                              <span className="ml-auto shrink-0 text-ink-3">
-                                {t("app.writeHint.extra", { extra: writeHint.extra })}
-                              </span>
-                            )}
                           </div>
                         )}
                         {isStopping && (
