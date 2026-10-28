@@ -10,6 +10,7 @@ setlocal
 if "%FAKE_GH_MODE%"=="slow" goto slow
 if "%1"=="--version" goto version
 if "%1"=="auth" if "%2"=="status" goto auth
+if "%1"=="pr" if "%2"=="list" if "%3"=="-R" goto pr_list
 if "%1"=="crash" goto crash
 goto unsupported
 
@@ -28,12 +29,44 @@ exit /b 0
 
 :auth
 if "%FAKE_GH_MODE%"=="not-logged-in" goto not_logged_in
+if "%FAKE_GH_MODE%"=="auth-none" goto auth_none
+if "%FAKE_GH_MODE%"=="auth-other-host" goto auth_other_host
 echo github.com
 echo   Logged in to github.com account tester
+echo gitlab.example.com
+echo   Logged in to gitlab.example.com account tester
 exit /b 0
 
 :not_logged_in
 >&2 echo You are not logged into any GitHub hosts.
+exit /b 1
+
+:auth_none
+>&2 echo You are not logged into any GitHub hosts.
+exit /b 1
+
+:auth_other_host
+echo gitlab.example.com
+echo   Logged in to gitlab.example.com account tester
+exit /b 0
+
+:pr_list
+if "%FAKE_GH_MODE%"=="repo-missing" goto repo_missing
+if "%FAKE_GH_MODE%"=="bad-cred" goto bad_cred
+if "%FAKE_GH_MODE%"=="rate-limit" goto rate_limit
+type "%FAKE_GH_FIXTURE%"
+exit /b 0
+
+:repo_missing
+>&2 echo GraphQL: Could not resolve to a Repository with the name 'x'. (repository)
+exit /b 1
+
+:bad_cred
+>&2 echo HTTP 401: Bad credentials (https://api.github.com/graphql)
+exit /b 1
+
+:rate_limit
+>&2 echo HTTP 403: API rate limit exceeded for 1.2.3.4. (resets in 42 minutes)
 exit /b 1
 
 :crash

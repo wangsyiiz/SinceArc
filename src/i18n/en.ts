@@ -435,6 +435,8 @@ export const en: Record<MessageKey, string> = {
   "err.gh.notInstalled": "GitHub CLI (gh) not found",
   "err.gh.notLoggedIn": "gh is not logged in to GitHub",
   "err.gh.failed": "gh failed: {{detail}}",
+  "err.gh.badState": "Unknown PR state: {{detail}} (expected open / closed / merged / all)",
+  "err.gh.repoRequired": "Repository owner and name are required",
   "err.member.loadAgentUserFailed": "Failed to read agent users: {{detail}}",
   "err.member.loadMembersFailed": "Failed to read group members: {{detail}}",
   "err.member.handleTaken": "@{{handle}} is already taken",

@@ -1,0 +1,20 @@
+[
+  {
+    "author": { "id": "MDQ6VXNlcjQwMzUxNTE1", "is_bot": false, "login": "wangsyiiz", "name": "wangsyiiz" },
+    "baseRefName": "feat/e9",
+    "headRefName": "feat/e9.2-pr-list",
+    "isDraft": true,
+    "mergeable": "MERGEABLE",
+    "number": 13,
+    "reviewDecision": "",
+    "state": "OPEN",
+    "statusCheckRollup": [
+      { "__typename": "CheckRun", "completedAt": null, "conclusion": "",
+        "detailsUrl": "https://github.com/wangsyiiz/SinceArc/actions/runs/40670000000/job/122800000000",
+        "name": "signed-off", "startedAt": "2026-10-28T10:10:00Z", "status": "IN_PROGRESS", "workflowName": "dco" }
+    ],
+    "title": "feat(gh): E9.2 领域模型 + gh_pr_list",
+    "updatedAt": "2026-10-28T10:12:00Z",
+    "url": "https://github.com/wangsyiiz/SinceArc/pull/13"
+  }
+]
