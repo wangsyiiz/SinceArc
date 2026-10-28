@@ -161,6 +161,42 @@ TTL 不进命令层，也不进 adapter。
 
 结果缓存 30s；前端「重新检测」按钮强制刷新（传 `force: true`）。
 
+## 2.1 仓库身份解析（`gh_repo_resolve`，2026-10-28 定）
+
+`gh` 的四个命令都要 `[HOST/]OWNER/REPO`，而应用手上只有本地目录 —— 项目列表里 `slug` 是 `—/文件夹名`
+这类占位值。所以新增一个**只读、纯文件系统**命令：
+
+```
+gh_repo_resolve(path: string) -> { host: string, owner: string, name: string }
+```
+
+**判定顺序（找到即停）**
+
+1. 从 `path` 向上逐级找 `.git`（**文件或目录都算**，worktree / submodule 是文件），到文件系统根为止。
+2. `.git` 是文件 → 读其中唯一一行 `gitdir: <路径>`，相对路径相对 `.git` 所在目录解析；是目录 → 直接用它。
+3. 读 `<gitdir>/config` 的 `[remote "origin"]` 的 `url`。
+4. 没有 `origin` 时按兜底：**恰好一个** remote → 用它的 `url`；0 个或多个 → 拒绝（见码表）。
+
+**URL → (host, owner, name)（逐条，段数按 `/` 切）**
+
+| 形状 | host | owner / name |
+| --- | --- | --- |
+| `https://host[:port]/<seg…>` | 第一段，去端口 | 最后两段 |
+| `http://host[:port]/<seg…>` | 同上 | 同上 |
+| `ssh://[user@]host[:port]/<seg…>` | 第一段（去 `user@`、去端口） | 最后两段 |
+| `git@host:<seg…>`（scp 风格） | 冒号前（去 `user@`） | 冒号后按 `/` 切，最后两段 |
+
+- 末尾 `.git` 一律去掉；`user@` / `password@` 一律去掉。
+- 段数 < 2 → 拒绝。段数 > 2 → 取最后两段并 `tracing::warn!` 留痕（GitLab 嵌套组这类，本项目只面向 GitHub）。
+- **兜底（枚举之外一律拒绝，不猜）**：`git://`、`file://`、盘符路径、`/` 开头的本地路径、没有任何分隔符的字符串
+  —— 全部按「解析不出」拒绝。宁可报错让用户配远端，也不拿半截路径去调 `gh`。
+
+**其它约束**
+
+- 不缓存（纯文件读，µs 级）；不读 `~/.config/gh/hosts.yml`；**不调 `git` 进程**（与 §1「不用 `std::process`」同一条纪律）。
+- 分层：解析在 domain（`gh/repo.rs`），只用 `std::fs`，不进 adapter —— adapter 只跟进程打交道（§1.1）。
+- 返回的 `host` 可直接填进 `RepoRefDto.host`（§2 的 `host` 缺省规则是给「没解析到」的情况用的；解析到了就以解析结果为准）。
+
 ## 3. 错误码（落在既有 50700 段，不造新段）
 
 `50700–50799` 的定位是「客户端辅助设施」，gh 是外部辅助工具，落在这一段。
@@ -174,6 +210,7 @@ TTL 不进命令层，也不进 adapter。
 | `50714` | 执行失败 / 超时 | 「gh 执行失败」+ stderr 首行 |
 | `50715` | JSON 解析失败 | 「gh 返回了看不懂的数据」+ 版本号（多为版本过旧） |
 | `50716` | PR 不存在 | 「这个 PR 拿不到：编号不存在或已删除」+ 编号 |
+| `50717` | 仓库身份解析失败（§2.1） | 两条 key，按判定结果二选一：`err.gh.notGitRepo`「这个目录还不是 git 仓库」／`err.gh.noRemote`「没找到可用的 origin 远端（或远端地址认不出 GitHub 仓库）」 |
 
 实测信号（spike）：
 
@@ -271,6 +308,14 @@ E9 原卡里「单页 ≤ 200 行」据此改成「客户端对 patch 切片，�
 ## 6. UI（代码视图切换即检测）
 
 - 侧栏切到代码视图（tab `kind: "repo"`）时调用 `gh_status`；**不是**只在启动时查一次。
+- 打开顺序（三步各自要能单独显示状态，别合成一个「加载中」）：
+
+  1. `gh_status(force: false)` → 不可用就走下面的安装指引，**不再往下走**；
+  2. `gh_repo_resolve(repo.path)`（§2.1）→ 失败在栏内说明「这个目录还不是 git 仓库 / 没配 origin」，附路径与
+     「重新选择目录」；此时不显示「这个仓库没有 PR」（空列表与解析失败必须是两种样子）；
+  3. `gh_pr_list(repo)` → 空数组才是「这个仓库没有 PR」；其它错误按码出文案（50712 / 50713 / 50714）。
+
+  「重新检测」按钮 = 三步全重跑（`gh_status(force: true)` 之后重跑 2、3）。
 - 不可用时**在栏内**给简易安装步骤（不弹全屏对话框，不阻止继续用其它功能）：
 
   ```
@@ -297,6 +342,8 @@ E9 原卡里「单页 ≤ 200 行」据此改成「客户端对 patch 切片，�
 | 详情 | `gh pr view <n> --json …` | ~1.1 s，3,174 B |
 | diff 切片 | `gh_pr_diff(3, 0, 200)` | 首页 200 行，整包 39,766 B 落缓存 |
 | 仓库不存在 → 50713 | 指向 `wangsyiiz/nope-xyz-123` | 人话错误，不显示空列表 |
+| 目录不是 git 仓库 → 50717 | 选一个非仓库目录（如 `C:\Users\picke`）当项目 | 栏内「还不是 git 仓库」，与「没有 PR」区分得开 |
+| 身份解析 | `gh_repo_resolve("C:\\source\\sincearc")` | `host=github.com`、`owner=wangsyiiz`、`name=SinceArc` |
 | 不写 token | 全仓搜 `gh auth token` | 0 处 |
 
 ## 8. 不做
