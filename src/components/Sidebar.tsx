@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, FolderGit2, MessageSquare, Plus, Settings2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { AgentProfile, GithubPR, GithubRepo, Player, SessionSummary } from "@/types";
+import type { PrDto, RepoRefDto } from "@/lib/ipc";
+import type { AgentProfile, GithubRepo, Player, SessionSummary } from "@/types";
 import type { MessageKey } from "@/i18n/zh-CN";
 import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
@@ -21,7 +22,9 @@ interface SidebarProps {
   profiles: AgentProfile[];
   players: Player[];
   repos: GithubRepo[];
-  prsByRepo: Record<string, GithubPR[]>;
+  prsByRepo: Record<string, PrDto[]>;
+  /** repoId → 解析出的仓库身份；拿不到时侧栏显示 path 尾段。 */
+  identityByRepo: Record<string, RepoRefDto | undefined>;
   onSelect: (id: string) => void;
   onNew: () => void;
   /** 指定连接新建（下拉里选 agent 时用） */
@@ -33,6 +36,8 @@ interface SidebarProps {
   isSessionBusy?: (id: string) => boolean;
   onOpenRepo: (repoId: string) => void;
   onAddRepo: (path: string) => void;
+  /** 每次自增就展开「添加项目路径」输入框：代码视图里的「重新选择目录」用它。 */
+  focusAddSignal?: number;
   width?: number;
 }
 
@@ -63,6 +68,7 @@ export function Sidebar({
   players,
   repos,
   prsByRepo,
+  identityByRepo,
   onSelect,
   onNew,
   onNewWithProfile,
@@ -71,11 +77,17 @@ export function Sidebar({
   isSessionBusy,
   onOpenRepo,
   onAddRepo,
+  focusAddSignal,
   width = 260,
 }: SidebarProps) {
   const { t } = useTranslation();
   const [adding, setAdding] = useState(false);
   const [path, setPath] = useState("");
+
+  useEffect(() => {
+    if (!focusAddSignal) return;
+    setAdding(true);
+  }, [focusAddSignal]);
 
   const grouped = useMemo(
     () =>
@@ -218,7 +230,15 @@ export function Sidebar({
             )}
             {repos.map((r) => {
               const count = (prsByRepo[r.id] ?? []).length;
-              return <RepoButton key={r.id} repo={r} count={count} onOpen={onOpenRepo} />;
+              return (
+                <RepoButton
+                  key={r.id}
+                  repo={r}
+                  count={count}
+                  identity={identityByRepo[r.id]}
+                  onOpen={onOpenRepo}
+                />
+              );
             })}
 
             {adding ? (
@@ -268,15 +288,21 @@ export function Sidebar({
 function RepoButton({
   repo,
   count,
+  identity,
   onOpen,
 }: {
   repo: GithubRepo;
   count: number;
+  identity: RepoRefDto | undefined;
   onOpen: (id: string) => void;
 }) {
   const { t } = useTranslation();
   const [el, setEl] = useState<HTMLButtonElement | null>(null);
   const hover = useHoverCard();
+  // 身份来自 gh_repo_resolve；还没解析出来时显示 path 尾段，绝不显示占位 slug。
+  const subtitle = identity
+    ? `${identity.owner}/${identity.name}`
+    : repo.path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || repo.path;
   return (
     <>
       <button
@@ -286,7 +312,7 @@ function RepoButton({
         className="group mb-0.5 flex w-full flex-col gap-0.5 rounded-mark px-2.5 py-2 text-left transition-colors hover:bg-surface-3"
       >
         <span className="flex items-center gap-1.5">
-          <StatusDot status={repo.connected ? "connected" : "untested"} />
+          <StatusDot status={identity ? "connected" : "untested"} />
           <span className="transition-colors duration-150 truncate text-small text-ink-2 group-hover:text-ink-1">
             {localizeText(repo.name, t)}
           </span>
@@ -294,7 +320,7 @@ function RepoButton({
             <span className="ml-auto shrink-0 font-mono text-micro text-ink-3">{count}</span>
           )}
         </span>
-        <span className="truncate pl-3 font-mono text-micro text-ink-3">{repo.slug}</span>
+        <span className="truncate pl-3 font-mono text-micro text-ink-3">{subtitle}</span>
       </button>
       {hover.card(<span className="break-all font-mono">{repo.path}</span>)}
     </>
