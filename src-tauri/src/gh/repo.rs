@@ -323,7 +323,8 @@ mod tests {
     #[test]
     fn parse_remote_url_table() {
         // (输入, 期望结果)；Err 只断言拒绝，不锁具体变体。
-        let cases: &[(&str, Option<(&str, &str, &str)>)] = &[
+        type Case<'a> = (&'a str, Option<(&'a str, &'a str, &'a str)>);
+        let cases: &[Case] = &[
             ("https://github.com/wangsyiiz/SinceArc.git", Some(("github.com", "wangsyiiz", "SinceArc"))),
             ("https://github.com/wangsyiiz/SinceArc", Some(("github.com", "wangsyiiz", "SinceArc"))),
             ("http://host:8080/o/r", Some(("host", "o", "r"))),

@@ -478,6 +478,25 @@ fn pr_not_found(code: u32, number: Option<u32>) -> CmdError {
     )
 }
 
+fn failed(code: u32, detail: impl Into<String>) -> CmdError {
+    let detail = detail.into();
+    let detail = if detail.trim().is_empty() {
+        "未知错误".to_string()
+    } else {
+        detail
+    };
+    CmdError::keyed_with(
+        code,
+        "err.gh.failed",
+        format!("gh 执行失败：{detail}"),
+        BTreeMap::from([("detail".to_string(), detail)]),
+    )
+}
+
+fn first_line(value: &str) -> String {
+    value.lines().next().unwrap_or("").trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,21 +580,3 @@ mod tests {
     }
 }
 
-fn failed(code: u32, detail: impl Into<String>) -> CmdError {
-    let detail = detail.into();
-    let detail = if detail.trim().is_empty() {
-        "未知错误".to_string()
-    } else {
-        detail
-    };
-    CmdError::keyed_with(
-        code,
-        "err.gh.failed",
-        format!("gh 执行失败：{detail}"),
-        BTreeMap::from([("detail".to_string(), detail)]),
-    )
-}
-
-fn first_line(value: &str) -> String {
-    value.lines().next().unwrap_or("").trim().to_string()
-}
