@@ -260,7 +260,7 @@ export function Composer({
       )}
     >
       {/* 工具行（上，§22/§23）：附件 / 上下文用量 ｜ MCP / 撤销 / 自动批准。发送键不在这里 —— 它浮动在输入框右下角 */}
-      <div className="flex h-8 items-center gap-1 px-1">
+      <div className="mt-1 flex h-8 items-center gap-1 px-1">
         <Tooltip label={t("ui.button.addAttachment")}>
           <Button
             variant="ghost"

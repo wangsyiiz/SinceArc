@@ -377,11 +377,14 @@ body {
 }
 
 .sc-window {
+  display: flex;
+  flex-direction: column;
   background: var(--glass-1);
   -webkit-backdrop-filter: blur(24px) saturate(1.5);
   backdrop-filter: blur(24px) saturate(1.5);
-  border: 1px solid var(--glass-border);
-  box-shadow: var(--edge-highlight);
+  /* 描边用 inset 阴影而不是 border：1px border 会占布局，让工具行的上边距比下边距少 1px（§24.4） */
+  border: 0;
+  box-shadow: var(--edge-highlight), inset 0 0 0 1px var(--glass-border);
 }
 .sc-tooltip {
   /* 平铺实心面 + 1px 边框：短提示要「被看见」，是 §1.8「暗色靠内高光划界」的唯一例外 */
