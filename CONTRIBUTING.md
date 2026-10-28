@@ -11,9 +11,26 @@
 
 ## 二、分支与提交
 
-- 从 `main` 切 `feat/<topic>` 或 `fix/<topic>`，提交前确认 `git branch --show-current`；
-- 提交信息写清「为什么」和实测读数，而不是只写「改了什么」；
+分支是两层：**epic 分支**（一个功能域）→ **任务分支**（一张卡），不允许跳过层级。
+
+```
+main
+ └── feat/e13            epic 分支：一个 epic 一条，从 main 切
+      └── feat/e13.4-xxx 任务分支：一张卡一条，从 epic 切
+           ↑ 验完合回 epic（不直接合 main）
+              └── 整个 epic 的卡都完成后，epic → main 一次合入
+```
+
+- **epic 分支**：从 `main` 切，命名 `feat/e<epic 编号>`（如 `feat/e9`）。epic 分支上只允许出现「本 epic 的合入」和规范/文档先行改动，**不直接在 epic 上写实现**；
+- **任务分支**：从 epic 切，命名 `feat/e<epic>.<卡号>-<短语>`（如 `feat/e9.1-gh-adapter`），PR 的 **base 一律是 epic 分支**，不是 `main`；
+- 任务卡验完、PR 合并进 epic 后，再开下一张卡；同一个 epic 的任务**不并行**（并行实现＝双份成本、红灯无法归因）；
+- 没有 epic 归属的单点修复（`fix/<topic>`）才直接从 `main` 切、base 也写 `main`；
+- 提交前确认 `git branch --show-current`；提交信息写清「为什么」和实测读数，而不是只写「改了什么」；
 - **每个提交都要带 sign-off**（见下），CI 会校验。
+
+> 2026-10-28 修订：原文只写了「从 main 切 feat/<topic>」，没区分 epic 与任务两层，
+> 结果第一个 epic 的任务分支直接对 main 开 PR。改成上面两层结构，原因是 epic 内多张卡
+> 需要连续验证、中间状态不该进 main（`main` 上永远是能发版的完整状态）。
 
 ## 三、DCO：每个提交都要签
 
