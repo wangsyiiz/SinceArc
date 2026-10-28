@@ -3,7 +3,7 @@
 //! 目录是全局唯一的一份配置；profile / session 只存名字。解析规则永远是
 //! `session ?? profile ?? 目录全部`，不做合并：NULL 表示继承，`[]` 表示明确为空。
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -249,12 +249,14 @@ pub struct SessionMcpStateDto {
 pub fn validate_mcp_server(server: &McpServerDto) -> Result<(), CmdError> {
     let name = server.name().trim();
     if name.is_empty() {
-        return Err(CmdError::new(50700, "MCP 名称不能为空"));
+        return Err(CmdError::keyed(50700, "err.mcp.nameRequired", "MCP 名称不能为空"));
     }
     if name.chars().count() > NAME_MAX_CHARS {
-        return Err(CmdError::new(
+        return Err(CmdError::keyed_with(
             50700,
+            "err.mcp.nameTooLong",
             format!("MCP 名称不能超过 {NAME_MAX_CHARS} 个字符"),
+            BTreeMap::from([("max".to_string(), NAME_MAX_CHARS.to_string())]),
         ));
     }
 
@@ -263,25 +265,31 @@ pub fn validate_mcp_server(server: &McpServerDto) -> Result<(), CmdError> {
             command, args, env, ..
         } => {
             if command.trim().is_empty() {
-                return Err(CmdError::new(50700, "stdio 的 command 不能为空"));
+                return Err(CmdError::keyed(
+                    50700,
+                    "err.mcp.commandRequired",
+                    "stdio 的 command 不能为空",
+                ));
             }
             for (index, arg) in args.iter().enumerate() {
                 if arg.trim().is_empty() {
-                    return Err(CmdError::new(
+                    return Err(CmdError::keyed_with(
                         50700,
+                        "err.mcp.stdioArgEmpty",
                         format!("stdio 的 args 第 {} 项不能为空", index + 1),
+                        BTreeMap::from([("index".to_string(), (index + 1).to_string())]),
                     ));
                 }
             }
-            validate_pairs("stdio 的 env", env)?;
+            validate_pairs("stdio", "env", env)?;
         }
         McpServerDto::Http { url, headers, .. } => {
             validate_url("http", url)?;
-            validate_pairs("http 的 headers", headers)?;
+            validate_pairs("http", "headers", headers)?;
         }
         McpServerDto::Sse { url, headers, .. } => {
             validate_url("sse", url)?;
-            validate_pairs("sse 的 headers", headers)?;
+            validate_pairs("sse", "headers", headers)?;
         }
     }
     Ok(())
@@ -290,29 +298,48 @@ pub fn validate_mcp_server(server: &McpServerDto) -> Result<(), CmdError> {
 fn validate_url(kind: &str, url: &str) -> Result<(), CmdError> {
     let url = url.trim();
     if url.is_empty() {
-        return Err(CmdError::new(50700, format!("{kind} 的 url 不能为空")));
+        return Err(CmdError::keyed_with(
+            50700,
+            "err.mcp.urlRequired",
+            format!("{kind} 的 url 不能为空"),
+            BTreeMap::from([("kind".to_string(), kind.to_string())]),
+        ));
     }
     if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err(CmdError::new(
+        return Err(CmdError::keyed_with(
             50700,
+            "err.mcp.urlSchemeInvalid",
             format!("{kind} 的 url 必须以 http:// 或 https:// 开头"),
+            BTreeMap::from([("kind".to_string(), kind.to_string())]),
         ));
     }
     Ok(())
 }
 
-fn validate_pairs(field: &str, pairs: &[McpKeyValueDto]) -> Result<(), CmdError> {
+fn validate_pairs(owner: &str, field: &str, pairs: &[McpKeyValueDto]) -> Result<(), CmdError> {
     if pairs.len() > PAIRS_MAX {
-        return Err(CmdError::new(
+        return Err(CmdError::keyed_with(
             50700,
-            format!("{field} 最多 {PAIRS_MAX} 项"),
+            "err.mcp.pairsTooMany",
+            format!("{owner} 的 {field} 最多 {PAIRS_MAX} 项"),
+            BTreeMap::from([
+                ("owner".to_string(), owner.to_string()),
+                ("field".to_string(), field.to_string()),
+                ("max".to_string(), PAIRS_MAX.to_string()),
+            ]),
         ));
     }
     for (index, pair) in pairs.iter().enumerate() {
         if pair.value.len() > VALUE_MAX_BYTES {
-            return Err(CmdError::new(
+            return Err(CmdError::keyed_with(
                 50700,
-                format!("{field}[{index}].value 超过 4KB"),
+                "err.mcp.valueTooLarge",
+                format!("{owner} 的 {field}[{index}].value 超过 4KB"),
+                BTreeMap::from([
+                    ("owner".to_string(), owner.to_string()),
+                    ("field".to_string(), field.to_string()),
+                    ("index".to_string(), index.to_string()),
+                ]),
             ));
         }
     }
@@ -344,23 +371,39 @@ pub(crate) fn upsert_server(
     let rows = catalog_rows(state)?;
     let is_new = !rows.iter().any(|row| row.0 == server.name());
     if is_new && rows.len() >= CATALOG_MAX {
-        return Err(CmdError::new(
+        return Err(CmdError::keyed_with(
             50700,
+            "err.mcp.catalogFull",
             format!("MCP 目录最多 {CATALOG_MAX} 条"),
+            BTreeMap::from([("max".to_string(), CATALOG_MAX.to_string())]),
         ));
     }
     let config = config_json(&server)?;
     state
         .db
         .upsert_mcp_server(server.name(), server.kind(), &config)
-        .map_err(|e| CmdError::new(50000, format!("保存 MCP 目录失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.mcp.saveCatalogFailed",
+                format!("保存 MCP 目录失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 pub(crate) fn delete_server(state: &AppState, name: &str) -> Result<(), CmdError> {
     state
         .db
         .delete_mcp_server(name.trim())
-        .map_err(|e| CmdError::new(50000, format!("删除 MCP 目录失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.mcp.deleteCatalogFailed",
+                format!("删除 MCP 目录失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 pub(crate) async fn session_mcp_names(
@@ -411,7 +454,14 @@ pub(crate) async fn session_state(
     let session_raw = state
         .db
         .session_mcp_names_raw(ui_session_id)
-        .map_err(|e| CmdError::new(50000, format!("读取会话 MCP 名单失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.mcp.loadSessionNamesFailed",
+                format!("读取会话 MCP 名单失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     let session_names = match session_raw {
         Some(Some(raw)) => parse_names(&raw, "sessions", ui_session_id),
         _ => None,
@@ -419,7 +469,14 @@ pub(crate) async fn session_state(
     let profile_id = state
         .db
         .session_profile_id(ui_session_id)
-        .map_err(|e| CmdError::new(50000, format!("读取会话连接失败：{e}")))?
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.mcp.loadSessionProfileFailed",
+                format!("读取会话连接失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?
         .flatten();
 
     let profile_names = match profile_id.as_deref() {
@@ -427,7 +484,14 @@ pub(crate) async fn session_state(
             let raw = state
                 .db
                 .profile_default_mcp_raw(profile_id)
-                .map_err(|e| CmdError::new(50000, format!("读取连接 MCP 名单失败：{e}")))?;
+                .map_err(|e| {
+                    CmdError::keyed_with(
+                        50000,
+                        "err.mcp.loadProfileNamesFailed",
+                        format!("读取连接 MCP 名单失败：{e}"),
+                        BTreeMap::from([("detail".to_string(), e.to_string())]),
+                    )
+                })?;
             match raw {
                 Some(Some(raw)) => parse_names(&raw, "profiles", profile_id),
                 _ => None,
@@ -456,7 +520,14 @@ fn catalog_rows(state: &AppState) -> Result<Vec<McpRow>, CmdError> {
     state
         .db
         .mcp_catalog_rows()
-        .map_err(|e| CmdError::new(50000, format!("读取 MCP 目录失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.mcp.loadCatalogFailed",
+                format!("读取 MCP 目录失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 fn session_names_from_state(
@@ -467,7 +538,14 @@ fn session_names_from_state(
     let session_raw = state
         .db
         .session_mcp_names_raw(ui_session_id)
-        .map_err(|e| CmdError::new(50000, format!("读取会话 MCP 名单失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.mcp.loadSessionNamesFailed",
+                format!("读取会话 MCP 名单失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     if let Some(Some(raw)) = session_raw {
         if let Some(names) = parse_names(&raw, "sessions", ui_session_id) {
             return Ok(names);
@@ -477,13 +555,27 @@ fn session_names_from_state(
     let profile_id = state
         .db
         .session_profile_id(ui_session_id)
-        .map_err(|e| CmdError::new(50000, format!("读取会话连接失败：{e}")))?
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.mcp.loadSessionProfileFailed",
+                format!("读取会话连接失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?
         .flatten();
     if let Some(profile_id) = profile_id {
         let profile_raw = state
             .db
             .profile_default_mcp_raw(&profile_id)
-            .map_err(|e| CmdError::new(50000, format!("读取连接 MCP 名单失败：{e}")))?;
+            .map_err(|e| {
+                CmdError::keyed_with(
+                    50000,
+                    "err.mcp.loadProfileNamesFailed",
+                    format!("读取连接 MCP 名单失败：{e}"),
+                    BTreeMap::from([("detail".to_string(), e.to_string())]),
+                )
+            })?;
         if let Some(Some(raw)) = profile_raw {
             if let Some(names) = parse_names(&raw, "profiles", &profile_id) {
                 return Ok(names);
@@ -502,7 +594,14 @@ fn profile_names_from_state(
     let raw = state
         .db
         .profile_default_mcp_raw(profile_id)
-        .map_err(|e| CmdError::new(50000, format!("读取连接 MCP 名单失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.mcp.loadProfileNamesFailed",
+                format!("读取连接 MCP 名单失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     if let Some(Some(raw)) = raw {
         if let Some(names) = parse_names(&raw, "profiles", profile_id) {
             return Ok(names);
@@ -566,9 +665,19 @@ fn entries_for_names(
     }
 
     if entries.len() > EFFECTIVE_MAX {
-        return Err(CmdError::new(
+        let key = if scope == "本连接" {
+            "err.mcp.profileEffectiveLimit"
+        } else {
+            "err.mcp.sessionEffectiveLimit"
+        };
+        return Err(CmdError::keyed_with(
             50700,
+            key,
             format!("{scope}生效 {} 条，上限 {EFFECTIVE_MAX}", entries.len()),
+            BTreeMap::from([
+                ("used".to_string(), entries.len().to_string()),
+                ("max".to_string(), EFFECTIVE_MAX.to_string()),
+            ]),
         ));
     }
     Ok(entries)
@@ -578,8 +687,14 @@ fn entry_values(entries: Vec<McpCatalogEntryDto>) -> Result<Vec<Value>, CmdError
     entries
         .into_iter()
         .map(|entry| {
-            serde_json::to_value(entry.server)
-                .map_err(|e| CmdError::new(50700, format!("MCP 配置序列化失败：{e}")))
+            serde_json::to_value(entry.server).map_err(|e| {
+                CmdError::keyed_with(
+                    50700,
+                    "err.mcp.serializeConfigFailed",
+                    format!("MCP 配置序列化失败：{e}"),
+                    BTreeMap::from([("detail".to_string(), e.to_string())]),
+                )
+            })
         })
         .collect()
 }
@@ -617,8 +732,14 @@ fn config_json(server: &McpServerDto) -> Result<String, CmdError> {
             json!({ "url": url, "headers": headers })
         }
     };
-    serde_json::to_string(&config)
-        .map_err(|e| CmdError::new(50700, format!("MCP 配置序列化失败：{e}")))
+    serde_json::to_string(&config).map_err(|e| {
+        CmdError::keyed_with(
+            50700,
+            "err.mcp.serializeConfigFailed",
+            format!("MCP 配置序列化失败：{e}"),
+            BTreeMap::from([("detail".to_string(), e.to_string())]),
+        )
+    })
 }
 
 #[cfg(test)]

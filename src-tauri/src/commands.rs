@@ -322,6 +322,10 @@ fn usage_percent(used: u64, size: u64) -> u8 {
 pub struct CmdError {
     pub code: u32,
     pub msg: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<BTreeMap<String, String>>,
 }
 
 impl CmdError {
@@ -329,6 +333,31 @@ impl CmdError {
         Self {
             code,
             msg: msg.into(),
+            key: None,
+            params: None,
+        }
+    }
+
+    pub(crate) fn keyed(code: u32, key: &'static str, msg: impl Into<String>) -> Self {
+        Self {
+            code,
+            msg: msg.into(),
+            key: Some(key.to_string()),
+            params: None,
+        }
+    }
+
+    pub(crate) fn keyed_with(
+        code: u32,
+        key: &'static str,
+        msg: impl Into<String>,
+        params: BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            code,
+            msg: msg.into(),
+            key: Some(key.to_string()),
+            params: Some(params),
         }
     }
 }
@@ -368,7 +397,11 @@ pub fn is_openable_url(url: &str) -> bool {
 #[tauri::command]
 pub async fn open_external(url: String) -> Result<(), CmdError> {
     if !is_openable_url(&url) {
-        return Err(CmdError::new(50102, "只允许打开 http / https / mailto 链接"));
+        return Err(CmdError::keyed(
+            50102,
+            "err.external.schemeNotAllowed",
+            "只允许打开 http / https / mailto 链接",
+        ));
     }
     let target = url.trim().to_string();
 
@@ -382,7 +415,14 @@ pub async fn open_external(url: String) -> Result<(), CmdError> {
             .args(["/C", "start", "", &target])
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
-            .map_err(|e| CmdError::new(50705, format!("打不开系统浏览器：{e}")))?;
+            .map_err(|e| {
+                CmdError::keyed_with(
+                    50705,
+                    "err.external.openBrowserFailed",
+                    format!("打不开系统浏览器：{e}"),
+                    BTreeMap::from([("detail".to_string(), e.to_string())]),
+                )
+            })?;
     }
 
     #[cfg(not(windows))]
@@ -395,7 +435,14 @@ pub async fn open_external(url: String) -> Result<(), CmdError> {
         std::process::Command::new(opener)
             .arg(&target)
             .spawn()
-            .map_err(|e| CmdError::new(50705, format!("打不开系统浏览器：{e}")))?;
+            .map_err(|e| {
+                CmdError::keyed_with(
+                    50705,
+                    "err.external.openBrowserFailed",
+                    format!("打不开系统浏览器：{e}"),
+                    BTreeMap::from([("detail".to_string(), e.to_string())]),
+                )
+            })?;
     }
 
     Ok(())
@@ -543,20 +590,33 @@ pub struct SettingsReport {
 impl AppSettingsDto {
     fn validate(&self) -> Result<(), CmdError> {
         if self.context_messages > CONTEXT_MESSAGES_MAX {
-            return Err(CmdError::new(50001, "附带条数超出范围（0–20）"));
+            return Err(CmdError::keyed(
+                50001,
+                "err.settings.contextOutOfRange",
+                "附带条数超出范围（0–20）",
+            ));
         }
         if !is_valid_theme(&self.theme) {
-            return Err(CmdError::new(50001, "未知主题"));
+            return Err(CmdError::keyed(50001, "err.settings.unknownTheme", "未知主题"));
         }
         if !is_valid_auto_approve(&self.auto_approve_default) {
-            return Err(CmdError::new(50001, "未知的自动同意档"));
+            return Err(CmdError::keyed(
+                50001,
+                "err.settings.unknownAutoApprove",
+                "未知的自动同意档",
+            ));
         }
         // 显式报错而不是静默归一：写了不认识的语言就是调用方错了（docs/i18n.md §2）
         if let Some(language) = &self.language {
             if !is_valid_language(language) {
-                return Err(CmdError::new(
+                return Err(CmdError::keyed_with(
                     50001,
+                    "err.settings.invalidLanguage",
                     format!("未知语言 `{language}`（应为 {}）", LANGUAGE_IDS.join("/")),
+                    BTreeMap::from([
+                        ("language".to_string(), language.clone()),
+                        ("expected".to_string(), LANGUAGE_IDS.join("/")),
+                    ]),
                 ));
             }
         }
@@ -689,12 +749,12 @@ fn to_ssh_spec(dto: &ProfileDto) -> Result<SshSpec, CmdError> {
         .ssh_host
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| CmdError::new(50300, "SSH 主机未填"))?;
+        .ok_or_else(|| CmdError::keyed(50300, "err.ssh.hostMissing", "SSH 主机未填"))?;
     let user = dto
         .ssh_user
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| CmdError::new(50300, "SSH 账号未填"))?;
+        .ok_or_else(|| CmdError::keyed(50300, "err.ssh.userMissing", "SSH 账号未填"))?;
 
     let auth = match dto.ssh_auth.as_deref() {
         Some("key") => {
@@ -702,7 +762,13 @@ fn to_ssh_spec(dto: &ProfileDto) -> Result<SshSpec, CmdError> {
                 .ssh_key_path
                 .as_deref()
                 .filter(|s| !s.trim().is_empty())
-                .ok_or_else(|| CmdError::new(50300, "认证方式选了私钥，但私钥路径未填"))?;
+                .ok_or_else(|| {
+                    CmdError::keyed(
+                        50300,
+                        "err.ssh.keyPathMissing",
+                        "认证方式选了私钥，但私钥路径未填",
+                    )
+                })?;
             SshAuth::Key {
                 path: path.to_string(),
             }
@@ -712,18 +778,32 @@ fn to_ssh_spec(dto: &ProfileDto) -> Result<SshSpec, CmdError> {
                 .ssh_password
                 .as_deref()
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| CmdError::new(50300, "认证方式选了密码，但密码未填"))?;
+                .ok_or_else(|| {
+                    CmdError::keyed(
+                        50300,
+                        "err.ssh.passwordMissing",
+                        "认证方式选了密码，但密码未填",
+                    )
+                })?;
             SshAuth::Password {
                 secret: secret.to_string(),
             }
         }
         Some(other) => {
-            return Err(CmdError::new(
+            return Err(CmdError::keyed_with(
                 50300,
+                "err.conn.unknownAuth",
                 format!("未知的认证方式：{other}（只接受 key / password）"),
+                BTreeMap::from([("other".to_string(), other.to_string())]),
             ))
         }
-        None => return Err(CmdError::new(50300, "SSH 认证方式未选")),
+        None => {
+            return Err(CmdError::keyed(
+                50300,
+                "err.ssh.authMissing",
+                "SSH 认证方式未选",
+            ))
+        }
     };
 
     Ok(SshSpec {
@@ -743,9 +823,11 @@ pub fn to_profile(dto: &ProfileDto) -> Result<AgentProfile, CmdError> {
         },
         "ssh" => Launch::Ssh(to_ssh_spec(dto)?),
         other => {
-            return Err(CmdError::new(
+            return Err(CmdError::keyed_with(
                 50300,
+                "err.conn.unknownLaunch",
                 format!("未知的连接方式：{other}（只接受 local / wsl / ssh）"),
+                BTreeMap::from([("other".to_string(), other.to_string())]),
             ))
         }
     };
@@ -786,9 +868,14 @@ pub async fn command_preview(
     } else {
         cwd
     };
-    let spec = parsed
-        .command_line(&cwd)
-        .map_err(|e| CmdError::new(50000, format!("生成命令预览失败：{e}")))?;
+    let spec = parsed.command_line(&cwd).map_err(|e| {
+        CmdError::keyed_with(
+            50000,
+            "err.conn.commandPreviewFailed",
+            format!("生成命令预览失败：{e}"),
+            BTreeMap::from([("detail".to_string(), e.to_string())]),
+        )
+    })?;
     let line = render_command_line(&spec);
 
     // 密码认证会为 SSH_ASKPASS 写临时脚本；预览不需要它，渲染完立刻清掉。
@@ -804,14 +891,16 @@ pub async fn command_preview(
 /// 「agent closed stdout」—— 空 cwd 和命令不存在长得一模一样，根本没法排查。
 fn validate_launch_input(profile: &ProfileDto) -> Result<(), CmdError> {
     if profile.program.trim().is_empty() {
-        return Err(CmdError::new(
+        return Err(CmdError::keyed(
             50202,
+            "err.session.emptyAgentCommand",
             "agent 命令为空：先在「Agent」里选一个，或填一条能起 ACP 的命令",
         ));
     }
     if profile.cwd.trim().is_empty() {
-        return Err(CmdError::new(
+        return Err(CmdError::keyed(
             50201,
+            "err.session.emptyCwd",
             "工作目录为空：agent 会在空路径下启动并立刻退出，先把工作目录填上",
         ));
     }
@@ -840,13 +929,20 @@ fn launch_error(profile: &ProfileDto, e: transport::TransportError) -> CmdError 
         .chain(profile.args.iter().map(String::as_str))
         .collect::<Vec<_>>()
         .join(" ");
-    CmdError::new(
+    CmdError::keyed_with(
         50200,
+        "err.conn.launchFailed",
         format!(
             "启动失败：`{cmd}`（{} · 工作目录 {}）
 {e}",
             profile.launch, profile.cwd
         ),
+        BTreeMap::from([
+            ("cmd".to_string(), cmd),
+            ("launch".to_string(), profile.launch.to_string()),
+            ("cwd".to_string(), profile.cwd.clone()),
+            ("detail".to_string(), e.to_string()),
+        ]),
     )
 }
 
@@ -892,7 +988,11 @@ pub async fn agent_user_test(
 ) -> Result<AgentUserTestOutcome, CmdError> {
     validate_launch_input(&profile)?;
     if acp_session_id.trim().is_empty() {
-        return Err(CmdError::new(50602, "session id 不能为空"));
+        return Err(CmdError::keyed(
+            50602,
+            "err.member.sessionIdRequired",
+            "session id 不能为空",
+        ));
     }
     let parsed = to_profile(&profile)?;
     let cwd = cwd
@@ -965,7 +1065,14 @@ pub fn agent_users_list(
     state
         .db
         .list_agent_users()
-        .map_err(|e| CmdError::new(50000, format!("读 agent user 失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.member.loadAgentUserFailed",
+                format!("读 agent user 失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 /// 保存玩家。handle 与 (连接, 会话) 都是唯一键 —— 冲突要说清楚是哪一个，
@@ -976,18 +1083,23 @@ pub fn agent_user_save(
     user: crate::db::AgentUserRow,
 ) -> Result<(), CmdError> {
     if user.name.trim().is_empty() {
-        return Err(CmdError::new(50602, "名字不能为空"));
+        return Err(CmdError::keyed(50602, "err.member.nameRequired", "名字不能为空"));
     }
     if user.handle.trim().trim_start_matches('@').is_empty() {
-        return Err(CmdError::new(50602, "handle 不能为空"));
+        return Err(CmdError::keyed(50602, "err.member.handleRequired", "handle 不能为空"));
     }
     if user.handle.trim().chars().any(|c| c.is_whitespace()) {
         // 解析靠空白断词：短名里有空格就永远 @ 不到（docs/group-chat.md §3）
-        return Err(CmdError::new(50602, "短名里不能有空格"));
+        return Err(CmdError::keyed(
+            50602,
+            "err.member.handleNoSpaces",
+            "短名里不能有空格",
+        ));
     }
     if user.acp_session_id.trim().is_empty() {
-        return Err(CmdError::new(
+        return Err(CmdError::keyed(
             50602,
+            "err.member.sessionIdRequiredTestFirst",
             "session id 不能为空：先测试通过再保存",
         ));
     }
@@ -996,17 +1108,28 @@ pub fn agent_user_save(
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("agent_users.handle") {
-                Err(CmdError::new(
+                Err(CmdError::keyed_with(
                     50600,
+                    "err.member.handleTaken",
                     format!("@{} 已经被占用了", user.handle.trim_start_matches('@')),
+                    BTreeMap::from([(
+                        "handle".to_string(),
+                        user.handle.trim_start_matches('@').to_string(),
+                    )]),
                 ))
             } else if msg.contains("profile_id, acp_session_id") {
-                Err(CmdError::new(
+                Err(CmdError::keyed(
                     50601,
+                    "err.member.alreadyAnotherPlayer",
                     "这条连接上这个会话已经是另一个玩家了 —— 同一个人不能同时有两个身份",
                 ))
             } else {
-                Err(CmdError::new(50000, format!("保存失败：{msg}")))
+                Err(CmdError::keyed_with(
+                    50000,
+                    "err.member.saveFailed",
+                    format!("保存失败：{msg}"),
+                    BTreeMap::from([("detail".to_string(), msg.clone())]),
+                ))
             }
         }
     }
@@ -1017,7 +1140,14 @@ pub fn agent_user_delete(state: State<'_, AppState>, id: String) -> Result<(), C
     state
         .db
         .delete_agent_user(&id)
-        .map_err(|e| CmdError::new(50000, format!("删除失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.member.deleteFailed",
+                format!("删除失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 #[tauri::command]
@@ -1028,7 +1158,14 @@ pub fn session_members(
     state
         .db
         .session_members(&session_id)
-        .map_err(|e| CmdError::new(50000, format!("读群成员失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.member.loadMembersFailed",
+                format!("读群成员失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
@@ -1058,7 +1195,14 @@ pub async fn mention_resolve(
     let members = state
         .db
         .session_members(&session_id)
-        .map_err(|e| CmdError::new(50000, format!("读群成员失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.member.loadMembersFailed",
+                format!("读群成员失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     let handles: Vec<String> = members.iter().map(|m| m.handle.clone()).collect();
 
     let Some(hit) = crate::mention::find(&text, &handles) else {
@@ -1077,16 +1221,19 @@ pub async fn mention_resolve(
         .filter(|m| crate::mention::same_handle(&m.handle, &hit.handle))
         .collect();
     if matched.len() != 1 {
-        return Err(CmdError::new(
+        return Err(CmdError::keyed_with(
             50601,
+            "err.member.handleAmbiguous",
             format!("短名 @{} 对应了多个成员，数据不一致 —— 请到成员设置里修正", hit.handle),
+            BTreeMap::from([("handle".to_string(), hit.handle.clone())]),
         ));
     }
     let member = matched[0];
 
     if member.acp_session_id.trim().is_empty() {
-        return Err(CmdError::new(
+        return Err(CmdError::keyed(
             50602,
+            "err.member.noSessionYet",
             "这个成员还没有可用的会话 —— 到成员设置里点「测试」建一个",
         ));
     }
@@ -1094,11 +1241,24 @@ pub async fn mention_resolve(
     let cwd = state
         .db
         .load_profiles()
-        .map_err(|e| CmdError::new(50000, format!("读取配置失败：{e}")))?
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.settings.loadConfigFailed",
+                format!("读取配置失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?
         .into_iter()
         .find(|p| p.id == member.profile_id)
         .map(|p| p.cwd)
-        .ok_or_else(|| CmdError::new(50601, "成员所属的连接不存在，数据不一致"))?;
+        .ok_or_else(|| {
+            CmdError::keyed(
+                50601,
+                "err.member.profileMissing",
+                "成员所属的连接不存在，数据不一致",
+            )
+        })?;
 
     Ok(MentionResolution {
         member_id: Some(member.id.clone()),
@@ -1119,7 +1279,14 @@ pub fn session_member_add(
     state
         .db
         .add_member(&session_id, &user_id)
-        .map_err(|e| CmdError::new(50000, format!("拉人进群失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.member.addToGroupFailed",
+                format!("拉人进群失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 #[tauri::command]
@@ -1131,7 +1298,14 @@ pub fn session_member_remove(
     state
         .db
         .remove_member(&session_id, &user_id)
-        .map_err(|e| CmdError::new(50000, format!("移出群失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.member.removeFromGroupFailed",
+                format!("移出群失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 /// SSH 只扫**用户已经存了连接配置**的 host（docs/discovery.md §3）。
@@ -1294,7 +1468,14 @@ pub fn agent_discovery_cached(
     let raw = state
         .db
         .meta_get("discovery")
-        .map_err(|e| CmdError::new(50000, format!("读发现缓存失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.conn.loadDiscoveryCacheFailed",
+                format!("读发现缓存失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     let Some(raw) = raw else { return Ok(None) };
     match serde_json::from_str::<acp::discover::DiscoveryCache>(&raw) {
         Ok(c) => Ok(Some(acp::discover::DiscoverOutcome::from_cache(c))),
@@ -1481,7 +1662,14 @@ pub async fn session_storage_stats(
     let stats = state
         .db
         .storage_stats(&ui_session_id)
-        .map_err(|e| CmdError::new(50000, format!("读取存储统计失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.trace.loadStorageStatsFailed",
+                format!("读取存储统计失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     let reasons = storage_hint_reasons(&stats, crate::trace::now_ms());
     Ok(StorageStatsDto {
         atom_count: stats.atom_count,
@@ -1506,12 +1694,26 @@ pub async fn session_trace(
     let turns = state
         .db
         .load_turns(&session_id, limit)
-        .map_err(|e| CmdError::new(50000, format!("读取轮次失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.trace.loadTurnsFailed",
+                format!("读取轮次失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     // 事件按轮取：先取这一批轮次的所有事件（seq 倒序），聚合时再按轮分组
     let events = state
         .db
         .load_events(&session_id, limit * 200)
-        .map_err(|e| CmdError::new(50000, format!("读取轨迹失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.trace.loadTraceFailed",
+                format!("读取轨迹失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     let turns = crate::trace::with_orphan_turns(turns, &session_id, &events);
     // 轮次上的 prompt 字段保留给老数据作历史兼容；正文权威在 atoms（chat / text.user）。
     Ok(crate::trace::aggregate(turns, events))
@@ -1593,7 +1795,11 @@ pub async fn session_trace_backfill(
     cwd: String,
 ) -> Result<TraceBackfillDto, CmdError> {
     let handle = state.get(&profile_id).await.ok_or_else(|| {
-        CmdError::new(50300, "目标连接已断开，补录需要在连接态下进行")
+        CmdError::keyed(
+            50300,
+            "err.conn.closedForBackfill",
+            "目标连接已断开，补录需要在连接态下进行",
+        )
     })?;
 
     let mut window = ReplayWindow::open(state.replay.clone(), acp_session_id.clone());
@@ -1619,9 +1825,11 @@ pub async fn session_trace_backfill(
         Ok(Err(transport::TransportError::Timeout(_))) => true,
         Ok(Err(e)) => {
             window.close();
-            return Err(CmdError::new(
+            return Err(CmdError::keyed_with(
                 50200,
+                "err.session.loadFailed",
                 format!("session/load 失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
             ));
         }
         Err(_) => true,
@@ -1643,7 +1851,14 @@ pub async fn session_trace_backfill(
     let already = state
         .db
         .replay_turn_exists(&ui_session_id, &turn_id)
-        .map_err(|e| CmdError::new(50000, format!("查询补录轮失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.trace.queryReplayTurnFailed",
+                format!("查询补录轮失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     if already {
         return Ok(TraceBackfillDto {
             captured: captured_count,
@@ -1665,7 +1880,14 @@ pub async fn session_trace_backfill(
     state
         .db
         .insert_replay_turn(&ui_session_id, &turn_id, min_at, max_at)
-        .map_err(|e| CmdError::new(50000, format!("记录补录轮失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.trace.recordReplayTurnFailed",
+                format!("记录补录轮失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     let atoms: Vec<db::ReplayAtom> = captured
         .into_iter()
         .enumerate()
@@ -1682,7 +1904,14 @@ pub async fn session_trace_backfill(
     let (added, skipped) = state
         .db
         .append_replay_atoms(&ui_session_id, &turn_id, &atoms)
-        .map_err(|e| CmdError::new(50000, format!("写入补录轨迹失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.trace.writeReplayTraceFailed",
+                format!("写入补录轨迹失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     Ok(TraceBackfillDto {
         captured: captured_count,
         added,
@@ -2798,7 +3027,14 @@ pub async fn profiles_load(state: State<'_, AppState>) -> Result<Vec<ProfileDto>
     state
         .db
         .load_profiles()
-        .map_err(|e| CmdError::new(50000, format!("读取配置失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.settings.loadConfigFailed",
+                format!("读取配置失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 #[tauri::command]
@@ -2817,7 +3053,14 @@ pub async fn profiles_save(
     state
         .db
         .save_profiles(&sanitized)
-        .map_err(|e| CmdError::new(50000, format!("保存配置失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.settings.saveConfigFailed",
+                format!("保存配置失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 #[tauri::command]
@@ -2827,7 +3070,14 @@ pub async fn mcp_catalog(
     let rows = state
         .db
         .mcp_catalog_rows()
-        .map_err(|e| CmdError::new(50000, format!("读取 MCP 目录失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.mcp.loadCatalogFailed",
+                format!("读取 MCP 目录失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     Ok(mcp::catalog_entries(&rows))
 }
 
@@ -2852,15 +3102,28 @@ pub async fn session_set_mcp_names(
 ) -> Result<(), CmdError> {
     let raw = match names.as_ref() {
         Some(names) => Some(
-            serde_json::to_string(names)
-                .map_err(|e| CmdError::new(50700, format!("MCP 名单序列化失败：{e}")))?,
+            serde_json::to_string(names).map_err(|e| {
+                CmdError::keyed_with(
+                    50700,
+                    "err.mcp.serializeNamesFailed",
+                    format!("MCP 名单序列化失败：{e}"),
+                    BTreeMap::from([("detail".to_string(), e.to_string())]),
+                )
+            })?,
         ),
         None => None,
     };
     state
         .db
         .set_session_mcp_names(&ui_session_id, raw.as_deref())
-        .map_err(|e| CmdError::new(50000, format!("保存会话 MCP 名单失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.mcp.saveSessionNamesFailed",
+                format!("保存会话 MCP 名单失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 #[tauri::command]
@@ -2871,15 +3134,28 @@ pub async fn profile_set_default_mcp(
 ) -> Result<(), CmdError> {
     let raw = match names.as_ref() {
         Some(names) => Some(
-            serde_json::to_string(names)
-                .map_err(|e| CmdError::new(50700, format!("MCP 名单序列化失败：{e}")))?,
+            serde_json::to_string(names).map_err(|e| {
+                CmdError::keyed_with(
+                    50700,
+                    "err.mcp.serializeNamesFailed",
+                    format!("MCP 名单序列化失败：{e}"),
+                    BTreeMap::from([("detail".to_string(), e.to_string())]),
+                )
+            })?,
         ),
         None => None,
     };
     state
         .db
         .set_profile_default_mcp(&profile_id, raw.as_deref())
-        .map_err(|e| CmdError::new(50000, format!("保存连接 MCP 名单失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.mcp.saveProfileNamesFailed",
+                format!("保存连接 MCP 名单失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 #[tauri::command]
@@ -2895,7 +3171,14 @@ pub async fn settings_load(state: State<'_, AppState>) -> Result<SettingsReport,
     let (settings, issues) = state
         .db
         .load_settings_report()
-        .map_err(|e| CmdError::new(50000, format!("读取设置失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.settings.loadSettingsFailed",
+                format!("读取设置失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     Ok(SettingsReport { settings, issues })
 }
 
@@ -2908,7 +3191,14 @@ pub async fn settings_save(
     state
         .db
         .save_settings(&settings)
-        .map_err(|e| CmdError::new(50000, format!("保存设置失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.settings.saveSettingsFailed",
+                format!("保存设置失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 #[derive(Debug, Serialize, ts_rs::TS)]
@@ -2934,7 +3224,14 @@ pub async fn session_new(
     let handle = state
         .get(&profile_id)
         .await
-        .ok_or_else(|| CmdError::new(50300, format!("profile 未连接，不能建会话：{profile_id}")))?;
+        .ok_or_else(|| {
+            CmdError::keyed_with(
+                50300,
+                "err.session.profileNotConnectedCreate",
+                format!("profile 未连接，不能建会话：{profile_id}"),
+                BTreeMap::from([("profileId".to_string(), profile_id.clone())]),
+            )
+        })?;
 
     let mcp_servers =
         mcp::target_mcp_servers(state.inner(), &profile_id, ui_session_id.as_deref()).await?;
@@ -2951,9 +3248,11 @@ pub async fn session_new(
         .get("sessionId")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            CmdError::new(
+            CmdError::keyed_with(
                 50200,
+                "err.session.newMissingSessionId",
                 format!("session/new 没有返回 sessionId，实际返回：{result}"),
+                BTreeMap::from([("result".to_string(), result.to_string())]),
             )
         })?
         .to_string();
@@ -2977,7 +3276,14 @@ pub async fn session_new(
                 "created",
                 Some(&handle.outcome.agent_name),
             )
-            .map_err(|e| CmdError::new(50000, format!("记录会话绑定失败：{e}")))?;
+            .map_err(|e| {
+                CmdError::keyed_with(
+                    50000,
+                    "err.session.recordBindingFailed",
+                    format!("记录会话绑定失败：{e}"),
+                    BTreeMap::from([("detail".to_string(), e.to_string())]),
+                )
+            })?;
     }
 
     state
@@ -3003,7 +3309,12 @@ pub async fn session_rebind(
     cwd: String,
 ) -> Result<SessionInfo, CmdError> {
     let handle = state.get(&profile_id).await.ok_or_else(|| {
-        CmdError::new(50300, format!("profile 未连接，不能重建会话：{profile_id}"))
+        CmdError::keyed_with(
+            50300,
+            "err.session.profileNotConnectedRebuild",
+            format!("profile 未连接，不能重建会话：{profile_id}"),
+            BTreeMap::from([("profileId".to_string(), profile_id.clone())]),
+        )
     })?;
 
     let mcp_servers = mcp::session_mcp_servers(state.inner(), &ui_session_id).await?;
@@ -3020,9 +3331,11 @@ pub async fn session_rebind(
         .get("sessionId")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            CmdError::new(
+            CmdError::keyed_with(
                 50200,
+                "err.session.newMissingSessionId",
                 format!("session/new 没有返回 sessionId，实际返回：{result}"),
+                BTreeMap::from([("result".to_string(), result.to_string())]),
             )
         })?
         .to_string();
@@ -3041,7 +3354,14 @@ pub async fn session_rebind(
             "replaced",
             Some(&handle.outcome.agent_name),
         )
-        .map_err(|e| CmdError::new(50000, format!("记录重建绑定失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.session.recordRebindFailed",
+                format!("记录重建绑定失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
 
     tracing::info!(
         target: "sincearc::ipc", profile = %profile_id, session = %session_id,
@@ -3102,10 +3422,14 @@ fn next_delegate_handle_id() -> String {
 
 fn validate_delegate_task_text(task: &str) -> Result<(), CmdError> {
     if task.trim().is_empty() {
-        return Err(CmdError::new(50701, "任务正文为空"));
+        return Err(CmdError::keyed(50701, "err.delegate.bodyEmpty", "任务正文为空"));
     }
     if task.len() > DELEGATE_TASK_MAX_BYTES {
-        return Err(CmdError::new(50701, "任务正文超过 8KB"));
+        return Err(CmdError::keyed(
+            50701,
+            "err.delegate.bodyTooLarge",
+            "任务正文超过 8KB",
+        ));
     }
     Ok(())
 }
@@ -3115,7 +3439,11 @@ fn validate_delegate_task_text(task: &str) -> Result<(), CmdError> {
 async fn guard_delegate_depth(delegates: &Delegates, parent_acp_session: Option<&str>) -> Result<(), CmdError> {
     if let Some(parent) = parent_acp_session {
         if delegates.is_child(parent).await {
-            return Err(CmdError::new(50702, "子任务不能再派活（深度上限 1）"));
+            return Err(CmdError::keyed(
+                50702,
+                "err.delegate.depthLimit",
+                "子任务不能再派活（深度上限 1）",
+            ));
         }
     }
     Ok(())
@@ -3130,7 +3458,11 @@ async fn guard_delegate_concurrency(
         .await
         >= DELEGATE_MAX_RUNNING
     {
-        return Err(CmdError::new(50703, "同一会话最多同时派 3 个任务"));
+        return Err(CmdError::keyed(
+            50703,
+            "err.delegate.tooMany",
+            "同一会话最多同时派 3 个任务",
+        ));
     }
     Ok(())
 }
@@ -3174,7 +3506,7 @@ async fn wait_for_delegate(
     let entry = delegates
         .get(handle_id)
         .await
-        .ok_or_else(|| CmdError::new(50704, "delegate 句柄不存在"))?;
+        .ok_or_else(|| CmdError::keyed(50704, "err.delegate.handleMissing", "delegate 句柄不存在"))?;
     if entry.status != DelegateStatus::Running {
         return Ok(outcome_from_entry(&entry));
     }
@@ -3194,7 +3526,9 @@ async fn wait_for_delegate(
             let current = delegates
                 .get(handle_id)
                 .await
-                .ok_or_else(|| CmdError::new(50704, "delegate 句柄不存在"))?;
+                .ok_or_else(|| {
+                    CmdError::keyed(50704, "err.delegate.handleMissing", "delegate 句柄不存在")
+                })?;
             Ok(outcome_from_entry(&current))
         }
         // 超时只说明「还在跑」，不取消、不打扰目标 agent。
@@ -3225,9 +3559,11 @@ async fn new_child_session(
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| {
-            CmdError::new(
+            CmdError::keyed_with(
                 50200,
+                "err.session.newMissingSessionId",
                 format!("session/new 没有返回 sessionId，实际返回：{result}"),
+                BTreeMap::from([("result".to_string(), result.to_string())]),
             )
         })
 }
@@ -3263,9 +3599,11 @@ async fn create_delegate_child(
                             .and_then(serde_json::Value::as_str)
                             .map(str::to_string)
                             .ok_or_else(|| {
-                                CmdError::new(
+                                CmdError::keyed_with(
                                     50200,
+                                    "err.session.forkMissingSessionId",
                                     format!("session/fork 没有返回 sessionId，实际返回：{result}"),
+                                    BTreeMap::from([("result".to_string(), result.to_string())]),
                                 )
                             })?;
                         tracing::info!(
@@ -3481,15 +3819,24 @@ pub async fn delegate_task(
     let member = state
         .db
         .list_agent_users()
-        .map_err(|e| CmdError::new(50000, format!("读 agent user 失败：{e}")))?
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.member.loadAgentUserFailed",
+                format!("读 agent user 失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?
         .into_iter()
         .find(|user| user.id == target_member_id)
-        .ok_or_else(|| CmdError::new(50700, "目标成员不存在或不在本群"))?;
+        .ok_or_else(|| CmdError::keyed(50700, "err.member.notInGroup", "目标成员不存在或不在本群"))?;
 
     let agent = state.get(&member.profile_id).await.ok_or_else(|| {
-        CmdError::new(
+        CmdError::keyed_with(
             50300,
+            "err.conn.targetNotConnected",
             format!("目标连接未连上：{}", member.profile_id),
+            BTreeMap::from([("profileId".to_string(), member.profile_id.clone())]),
         )
     })?;
 
@@ -3497,7 +3844,14 @@ pub async fn delegate_task(
     let profile = state
         .db
         .load_profiles()
-        .map_err(|e| CmdError::new(50000, format!("读取配置失败：{e}")))?
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.settings.loadConfigFailed",
+                format!("读取配置失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?
         .into_iter()
         .find(|profile| profile.id == member.profile_id);
     let caps_fork = profile
@@ -3795,7 +4149,7 @@ pub async fn delegate_cancel(
         .delegates
         .get(&handle_id)
         .await
-        .ok_or_else(|| CmdError::new(50704, "delegate 句柄不存在"))?;
+        .ok_or_else(|| CmdError::keyed(50704, "err.delegate.handleMissing", "delegate 句柄不存在"))?;
     if entry.status != DelegateStatus::Running {
         return Ok(outcome_from_entry(&entry));
     }
@@ -3803,7 +4157,13 @@ pub async fn delegate_cancel(
     let handle = state
         .get(&entry.profile_id)
         .await
-        .ok_or_else(|| CmdError::new(50300, "目标连接已断开，这次派活没有可停的对象"))?;
+        .ok_or_else(|| {
+            CmdError::keyed(
+                50300,
+                "err.conn.closedForCancel",
+                "目标连接已断开，这次派活没有可停的对象",
+            )
+        })?;
 
     // 先打标记再发通知：agent 可能立刻回终态，晚一步就区分不出「取消导致的 failed」。
     state.request_cancel(&entry.child_acp_session_id).await;
@@ -3860,17 +4220,34 @@ pub async fn session_load(
     ui_session_id: Option<String>,
 ) -> Result<SessionLoadOutcome, CmdError> {
     if acp_session_id.trim().is_empty() {
-        return Err(CmdError::new(50602, "session id 不能为空"));
+        return Err(CmdError::keyed(
+            50602,
+            "err.member.sessionIdRequired",
+            "session id 不能为空",
+        ));
     }
     let handle = state
         .get(&profile_id)
         .await
-        .ok_or_else(|| CmdError::new(50400, "这条连接还没建立 —— 先连接它，再向成员发消息"))?;
+        .ok_or_else(|| {
+            CmdError::keyed(
+                50400,
+                "err.conn.notEstablished",
+                "这条连接还没建立 —— 先连接它，再向成员发消息",
+            )
+        })?;
     let live = match ui_session_id.as_deref() {
         Some(ui_id) => state
             .db
             .live_handle(ui_id)
-            .map_err(|e| CmdError::new(50000, format!("读取恢复句柄失败：{e}")))?
+            .map_err(|e| {
+                CmdError::keyed_with(
+                    50000,
+                    "err.session.loadResumeHandleFailed",
+                    format!("读取恢复句柄失败：{e}"),
+                    BTreeMap::from([("detail".to_string(), e.to_string())]),
+                )
+            })?
             .filter(|h| h.acp_session_id == acp_session_id),
         None => None,
     };
@@ -3924,13 +4301,20 @@ pub async fn session_prompt(
     ui_session_id: Option<String>,
 ) -> Result<SessionPromptResult, CmdError> {
     if text.trim().is_empty() {
-        return Err(CmdError::new(50300, "消息为空"));
+        return Err(CmdError::keyed(50300, "err.session.emptyMessage", "消息为空"));
     }
 
     let mut record = state
         .session(&session_id)
         .await
-        .ok_or_else(|| CmdError::new(50300, format!("未知会话：{session_id}")))?;
+        .ok_or_else(|| {
+            CmdError::keyed_with(
+                50300,
+                "err.session.notFound",
+                format!("未知会话：{session_id}"),
+                BTreeMap::from([("sessionId".to_string(), session_id.clone())]),
+            )
+        })?;
 
     // 归属以「这一次是谁发的」为准：同一个成员会话可能被不同的群 @ 过，
     // 事件必须投给当前这次提问所在的群，而不是它上一次被绑的地方。
@@ -3941,9 +4325,11 @@ pub async fn session_prompt(
             .await;
     }
     let handle = state.get(&record.profile_id).await.ok_or_else(|| {
-        CmdError::new(
+        CmdError::keyed_with(
             50300,
+            "err.session.profileDisconnected",
             format!("会话所属的 profile 已断开：{}", record.profile_id),
+            BTreeMap::from([("profileId".to_string(), record.profile_id.clone())]),
         )
     })?;
 
@@ -4106,11 +4492,16 @@ pub async fn session_prompt(
 fn steer_precheck(text: &str, commands: &[CommandDto]) -> Result<String, CmdError> {
     let text = text.trim();
     if text.is_empty() {
-        return Err(CmdError::new(STEER_INVALID, "参数不合法"));
+        return Err(CmdError::keyed(
+            STEER_INVALID,
+            "err.session.steerInvalidParams",
+            "参数不合法",
+        ));
     }
     if !commands.iter().any(|command| command.name == "steer") {
-        return Err(CmdError::new(
+        return Err(CmdError::keyed(
             STEER_NO_COMMAND,
+            "err.session.steerCommandMissing",
             "这个 agent 没有声明 steer 命令",
         ));
     }
@@ -4126,19 +4517,27 @@ pub async fn session_steer(
     text: String,
 ) -> Result<(), CmdError> {
     if text.trim().is_empty() {
-        return Err(CmdError::new(STEER_INVALID, "参数不合法"));
+        return Err(CmdError::keyed(
+            STEER_INVALID,
+            "err.session.steerInvalidParams",
+            "参数不合法",
+        ));
     }
 
     let record = state.session(&session_id).await.ok_or_else(|| {
-        CmdError::new(
+        CmdError::keyed_with(
             50300,
+            "err.session.notFoundNotConnected",
             format!("未知会话（不属于任何已连接 agent）：{session_id}"),
+            BTreeMap::from([("sessionId".to_string(), session_id.clone())]),
         )
     })?;
     let handle = state.get(&record.profile_id).await.ok_or_else(|| {
-        CmdError::new(
+        CmdError::keyed_with(
             50400,
+            "err.conn.notConnected",
             format!("连接不存在或已断开：{}", record.profile_id),
+            BTreeMap::from([("profileId".to_string(), record.profile_id.clone())]),
         )
     })?;
 
@@ -4195,7 +4594,13 @@ pub async fn session_cancel(
     let handle = state
         .get(&profile_id)
         .await
-        .ok_or_else(|| CmdError::new(50400, "这条连接还没建立，无法取消"))?;
+        .ok_or_else(|| {
+            CmdError::keyed(
+                50400,
+                "err.conn.notEstablishedForCancel",
+                "这条连接还没建立，无法取消",
+            )
+        })?;
 
     tracing::info!(
         target: "sincearc::ipc", profile = %profile_id, session = %session_id,
@@ -4354,7 +4759,12 @@ async fn respond_permission(
                 target: "sincearc::ipc", profile = %profile_id, id, error = %e,
                 "respond failed"
             );
-            Err(CmdError::new(50502, format!("写回决定失败：{e}")))
+            Err(CmdError::keyed_with(
+                50502,
+                "err.permission.writeDecisionFailed",
+                format!("写回决定失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            ))
         }
     }
 }
@@ -4369,14 +4779,23 @@ pub async fn permission_allow_turn(
     kind: String,
 ) -> Result<(), CmdError> {
     if !is_known_permission_kind(&kind) {
-        return Err(CmdError::new(50100, format!("未知权限类别：{kind}")));
+        return Err(CmdError::keyed_with(
+            50100,
+            "err.permission.unknownKind",
+            format!("未知权限类别：{kind}"),
+            BTreeMap::from([("kind".to_string(), kind.to_string())]),
+        ));
     }
     if state.get(&profile_id).await.is_none() {
-        return Err(CmdError::new(50300, "连接已断开，没有本轮可放行"));
+        return Err(CmdError::keyed(
+            50300,
+            "err.conn.closedNoTurn",
+            "连接已断开，没有本轮可放行",
+        ));
     }
     let active_turn = state.turns.current(&acp_session_id).await;
     if active_turn.as_deref() != Some(turn_id.as_str()) {
-        return Err(CmdError::new(50300, "没有本轮可放行"));
+        return Err(CmdError::keyed(50300, "err.turn.noneToApprove", "没有本轮可放行"));
     }
     state
         .turn_approvals
@@ -4424,12 +4843,22 @@ pub async fn agent_respond_request(
     // 否则我们会往一个 agent 已经处理完的 id 上再写一条响应。
     let (known, turn_id) = state.pending.take_with_turn(&profile_id, id).await;
     if !known {
-        return Err(CmdError::new(50500, "这个请求已失效或已被回答"));
+        return Err(CmdError::keyed(
+            50500,
+            "err.permission.stale",
+            "这个请求已失效或已被回答",
+        ));
     }
     let handle = state
         .get(&profile_id)
         .await
-        .ok_or_else(|| CmdError::new(50501, "连接已断开，无法回答这个请求"))?;
+        .ok_or_else(|| {
+            CmdError::keyed(
+                50501,
+                "err.permission.connClosed",
+                "连接已断开，无法回答这个请求",
+            )
+        })?;
     let reply = PermissionReply {
         turn_id: turn_id.clone(),
         decision: decision.unwrap_or_default(),
@@ -4478,7 +4907,14 @@ pub async fn sessions_list(
     state
         .db
         .list_sessions(profile_id.as_deref())
-        .map_err(|e| CmdError::new(50000, format!("读取会话列表失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.session.loadSessionsFailed",
+                format!("读取会话列表失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 #[tauri::command]
@@ -4489,7 +4925,14 @@ pub async fn session_upsert(
     state
         .db
         .upsert_session(&row)
-        .map_err(|e| CmdError::new(50000, format!("保存会话失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.session.saveSessionFailed",
+                format!("保存会话失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 #[tauri::command]
@@ -4497,7 +4940,14 @@ pub async fn session_delete(state: State<'_, AppState>, id: String) -> Result<()
     state
         .db
         .delete_session(&id)
-        .map_err(|e| CmdError::new(50000, format!("删除会话失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.session.deleteSessionFailed",
+                format!("删除会话失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 #[tauri::command]
@@ -4509,7 +4959,14 @@ pub async fn session_bind_acp(
     state
         .db
         .bind_acp_session(&id, &acp_session_id, "", "replaced")
-        .map_err(|e| CmdError::new(50000, format!("绑定会话失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.session.bindSessionFailed",
+                format!("绑定会话失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 /// 客户端侧日志：追到应用数据目录下的 sincearc.log。
@@ -4522,20 +4979,47 @@ pub async fn client_log(app: tauri::AppHandle, tag: String, text: String) -> Res
     let dir = app
         .path()
         .app_data_dir()
-        .map_err(|e| CmdError::new(50700, format!("拿不到应用数据目录：{e}")))?;
-    std::fs::create_dir_all(&dir).map_err(|e| CmdError::new(50700, format!("建目录失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50700,
+                "err.external.appDataDirFailed",
+                format!("拿不到应用数据目录：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        CmdError::keyed_with(
+            50700,
+            "err.external.createDirFailed",
+            format!("建目录失败：{e}"),
+            BTreeMap::from([("detail".to_string(), e.to_string())]),
+        )
+    })?;
     let path = dir.join("sincearc.log");
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-        .map_err(|e| CmdError::new(50700, format!("打开日志失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50700,
+                "err.external.openLogFailed",
+                format!("打开日志失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    writeln!(f, "{ts}\t{tag}\t{text}")
-        .map_err(|e| CmdError::new(50700, format!("写日志失败：{e}")))?;
+    writeln!(f, "{ts}\t{tag}\t{text}").map_err(|e| {
+        CmdError::keyed_with(
+            50700,
+            "err.external.writeLogFailed",
+            format!("写日志失败：{e}"),
+            BTreeMap::from([("detail".to_string(), e.to_string())]),
+        )
+    })?;
     Ok(())
 }
 
@@ -4548,7 +5032,14 @@ pub async fn messages_append(
     state
         .db
         .append_messages(&session_id, &messages)
-        .map_err(|e| CmdError::new(50000, format!("保存消息失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.session.saveMessageFailed",
+                format!("保存消息失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
 
     // 会话标题：默认所有会话都叫「新会话」，用户分不清谁是谁（实测过：在两个同名会话里找错回复）。
     // 属于业务规则，所以留在命令层，db 只负责「仍叫占位名时才写」这个动作。
@@ -4594,7 +5085,14 @@ pub async fn messages_load(
     state
         .db
         .load_messages_page(&session_id, limit, before_seq)
-        .map_err(|e| CmdError::new(50000, format!("读取消息失败：{e}")))
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.session.loadMessagesFailed",
+                format!("读取消息失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })
 }
 
 /// 打开会话时先给一次最新的真实上下文占用；实时变化仍走 `acp.usage`。
@@ -4606,7 +5104,14 @@ pub async fn session_usage(
     let latest = state
         .db
         .latest_usage(&session_id)
-        .map_err(|e| CmdError::new(50000, format!("读取上下文占用失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.session.loadUsageFailed",
+                format!("读取上下文占用失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     let Some((payload, author_id)) = latest else {
         return Ok(None);
     };
@@ -4694,9 +5199,11 @@ async fn push_mode(
                 error = %e,
                 "set_mode failed"
             );
-            CmdError::new(
+            CmdError::keyed_with(
                 50402,
+                "err.mode.switchFailed",
                 format!("切换模式失败：{mode_id}（该连接可能不支持这个模式）"),
+                BTreeMap::from([("modeId".to_string(), mode_id.to_string())]),
             )
         })
 }
@@ -4713,7 +5220,14 @@ pub async fn session_apply_mode(
     let override_mode = state
         .db
         .mode_override(&ui_session_id)
-        .map_err(|e| CmdError::new(50000, format!("读取会话模式失败：{e}")))?;
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.session.loadModeFailed",
+                format!("读取会话模式失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
     let following = override_mode.is_none();
 
     // 兜底（§4 末条）：两个来源都空就什么都不推，沿用 agent 报的 currentModeId
@@ -4741,7 +5255,7 @@ pub async fn session_apply_mode(
     let handle = state
         .get(&profile_id)
         .await
-        .ok_or_else(|| CmdError::new(50400, "连接已断开，改不了模式"))?;
+        .ok_or_else(|| CmdError::keyed(50400, "err.conn.closedForMode", "连接已断开，改不了模式"))?;
     match push_mode(&handle, &acp_session_id, &target).await {
         Ok(()) => Ok(ModeChoice {
             applied: Some(target),
@@ -4771,7 +5285,7 @@ pub async fn session_choose_mode(
     let handle = state
         .get(&profile_id)
         .await
-        .ok_or_else(|| CmdError::new(50400, "连接已断开，改不了模式"))?;
+        .ok_or_else(|| CmdError::keyed(50400, "err.conn.closedForMode", "连接已断开，改不了模式"))?;
 
     match mode_id {
         Some(m) => {
@@ -4779,15 +5293,33 @@ pub async fn session_choose_mode(
             let modes = state
                 .modes_of(&acp_session_id)
                 .await
-                .ok_or_else(|| CmdError::new(50403, "这个会话没有报上来可选模式，无法切换"))?;
+                .ok_or_else(|| {
+                    CmdError::keyed(
+                        50403,
+                        "err.mode.noneReported",
+                        "这个会话没有报上来可选模式，无法切换",
+                    )
+                })?;
             if !modes.available.iter().any(|x| x.id == m) {
-                return Err(CmdError::new(50401, format!("这个连接不支持模式 {m}")));
+                return Err(CmdError::keyed_with(
+                    50401,
+                    "err.mode.unsupported",
+                    format!("这个连接不支持模式 {m}"),
+                    BTreeMap::from([("modeId".to_string(), m.clone())]),
+                ));
             }
             push_mode(&handle, &acp_session_id, &m).await?;
             state
                 .db
                 .set_mode_override(&ui_session_id, Some(&m))
-                .map_err(|e| CmdError::new(50000, format!("保存会话模式失败：{e}")))?;
+                .map_err(|e| {
+                    CmdError::keyed_with(
+                        50000,
+                        "err.session.saveModeFailed",
+                        format!("保存会话模式失败：{e}"),
+                        BTreeMap::from([("detail".to_string(), e.to_string())]),
+                    )
+                })?;
             Ok(ModeChoice {
                 applied: Some(m),
                 following: false,
@@ -4800,7 +5332,14 @@ pub async fn session_choose_mode(
             state
                 .db
                 .set_mode_override(&ui_session_id, None)
-                .map_err(|e| CmdError::new(50000, format!("保存会话模式失败：{e}")))?;
+                .map_err(|e| {
+                    CmdError::keyed_with(
+                        50000,
+                        "err.session.saveModeFailed",
+                        format!("保存会话模式失败：{e}"),
+                        BTreeMap::from([("detail".to_string(), e.to_string())]),
+                    )
+                })?;
 
             let Some(target) = profile_default_mode(&state, &profile_id) else {
                 return Ok(ModeChoice {
@@ -4833,6 +5372,86 @@ pub async fn session_choose_mode(
                 )),
             }
         }
+    }
+}
+
+/// 线形状回归：前端靠 `CmdError` 上的 `key` / `params` 决定译文，serde 一旦把它们写错名、
+/// 或者 `skip_serializing_if` 把 `Some(..)` 也吃掉，编译和单测都不会报，只有英文界面会退回中文。
+#[cfg(test)]
+mod cmd_error_wire_tests {
+    use super::CmdError;
+
+    #[test]
+    fn keyless_error_omits_key_and_params() {
+        let json = serde_json::to_value(CmdError::new(50000, "读取配置失败：x")).expect("serialize");
+        assert_eq!(json["code"], 50000);
+        assert_eq!(json["msg"], "读取配置失败：x");
+        assert!(json.get("key").is_none(), "key 不该出现: {json}");
+        assert!(json.get("params").is_none(), "params 不该出现: {json}");
+    }
+
+    #[test]
+    fn keyed_error_carries_key_and_params() {
+        let json = serde_json::to_value(CmdError::keyed(50602, "err.member.nameRequired", "名字不能为空"))
+            .expect("serialize");
+        assert_eq!(json["key"], "err.member.nameRequired");
+        assert_eq!(json["msg"], "名字不能为空");
+        assert!(json.get("params").is_none());
+
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("detail".to_string(), "socket closed".to_string());
+        // 用一条真实带 {{detail}} 的 key：验证 params 能被原样带出去。
+        let json = serde_json::to_value(CmdError::keyed_with(
+            50000,
+            "err.settings.loadConfigFailed",
+            "读取配置失败：socket closed",
+            params,
+        ))
+        .expect("serialize");
+        assert_eq!(json["key"], "err.settings.loadConfigFailed");
+        assert_eq!(json["params"]["detail"], "socket closed");
+    }
+
+    #[test]
+    fn interpolated_errors_keep_msg_and_carry_named_params() {
+        let profile = super::ProfileDto {
+            id: "p1".into(),
+            name: "Box".into(),
+            launch: "ssh".into(),
+            program: "agent".into(),
+            args: vec!["--acp".into()],
+            cwd: "/work".into(),
+            default_mode: None,
+            default_mcp: None,
+            caps: None,
+            caps_at: None,
+            distro: None,
+            shell: None,
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: None,
+            ssh_auth: None,
+            ssh_key_path: None,
+            ssh_password: None,
+        };
+        let err = super::launch_error(
+            &profile,
+            super::transport::TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "socket closed",
+            )),
+        );
+        assert_eq!(err.code, 50200);
+        assert_eq!(err.key.as_deref(), Some("err.conn.launchFailed"));
+        assert_eq!(
+            err.msg,
+            "启动失败：`agent --acp`（ssh · 工作目录 /work）\nio failed: socket closed"
+        );
+        let params = err.params.expect("launch error carries params");
+        assert_eq!(params["cmd"], "agent --acp");
+        assert_eq!(params["launch"], "ssh");
+        assert_eq!(params["cwd"], "/work");
+        assert_eq!(params["detail"], "io failed: socket closed");
     }
 }
 

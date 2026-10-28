@@ -3,11 +3,13 @@ import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useTranslation } from "react-i18next";
 import { localizeText } from "@/lib/i18n-text";
-import { errorText } from "@/lib/errors";
+import { errorTextOf } from "@/lib/errors";
 
 interface ConnectErrorStateProps {
   code?: string;
   message: string;
+  errorKey?: string;
+  errorParams?: Record<string, string>;
   resumeUnavailable?: boolean;
   newSessionBusy?: boolean;
   /** 正在重试：按钮转圈 + 标题下一条细滑块，点一次就必须看得出来在动 */
@@ -20,6 +22,8 @@ interface ConnectErrorStateProps {
 export function ConnectErrorState({
   code,
   message,
+  errorKey,
+  errorParams,
   resumeUnavailable = false,
   newSessionBusy = false,
   retrying = false,
@@ -28,7 +32,13 @@ export function ConnectErrorState({
   onOpenSettings,
 }: ConnectErrorStateProps) {
   const { t } = useTranslation();
-  const detail = [code, errorText(Number(code), localizeText(message, t), t)]
+  const detail = [
+    code,
+    errorTextOf(
+      { code: Number(code), msg: localizeText(message, t), key: errorKey, params: errorParams },
+      t,
+    ),
+  ]
     .filter(Boolean)
     .join(" ");
 

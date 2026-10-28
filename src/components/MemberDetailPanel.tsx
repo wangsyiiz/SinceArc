@@ -22,7 +22,7 @@ import { asCmdError, type AgentUser } from "@/lib/ipc";
 import { agentBrand } from "@/lib/agent-brands";
 import { delegateTargetCaps } from "@/lib/delegate-target";
 import { profileLabel } from "@/lib/format";
-import { errorText } from "@/lib/errors";
+import { errorTextOf } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import type { AgentProfile } from "@/types";
 import { AgentLogo } from "./AgentLogo";
@@ -163,7 +163,7 @@ export function MemberDetailPanel({
       onClose();
     } catch (e) {
       const err = asCmdError(e);
-      setError(errorText(err.code, err.msg, t));
+      setError(errorTextOf(err, t));
     } finally {
       setRemoving(false);
     }

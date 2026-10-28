@@ -35,7 +35,12 @@ interface StatusBarProps {
   /** 最近一次会话恢复判定；无标记表示新会话/尚未恢复 */
   resume?: SessionResumeState | null;
   /** 最近一次连接尝试失败；用来区分“未连接”和“连接失败” */
-  connectError?: { code: string; message: string } | null;
+  connectError?: {
+    code: string;
+    message: string;
+    key?: string;
+    params?: Record<string, string>;
+  } | null;
   /** 正在为这个会话连（无感连接 / 手动重试）：让「打开到可用」这一段也有可见的过渡 */
   connecting?: boolean;
 }

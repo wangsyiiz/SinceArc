@@ -10,7 +10,7 @@ import {
   type AgentUser,
 } from "@/lib/ipc";
 import { profileLabel } from "@/lib/format";
-import { errorText } from "@/lib/errors";
+import { errorTextOf } from "@/lib/errors";
 import type { AgentProfile } from "@/types";
 import { Tooltip } from "./ui/Tooltip";
 
@@ -74,7 +74,7 @@ export function MembersMenu({
       .then(setUsers)
       .catch((e) => {
         const err = asCmdError(e);
-        setError(errorText(err.code, err.msg, t));
+        setError(errorTextOf(err, t));
       });
   }, [open, t]);
 
@@ -108,7 +108,7 @@ export function MembersMenu({
       onChanged();
     } catch (e) {
       const err = asCmdError(e);
-      setError(`${err.code} ${errorText(err.code, err.msg, t)}`);
+      setError(`${err.code} ${errorTextOf(err, t)}`);
     } finally {
       setBusy(null);
     }

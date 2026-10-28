@@ -7,6 +7,8 @@
 export interface CmdError {
   code: number;
   msg: string;
+  key?: string;
+  params?: Record<string, string>;
 }
 
 /** 后端推来的事件。tag = kind，与 Rust 的 AcpEvent 对齐 */
