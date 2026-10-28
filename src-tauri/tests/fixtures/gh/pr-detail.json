@@ -1,0 +1,115 @@
+{
+  "additions": 803,
+  "author": {
+    "id": "MDQ6VXNlcjQwMzUxNTE1",
+    "is_bot": false,
+    "login": "wangsyiiz",
+    "name": "wangsyiiz"
+  },
+  "baseRefName": "feat/e9",
+  "body": "E9 的第一张卡：**只做「gh 能不能用」**。不碰 PR 列表 / 详情 / diff（E9.2–E9.3），不碰前端组件（E9.4）。\n\nbase 是 `feat/e9`（E9 的 epic 分支），不是 `main` —— 整个 epic 的卡都完成后才回 main。\n\n## 做了什么\n\n三层按 `docs/gh.md §1.1` 落地，装配点只在 `lib.rs`：\n\n| 文件 | 层 | 内容 |\n|---|---|---|\n| `gh/model.rs` | domain | `GhStatus`、六档 `GhError` + 唯一的 `code()` 码表（50710–50715）、`trait GhCli` |\n| `gh/service.rs` | domain | 30s TTL 缓存、`force` 绕过、**错误不缓存**（否则装好 gh 点「重新检测」30s 内还是旧失败） |\n| `gh/cli.rs` | adapter | 四级探测（PATH → `%ProgramFiles%\\GitHub CLI` → `%LOCALAPPDATA%\\Programs\\GitHub CLI` → scoop shims）；`tokio::process` 跑 `--version`(2s) / `auth status`(5s)；超时 `kill`+`wait` 回收；stdout/stderr 分读避免管道死锁；探测根与可执行名可注入（生产才读环境） |\n| `gh/mod.rs` | 命令层 | `GhState`、`GhStatusDto`（ts-rs，camelCase）、`gh_status(force?)`；`GhError → CmdError` 走 `keyed`/`keyed_with` |\n\n`RealGh` 全仓只出现在 `lib.rs` 一行 —— 删掉 `cli.rs`，domain 与命令层照旧编译（规范里那条硬线的可验证形式）。\n\n## 读数（Windows 工具链实测）\n\n- `cargo test --lib`：**293 passed / 0 failed**，5.83s（基线 284 + 9 条新测 + ts-rs 导出测试）\n- 真机真 gh（临时探针跑 `RealGh::new().status()`，探针已删）：\n  `available=true, version=\"2.103.3\", logged_in=true, gh_path=\"C:\\Program Files\\GitHub CLI\\gh.exe\"`，1.00s\n- `where.exe gh` 无输出 ⇒ 命中的是第 2 条固定路径而非 PATH（正是规范新写的组合）\n- `tsc -b` 0 error；`npm test` 250 pass / 0 fail；`check-i18n` 资源一致 0、界面残留 0、Rust keyed key 0 缺失\n\n## 没取到的读数（不粉饰）\n\n真机「未登录 → 50711」跑不出来：WSL 里 `GH_TOKEN=ghp_invalid` 不会转发到 Windows 侧的 `gh.exe`（只转发 `WSLENV` 白名单），而本机 gh 已登录、不能随手 logout。这条只有 stub 单测覆盖（`auth_status_nonzero_means_not_logged_in`）。\n\n## 交付里两处错，已由我手工改掉（理由写在代码注释里）\n\n1. `fake-gh.cmd` 原用 `if ( … )` 块，块内 `echo gh version 2.99.1 (2026-10-28)` 的右括号**提前闭合了块**，导致 `auth status` 也返回 0 并打印版本行，`auth_status_nonzero_means_not_logged_in` 因此红。改成 `goto`/label，并按 `.gitattributes` 存 CRLF。\n2. 原「写垃圾 `.exe` 假装跑不起来」的用例，在 Windows 上 CreateProcess 撞非 PE 文件会**卡在系统错误弹窗 300s 不返回**（实测，整条门禁被挂住）。换成「真实可执行文件但 `--version` 非 0 ⇒ `available=false`」，同时删掉 `cli.rs` 里没人用的 `first_line`。\n\n## 顺带的规范改动（本 PR 前两个提交）\n\n- `docs/gh.md`：`不引新依赖` → 白名单（唯一例外 `async-trait`，proc-macro、不进二进制）；`std::process` → `tokio::process`；新增「装配点」「探测的可测性（`with_roots` + `.cmd` stub）」；`gh_status` 四字段分期（`host`/`cwdOk` 留 E9.2）；§7 冒烟映射换成真机读数。\n- `CONTRIBUTING.md`：分支改成 epic → 任务两层（本次 base 调整的依据）。\n\n## 新增依赖\n\n`async-trait = \"0.1\"`（proc-macro）。为什么需要：`GhCli` 必须同时异步且 dyn-safe，原生 `async fn` in trait 不满足 dyn，而 `Arc<dyn GhCli>` 是分层解耦的前提。体积代价：不进二进制；其三个传递依赖 `proc-macro2`/`quote`/`syn` 本就在 `Cargo.lock` 里（`Cargo.lock` 因此只 +12 行）。\n",
+  "changedFiles": 13,
+  "createdAt": "2026-10-28T10:00:28Z",
+  "deletions": 3,
+  "files": [
+    {
+      "path": ".gitattributes",
+      "additions": 1,
+      "deletions": 0,
+      "changeType": "ADDED"
+    },
+    {
+      "path": "docs/gh.md",
+      "additions": 40,
+      "deletions": 3,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "src-tauri/Cargo.lock",
+      "additions": 12,
+      "deletions": 0,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "src-tauri/Cargo.toml",
+      "additions": 1,
+      "deletions": 0,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "src-tauri/src/gh/cli.rs",
+      "additions": 413,
+      "deletions": 0,
+      "changeType": "ADDED"
+    },
+    {
+      "path": "src-tauri/src/gh/mod.rs",
+      "additions": 100,
+      "deletions": 0,
+      "changeType": "ADDED"
+    },
+    {
+      "path": "src-tauri/src/gh/model.rs",
+      "additions": 40,
+      "deletions": 0,
+      "changeType": "ADDED"
+    },
+    {
+      "path": "src-tauri/src/gh/service.rs",
+      "additions": 137,
+      "deletions": 0,
+      "changeType": "ADDED"
+    },
+    {
+      "path": "src-tauri/src/lib.rs",
+      "additions": 5,
+      "deletions": 0,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "src-tauri/tests/fixtures/fake-gh.cmd",
+      "additions": 45,
+      "deletions": 0,
+      "changeType": "ADDED"
+    },
+    {
+      "path": "src/i18n/en.ts",
+      "additions": 3,
+      "deletions": 0,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "src/i18n/zh-CN.ts",
+      "additions": 3,
+      "deletions": 0,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "src/lib/ipc/types.gen/GhStatusDto.ts",
+      "additions": 3,
+      "deletions": 0,
+      "changeType": "ADDED"
+    }
+  ],
+  "headRefName": "feat/e9-gh-adapter",
+  "isDraft": false,
+  "mergeable": "UNKNOWN",
+  "number": 12,
+  "reviewDecision": "",
+  "state": "MERGED",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-10-28T10:00:40Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/wangsyiiz/SinceArc/actions/runs/40668676486/job/122749621381",
+      "name": "signed-off",
+      "startedAt": "2026-10-28T10:00:35Z",
+      "status": "COMPLETED",
+      "workflowName": "dco"
+    }
+  ],
+  "title": "feat(gh): E9.1 gh adapter —— 可用性探测 + 版本/登录 + 50710/50711/50714",
+  "updatedAt": "2026-10-28T10:03:06Z",
+  "url": "https://github.com/wangsyiiz/SinceArc/pull/12"
+}

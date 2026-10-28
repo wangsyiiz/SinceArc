@@ -2,6 +2,7 @@ pub mod acp;
 pub mod coalesce;
 pub mod commands;
 pub mod db;
+pub mod gh;
 pub mod lock;
 pub mod mcp;
 pub mod mention;
@@ -156,6 +157,9 @@ pub fn run() {
             let db = db::Db::open(&dir.join("sincearc.db"))?;
             tracing::info!(target: "sincearc::ipc", path = %dir.join("sincearc.db").display(), "db ready");
             app.manage(AppState::new(db));
+            app.manage(gh::GhState::new(std::sync::Arc::new(
+                gh::cli::RealGh::new(),
+            )));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -213,6 +217,11 @@ pub fn run() {
             commands::messages_load,
             commands::session_usage,
             commands::agent_list_connected,
+            gh::gh_status,
+            gh::gh_repo_resolve,
+            gh::gh_pr_list,
+            gh::gh_pr_detail,
+            gh::gh_pr_diff,
         ])
         .build(tauri::generate_context!())
         .expect("error while building SinceArc");

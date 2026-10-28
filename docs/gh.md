@@ -19,7 +19,12 @@ src-tauri/src/gh/
 
 **门禁边界（硬约束）**
 
-- 不引新依赖：只用 `std::process` + `serde_json`，不引 octocrab / reqwest。
+- **不引新依赖（白名单唯一例外：`async-trait`）**：`GhCli` 必须同时「异步」且「dyn-safe」
+  （`Arc<dyn GhCli>` 要能进 `AppState`），原生 `async fn` in trait 不满足 dyn，故用 `async-trait`
+  （proc-macro，不进二进制；其三个传递依赖 `proc-macro2` / `quote` / `syn` 本已在锁文件里）。
+  **白名单之外一律拒绝**：不引 octocrab / reqwest / 任何 HTTP 客户端。
+- 进程与超时用 `tokio::process` + `tokio::time::timeout`（两者都已在依赖里，不算新增）；
+  **不用 `std::process`** —— 同步跑会阻塞 UI，与下一条「调用走 async」冲突。
 - 不在客户端存任何 token；登录态完全归 `gh` 自己管。
 - 所有 gh 调用必须有超时：列表 10s、详情 10s、diff 20s。
 - 调用走 async，不阻塞 UI 线程。
@@ -65,6 +70,24 @@ adapter（src-tauri/src/gh/cli.rs，实现 trait GhCli：进程、argv、超时�
 3. **错误枚举**（domain 定义）：`GhError { NotInstalled, NotLoggedIn, RateLimited{reset}, RepoUnavailable, Timeout, ParseFailed{version}, CliFailed{stderr} }`，
    码只在一个地方映射：`impl GhError { fn code(&self) -> u16 }`。**adapter 只负责把 stderr 文本判成枚举，不碰数字码**。
 
+### 装配点（守住「删掉 cli.rs 仍能编译」这条线）
+
+`commands` 只认 `Arc<dyn GhCli>`，**不出现 `RealGh`**。装配在 `lib.rs`：构造 `RealGh` 后塞进 `AppState` 的
+`gh: Arc<dyn GhCli>` 字段。这样 `cli.rs` 的增删只波及 `lib.rs`，`domain` 与 `commands` 照旧编译。
+反之，若 `commands` 里出现 `use crate::gh::cli::RealGh`，上面那条硬线就名存实亡。
+
+### 探测的可测性（否则「假 gh 进 PATH」这条验收写不成稳定单测）
+
+`RealGh` 的**探测根**（PATH + 三条固定路径）与可执行名必须是构造参数，默认值才从环境取：
+
+```rust
+RealGh::new()               // 生产：PATH + %ProgramFiles% + %LOCALAPPDATA% + scoop shims
+RealGh::with_roots(roots)   // 测试：tempdir 里放 stub，不碰真实环境
+```
+
+两个原因：改进程级 `PATH` 是全局副作用，测试之间互相污染；Windows 原生 `cargo test` 没有 sh 解释器，
+所以 stub 必须是 `.cmd`（`cmd.exe` 可直接执行），不是 `.sh`。
+
 ### 各层职责一览
 
 | 层 | 有 | 没有 |
@@ -75,19 +98,44 @@ adapter（src-tauri/src/gh/cli.rs，实现 trait GhCli：进程、argv、超时�
 
 **缓存放 domain 而不是 adapter**：这样 adapter 保持无状态，domain 的缓存逻辑可以用假 adapter（fixture JSON）单测，不需要机器上装 gh。
 
+**文件落点**：`model.rs` = domain（模型 + `GhCli` trait + `GhError` + `code()`）；`cli.rs` = adapter；
+`mod.rs` = 命令层（`#[tauri::command]` + DTO + 取码 + 日志）。
+`gh_status` 的 30s 缓存落在 domain（`service.rs::GhService`，持 `Arc<dyn GhCli>`），commands 只调 service ——
+TTL 不进命令层，也不进 adapter。
+
 ### 可测性（这是分层的验收方式，不是口号）
 
 - **domain 测试**：实现一个 `FakeGh`（返回捕获下来的真实 JSON 反序列化后的领域模型 / 直接返回 `GhError`），
   验证缓存命中、TTL 过期、排序、切片边界、错误码映射。**不需要 gh 在场。**
-- **adapter 测试**：用一个 stub 脚本冒充 `gh`（`tests/fixtures/fake-gh.sh`，按 argv 吐捕获的 JSON / 退出码 / stderr），
-  验证探测、版本解析、四类 stderr→枚举、超时。**不需要网络。**
+- **adapter 测试**：用一个 stub 脚本冒充 `gh`（`tests/fixtures/fake-gh.cmd`，按 argv 吐捕获的 JSON / 退出码 / stderr，
+  经 `RealGh::with_roots` 注入），验证探测、版本解析、四类 stderr→枚举、超时。**不需要网络。**
 - **端到端**：真机真 gh，只跑 E9.5 的冒烟脚本。
 
 判断是否解耦成功的一条硬线：**把 `src-tauri/src/gh/cli.rs` 整个删掉，domain 与 commands 应当仍能编译**（trait 与模型都在 domain 侧）。做不到就是解耦没做到。
 
 ## 2. 可用性探测（这是本功能的第一道门）
 
-`gh_status` 返回：`{ available, version?, loggedIn, host, cwdOk, ghPath? }`。
+`gh_status` 返回：`{ available, version?, loggedIn, host?, cwdOk, ghPath? }`。
+
+> **六字段定稿（2026-10-28，所有者选「保留」）**：E9.1 先只交了四项，E9.2 补齐 `host` / `cwdOk`。
+> 两者语义如下，别处不再另立说法。
+
+**`host`：默认用哪个 GitHub 主机**
+
+- 来源：`gh auth status` 的输出（这条命令本来就要跑，不再多起进程）。行形如
+  `✓ Logged in to github.com account <user> (keyring)`。
+- 规则（带兜底）：`github.com` 已登录 → 取它；否则取唯一已登录的 host；多个都登录且都没有
+  `github.com` → 取第一个并 `tracing::warn!` 留痕；一个都没登录 → `None`（此时 `loggedIn=false`，命令层报 50711）。
+- 用途：`RepoRef.host` 缺省时填它。gh 的 `-R` 支持 `[HOST/]OWNER/REPO`，所以跨 host 不用别的手段。
+- 不做：不读 `~/.config/gh/hosts.yml`（§8），不猜没登录过的主机。
+
+**`cwdOk`：当前目录能不能当隐式仓库用**
+
+- 语义：进程 cwd 是否落在 git 工作树内 —— 也就是「不带 `-R` 的 gh 命令能不能自己推断出仓库」。
+- 判定：纯文件系统向上找 `.git`（文件或目录都算，worktree 与 submodule 用 `.git` 文件），
+  O(深度)，**不起进程**，不调 `git`。
+- 用途：E9.4 代码视图里给「当前目录不是仓库」的提示；E14「项目与位置」可以直接拿它当现成信号。
+- 明确不做：不判断该仓库有没有远端、是否属于 gh 认识的 host、工作区是否干净。
 
 探测顺序（找到即停）：
 
@@ -95,6 +143,10 @@ adapter（src-tauri/src/gh/cli.rs，实现 trait GhCli：进程、argv、超时�
 2. `%ProgramFiles%\GitHub CLI\gh.exe`
 3. `%LOCALAPPDATA%\Programs\GitHub CLI\gh.exe`
 4. `%USERPROFILE%\scoop\shims\gh.exe`
+
+**实测（2026-10-28，本机 Windows）**：gh `2.103.3` 装在 `C:\Program Files\GitHub CLI\gh.exe`，
+但 `where.exe gh` **无输出**（安装目录不在 PATH）⇒ 第 2 条兜底路径不是可选项，是唯一命中路径。
+所以「有 gh」这条验收必须能覆盖「PATH 探测 miss、固定路径命中」这种组合，不能只测 PATH。
 
 判定：
 
@@ -109,6 +161,42 @@ adapter（src-tauri/src/gh/cli.rs，实现 trait GhCli：进程、argv、超时�
 
 结果缓存 30s；前端「重新检测」按钮强制刷新（传 `force: true`）。
 
+## 2.1 仓库身份解析（`gh_repo_resolve`，2026-10-28 定）
+
+`gh` 的四个命令都要 `[HOST/]OWNER/REPO`，而应用手上只有本地目录 —— 项目列表里 `slug` 是 `—/文件夹名`
+这类占位值。所以新增一个**只读、纯文件系统**命令：
+
+```
+gh_repo_resolve(path: string) -> { host: string, owner: string, name: string }
+```
+
+**判定顺序（找到即停）**
+
+1. 从 `path` 向上逐级找 `.git`（**文件或目录都算**，worktree / submodule 是文件），到文件系统根为止。
+2. `.git` 是文件 → 读其中唯一一行 `gitdir: <路径>`，相对路径相对 `.git` 所在目录解析；是目录 → 直接用它。
+3. 读 `<gitdir>/config` 的 `[remote "origin"]` 的 `url`。
+4. 没有 `origin` 时按兜底：**恰好一个** remote → 用它的 `url`；0 个或多个 → 拒绝（见码表）。
+
+**URL → (host, owner, name)（逐条，段数按 `/` 切）**
+
+| 形状 | host | owner / name |
+| --- | --- | --- |
+| `https://host[:port]/<seg…>` | 第一段，去端口 | 最后两段 |
+| `http://host[:port]/<seg…>` | 同上 | 同上 |
+| `ssh://[user@]host[:port]/<seg…>` | 第一段（去 `user@`、去端口） | 最后两段 |
+| `git@host:<seg…>`（scp 风格） | 冒号前（去 `user@`） | 冒号后按 `/` 切，最后两段 |
+
+- 末尾 `.git` 一律去掉；`user@` / `password@` 一律去掉。
+- 段数 < 2 → 拒绝。段数 > 2 → 取最后两段并 `tracing::warn!` 留痕（GitLab 嵌套组这类，本项目只面向 GitHub）。
+- **兜底（枚举之外一律拒绝，不猜）**：`git://`、`file://`、盘符路径、`/` 开头的本地路径、没有任何分隔符的字符串
+  —— 全部按「解析不出」拒绝。宁可报错让用户配远端，也不拿半截路径去调 `gh`。
+
+**其它约束**
+
+- 不缓存（纯文件读，µs 级）；不读 `~/.config/gh/hosts.yml`；**不调 `git` 进程**（与 §1「不用 `std::process`」同一条纪律）。
+- 分层：解析在 domain（`gh/repo.rs`），只用 `std::fs`，不进 adapter —— adapter 只跟进程打交道（§1.1）。
+- 返回的 `host` 可直接填进 `RepoRefDto.host`（§2 的 `host` 缺省规则是给「没解析到」的情况用的；解析到了就以解析结果为准）。
+
 ## 3. 错误码（落在既有 50700 段，不造新段）
 
 `50700–50799` 的定位是「客户端辅助设施」，gh 是外部辅助工具，落在这一段。
@@ -121,6 +209,8 @@ adapter（src-tauri/src/gh/cli.rs，实现 trait GhCli：进程、argv、超时�
 | `50713` | 仓库不存在 / 无权限 | 「这个仓库拿不到：不存在或当前账号无权限」 |
 | `50714` | 执行失败 / 超时 | 「gh 执行失败」+ stderr 首行 |
 | `50715` | JSON 解析失败 | 「gh 返回了看不懂的数据」+ 版本号（多为版本过旧） |
+| `50716` | PR 不存在 | 「这个 PR 拿不到：编号不存在或已删除」+ 编号 |
+| `50717` | 仓库身份解析失败（§2.1） | 两条 key，按判定结果二选一：`err.gh.notGitRepo`「这个目录还不是 git 仓库」／`err.gh.noRemote`「没找到可用的 origin 远端（或远端地址认不出 GitHub 仓库）」 |
 
 实测信号（spike）：
 
@@ -131,6 +221,11 @@ adapter（src-tauri/src/gh/cli.rs，实现 trait GhCli：进程、argv、超时�
 ## 4. 领域模型（必须允许可空）
 
 ```ts
+interface GhRepoRef {
+  host?: string;                  // 缺省用 gh_status.host（github.com 优先），见 §2
+  owner: string;
+  name: string;
+}
 interface GhAuthor { login: string; name?: string; isBot: boolean }
 interface GhPullRequest {
   number: number; title: string; url: string;
@@ -142,6 +237,28 @@ interface GhPullRequest {
   reviewDecision?: string;        // 可能为空串 → 存成 undefined
   checks: "pending" | "passing" | "failing";
 }
+
+// 详情 = 列表条目 + 正文与统计 + 文件清单（E9.3）
+interface GhFile {
+  path: string; additions: number; deletions: number;
+  changeType: string;             // ADDED/MODIFIED/DELETED/RENAMED/COPIED → 存小写
+}
+interface GhPrDetail {
+  pr: GhPullRequest;              // 复用列表那套字段，不另立一套
+  body: string;                   // 原始 markdown 文本，前端只渲染纯文本 + 链接白名单（§1）
+  createdAt: string;              // ISO8601
+  additions: number; deletions: number; changedFiles: number;
+  files: GhFile[];
+  filesTruncated: boolean;        // GitHub 对 files 有 300 条上限，超出即 true
+}
+
+// diff 切片（E9.3）：整包落后端缓存，按行切页
+interface GhDiffPage {
+  lines: string[];                // 本页的原始 diff 行（含 \ No newline 这类行）
+  page: number;                   // 0 基
+  pageSize: number;               // 请求生效的每页行数（1..=200）
+  totalLines: number; totalPages: number;
+}
 ```
 
 三条来自实测的约束：
@@ -151,19 +268,54 @@ interface GhPullRequest {
    不许当必然存在（否则已合并的 PR 渲染会崩）。
 3. `files` 是 `[{path, additions, deletions, changeType}]`，**没有 patch 内容**。
 
+`checks` 的汇总口径（2026-10-28 定，别处不另立说法）：
+
+- `statusCheckRollup` 里每条要么是 `CheckRun`（有 `status`/`conclusion`），要么是 `StatusContext`（有 `state`）；
+- 只要有一条 `conclusion ∈ {FAILURE, CANCELLED, TIMED_OUT, ACTION_REQUIRED, STARTUP_FAILURE}` 或 `state ∈ {FAILURE, ERROR}`
+  → `failing`；
+- 否则只要有一条 `status != COMPLETED` 或 `conclusion` 为空，或 `state` 为 `PENDING` → `pending`；
+- 其余（全部 SUCCESS / NEUTRAL / SKIPPED）→ `passing`；
+- **`statusCheckRollup` 为空（仓库没配 CI）也记 `pending`**，不记 `passing` —— 界面宁可显示「未完成」，
+  也不能给一个假的绿勾。
+
 ## 5. diff 与分页
 
 GitHub 没有「按行取 patch」的口子（REST 的 `pulls/{n}/files` 也没有 patch），所以：
 
-- 逐行 diff 只能取 `gh pr diff <n>` 的整包（spike：PR #3 → 39,766 B / 11 文件，随 PR 线性增长）；
-- **客户端切片**：整包落后端缓存，命令 `gh_pr_diff(pr, page, pageSize=200)` 按行切；
+- 逐行 diff 只能取 `gh pr diff <n>` 的整包（spike：PR #3 → 39,766 B / 11 文件；实测 PR #12 → 34,391 B / 974 行 / 13 文件，随 PR 线性增长）；
+- **客户端切片**：整包落后端缓存（TTL **5min**，同详情），命令 `gh_pr_diff(repo, number, page, pageSize)` 按行切；
 - 不把整包塞进事件或列表响应；大 PR 首批只取前 200 行。
 
 E9 原卡里「单页 ≤ 200 行」据此改成「客户端对 patch 切片，每片 ≤ 200 行」。
 
+**切片的精确规则（2026-10-28 定，实测 PR #12 = 974 行 / 34,391 B 作参照）**：
+
+- `page` 从 **0** 开始（§7 的验收 `gh_pr_diff(3, 0, 200)` 就是首页）；
+- `pageSize` 只允许 `1..=200`，缺省 200；**超出范围按错误返回（`err.gh.badPageSize`），不静默截断** ——
+  静默截断会让前端以为拿到的是它要的页大小；
+- `page >= totalPages` → 返回**空 `lines`**，`totalLines` / `totalPages` 照给（翻页越界不是错误，
+  界面上就是「没有更多」）；
+- 按 `\n` 切（`\r\n` 先归一成 `\n`），保留空行；不重新拼装、不解析 hunk 头；
+- 整包与切片结果都不落库，只在内存缓存。
+
+**详情（`gh_pr_detail`）的边界**：
+
+- `files` 一次取全部（GitHub 上限 300 条）：取到的条数 == 请求的 `changedFiles` 才算完整；
+  否则 `filesTruncated = true`，此时以 `changedFiles` 为准显示总数；
+- 详情 TTL **5min**（列表是 30s，别混），单次超时 **10s**；`gh pr diff` 超时 **20s**；
+- PR 编号不存在 → `50716`；仓库不存在仍走 `50713`。
+
 ## 6. UI（代码视图切换即检测）
 
 - 侧栏切到代码视图（tab `kind: "repo"`）时调用 `gh_status`；**不是**只在启动时查一次。
+- 打开顺序（三步各自要能单独显示状态，别合成一个「加载中」）：
+
+  1. `gh_status(force: false)` → 不可用就走下面的安装指引，**不再往下走**；
+  2. `gh_repo_resolve(repo.path)`（§2.1）→ 失败在栏内说明「这个目录还不是 git 仓库 / 没配 origin」，附路径与
+     「重新选择目录」；此时不显示「这个仓库没有 PR」（空列表与解析失败必须是两种样子）；
+  3. `gh_pr_list(repo)` → 空数组才是「这个仓库没有 PR」；其它错误按码出文案（50712 / 50713 / 50714）。
+
+  「重新检测」按钮 = 三步全重跑（`gh_status(force: true)` 之后重跑 2、3）。
 - 不可用时**在栏内**给简易安装步骤（不弹全屏对话框，不阻止继续用其它功能）：
 
   ```
@@ -180,16 +332,36 @@ E9 原卡里「单页 ≤ 200 行」据此改成「客户端对 patch 切片，�
 
 ## 7. 验收与冒烟映射
 
-| 验收点 | 怎么验 | 期望读数（真实） |
-| --- | --- | --- |
-| gh 未安装 → 50710 + 安装指引 | 把 `PATH` 与 4 个探测路径都弄空（临时改目录或重命名） | 栏内出现三步指引，命令可复制，无崩溃 |
-| 未登录 → 50711 | `GH_TOKEN=bad` 或 `gh auth logout` | 只显示「登录」一步 |
-| 列表可用 | `gh pr list --state all --limit 30 --json …` | 5 条 PR，1022–1130 ms，1,765 B |
-| 已合并 PR 可渲染 | 打开 `#5`（merged） | `mergeable=unknown` 不崩，checks 显示 signed-off |
-| 详情 | `gh pr view <n> --json …` | ~1.1 s，3,174 B |
-| diff 切片 | `gh_pr_diff(3, 0, 200)` | 首页 200 行，整包 39,766 B 落缓存 |
-| 仓库不存在 → 50713 | 指向 `wangsyiiz/nope-xyz-123` | 人话错误，不显示空列表 |
-| 不写 token | 全仓搜 `gh auth token` | 0 处 |
+场景号对应 `scripts/smoke-gh.mjs`：`A*` 跑真实 `gh` 取后端读数，`B*` 用仓库里的 fixtures 打桩读 DOM。
+
+| 验收点 | 怎么验 | 期望读数（真实） | 冒烟场景 |
+| --- | --- | --- | --- |
+| gh 未安装 → 50710 + 安装指引 | 把 `PATH` 与 4 个探测路径都弄空（临时改目录或重命名） | 栏内出现三步指引，命令可复制，无崩溃 | B1；段 A1 缺失时其余 A 项 skip |
+| gh 已安装 → `available=true` | 真机点「重新检测」（Windows，2026-10-28） | `available=true`；`version=2.103.3`；`ghPath=C:\Program Files\GitHub CLI\gh.exe`（`where.exe gh` 无输出 ⇒ 命中的是第 2 条固定路径）；`loggedIn=true`，账号 `wangsyiiz` | A1 / A2 |
+| 未登录 → 50711 | `GH_TOKEN=bad` 或 `gh auth logout` | 只显示「登录」一步 | A7 / B2 |
+| 列表可用 | `gh pr list --state all --limit 30 --json …` | 5 条 PR，1022–1130 ms，1,765 B | A3 / B3 |
+| 已合并 PR 可渲染 | 打开 `#5`（merged） | `mergeable=unknown` 不崩，checks 显示 signed-off | A4 / B4 |
+| 详情 | `gh pr view <n> --json …` | ~1.1 s，3,174 B | A4 / B5 |
+| diff 切片 | `gh_pr_diff(3, 0, 200)` | 首页 200 行，整包 39,766 B 落缓存 | A5 / B6 |
+| 仓库不存在 → 50713 | 指向 `wangsyiiz/nope-xyz-123` | 人话错误，不显示空列表 | A6 / B7 |
+| 目录不是 git 仓库 → 50717 | 选一个非仓库目录（如 `C:\Users\picke`）当项目 | 栏内「还不是 git 仓库」，与「没有 PR」区分得开 | B8 |
+| 身份解析 | `gh_repo_resolve("C:\\source\\sincearc")` | `host=github.com`、`owner=wangsyiiz`、`name=SinceArc` | B3（打桩返回同一身份） |
+| 不写 token | 全仓搜 `gh auth token` | 0 处 | —（本脚本不覆盖，另跑搜索） |
+
+跑法（先构建 `dist`；Chromium 与 playwright 路径按本机实际值替换）：
+
+```
+python3 -m http.server 4181 --directory dist &
+PW_MODULE=/home/jerry/.local/lib/node_modules/playwright/index.mjs \
+  node scripts/smoke-gh.mjs --base http://127.0.0.1:4181/index.html \
+  --chromium /usr/sbin/chromium-browser --json <scratch>/smoke-gh.json
+```
+
+**段 A 的数字会随环境与仓库状态漂移**，脚本每次打印的是当次实测：上面「期望读数」列是 2026-10-28 的
+Windows 首测基线（`gh 2.103.3` / 5 条 PR / diff 974 行）。同一脚本在 WSL 侧跑时命中 Linux 的 `gh 2.97.0`，
+PR 条数按当时仓库状态（2026-10-28 晚实测 17 条：2 open / 14 merged / 1 closed，2,036 ms，12,070 B），
+A4/A5 取列表里第一条 merged 的 PR。这些差异是数据源的差异，不是回归 —— 判回归只看「✔/✖」与 `50713 / 50711`
+这两个信号是否仍为 true。
 
 ## 8. 不做
 
