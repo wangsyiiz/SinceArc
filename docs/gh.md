@@ -173,6 +173,7 @@ TTL 不进命令层，也不进 adapter。
 | `50713` | 仓库不存在 / 无权限 | 「这个仓库拿不到：不存在或当前账号无权限」 |
 | `50714` | 执行失败 / 超时 | 「gh 执行失败」+ stderr 首行 |
 | `50715` | JSON 解析失败 | 「gh 返回了看不懂的数据」+ 版本号（多为版本过旧） |
+| `50716` | PR 不存在 | 「这个 PR 拿不到：编号不存在或已删除」+ 编号 |
 
 实测信号（spike）：
 
@@ -199,6 +200,28 @@ interface GhPullRequest {
   reviewDecision?: string;        // 可能为空串 → 存成 undefined
   checks: "pending" | "passing" | "failing";
 }
+
+// 详情 = 列表条目 + 正文与统计 + 文件清单（E9.3）
+interface GhFile {
+  path: string; additions: number; deletions: number;
+  changeType: string;             // ADDED/MODIFIED/DELETED/RENAMED/COPIED → 存小写
+}
+interface GhPrDetail {
+  pr: GhPullRequest;              // 复用列表那套字段，不另立一套
+  body: string;                   // 原始 markdown 文本，前端只渲染纯文本 + 链接白名单（§1）
+  createdAt: string;              // ISO8601
+  additions: number; deletions: number; changedFiles: number;
+  files: GhFile[];
+  filesTruncated: boolean;        // GitHub 对 files 有 300 条上限，超出即 true
+}
+
+// diff 切片（E9.3）：整包落后端缓存，按行切页
+interface GhDiffPage {
+  lines: string[];                // 本页的原始 diff 行（含 \ No newline 这类行）
+  page: number;                   // 0 基
+  pageSize: number;               // 请求生效的每页行数（1..=200）
+  totalLines: number; totalPages: number;
+}
 ```
 
 三条来自实测的约束：
@@ -222,11 +245,28 @@ interface GhPullRequest {
 
 GitHub 没有「按行取 patch」的口子（REST 的 `pulls/{n}/files` 也没有 patch），所以：
 
-- 逐行 diff 只能取 `gh pr diff <n>` 的整包（spike：PR #3 → 39,766 B / 11 文件，随 PR 线性增长）；
-- **客户端切片**：整包落后端缓存，命令 `gh_pr_diff(pr, page, pageSize=200)` 按行切；
+- 逐行 diff 只能取 `gh pr diff <n>` 的整包（spike：PR #3 → 39,766 B / 11 文件；实测 PR #12 → 34,391 B / 974 行 / 13 文件，随 PR 线性增长）；
+- **客户端切片**：整包落后端缓存（TTL **5min**，同详情），命令 `gh_pr_diff(repo, number, page, pageSize)` 按行切；
 - 不把整包塞进事件或列表响应；大 PR 首批只取前 200 行。
 
 E9 原卡里「单页 ≤ 200 行」据此改成「客户端对 patch 切片，每片 ≤ 200 行」。
+
+**切片的精确规则（2026-10-28 定，实测 PR #12 = 974 行 / 34,391 B 作参照）**：
+
+- `page` 从 **0** 开始（§7 的验收 `gh_pr_diff(3, 0, 200)` 就是首页）；
+- `pageSize` 只允许 `1..=200`，缺省 200；**超出范围按错误返回（`err.gh.badPageSize`），不静默截断** ——
+  静默截断会让前端以为拿到的是它要的页大小；
+- `page >= totalPages` → 返回**空 `lines`**，`totalLines` / `totalPages` 照给（翻页越界不是错误，
+  界面上就是「没有更多」）；
+- 按 `\n` 切（`\r\n` 先归一成 `\n`），保留空行；不重新拼装、不解析 hunk 头；
+- 整包与切片结果都不落库，只在内存缓存。
+
+**详情（`gh_pr_detail`）的边界**：
+
+- `files` 一次取全部（GitHub 上限 300 条）：取到的条数 == 请求的 `changedFiles` 才算完整；
+  否则 `filesTruncated = true`，此时以 `changedFiles` 为准显示总数；
+- 详情 TTL **5min**（列表是 30s，别混），单次超时 **10s**；`gh pr diff` 超时 **20s**；
+- PR 编号不存在 → `50716`；仓库不存在仍走 `50713`。
 
 ## 6. UI（代码视图切换即检测）
 
