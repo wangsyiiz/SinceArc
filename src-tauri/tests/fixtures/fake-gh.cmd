@@ -11,6 +11,8 @@ if "%FAKE_GH_MODE%"=="slow" goto slow
 if "%1"=="--version" goto version
 if "%1"=="auth" if "%2"=="status" goto auth
 if "%1"=="pr" if "%2"=="list" if "%3"=="-R" goto pr_list
+if "%1"=="pr" if "%2"=="view" goto pr_view
+if "%1"=="pr" if "%2"=="diff" goto pr_diff
 if "%1"=="crash" goto crash
 goto unsupported
 
@@ -56,6 +58,20 @@ if "%FAKE_GH_MODE%"=="bad-cred" goto bad_cred
 if "%FAKE_GH_MODE%"=="rate-limit" goto rate_limit
 type "%FAKE_GH_FIXTURE%"
 exit /b 0
+
+:pr_view
+if "%FAKE_GH_MODE%"=="pr-not-found" goto pr_not_found
+if "%FAKE_GH_MODE%"=="repo-missing" goto repo_missing
+type "%FAKE_GH_FIXTURE%"
+exit /b 0
+
+:pr_diff
+type "%FAKE_GH_FIXTURE%"
+exit /b 0
+
+:pr_not_found
+>&2 echo GraphQL: Could not resolve to a PullRequest with the number of 1. (repository.pullRequest)
+exit /b 1
 
 :repo_missing
 >&2 echo GraphQL: Could not resolve to a Repository with the name 'x'. (repository)
