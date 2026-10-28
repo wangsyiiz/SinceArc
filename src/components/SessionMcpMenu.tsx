@@ -13,7 +13,7 @@ import {
 } from "@/lib/ipc";
 import { entryKind, transportSupportNote } from "@/lib/mcp-display";
 import { diffMcpNames } from "@/lib/mcp-names-diff";
-import { errorText } from "@/lib/errors";
+import { errorTextOf } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import { McpServerChecklist } from "./McpChecklist";
 import { MoreMenu } from "./MoreMenu";
@@ -167,7 +167,7 @@ function SessionMcpPanel({
       .catch((e) => {
         if (alive) {
           const err = asCmdError(e);
-          setError(t("settings.sessionMcp.loadFailed", { msg: errorText(err.code, err.msg, t) }));
+          setError(t("settings.sessionMcp.loadFailed", { msg: errorTextOf(err, t) }));
         }
       })
       .finally(() => {
@@ -194,7 +194,7 @@ function SessionMcpPanel({
     } catch (e) {
       applyLoadedState(state);
       const err = asCmdError(e);
-      setError(t("settings.sessionMcp.saveFailed", { msg: errorText(err.code, err.msg, t) }));
+      setError(t("settings.sessionMcp.saveFailed", { msg: errorTextOf(err, t) }));
     } finally {
       setSaving(false);
     }
@@ -229,7 +229,7 @@ function SessionMcpPanel({
       setReconnectNeeded(false);
     } catch (e) {
       const err = asCmdError(e);
-      setError(t("settings.sessionMcp.reconnectFailed", { msg: errorText(err.code, err.msg, t) }));
+      setError(t("settings.sessionMcp.reconnectFailed", { msg: errorTextOf(err, t) }));
     } finally {
       setReconnecting(false);
     }

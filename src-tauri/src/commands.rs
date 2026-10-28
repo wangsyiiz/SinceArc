@@ -322,6 +322,10 @@ fn usage_percent(used: u64, size: u64) -> u8 {
 pub struct CmdError {
     pub code: u32,
     pub msg: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<BTreeMap<String, String>>,
 }
 
 impl CmdError {
@@ -329,6 +333,31 @@ impl CmdError {
         Self {
             code,
             msg: msg.into(),
+            key: None,
+            params: None,
+        }
+    }
+
+    pub(crate) fn keyed(code: u32, key: &'static str, msg: impl Into<String>) -> Self {
+        Self {
+            code,
+            msg: msg.into(),
+            key: Some(key.to_string()),
+            params: None,
+        }
+    }
+
+    pub(crate) fn keyed_with(
+        code: u32,
+        key: &'static str,
+        msg: impl Into<String>,
+        params: BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            code,
+            msg: msg.into(),
+            key: Some(key.to_string()),
+            params: Some(params),
         }
     }
 }
@@ -368,7 +397,11 @@ pub fn is_openable_url(url: &str) -> bool {
 #[tauri::command]
 pub async fn open_external(url: String) -> Result<(), CmdError> {
     if !is_openable_url(&url) {
-        return Err(CmdError::new(50102, "只允许打开 http / https / mailto 链接"));
+        return Err(CmdError::keyed(
+            50102,
+            "err.external.schemeNotAllowed",
+            "只允许打开 http / https / mailto 链接",
+        ));
     }
     let target = url.trim().to_string();
 
@@ -543,13 +576,21 @@ pub struct SettingsReport {
 impl AppSettingsDto {
     fn validate(&self) -> Result<(), CmdError> {
         if self.context_messages > CONTEXT_MESSAGES_MAX {
-            return Err(CmdError::new(50001, "附带条数超出范围（0–20）"));
+            return Err(CmdError::keyed(
+                50001,
+                "err.settings.contextOutOfRange",
+                "附带条数超出范围（0–20）",
+            ));
         }
         if !is_valid_theme(&self.theme) {
-            return Err(CmdError::new(50001, "未知主题"));
+            return Err(CmdError::keyed(50001, "err.settings.unknownTheme", "未知主题"));
         }
         if !is_valid_auto_approve(&self.auto_approve_default) {
-            return Err(CmdError::new(50001, "未知的自动同意档"));
+            return Err(CmdError::keyed(
+                50001,
+                "err.settings.unknownAutoApprove",
+                "未知的自动同意档",
+            ));
         }
         // 显式报错而不是静默归一：写了不认识的语言就是调用方错了（docs/i18n.md §2）
         if let Some(language) = &self.language {
@@ -689,12 +730,12 @@ fn to_ssh_spec(dto: &ProfileDto) -> Result<SshSpec, CmdError> {
         .ssh_host
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| CmdError::new(50300, "SSH 主机未填"))?;
+        .ok_or_else(|| CmdError::keyed(50300, "err.ssh.hostMissing", "SSH 主机未填"))?;
     let user = dto
         .ssh_user
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| CmdError::new(50300, "SSH 账号未填"))?;
+        .ok_or_else(|| CmdError::keyed(50300, "err.ssh.userMissing", "SSH 账号未填"))?;
 
     let auth = match dto.ssh_auth.as_deref() {
         Some("key") => {
@@ -702,7 +743,13 @@ fn to_ssh_spec(dto: &ProfileDto) -> Result<SshSpec, CmdError> {
                 .ssh_key_path
                 .as_deref()
                 .filter(|s| !s.trim().is_empty())
-                .ok_or_else(|| CmdError::new(50300, "认证方式选了私钥，但私钥路径未填"))?;
+                .ok_or_else(|| {
+                    CmdError::keyed(
+                        50300,
+                        "err.ssh.keyPathMissing",
+                        "认证方式选了私钥，但私钥路径未填",
+                    )
+                })?;
             SshAuth::Key {
                 path: path.to_string(),
             }
@@ -712,7 +759,13 @@ fn to_ssh_spec(dto: &ProfileDto) -> Result<SshSpec, CmdError> {
                 .ssh_password
                 .as_deref()
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| CmdError::new(50300, "认证方式选了密码，但密码未填"))?;
+                .ok_or_else(|| {
+                    CmdError::keyed(
+                        50300,
+                        "err.ssh.passwordMissing",
+                        "认证方式选了密码，但密码未填",
+                    )
+                })?;
             SshAuth::Password {
                 secret: secret.to_string(),
             }
@@ -723,7 +776,13 @@ fn to_ssh_spec(dto: &ProfileDto) -> Result<SshSpec, CmdError> {
                 format!("未知的认证方式：{other}（只接受 key / password）"),
             ))
         }
-        None => return Err(CmdError::new(50300, "SSH 认证方式未选")),
+        None => {
+            return Err(CmdError::keyed(
+                50300,
+                "err.ssh.authMissing",
+                "SSH 认证方式未选",
+            ))
+        }
     };
 
     Ok(SshSpec {
@@ -804,14 +863,16 @@ pub async fn command_preview(
 /// 「agent closed stdout」—— 空 cwd 和命令不存在长得一模一样，根本没法排查。
 fn validate_launch_input(profile: &ProfileDto) -> Result<(), CmdError> {
     if profile.program.trim().is_empty() {
-        return Err(CmdError::new(
+        return Err(CmdError::keyed(
             50202,
+            "err.session.emptyAgentCommand",
             "agent 命令为空：先在「Agent」里选一个，或填一条能起 ACP 的命令",
         ));
     }
     if profile.cwd.trim().is_empty() {
-        return Err(CmdError::new(
+        return Err(CmdError::keyed(
             50201,
+            "err.session.emptyCwd",
             "工作目录为空：agent 会在空路径下启动并立刻退出，先把工作目录填上",
         ));
     }
@@ -892,7 +953,11 @@ pub async fn agent_user_test(
 ) -> Result<AgentUserTestOutcome, CmdError> {
     validate_launch_input(&profile)?;
     if acp_session_id.trim().is_empty() {
-        return Err(CmdError::new(50602, "session id 不能为空"));
+        return Err(CmdError::keyed(
+            50602,
+            "err.member.sessionIdRequired",
+            "session id 不能为空",
+        ));
     }
     let parsed = to_profile(&profile)?;
     let cwd = cwd
@@ -976,18 +1041,23 @@ pub fn agent_user_save(
     user: crate::db::AgentUserRow,
 ) -> Result<(), CmdError> {
     if user.name.trim().is_empty() {
-        return Err(CmdError::new(50602, "名字不能为空"));
+        return Err(CmdError::keyed(50602, "err.member.nameRequired", "名字不能为空"));
     }
     if user.handle.trim().trim_start_matches('@').is_empty() {
-        return Err(CmdError::new(50602, "handle 不能为空"));
+        return Err(CmdError::keyed(50602, "err.member.handleRequired", "handle 不能为空"));
     }
     if user.handle.trim().chars().any(|c| c.is_whitespace()) {
         // 解析靠空白断词：短名里有空格就永远 @ 不到（docs/group-chat.md §3）
-        return Err(CmdError::new(50602, "短名里不能有空格"));
+        return Err(CmdError::keyed(
+            50602,
+            "err.member.handleNoSpaces",
+            "短名里不能有空格",
+        ));
     }
     if user.acp_session_id.trim().is_empty() {
-        return Err(CmdError::new(
+        return Err(CmdError::keyed(
             50602,
+            "err.member.sessionIdRequiredTestFirst",
             "session id 不能为空：先测试通过再保存",
         ));
     }
@@ -1001,8 +1071,9 @@ pub fn agent_user_save(
                     format!("@{} 已经被占用了", user.handle.trim_start_matches('@')),
                 ))
             } else if msg.contains("profile_id, acp_session_id") {
-                Err(CmdError::new(
+                Err(CmdError::keyed(
                     50601,
+                    "err.member.alreadyAnotherPlayer",
                     "这条连接上这个会话已经是另一个玩家了 —— 同一个人不能同时有两个身份",
                 ))
             } else {
@@ -1085,8 +1156,9 @@ pub async fn mention_resolve(
     let member = matched[0];
 
     if member.acp_session_id.trim().is_empty() {
-        return Err(CmdError::new(
+        return Err(CmdError::keyed(
             50602,
+            "err.member.noSessionYet",
             "这个成员还没有可用的会话 —— 到成员设置里点「测试」建一个",
         ));
     }
@@ -1098,7 +1170,13 @@ pub async fn mention_resolve(
         .into_iter()
         .find(|p| p.id == member.profile_id)
         .map(|p| p.cwd)
-        .ok_or_else(|| CmdError::new(50601, "成员所属的连接不存在，数据不一致"))?;
+        .ok_or_else(|| {
+            CmdError::keyed(
+                50601,
+                "err.member.profileMissing",
+                "成员所属的连接不存在，数据不一致",
+            )
+        })?;
 
     Ok(MentionResolution {
         member_id: Some(member.id.clone()),
@@ -1593,7 +1671,11 @@ pub async fn session_trace_backfill(
     cwd: String,
 ) -> Result<TraceBackfillDto, CmdError> {
     let handle = state.get(&profile_id).await.ok_or_else(|| {
-        CmdError::new(50300, "目标连接已断开，补录需要在连接态下进行")
+        CmdError::keyed(
+            50300,
+            "err.conn.closedForBackfill",
+            "目标连接已断开，补录需要在连接态下进行",
+        )
     })?;
 
     let mut window = ReplayWindow::open(state.replay.clone(), acp_session_id.clone());
@@ -3102,10 +3184,14 @@ fn next_delegate_handle_id() -> String {
 
 fn validate_delegate_task_text(task: &str) -> Result<(), CmdError> {
     if task.trim().is_empty() {
-        return Err(CmdError::new(50701, "任务正文为空"));
+        return Err(CmdError::keyed(50701, "err.delegate.bodyEmpty", "任务正文为空"));
     }
     if task.len() > DELEGATE_TASK_MAX_BYTES {
-        return Err(CmdError::new(50701, "任务正文超过 8KB"));
+        return Err(CmdError::keyed(
+            50701,
+            "err.delegate.bodyTooLarge",
+            "任务正文超过 8KB",
+        ));
     }
     Ok(())
 }
@@ -3115,7 +3201,11 @@ fn validate_delegate_task_text(task: &str) -> Result<(), CmdError> {
 async fn guard_delegate_depth(delegates: &Delegates, parent_acp_session: Option<&str>) -> Result<(), CmdError> {
     if let Some(parent) = parent_acp_session {
         if delegates.is_child(parent).await {
-            return Err(CmdError::new(50702, "子任务不能再派活（深度上限 1）"));
+            return Err(CmdError::keyed(
+                50702,
+                "err.delegate.depthLimit",
+                "子任务不能再派活（深度上限 1）",
+            ));
         }
     }
     Ok(())
@@ -3130,7 +3220,11 @@ async fn guard_delegate_concurrency(
         .await
         >= DELEGATE_MAX_RUNNING
     {
-        return Err(CmdError::new(50703, "同一会话最多同时派 3 个任务"));
+        return Err(CmdError::keyed(
+            50703,
+            "err.delegate.tooMany",
+            "同一会话最多同时派 3 个任务",
+        ));
     }
     Ok(())
 }
@@ -3174,7 +3268,7 @@ async fn wait_for_delegate(
     let entry = delegates
         .get(handle_id)
         .await
-        .ok_or_else(|| CmdError::new(50704, "delegate 句柄不存在"))?;
+        .ok_or_else(|| CmdError::keyed(50704, "err.delegate.handleMissing", "delegate 句柄不存在"))?;
     if entry.status != DelegateStatus::Running {
         return Ok(outcome_from_entry(&entry));
     }
@@ -3194,7 +3288,9 @@ async fn wait_for_delegate(
             let current = delegates
                 .get(handle_id)
                 .await
-                .ok_or_else(|| CmdError::new(50704, "delegate 句柄不存在"))?;
+                .ok_or_else(|| {
+                    CmdError::keyed(50704, "err.delegate.handleMissing", "delegate 句柄不存在")
+                })?;
             Ok(outcome_from_entry(&current))
         }
         // 超时只说明「还在跑」，不取消、不打扰目标 agent。
@@ -3484,7 +3580,7 @@ pub async fn delegate_task(
         .map_err(|e| CmdError::new(50000, format!("读 agent user 失败：{e}")))?
         .into_iter()
         .find(|user| user.id == target_member_id)
-        .ok_or_else(|| CmdError::new(50700, "目标成员不存在或不在本群"))?;
+        .ok_or_else(|| CmdError::keyed(50700, "err.member.notInGroup", "目标成员不存在或不在本群"))?;
 
     let agent = state.get(&member.profile_id).await.ok_or_else(|| {
         CmdError::new(
@@ -3795,7 +3891,7 @@ pub async fn delegate_cancel(
         .delegates
         .get(&handle_id)
         .await
-        .ok_or_else(|| CmdError::new(50704, "delegate 句柄不存在"))?;
+        .ok_or_else(|| CmdError::keyed(50704, "err.delegate.handleMissing", "delegate 句柄不存在"))?;
     if entry.status != DelegateStatus::Running {
         return Ok(outcome_from_entry(&entry));
     }
@@ -3803,7 +3899,13 @@ pub async fn delegate_cancel(
     let handle = state
         .get(&entry.profile_id)
         .await
-        .ok_or_else(|| CmdError::new(50300, "目标连接已断开，这次派活没有可停的对象"))?;
+        .ok_or_else(|| {
+            CmdError::keyed(
+                50300,
+                "err.conn.closedForCancel",
+                "目标连接已断开，这次派活没有可停的对象",
+            )
+        })?;
 
     // 先打标记再发通知：agent 可能立刻回终态，晚一步就区分不出「取消导致的 failed」。
     state.request_cancel(&entry.child_acp_session_id).await;
@@ -3860,12 +3962,22 @@ pub async fn session_load(
     ui_session_id: Option<String>,
 ) -> Result<SessionLoadOutcome, CmdError> {
     if acp_session_id.trim().is_empty() {
-        return Err(CmdError::new(50602, "session id 不能为空"));
+        return Err(CmdError::keyed(
+            50602,
+            "err.member.sessionIdRequired",
+            "session id 不能为空",
+        ));
     }
     let handle = state
         .get(&profile_id)
         .await
-        .ok_or_else(|| CmdError::new(50400, "这条连接还没建立 —— 先连接它，再向成员发消息"))?;
+        .ok_or_else(|| {
+            CmdError::keyed(
+                50400,
+                "err.conn.notEstablished",
+                "这条连接还没建立 —— 先连接它，再向成员发消息",
+            )
+        })?;
     let live = match ui_session_id.as_deref() {
         Some(ui_id) => state
             .db
@@ -3924,7 +4036,7 @@ pub async fn session_prompt(
     ui_session_id: Option<String>,
 ) -> Result<SessionPromptResult, CmdError> {
     if text.trim().is_empty() {
-        return Err(CmdError::new(50300, "消息为空"));
+        return Err(CmdError::keyed(50300, "err.session.emptyMessage", "消息为空"));
     }
 
     let mut record = state
@@ -4195,7 +4307,13 @@ pub async fn session_cancel(
     let handle = state
         .get(&profile_id)
         .await
-        .ok_or_else(|| CmdError::new(50400, "这条连接还没建立，无法取消"))?;
+        .ok_or_else(|| {
+            CmdError::keyed(
+                50400,
+                "err.conn.notEstablishedForCancel",
+                "这条连接还没建立，无法取消",
+            )
+        })?;
 
     tracing::info!(
         target: "sincearc::ipc", profile = %profile_id, session = %session_id,
@@ -4372,11 +4490,15 @@ pub async fn permission_allow_turn(
         return Err(CmdError::new(50100, format!("未知权限类别：{kind}")));
     }
     if state.get(&profile_id).await.is_none() {
-        return Err(CmdError::new(50300, "连接已断开，没有本轮可放行"));
+        return Err(CmdError::keyed(
+            50300,
+            "err.conn.closedNoTurn",
+            "连接已断开，没有本轮可放行",
+        ));
     }
     let active_turn = state.turns.current(&acp_session_id).await;
     if active_turn.as_deref() != Some(turn_id.as_str()) {
-        return Err(CmdError::new(50300, "没有本轮可放行"));
+        return Err(CmdError::keyed(50300, "err.turn.noneToApprove", "没有本轮可放行"));
     }
     state
         .turn_approvals
@@ -4424,12 +4546,22 @@ pub async fn agent_respond_request(
     // 否则我们会往一个 agent 已经处理完的 id 上再写一条响应。
     let (known, turn_id) = state.pending.take_with_turn(&profile_id, id).await;
     if !known {
-        return Err(CmdError::new(50500, "这个请求已失效或已被回答"));
+        return Err(CmdError::keyed(
+            50500,
+            "err.permission.stale",
+            "这个请求已失效或已被回答",
+        ));
     }
     let handle = state
         .get(&profile_id)
         .await
-        .ok_or_else(|| CmdError::new(50501, "连接已断开，无法回答这个请求"))?;
+        .ok_or_else(|| {
+            CmdError::keyed(
+                50501,
+                "err.permission.connClosed",
+                "连接已断开，无法回答这个请求",
+            )
+        })?;
     let reply = PermissionReply {
         turn_id: turn_id.clone(),
         decision: decision.unwrap_or_default(),
@@ -4741,7 +4873,7 @@ pub async fn session_apply_mode(
     let handle = state
         .get(&profile_id)
         .await
-        .ok_or_else(|| CmdError::new(50400, "连接已断开，改不了模式"))?;
+        .ok_or_else(|| CmdError::keyed(50400, "err.conn.closedForMode", "连接已断开，改不了模式"))?;
     match push_mode(&handle, &acp_session_id, &target).await {
         Ok(()) => Ok(ModeChoice {
             applied: Some(target),
@@ -4771,7 +4903,7 @@ pub async fn session_choose_mode(
     let handle = state
         .get(&profile_id)
         .await
-        .ok_or_else(|| CmdError::new(50400, "连接已断开，改不了模式"))?;
+        .ok_or_else(|| CmdError::keyed(50400, "err.conn.closedForMode", "连接已断开，改不了模式"))?;
 
     match mode_id {
         Some(m) => {
@@ -4779,7 +4911,13 @@ pub async fn session_choose_mode(
             let modes = state
                 .modes_of(&acp_session_id)
                 .await
-                .ok_or_else(|| CmdError::new(50403, "这个会话没有报上来可选模式，无法切换"))?;
+                .ok_or_else(|| {
+                    CmdError::keyed(
+                        50403,
+                        "err.mode.noneReported",
+                        "这个会话没有报上来可选模式，无法切换",
+                    )
+                })?;
             if !modes.available.iter().any(|x| x.id == m) {
                 return Err(CmdError::new(50401, format!("这个连接不支持模式 {m}")));
             }
@@ -4833,6 +4971,45 @@ pub async fn session_choose_mode(
                 )),
             }
         }
+    }
+}
+
+/// 线形状回归：前端靠 `CmdError` 上的 `key` / `params` 决定译文，serde 一旦把它们写错名、
+/// 或者 `skip_serializing_if` 把 `Some(..)` 也吃掉，编译和单测都不会报，只有英文界面会退回中文。
+#[cfg(test)]
+mod cmd_error_wire_tests {
+    use super::CmdError;
+
+    #[test]
+    fn keyless_error_omits_key_and_params() {
+        let json = serde_json::to_value(CmdError::new(50000, "读取配置失败：x")).expect("serialize");
+        assert_eq!(json["code"], 50000);
+        assert_eq!(json["msg"], "读取配置失败：x");
+        assert!(json.get("key").is_none(), "key 不该出现: {json}");
+        assert!(json.get("params").is_none(), "params 不该出现: {json}");
+    }
+
+    #[test]
+    fn keyed_error_carries_key_and_params() {
+        let json = serde_json::to_value(CmdError::keyed(50602, "err.member.nameRequired", "名字不能为空"))
+            .expect("serialize");
+        assert_eq!(json["key"], "err.member.nameRequired");
+        assert_eq!(json["msg"], "名字不能为空");
+        assert!(json.get("params").is_none());
+
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("detail".to_string(), "socket closed".to_string());
+        // 这里只验证「params 能被带出去」，所以借用一条已登记的静态 key；
+        // C2 引入带 {{detail}} 的 key 后再换成真实的那条。
+        let json = serde_json::to_value(CmdError::keyed_with(
+            50000,
+            "err.settings.unknownTheme",
+            "读取配置失败：socket closed",
+            params,
+        ))
+        .expect("serialize");
+        assert_eq!(json["key"], "err.settings.unknownTheme");
+        assert_eq!(json["params"]["detail"], "socket closed");
     }
 }
 

@@ -24,7 +24,7 @@ import { settingsKey } from "@/lib/settings-key";
 import { normalizeCodeThemeId } from "@/lib/highlight/themes";
 import { profileLabel } from "@/lib/format";
 import { localizeText, translateKey } from "@/lib/i18n-text";
-import { errorText } from "@/lib/errors";
+import { errorTextOf } from "@/lib/errors";
 import { pushSystemNotice } from "@/lib/notices";
 import { delegateCancelFailureKey, type DelegatePhase } from "@/lib/delegate-status";
 import { mergeMessages } from "@/lib/messages-merge";
@@ -222,7 +222,7 @@ export default function App() {
           if (seq !== settingsSaveSeq.current) return;
           settingsPendingKey.current = null;
           const err = asCmdError(e);
-          setSettingsError(t("app.settings.saveFailed", { msg: errorText(err.code, err.msg, t) }));
+          setSettingsError(t("app.settings.saveFailed", { msg: errorTextOf(err, t) }));
         });
     }, SETTINGS_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
@@ -676,8 +676,18 @@ export default function App() {
    */
   const writeHint = useMemo(() => summarizeLocks(state.locks ?? {}), [state.locks]);
   const usageLine = state.usage ? describeUsage(state.usage, t) : null;
-  const connectProblem: { code?: string; message: string } | null = state.connectError
-    ? { code: state.connectError.code, message: state.connectError.message }
+  const connectProblem: {
+    code?: string;
+    message: string;
+    key?: string;
+    params?: Record<string, string>;
+  } | null = state.connectError
+    ? {
+        code: state.connectError.code,
+        message: state.connectError.message,
+        key: state.connectError.key,
+        params: state.connectError.params,
+      }
     : state.resume?.kind === "unavailable"
       ? { message: state.resume.reason ?? t("app.unknownReason") }
       : null;
@@ -912,7 +922,12 @@ export default function App() {
       if (error) {
         patchSession(sid, (s) => ({
           ...s,
-          connectError: { code: String(error.code), message: error.msg },
+          connectError: {
+            code: String(error.code),
+            message: error.msg,
+            key: error.key,
+            params: error.params,
+          },
         }));
         return;
       }
@@ -1014,6 +1029,8 @@ export default function App() {
     <ConnectErrorState
       code={connectProblem.code}
       message={connectProblem.message}
+      errorKey={connectProblem.key}
+      errorParams={connectProblem.params}
       resumeUnavailable={state.resume?.kind === "unavailable"}
       newSessionBusy={resumeBusy}
       retrying={retryBusy}
@@ -1213,7 +1230,7 @@ export default function App() {
     } catch (e) {
       const err = asCmdError(e);
       // 失败就留在框里说清楚：没删成，别让用户以为删了
-      setDeleteError(`${err.code} ${errorText(err.code, err.msg, t)}`);
+      setDeleteError(`${err.code} ${errorTextOf(err, t)}`);
     }
   };
 

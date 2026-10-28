@@ -249,7 +249,7 @@ pub struct SessionMcpStateDto {
 pub fn validate_mcp_server(server: &McpServerDto) -> Result<(), CmdError> {
     let name = server.name().trim();
     if name.is_empty() {
-        return Err(CmdError::new(50700, "MCP 名称不能为空"));
+        return Err(CmdError::keyed(50700, "err.mcp.nameRequired", "MCP 名称不能为空"));
     }
     if name.chars().count() > NAME_MAX_CHARS {
         return Err(CmdError::new(
@@ -263,7 +263,11 @@ pub fn validate_mcp_server(server: &McpServerDto) -> Result<(), CmdError> {
             command, args, env, ..
         } => {
             if command.trim().is_empty() {
-                return Err(CmdError::new(50700, "stdio 的 command 不能为空"));
+                return Err(CmdError::keyed(
+                    50700,
+                    "err.mcp.commandRequired",
+                    "stdio 的 command 不能为空",
+                ));
             }
             for (index, arg) in args.iter().enumerate() {
                 if arg.trim().is_empty() {

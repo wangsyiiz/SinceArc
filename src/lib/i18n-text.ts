@@ -44,7 +44,10 @@ export function translateKey(
   key: MessageKey,
   params?: I18nTextParams,
 ): string {
-  return (t as unknown as LooseTranslate)(key, params);
+  const loose = t as unknown as LooseTranslate;
+  // 没有参数时不要传 `undefined` 进去：i18next 会把显式 undefined 当成"有第二个实参"，
+  // 测试里断言的实参形状也会跟着漂。
+  return params ? loose(key, params) : loose(key);
 }
 
 /** 只为内部带 key 的字符串做翻译；普通用户/agent 文本原样返回。 */

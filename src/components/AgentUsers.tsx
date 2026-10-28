@@ -15,7 +15,7 @@ import {
   type AgentUser,
 } from "@/lib/ipc";
 import { profileLabel } from "@/lib/format";
-import { errorText } from "@/lib/errors";
+import { errorTextOf } from "@/lib/errors";
 import { PLAYER_COLORS } from "@/lib/player-colors";
 import { PlayerAvatar } from "./PlayerAvatar";
 import { Badge } from "./ui/Badge";
@@ -135,7 +135,7 @@ export function AgentUsersList({
       setError(null);
     } catch (e) {
       const err = asCmdError(e);
-      setError(errorText(err.code, err.msg, t));
+      setError(errorTextOf(err, t));
     }
   };
 
@@ -161,7 +161,7 @@ export function AgentUsersList({
       onChanged?.();
     } catch (e) {
       const err = asCmdError(e);
-      setError(errorText(err.code, err.msg, t));
+      setError(errorTextOf(err, t));
     } finally {
       setBusy(null);
     }
@@ -360,7 +360,7 @@ export function AgentUserDetail({
       const err = asCmdError(e);
       setTest({
         state: "fail",
-        detail: `${err.code} ${errorText(err.code, err.msg, t)}`,
+        detail: `${err.code} ${errorTextOf(err, t)}`,
       });
     }
   };
@@ -383,7 +383,7 @@ export function AgentUserDetail({
       onSaved(id);
     } catch (e) {
       const err = asCmdError(e);
-      setError(`${err.code} ${errorText(err.code, err.msg, t)}`);
+      setError(`${err.code} ${errorTextOf(err, t)}`);
     } finally {
       setBusy(false);
     }

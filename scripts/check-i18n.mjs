@@ -4,6 +4,7 @@
  *
  * ① 两语言资源一致：key 集合相等、同 key 占位符集合相等、无空文案
  * ② 界面代码里不许有中文字面量（白名单：注释、`*.test.ts`、`src/i18n/**`、行尾 `// i18n-ignore`）
+ * ③ Rust 里 `keyed*` 报上来的 `err.*` key 必须在 `zh-CN.ts` 中登记
  *
  * 为什么要有 ②：类型只保证"用了 key"，拦不住有人直接写一行中文进 JSX —— 那种漏译在英文界面里
  * 就是一句中文，评审时最容易漏。0 处残留是收口条件。
@@ -121,10 +122,82 @@ if (residue) {
     top.map(([f, n]) => `    ${n}  ${f}`).join("\n"));
 }
 
+/* ---------- ③ Rust keyed key 必须存在于 zh-CN.ts ---------- */
+/**
+ * 从一次 `keyed(` / `keyed_with(` 调用里取第一个字符串字面量。
+ *
+ * 不按行扫：构造点常有跨行写法，而且 key 前面可能隔着数字、表达式。这里从开括号开始
+ * 走到匹配的闭括号，遇到字符串就按转义规则跳过，既不会把下一处调用的 key 算进来，
+ * 也不会被字符串里的括号带偏。
+ */
+function firstStringLiteral(source, openParen) {
+  let depth = 1;
+  for (let i = openParen + 1; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '"') {
+      let value = "";
+      i += 1;
+      for (; i < source.length; i += 1) {
+        if (source[i] === "\\") {
+          value += source[i + 1] ?? "";
+          i += 1;
+        } else if (source[i] === '"') {
+          return value;
+        } else {
+          value += source[i];
+        }
+      }
+      return null;
+    }
+    if (ch === "(") depth += 1;
+    else if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) return null;
+    }
+  }
+  return null;
+}
+
+function rustKeyedKeys(source) {
+  const keys = [];
+  const call = /\bkeyed(?:_with)?\s*\(/g;
+  for (const match of source.matchAll(call)) {
+    const openParen = match.index + match[0].length - 1;
+    const value = firstStringLiteral(source, openParen);
+    if (value?.startsWith("err.")) keys.push(value);
+  }
+  return keys;
+}
+
+function* walkRust(dir) {
+  for (const name of readdirSync(dir)) {
+    if (SKIP_DIRS.has(name)) continue;
+    const full = join(dir, name);
+    const st = statSync(full);
+    if (st.isDirectory()) yield* walkRust(full);
+    else if (name.endsWith(".rs")) yield full;
+  }
+}
+
+const missingRustKeys = new Map();
+for (const file of walkRust(join(root, "src-tauri", "src"))) {
+  const rel = relative(root, file);
+  for (const key of rustKeyedKeys(readFileSync(file, "utf8"))) {
+    if (!(key in zhCN)) {
+      if (!missingRustKeys.has(key)) missingRustKeys.set(key, new Set());
+      missingRustKeys.get(key).add(rel);
+    }
+  }
+}
+if (missingRustKeys.size) {
+  const detail = [...missingRustKeys].map(([key, files]) => `${key}（${[...files].join(", ")}）`);
+  problems.push(`Rust keyed key 未在 zh-CN.ts 登记（${missingRustKeys.size}）：${detail.join(", ")}`);
+}
+
 if (problems.length) {
   console.error("i18n 门禁未通过：\n");
   for (const p of problems) console.error("  ✗ " + p);
   console.error(`\n  共 ${problems.length} 类问题`);
   process.exit(1);
 }
-console.log("i18n 门禁通过：资源一致 0 问题，界面代码 0 处残留");
+console.log("i18n 门禁通过：资源一致 0 问题，界面代码 0 处残留，Rust keyed key 0 缺失");
