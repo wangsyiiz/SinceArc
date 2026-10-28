@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import { currentLocale } from "../i18n/locale.ts";
 
 export const now = () =>
@@ -17,11 +18,11 @@ export function profileLabel(p: {
   launch?: string;
   distro?: string | null;
   ssh?: { host?: string } | null;
-}): string {
+}, t: TFunction): string {
   const name = p.name?.trim();
   if (name && name !== LEGACY_DEFAULT_PROFILE_NAME) return name;
   const program = p.program?.trim() || "agent";
   const where =
-    p.launch === "ssh" ? p.ssh?.host?.trim() || "ssh" : p.launch === "wsl" ? p.distro?.trim() || "wsl" : "本机"; // i18n-ignore: 调用点跨批次，保留显示值
+    p.launch === "ssh" ? p.ssh?.host?.trim() || "ssh" : p.launch === "wsl" ? p.distro?.trim() || "wsl" : t("connection.where.local");
   return `${program} · ${where}`;
 }

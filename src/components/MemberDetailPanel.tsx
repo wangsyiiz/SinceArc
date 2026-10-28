@@ -138,11 +138,11 @@ export function MemberDetailPanel({
 
   if (!anchor) return null;
 
-  const connection = profile ? profileLabel(profile) : t("settings.connection.missing");
+  const connection = profile ? profileLabel(profile, t) : t("settings.connection.missing");
   const logoAgent = profile
-    ? ([profile.agentName, profile.program, profileLabel(profile)].find(
+    ? ([profile.agentName, profile.program, profileLabel(profile, t)].find(
         (candidate): candidate is string => !!candidate && agentBrand(candidate) !== null,
-      ) ?? profileLabel(profile))
+      ) ?? profileLabel(profile, t))
     : null;
   const workDir = profile?.cwd?.trim() || "—";
   const delegateCaps = delegateTargetCaps(profile);

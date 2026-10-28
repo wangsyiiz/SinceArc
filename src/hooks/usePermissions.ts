@@ -304,18 +304,18 @@ export function usePermissions({
       note: string | null = null,
     ): Promise<PermissionOption | null> => {
       const head = queuesRef.current[uiSid]?.[0];
-      if (!head) throw new Error("没有待回答的权限请求"); // i18n-ignore: App 错误通道不做 marker 解码
+      if (!head) throw { code: 50901, msg: i18nText("permission.guard.noPending") };
 
       // 过期请求不再写回 agent。Esc/关闭只在本机出队，别拿一个已经失效的 id 去试。
       if (head.request.expiredReason !== undefined) {
-        if (optionId !== null) throw new Error("这个请求已过期，不能再作答"); // i18n-ignore: App 错误通道不做 marker 解码
+        if (optionId !== null) throw { code: 50902, msg: i18nText("permission.guard.expired") };
         removeHead(uiSid, head.profileId, head.requestId);
         return null;
       }
 
       const flightKey = `${head.profileId}:${head.requestId}`;
       if (inFlight.current[uiSid] === flightKey) {
-        throw new Error("这条权限请求还在处理中"); // i18n-ignore: App 错误通道不做 marker 解码
+        throw { code: 50903, msg: i18nText("permission.guard.inFlight") };
       }
 
       let selected: PermissionOption | null = null;
@@ -329,7 +329,7 @@ export function usePermissions({
           : { outcome: "cancelled" };
       } else {
         selected = head.request.options.find((option) => option.id === optionId) ?? null;
-        if (!selected) throw new Error("这个选项已经失效，请重新选择"); // i18n-ignore: App 错误通道不做 marker 解码
+        if (!selected) throw { code: 50904, msg: i18nText("permission.guard.optionGone") };
         outcome = { outcome: "selected", optionId };
       }
 

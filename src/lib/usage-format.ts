@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import { currentLocale } from "../i18n/locale.ts";
 
 /** 18530 → "18.5k"；1000000 → "1M"；999 → "999" */
@@ -13,14 +14,18 @@ function trimDecimal(n: number): string {
 }
 
 /** 上下文一行文案：是否进入告警档也在这里判，界面只读结果。 */
-export function describeUsage(u: { used: number; size: number; percent: number }): {
+export function describeUsage(u: { used: number; size: number; percent: number }, t: TFunction): {
   text: string;
   warn: boolean;
 } {
   const warn = u.percent >= 80;
-  const base = `上下文 ${formatTokens(u.used)} / ${formatTokens(u.size)}（${new Intl.NumberFormat(currentLocale(), { maximumFractionDigits: 0 }).format(u.percent)}%）`; // i18n-ignore: 唯一消费点 App.tsx 不在本批次白名单
+  const text = t(warn ? "usage.line.warn" : "usage.line.normal", {
+    used: formatTokens(u.used),
+    size: formatTokens(u.size),
+    percent: new Intl.NumberFormat(currentLocale(), { maximumFractionDigits: 0 }).format(u.percent),
+  });
   return {
-    text: warn ? `${base}，再问下去 agent 可能会丢开头` : base, // i18n-ignore: 唯一消费点 App.tsx 不在本批次白名单
+    text,
     warn,
   };
 }

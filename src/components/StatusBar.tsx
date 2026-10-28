@@ -243,7 +243,7 @@ function ProfileStatus({
         {...hover.triggerProps(el)}
         className="mr-1 flex min-w-0 items-center gap-1.5"
       >
-        <span className="max-w-30 truncate text-caption text-ink-2">{profileLabel(profile)}</span>
+        <span className="max-w-30 truncate text-caption text-ink-2">{profileLabel(profile, t)}</span>
         <Badge
           compact
           status={

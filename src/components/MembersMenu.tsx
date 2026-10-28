@@ -178,7 +178,7 @@ export function MembersMenu({
                     <span className="shrink-0 text-caption text-ink-1">{u.name}</span>
                     <span className="shrink-0 font-mono text-micro text-ink-3">@{u.handle}</span>
                     <span className="min-w-0 flex-1 truncate text-micro text-ink-3">
-                      {p ? profileLabel(p) : t("settings.connection.missing")}
+                      {p ? profileLabel(p, t) : t("settings.connection.missing")}
                     </span>
                     {joined ? (
                       <UserMinus size={11} className="shrink-0 text-ink-3" />

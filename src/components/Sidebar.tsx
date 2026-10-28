@@ -186,7 +186,7 @@ export function Sidebar({
                               "ml-auto max-w-18 shrink-0 truncate rounded-mark bg-surface-3/35 px-1 py-px font-mono text-micro text-ink-3 transition-colors group-hover:bg-surface-3/55",
                             )}
                           >
-                            {profileLabel(profile)}
+                            {profileLabel(profile, t)}
                           </span>
                         )}
                       </span>
@@ -380,7 +380,7 @@ function NewSessionButton({
               className="flex w-full items-center gap-2 rounded-mark px-2 py-1.5 text-left transition-colors hover:bg-surface-3"
             >
               <span className="min-w-0 flex-1 truncate text-ui-tight text-ink-1">
-                {profileLabel(p)}
+                {profileLabel(p, t)}
               </span>
               <span className="shrink-0 font-mono text-micro text-ink-3">{p.launch}</span>
             </button>

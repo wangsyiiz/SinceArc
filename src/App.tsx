@@ -23,9 +23,9 @@ import { autoApproveCovered, type AutoApproveLevel } from "@/lib/auto-approve";
 import { settingsKey } from "@/lib/settings-key";
 import { normalizeCodeThemeId } from "@/lib/highlight/themes";
 import { profileLabel } from "@/lib/format";
-import { localizeText } from "@/lib/i18n-text";
+import { localizeText, translateKey } from "@/lib/i18n-text";
 import { pushSystemNotice } from "@/lib/notices";
-import { delegateCancelFailureMessage, type DelegatePhase } from "@/lib/delegate-status";
+import { delegateCancelFailureKey, type DelegatePhase } from "@/lib/delegate-status";
 import { mergeMessages } from "@/lib/messages-merge";
 import { buildPlayers } from "@/lib/players";
 import { steerGate, type SteerGate } from "@/lib/steer-availability";
@@ -242,13 +242,13 @@ export default function App() {
     const prof = activeProfile;
     return {
       id: MAIN_AGENT_ID,
-      name: prof ? profileLabel(prof) : "agent",
+      name: prof ? profileLabel(prof, t) : "agent",
       handle: "agent",
       color: "var(--i3)",
       profileId: prof?.id ?? "",
       busy: false,
     };
-  }, [activeProfile]);
+  }, [activeProfile, t]);
 
   const { sessions, setSessions, reload: reloadSessions } = useSessionList();
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab } = useTabs(sessions);
@@ -667,7 +667,7 @@ export default function App() {
    * 一次性列三行会把输入框顶得老高，而这条本来就只是提示。
    */
   const writeHint = useMemo(() => summarizeLocks(state.locks ?? {}), [state.locks]);
-  const usageLine = state.usage ? describeUsage(state.usage) : null;
+  const usageLine = state.usage ? describeUsage(state.usage, t) : null;
   const connectProblem: { code?: string; message: string } | null = state.connectError
     ? { code: state.connectError.code, message: state.connectError.message }
     : state.resume?.kind === "unavailable"
@@ -1384,7 +1384,9 @@ export default function App() {
           pushSystemNotice(
             patchSession,
             lastSessionId,
-            t("app.notice.stopDelegateFailed", { reason: delegateCancelFailureMessage(err.code) }),
+            t("app.notice.stopDelegateFailed", {
+              reason: translateKey(t, delegateCancelFailureKey(err.code), { code: err.code }),
+            }),
           );
         }
       }

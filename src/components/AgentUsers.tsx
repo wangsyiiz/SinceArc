@@ -240,7 +240,7 @@ export function AgentUsersList({
                       <span className="shrink-0 font-mono text-micro text-ink-3">@{u.handle}</span>
                     </span>
                     <span className="mt-0.5 block truncate font-mono text-caption text-ink-3">
-                      {profile ? profileLabel(profile) : t("settings.connection.missing")}
+                      {profile ? profileLabel(profile, t) : t("settings.connection.missing")}
                     </span>
                   </span>
                   <Badge
@@ -330,7 +330,7 @@ export function AgentUserDetail({
         setTest({
           state: "ok",
           detail: t("settings.member.test.newSession", {
-            profile: profileLabel(profile),
+            profile: profileLabel(profile, t),
             session: sid.length > 16 ? `${sid.slice(0, 16)}…` : sid,
           }),
         });
@@ -628,7 +628,7 @@ function ProfilePick({
         <>
           <span className="min-w-0 truncate">
             {current
-              ? profileLabel(current)
+              ? profileLabel(current, t)
               : t("settings.member.profileSelect.placeholder")}
           </span>
           <ChevronDown className="size-3 shrink-0 text-ink-3" />
@@ -636,7 +636,7 @@ function ProfilePick({
       }
       items={profiles.map((p) => ({
         id: p.id,
-        label: profileLabel(p),
+        label: profileLabel(p, t),
         checked: p.id === value,
         onSelect: () => onChange(p.id),
       }))}

@@ -28,19 +28,3 @@ export function delegateCancelFailureKey(code: number): MessageKey {
       return "delegate.cancel.generic";
   }
 }
-
-/**
- * 兼容 App.tsx 的旧调用点：它把返回值直接塞进已翻译的整句里。
- * App.tsx 不在本批次白名单内，暂保留中文；新代码请用 `delegateCancelFailureKey`。
- */
-// i18n-ignore: App.tsx 调用点在本批次白名单外，暂时无法改为组件内 t()
-export function delegateCancelFailureMessage(code: number): string {
-  switch (code) {
-    case 50300:
-      return "目标连接已断开，这次派活没有可停的对象"; // i18n-ignore
-    case 50704:
-      return "这个派活已经结束或不属于当前会话"; // i18n-ignore
-    default:
-      return `停止失败（${code}）`; // i18n-ignore
-  }
-}
