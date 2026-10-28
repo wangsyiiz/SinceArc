@@ -219,6 +219,8 @@ pub fn run() {
             commands::agent_list_connected,
             gh::gh_status,
             gh::gh_pr_list,
+            gh::gh_pr_detail,
+            gh::gh_pr_diff,
         ])
         .build(tauri::generate_context!())
         .expect("error while building SinceArc");
