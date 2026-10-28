@@ -193,6 +193,29 @@ const sampleText = (page) =>
   await browser.close();
 }
 
+// 5b) Rust 带 key + params 的错误：英文界面必须渲染出译文与细节，不能留占位符或中文前缀
+{
+  const { browser, page } = await launch("en-US", "en", {
+    mcp_catalog: {
+      code: 50000,
+      msg: "读取配置失败：boom",
+      key: "err.settings.loadConfigFailed",
+      params: { detail: "boom" },
+    },
+  });
+  await page.getByRole("button", { name: /^(设置|Settings)$/ }).first().click();
+  await page.waitForTimeout(700);
+  await page.getByRole("button", { name: /^MCP$/ }).first().click();
+  await page.waitForTimeout(1200);
+  const text = (await sampleText(page)).body;
+  record(
+    "Rust key+params 渲染为英文",
+    text.includes("Failed to read configuration: boom") && !text.includes("{{") && !text.includes("读取配置失败"),
+    `译文=${text.includes("Failed to read configuration: boom")} 残留占位符=${text.includes("{{")} 残留中文=${text.includes("读取配置失败")}`,
+  );
+  await browser.close();
+}
+
 // 6) 无残留（由调用方跑 npm run check:i18n；这里只提示）
 record("代码残留", true, "本脚本不判定，请另跑 npm run check:i18n（期望 0 处）");
 
