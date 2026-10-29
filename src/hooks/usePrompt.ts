@@ -16,7 +16,7 @@ import { replaceTurnId } from "@/lib/turn-id";
 import { i18nText } from "@/lib/i18n-text";
 import type { AgentProfile, Message } from "@/types";
 import type { EnsureResult } from "./useAgentConnect";
-import type { AcpRefs } from "./useAcpEvents";
+import type { AcpRefs, ActiveSendTrace } from "./useAcpEvents";
 import type { PatchSession } from "./useSessionState";
 
 /** 主 agent 的发言用一个固定 id：玩家表里没有它时，消息会渲染成「agent」 */
@@ -79,8 +79,12 @@ export function usePrompt({
       text: string,
       /** 指定投递目标（群里 @ 了某个成员）：这时不再投主 agent */
       target?: { profileId: string; acpSessionId: string; authorId: string; cwd: string },
+      /** 用户发起时本轮已在跑：终态要用 400ms 规则判断是否被 agent 吞掉 */
+      busyAtSend = false,
+      /** 后台队列续发时指定目标界面会话；不传就是当前打开的会话。 */
+      sidOverride?: string,
     ) => {
-      const sid = lastSessionId;
+      const sid = sidOverride ?? lastSessionId;
       const at = now();
 
       // 归属：会话自己的连接优先，老会话（没记 profileId）退回当前选中。
@@ -101,7 +105,7 @@ export function usePrompt({
       // 用户消息先上屏，真假链路都一样；落库等拿到回执或明确失败后再做。
       // 只有真要发 prompt 时才置 busy —— 连接阶段置 busy 会把输入框锁住，
       // 而连接可能要几十秒，用户会以为界面卡死了（docs/desktop-ux.md §1.6）。
-      const userMsg: Message = {
+      const userMsg: Extract<Message, { role: "user" }> = {
         id: newId("u"),
         role: "user",
         atomKind: "text.user",
@@ -257,6 +261,19 @@ export function usePrompt({
         // 占位 id 只做本地 key：绝不允许带着 turn-live- 落库，收到后端回执后立刻替换。
         const turnId = newId("turn-live");
         acpToTurn.current[acpSid] = turnId;
+        const trace: ActiveSendTrace = {
+          startedAt: Date.now(),
+          busyAtSend,
+          sawStream: false,
+          stopReason: null,
+          resolvedAt: null,
+          uiSid: sid,
+          userMsg,
+          turnId,
+          userPersisted: false,
+          absorbed: false,
+        };
+        acp.sendTraces.current[acpSid] = trace;
         // 归属由后端按会话记录投递（docs/desktop-ux.md「事件路由」），
         // 这里只记「这一轮的 turn id」，供轨迹栏把回答挂到对应分支上。
 
@@ -295,6 +312,7 @@ export function usePrompt({
         );
         void sessionPrompt(acpSid, text, sid)
           .then(({ turnId: realTurnId }) => {
+            trace.turnId = realTurnId;
             // 后端是轮次身份的唯一来源：本地占位只负责让 UI 先有东西可挂。
             if (acpToTurn.current[acpSid] === turnId) {
               acpToTurn.current[acpSid] = realTurnId;
@@ -312,12 +330,21 @@ export function usePrompt({
                     : m,
               ),
             }));
-            persistUserMessage(realTurnId);
+            if (!busyAtSend && !trace.absorbed && !trace.userPersisted) {
+              trace.userPersisted = true;
+              persistUserMessage(realTurnId);
+            }
           })
           .catch((e) => {
             const err = asCmdError(e);
             setBusy(sid, false);
-            persistUserMessage();
+            if (!trace.absorbed && !trace.userPersisted) {
+              trace.userPersisted = true;
+              persistUserMessage();
+            }
+            if (acp.sendTraces.current[acpSid] === trace) {
+              delete acp.sendTraces.current[acpSid];
+            }
             pushSystemNotice(
               patchSession,
               sid,

@@ -21,4 +21,8 @@ codeTheme: string,
  * 界面语言：`zh-CN` | `en`。`None` = 库里还没有这个值（首启未判定，前端按系统语言判定后回写）；
  * 脏值读回时也按 `None` 处理 —— 脏值不算用户的选择（docs/i18n.md §2.1）。
  */
-language: string | null, };
+language: string | null, 
+/**
+ * running 时发送的默认动作：interrupt | queue | steer；脏值回落 interrupt。
+ */
+busyInputMode: string, };

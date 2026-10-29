@@ -12,8 +12,10 @@ import { SessionMcpButton } from "./SessionMcpMenu";
 import { UsageRing } from "./UsageRing";
 import { SlashMenu } from "./SlashMenu";
 import { Tooltip } from "./ui/Tooltip";
+import { Segmented } from "./ui/Segmented";
 import { filterCommands, slashQuery, type SlashCommand } from "@/lib/slash-filter";
 import { steerUnavailableReason, type SteerGate } from "@/lib/steer-availability";
+import type { BusyInputMode } from "@/lib/busy-input";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 
 interface ComposerProps {
@@ -41,6 +43,13 @@ interface ComposerProps {
   onReconnectMcp?: () => Promise<void>;
   /** 本轮上下文用量（§23）：并进工具行，替代原来输入区上方那条独立玻璃卡 */
   usage?: { text: string; warn: boolean; percent: number } | null;
+  /** running 时发送的默认动作（§28.5） */
+  busyInputMode?: BusyInputMode;
+  onBusyInputModeChange?: (mode: BusyInputMode) => void;
+  /** 已发出 cancel、正在等本轮终态 */
+  interrupting?: boolean;
+  /** 当前会话已排队的消息数 */
+  queuedCount?: number;
 }
 
 export function Composer({
@@ -61,6 +70,10 @@ export function Composer({
   sessionProfile,
   onReconnectMcp,
   usage,
+  busyInputMode = "interrupt",
+  onBusyInputModeChange,
+  interrupting = false,
+  queuedCount = 0,
 }: ComposerProps) {
   const { t } = useTranslation();
   const [value, setValue] = useState("");
@@ -155,10 +168,13 @@ export function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [value]);
 
-  const canSend = value.trim().length > 0 && !busy;
+  const canSend = value.trim().length > 0 && !busy && !interrupting;
   const slashItems = slashOpen ? filterCommands(value, commands) : [];
   const slashVisible = slashOpen && slashItems.length > 0;
-  const canSteerSend = busy && steerGate === "on" && value.trim().length > 0;
+  const canSteerSend =
+    busy && busyInputMode === "steer" && steerGate === "on" && value.trim().length > 0 && !interrupting;
+  const canBusyActionSend =
+    busy && busyInputMode !== "steer" && value.trim().length > 0 && !interrupting;
   const steerReasonKey = steerUnavailableReason(steerGate);
   const steerReason = steerReasonKey ? t(steerReasonKey) : null;
 
@@ -187,10 +203,22 @@ export function Composer({
   const autoApproveText =
     autoApprove === "edits" ? t("settings.chat.autoApprove.edits") : t("composer.autoApprove.off");
 
+  const busyModeOptions: { value: BusyInputMode; label: string }[] = [
+    { value: "interrupt", label: t("composer.busyMode.interrupt") },
+    { value: "queue", label: t("composer.busyMode.queue") },
+    { value: "steer", label: t("composer.busyMode.steer") },
+  ];
+
   const submit = () => {
+    if (interrupting) return;
     if (busy) {
-      if (!canSteerSend) return;
-      void onSteer?.(value.trim());
+      if (busyInputMode === "steer") {
+        if (!canSteerSend) return;
+        void onSteer?.(value.trim());
+      } else {
+        if (!canBusyActionSend) return;
+        onSend(value.trim());
+      }
       setValue("");
       setMention(null);
       setSlashOpen(false);
@@ -284,6 +312,21 @@ export function Composer({
             </span>
           </span>
         )}
+        <div className="ml-1 flex min-w-0 items-center gap-1.5">
+          <span className="shrink-0 text-micro text-ink-3">{t("composer.busyMode.label")}</span>
+          <Segmented
+            compact
+            ariaLabel={t("composer.busyMode.aria")}
+            options={busyModeOptions}
+            value={busyInputMode}
+            onChange={(mode) => onBusyInputModeChange?.(mode)}
+          />
+          {queuedCount > 0 && (
+            <span className="shrink-0 text-micro text-warn-1">
+              {t("composer.busy.queueCount", { count: queuedCount })}
+            </span>
+          )}
+        </div>
 
         <div className="ml-auto flex items-center gap-1">
           {sessionId && (
@@ -342,6 +385,7 @@ export function Composer({
           value={value}
           rows={1}
           spellCheck={false}
+          disabled={interrupting}
           placeholder={placeholder ?? t("composer.placeholder")}
           onChange={(e) => {
             const next = e.target.value;
@@ -425,20 +469,41 @@ export function Composer({
                   <Square className="size-3 fill-current" />
                 </Button>
               </Tooltip>
-              <Button
-                variant="glass"
-                size="sm"
-                onClick={submit}
-                disabled={!canSteerSend}
-                disabledReason={
-                  steerReason ?? (!canSteerSend ? t("composer.steer.empty") : undefined)
-                }
-                aria-label={t("ui.button.steer")}
-                className="h-7 gap-1 px-2 text-caption"
-              >
-                <ArrowUp className="size-3.5" />
-                {t("ui.button.steer")}
-              </Button>
+              {busyInputMode === "steer" ? (
+                <Button
+                  variant="glass"
+                  size="sm"
+                  onClick={submit}
+                  disabled={!canSteerSend}
+                  disabledReason={
+                    steerReason ?? (!canSteerSend ? t("composer.steer.empty") : undefined)
+                  }
+                  aria-label={t("ui.button.steer")}
+                  className="h-7 gap-1 px-2 text-caption"
+                >
+                  <ArrowUp className="size-3.5" />
+                  {t("ui.button.steer")}
+                </Button>
+              ) : (
+                <Button
+                  variant="glass"
+                  size="sm"
+                  onClick={submit}
+                  disabled={!canBusyActionSend}
+                  disabledReason={!canBusyActionSend ? t("composer.send.empty") : undefined}
+                  aria-label={
+                    busyInputMode === "queue"
+                      ? t("ui.button.queueSend")
+                      : t("ui.button.interruptSend")
+                  }
+                  className="h-7 gap-1 px-2 text-caption"
+                >
+                  <ArrowUp className="size-3.5" />
+                  {busyInputMode === "queue"
+                    ? t("ui.button.queueSend")
+                    : t("ui.button.interruptSend")}
+                </Button>
+              )}
             </>
           ) : (
             <Button

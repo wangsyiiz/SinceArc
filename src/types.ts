@@ -1,6 +1,7 @@
 import type { AgentCaps } from "@/lib/ipc/types.gen/AgentCaps";
 import { DEFAULT_CODE_THEME_ID, type CodeThemeId } from "./lib/highlight/themes.ts";
 import type { Language } from "./i18n/normalize";
+import type { BusyInputMode } from "./lib/busy-input";
 
 export type ThemeMode = "dark" | "light" | "system";
 
@@ -172,7 +173,7 @@ interface MessageBase {
 
 export type Message = MessageBase &
   (
-    | { role: "user"; text: string; kind?: "aside"; quoted?: QuotedRef; delegate?: MessageDelegate; asideReceipt?: string }
+    | { role: "user"; text: string; kind?: "aside"; quoted?: QuotedRef; delegate?: MessageDelegate; asideReceipt?: string; /** 只在前端存在：这条消息没有真正送达，不落库 */ undelivered?: boolean }
     | { role: "player"; playerId: string; text: string; streaming?: boolean; /** 用户中途点了停止：已生成的部分保留，但要标出来 */ stopped?: boolean; /** 这一轮出错（promptFailed）：收口时当帧拉满，不走补间 */ failed?: boolean }
     | { role: "system"; text: string }
   );
@@ -286,6 +287,8 @@ export interface ThreadSettings {
   codeTheme: CodeThemeId;
   /** 界面语言；`null` = 库里还没判定过（首启按系统语言判定后回写，docs/i18n.md §2.1） */
   language: Language | null;
+  /** running 时发送的默认动作；脏值由 IPC 收窄回 interrupt。 */
+  busyInputMode: BusyInputMode;
 }
 
 export const CONTEXT_MESSAGES_MAX = 20;
@@ -298,4 +301,5 @@ export const DEFAULT_THREAD_SETTINGS: ThreadSettings = {
   tweenEnabled: true,
   codeTheme: DEFAULT_CODE_THEME_ID,
   language: null,
+  busyInputMode: "interrupt",
 };

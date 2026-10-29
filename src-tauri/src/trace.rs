@@ -725,6 +725,23 @@ mod tests {
     }
 
     #[test]
+    fn notice_不进轨迹() {
+        let params = json!({
+            "sessionId": "s1",
+            "update": {
+                "sessionUpdate": "notice",
+                "severity": "warning",
+                "title": "Queued",
+                "description": "Queued for the next turn"
+            }
+        });
+        assert!(
+            parse("session/update", &params).is_none(),
+            "notice 是 live event，只转发给界面，不写轨迹"
+        );
+    }
+
+    #[test]
     fn usage_of_reads_used_and_size() {
         let payload = json!({ "size": 1_000_000, "used": 18_853 });
         assert_eq!(usage_of(&payload), Some((18_853, 1_000_000)));
