@@ -21,6 +21,7 @@ export interface UseVirtualListOptions {
   scrollRef: RefObject<HTMLDivElement | null>;
   overscan?: number;
   stickToBottom?: boolean;
+  diag?: (tag: string, text: string) => void;
 }
 
 interface AnchorSnapshot {
@@ -31,7 +32,15 @@ interface AnchorSnapshot {
 }
 
 export function useVirtualList(opts: UseVirtualListOptions) {
-  const { count, keyOf, estimate, scrollRef, overscan = 6, stickToBottom = false } = opts;
+  const {
+    count,
+    keyOf,
+    estimate,
+    scrollRef,
+    overscan = 6,
+    stickToBottom = false,
+    diag,
+  } = opts;
   const virtualizer = useVirtualizer({
     count,
     getScrollElement: () => scrollRef.current,
@@ -45,14 +54,30 @@ export function useVirtualList(opts: UseVirtualListOptions) {
   const anchorRef = useRef<AnchorSnapshot | null>(null);
   /** 锚定恢复进行中：这期间的条数/总高变化一律不触发贴底跟随 */
   const shiftingRef = useRef(false);
+  const [adjusting, setAdjusting] = useState(false);
+  /** 程序化滚动的保护窗：窗口内滚动事件只许把 atBottom 置 false。 */
+  const programmaticUntil = useRef(0);
   const tailKeyRef = useRef<string | null>(null);
   const anchorFrameRef = useRef<number | null>(null);
   const totalSize = virtualizer.getTotalSize();
 
+  const markProgrammatic = useCallback(() => {
+    programmaticUntil.current = Date.now() + 120;
+  }, []);
+
+  /** ref 与 state 双写：state 只在切换时更新，App 不会因为每帧滚动而重渲染。 */
+  const setShifting = useCallback((next: boolean) => {
+    if (shiftingRef.current === next) return;
+    shiftingRef.current = next;
+    setAdjusting(next);
+  }, []);
+  const isAdjusting = useCallback(() => shiftingRef.current, []);
+
   const scrollToEnd = useCallback(() => {
     if (count === 0) return;
+    markProgrammatic();
     virtualizer.scrollToEnd();
-  }, [count, virtualizer]);
+  }, [count, markProgrammatic, virtualizer]);
 
   /**
    * 用户主动发起的跳底（docs/desktop-ux.md §27.2）：发消息后**无条件**回到底部。
@@ -83,10 +108,13 @@ export function useVirtualList(opts: UseVirtualListOptions) {
     const tailChanged = isTailChange(tailKeyRef.current, nextTail);
     tailKeyRef.current = nextTail;
     if (shiftingRef.current) return;
+    if (Date.now() < programmaticUntil.current) return;
     if (!tailChanged) return;
+    if (count === 0) return;
     if (!shouldFollowBottom(stickToBottom, atBottom)) return;
+    diag?.("FOLLOW-END", "reason=tail");
     scrollToEnd();
-  }, [atBottom, count, keyOf, scrollToEnd, stickToBottom]);
+  }, [atBottom, count, diag, keyOf, scrollToEnd, stickToBottom]);
 
   // 贴底跟随（总高变化）：流式补间 / 卡片展开时条数不变但高度在长。
   // 锚定恢复期间跳过 —— 那种变化来自上方前插，跟随会把用户拽到底部。
@@ -94,9 +122,12 @@ export function useVirtualList(opts: UseVirtualListOptions) {
     if (lastTotal.current === totalSize) return;
     lastTotal.current = totalSize;
     if (shiftingRef.current) return;
+    if (Date.now() < programmaticUntil.current) return;
+    if (count === 0) return;
     if (!shouldFollowBottom(stickToBottom, atBottom)) return;
+    diag?.("FOLLOW-END", "reason=total");
     scrollToEnd();
-  }, [atBottom, scrollToEnd, stickToBottom, totalSize]);
+  }, [atBottom, count, diag, scrollToEnd, stickToBottom, totalSize]);
 
   // 用户上翻后 atBottom=false，上面两个 effect 都不会再改 scrollTop。
   // 注意：列表是条件渲染的，挂载那一刻 scrollRef.current 可能还是 null；
@@ -108,6 +139,7 @@ export function useVirtualList(opts: UseVirtualListOptions) {
     if (!box) return;
     const onScroll = () => {
       const next = isAtBottom(box);
+      if (next && Date.now() < programmaticUntil.current) return;
       setAtBottom((current) => (current === next ? current : next));
     };
     box.addEventListener("scroll", onScroll, { passive: true });
@@ -118,8 +150,8 @@ export function useVirtualList(opts: UseVirtualListOptions) {
   useEffect(() => {
     const box = scrollRef.current;
     if (!box) return;
-    const next = isAtBottom(box);
-    setAtBottom((current) => (current === next ? current : next));
+    if (isAtBottom(box)) return;
+    setAtBottom((current) => (current ? false : current));
   }, [count, scrollRef, totalSize]);
 
   const findElement = useCallback((box: HTMLElement, index: number) => {
@@ -141,21 +173,22 @@ export function useVirtualList(opts: UseVirtualListOptions) {
       if (!box) return;
       const el = findElement(box, index);
       if (!el) return;
-      shiftingRef.current = true;
+      markProgrammatic();
+      setShifting(true);
       anchorRef.current = {
         index,
         key: keyOf(index),
         offsetTop: offsetInContainer(box, el),
       };
     },
-    [findElement, keyOf, offsetInContainer, scrollRef],
+    [findElement, keyOf, markProgrammatic, offsetInContainer, scrollRef, setShifting],
   );
 
   const endAnchorShift = useCallback(() => {
     const anchor = anchorRef.current;
     anchorRef.current = null;
     if (!anchor) {
-      shiftingRef.current = false;
+      setShifting(false);
       return;
     }
 
@@ -164,17 +197,27 @@ export function useVirtualList(opts: UseVirtualListOptions) {
       anchorFrameRef.current = null;
     }
 
-    const alignedIndex = (() => {
-      for (let index = 0; index < count; index += 1) {
-        if (keyOf(index) === anchor.key) return index;
+    let alignedIndex = -1;
+    for (let index = 0; index < count; index += 1) {
+      if (keyOf(index) === anchor.key) {
+        alignedIndex = index;
+        break;
       }
-      return Math.max(0, Math.min(anchor.index, count - 1));
-    })();
-    if (count === 0) return;
+    }
+    // 锚点行被裁掉了：位置交给 use-trim-anchor 的补偿，这里绝不再跳。
+    if (alignedIndex < 0) {
+      setShifting(false);
+      diag?.("WINDOW-ANCHOR-LOST", `count=${count} anchor=${anchor.key}`);
+      return;
+    }
 
     anchorFrameRef.current = requestAnimationFrame(() => {
+      markProgrammatic();
       const box = scrollRef.current;
-      if (!box) return;
+      if (!box) {
+        setShifting(false);
+        return;
+      }
 
       // 先按库的 start 对齐把目标行带到已知位置，再补上它原本在视口里的偏移。
       virtualizer.scrollToIndex(alignedIndex, { align: "start" });
@@ -182,10 +225,17 @@ export function useVirtualList(opts: UseVirtualListOptions) {
       box.scrollTop = anchorTargetScrollTop(box.scrollTop, 0, anchor.offsetTop);
 
       anchorFrameRef.current = requestAnimationFrame(() => {
+        markProgrammatic();
         const settledBox = scrollRef.current;
-        if (!settledBox) return;
+        if (!settledBox) {
+          setShifting(false);
+          return;
+        }
         const row = findElement(settledBox, alignedIndex);
-        if (!row) return;
+        if (!row) {
+          setShifting(false);
+          return;
+        }
         const currentOffset = offsetInContainer(settledBox, row);
         const target = anchorTargetScrollTop(
           settledBox.scrollTop,
@@ -193,10 +243,20 @@ export function useVirtualList(opts: UseVirtualListOptions) {
           anchor.offsetTop,
         );
         if (Math.abs(target - settledBox.scrollTop) > 0.5) settledBox.scrollTop = target;
-        shiftingRef.current = false;
+        setShifting(false);
       });
     });
-  }, [count, findElement, keyOf, offsetInContainer, scrollRef, virtualizer]);
+  }, [
+    count,
+    diag,
+    findElement,
+    keyOf,
+    markProgrammatic,
+    offsetInContainer,
+    scrollRef,
+    setShifting,
+    virtualizer,
+  ]);
 
   useEffect(
     () => () => {
@@ -220,6 +280,9 @@ export function useVirtualList(opts: UseVirtualListOptions) {
     scrollToEnd,
     forceScrollToEnd,
     atBottom,
+    adjusting,
+    isAdjusting,
+    beginProgrammaticScroll: markProgrammatic,
     beginAnchorShift,
     endAnchorShift,
   };

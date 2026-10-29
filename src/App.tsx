@@ -149,6 +149,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { estimateMessageHeight } from "@/lib/virtual/message-height";
 import { useVirtualList } from "@/lib/virtual/useVirtualList";
 import {
+  pinIndexes,
   WINDOW_EDGE,
   type WindowPlan,
 } from "@/lib/messages-window";
@@ -453,6 +454,8 @@ export default function App() {
     scrollToEnd,
     forceScrollToEnd,
     atBottom: messageAtBottom,
+    adjusting: messageAdjusting,
+    beginProgrammaticScroll,
     beginAnchorShift,
     endAnchorShift,
   } = useVirtualList({
@@ -461,6 +464,7 @@ export default function App() {
     estimate: estimateMessage,
     scrollRef,
     stickToBottom: true,
+    diag: clog,
   });
 
   const visibleMessageIds = useMemo(
@@ -474,24 +478,21 @@ export default function App() {
       const id = normaliseTurnId(turn.id);
       if (id) runningTurns.add(id);
     }
-    const quotedMessageIds = new Set<string>();
-    for (const message of state.msgs) {
-      if (message.role !== "user") continue;
-      const quotedId = message.quoted?.messageId;
-      if (quotedId) quotedMessageIds.add(quotedId);
-    }
-
-    const pinned: number[] = [];
+    const streaming: number[] = [];
+    const undelivered: number[] = [];
+    const runningTurn: number[] = [];
     state.msgs.forEach((message, index) => {
-      const streaming = message.role === "player" && message.streaming === true;
-      const unsent = message.role === "user" && message.undelivered === true;
+      if (message.role === "player" && message.streaming === true) streaming.push(index);
+      if (message.role === "user" && message.undelivered === true) undelivered.push(index);
       const turnId = normaliseTurnId(message.turnId);
-      const runningTurn = turnId !== null && runningTurns.has(turnId);
-      if (streaming || unsent || runningTurn || quotedMessageIds.has(message.id)) {
-        pinned.push(index);
-      }
+      if (turnId !== null && runningTurns.has(turnId)) runningTurn.push(index);
     });
-    return pinned;
+    return pinIndexes({
+      count: state.msgs.length,
+      streaming,
+      undelivered,
+      runningTurn,
+    });
   }, [state.msgs, state.turns]);
 
   const handleWindowTrim = useCallback(
@@ -507,6 +508,9 @@ export default function App() {
     count: state.msgs.length,
     scopeKey: lastSessionId,
     pinned: pinnedMessageIndexes,
+    blocked: messageAdjusting,
+    diag: clog,
+    onProgrammaticScroll: beginProgrammaticScroll,
     onTrim: handleWindowTrim,
   });
 

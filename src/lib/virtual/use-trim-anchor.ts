@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type RefObject } from "react";
+import { useCallback, useLayoutEffect, useRef, type RefObject } from "react";
 import { planWindow, type WindowPlan } from "../messages-window.ts";
 import type { VirtualRow } from "./useVirtualList.ts";
 
@@ -53,6 +53,11 @@ export interface UseTrimAnchorOptions {
   /** Session identity: skip the first commit so mount-time scroll-to-bottom can settle. */
   scopeKey?: string | null;
   pinned: readonly number[];
+  /** 锚点补偿进行中：先欠着，等补偿落定后的下一帧再裁。 */
+  blocked?: boolean;
+  diag?: (tag: string, text: string) => void;
+  /** 裁剪也会改 scrollHeight/scrollTop，先进入程序化滚动保护窗。 */
+  onProgrammaticScroll?: () => void;
   onTrim: (plan: WindowPlan) => void;
 }
 
@@ -67,33 +72,75 @@ export function useTrimAnchor({
   count,
   scopeKey,
   pinned,
+  blocked = false,
+  diag,
+  onProgrammaticScroll,
   onTrim,
 }: UseTrimAnchorOptions): void {
   const frameRef = useRef<number | null>(null);
+  const retryFrameRef = useRef<number | null>(null);
+  const pendingRef = useRef(false);
   const seenScopeRef = useRef<string | null>(null);
+  const blockedRef = useRef(blocked);
+  blockedRef.current = blocked;
+  const latestRef = useRef({
+    scrollRef,
+    rows,
+    count,
+    scopeKey,
+    pinned,
+    diag,
+    onProgrammaticScroll,
+    onTrim,
+  });
+  latestRef.current = {
+    scrollRef,
+    rows,
+    count,
+    scopeKey,
+    pinned,
+    diag,
+    onProgrammaticScroll,
+    onTrim,
+  };
 
-  useLayoutEffect(() => {
-    if (frameRef.current !== null) return;
-    const scope = scopeKey ?? "";
+  const runTrim = useCallback(() => {
+    if (frameRef.current !== null) {
+      pendingRef.current = true;
+      return;
+    }
+    pendingRef.current = false;
+    const latest = latestRef.current;
+    const scope = latest.scopeKey ?? "";
     if (seenScopeRef.current !== scope) {
       seenScopeRef.current = scope;
       return;
     }
-    const box = scrollRef.current;
+    const box = latest.scrollRef.current;
     if (!box) return;
-    const range = visibleIndexRange(rows, box);
+    const range = visibleIndexRange(latest.rows, box);
     if (!range) return;
 
-    const plan = planWindow({ count, ...range, pinned });
+    const plan = planWindow({
+      count: latest.count,
+      ...range,
+      pinned: latest.pinned,
+      diag: latest.diag,
+    });
     if (plan.dropHead === 0 && plan.dropTail === 0) return;
 
     const previousTop = box.scrollTop;
     const previousHeight = box.scrollHeight;
-    onTrim(plan);
+    latest.diag?.(
+      "WINDOW-TRIM",
+      `head=${plan.dropHead} tail=${plan.dropTail} top=${previousTop} h=${previousHeight}`,
+    );
+    latest.onProgrammaticScroll?.();
+    latest.onTrim(plan);
 
     frameRef.current = requestAnimationFrame(() => {
       frameRef.current = null;
-      const next = scrollRef.current;
+      const next = latest.scrollRef.current;
       if (!next) return;
       const nextTop =
         plan.dropHead > 0
@@ -107,11 +154,46 @@ export function useTrimAnchor({
       const max = Math.max(0, next.scrollHeight - next.clientHeight);
       next.scrollTop = Math.max(0, Math.min(max, nextTop));
     });
-  }, [count, onTrim, pinned, rows, scopeKey, scrollRef]);
+  }, []);
+
+  const schedulePending = useCallback(() => {
+    if (retryFrameRef.current !== null) return;
+    function tick() {
+      retryFrameRef.current = null;
+      if (blockedRef.current) {
+        pendingRef.current = true;
+        return;
+      }
+      if (frameRef.current !== null) {
+        pendingRef.current = true;
+        retryFrameRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      runTrim();
+    }
+    retryFrameRef.current = requestAnimationFrame(tick);
+  }, [runTrim]);
+
+  useLayoutEffect(() => {
+    if (blocked) {
+      pendingRef.current = true;
+      return;
+    }
+    // 欠账或已有补算帧：等到下一帧用最新数据再算。
+    if (pendingRef.current || retryFrameRef.current !== null) {
+      pendingRef.current = true;
+      schedulePending();
+      return;
+    }
+    // 上一次裁剪的 scrollTop 补偿还没落定，等下一次布局变化再裁。
+    if (frameRef.current !== null) return;
+    runTrim();
+  }, [blocked, count, diag, onTrim, pinned, rows, runTrim, schedulePending, scopeKey, scrollRef]);
 
   useLayoutEffect(
     () => () => {
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+      if (retryFrameRef.current !== null) cancelAnimationFrame(retryFrameRef.current);
     },
     [],
   );
