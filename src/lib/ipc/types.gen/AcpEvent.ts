@@ -20,4 +20,12 @@ authorId?: string | null, } | { "kind": "request", id: number, method: string, p
 /**
  * 这一轮的 id（后端生成，前端只认它）。派活子会话取父轮；没有父轮时为 None。
  */
-turnId?: string | null, uiSessionId?: string | null, authorId?: string | null, } | { "kind": "promptResult", sessionId: string, uiSessionId?: string | null, authorId?: string | null, result: unknown, } | { "kind": "promptFailed", sessionId: string, uiSessionId?: string | null, authorId?: string | null, msg: string, };
+turnId?: string | null, uiSessionId?: string | null, authorId?: string | null, 
+/**
+ * 谁发起的这一轮：`client` / `agent`。真实轮缺省（None）即 client。
+ */
+origin?: string | null, } | { "kind": "promptResult", sessionId: string, uiSessionId?: string | null, authorId?: string | null, 
+/**
+ * 谁发起的这一轮：`client` / `agent`。真实轮缺省（None）即 client。
+ */
+origin?: string | null, result: unknown, } | { "kind": "promptFailed", sessionId: string, uiSessionId?: string | null, authorId?: string | null, msg: string, };

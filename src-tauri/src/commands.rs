@@ -23,8 +23,8 @@ use crate::db;
 use crate::lock::SessionLockDto;
 use crate::mcp::{self, McpCatalogEntryDto, McpServerDto, SessionMcpStateDto};
 use crate::state::{
-    AgentHandle, AppState, Captured, ContextMode, ContextReason, DelegateEntry, DelegateStatus,
-    Delegates, ReplayCapture, SessionRecord,
+    AgentHandle, AgentTurns, AppState, Captured, ContextMode, ContextReason, DelegateEntry,
+    DelegateStatus, Delegates, ReplayCapture, SessionRecord, AGENT_TURN_IDLE_MS,
 };
 use crate::wire::{Meta, WireEvent};
 
@@ -207,6 +207,10 @@ pub enum AcpEvent {
         ui_session_id: Option<String>,
         #[ts(optional = nullable)]
         author_id: Option<String>,
+        /// 谁发起的这一轮：`client` / `agent`。真实轮缺省（None）即 client。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        origin: Option<String>,
     },
     /// 一轮 prompt 正常结束（带 stopReason 等原始结果）
     PromptResult {
@@ -215,6 +219,10 @@ pub enum AcpEvent {
         ui_session_id: Option<String>,
         #[ts(optional = nullable)]
         author_id: Option<String>,
+        /// 谁发起的这一轮：`client` / `agent`。真实轮缺省（None）即 client。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        origin: Option<String>,
         #[ts(type = "unknown")]
         result: serde_json::Value,
     },
@@ -1967,11 +1975,180 @@ pub async fn ipc_subscribe(
     Ok(())
 }
 
+/// 合成轮的唯一收尾定时器入口。每次 update / 权限变化都会起一个新定时器；
+/// 旧定时器靠 `generation` 发现自己已过期，醒来后什么都不做。
+/// 合成轮定时器要投递的目标（属于谁的哪一轮）。聚成一个结构体是为了让
+/// `spawn_agent_turn_timer` 的参数保持在 clippy 的 7 个以内。
+struct SynthTarget {
+    profile_id: String,
+    session_id: String,
+    ui_session_id: Option<String>,
+    author_id: Option<String>,
+}
+
+fn spawn_agent_turn_timer(
+    bus: Arc<crate::wire::EventBus>,
+    agent_turns: AgentTurns,
+    db: Arc<crate::db::Db>,
+    target: SynthTarget,
+    generation: u64,
+) {
+    let SynthTarget {
+        profile_id,
+        session_id,
+        ui_session_id,
+        author_id,
+    } = target;
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(AGENT_TURN_IDLE_MS)).await;
+        let Some(end) = agent_turns.finish_if_idle(&session_id, generation) else {
+            return;
+        };
+        // 合成轮也有 turns 行（开始时建），必须在这里收掉：
+        // 否则这一轮永远停在 running，重启后历史里挂着一个没收尾的轮次。
+        end_turn_safely(&db, &end.turn_id, "finished", Some("end_turn"));
+        tracing::info!(
+            target: "sincearc::ipc",
+            session = %session_id,
+            turn = %end.turn_id,
+            reason = %end.reason,
+            "TURN-SYNTH-END"
+        );
+        bus.emit_json(
+            "acp.prompt.result",
+            true,
+            Meta::for_session(
+                profile_id,
+                session_id.clone(),
+                ui_session_id.clone(),
+                author_id.clone(),
+            ),
+            &AcpEvent::PromptResult {
+                session_id,
+                ui_session_id,
+                author_id,
+                origin: Some("agent".to_string()),
+                result: serde_json::json!({ "stopReason": "end_turn" }),
+            },
+        );
+    });
+}
+
+/// `session/update` 的唯一出口：先推进自发起轮状态机，再转发原事件。
+///
+/// 客户端有未决 prompt、或正处于 `session/load` 捕获窗口时，状态机不动，
+/// 这条路径与改造前完全一致。
+/// 转发一条 `session/update` 需要的「往哪投」上下文。
+struct UpdateRoute<'a> {
+    bus: &'a Arc<crate::wire::EventBus>,
+    agent_turns: &'a AgentTurns,
+    replay: &'a ReplayCapture,
+    db: &'a Arc<crate::db::Db>,
+    profile_id: &'a str,
+}
+
+fn forward_session_update(
+    route: &UpdateRoute<'_>,
+    session_id: Option<String>,
+    ui_session_id: Option<String>,
+    author_id: Option<String>,
+    params: serde_json::Value,
+) {
+    let UpdateRoute {
+        bus,
+        agent_turns,
+        replay,
+        db,
+        profile_id,
+    } = *route;
+    if let Some(sid) = session_id.as_deref() {
+        if !replay.is_open(sid) {
+            let signal = params
+                .get("update")
+                .and_then(|update| agent_turns.on_session_update(sid, update));
+            if let Some(signal) = signal {
+                if let Some(turn_id) = signal.started_turn.as_ref() {
+                    // 没有客户端 prompt，就没有人替这一轮建 turns 行 —— 自己建。
+                    // 缺了它，正文的 turn_id 会指向不存在的轮次，历史里这一轮会散架。
+                    if let Some(ui) = ui_session_id.as_deref() {
+                        if let Err(e) = db.start_turn(ui, turn_id, "", author_id.as_deref(), None) {
+                            tracing::warn!(
+                                target: "sincearc::ipc",
+                                session = %sid,
+                                turn = %turn_id,
+                                error = %e,
+                                "TURN-SYNTH-START 落库失败"
+                            );
+                        }
+                    }
+                    tracing::info!(
+                        target: "sincearc::ipc",
+                        session = %sid,
+                        turn = %turn_id,
+                        "TURN-SYNTH-START"
+                    );
+                    bus.emit_json(
+                        "acp.prompt.started",
+                        true,
+                        Meta::for_session(
+                            profile_id.to_string(),
+                            sid.to_string(),
+                            ui_session_id.clone(),
+                            author_id.clone(),
+                        ),
+                        &AcpEvent::PromptStarted {
+                            session_id: sid.to_string(),
+                            turn_id: Some(turn_id.clone()),
+                            ui_session_id: ui_session_id.clone(),
+                            author_id: author_id.clone(),
+                            origin: Some("agent".to_string()),
+                        },
+                    );
+                }
+                spawn_agent_turn_timer(
+                    bus.clone(),
+                    agent_turns.clone(),
+                    db.clone(),
+                    SynthTarget {
+                        profile_id: profile_id.to_string(),
+                        session_id: sid.to_string(),
+                        ui_session_id: ui_session_id.clone(),
+                        author_id: author_id.clone(),
+                    },
+                    signal.generation,
+                );
+            }
+        }
+    }
+
+    let event = AcpEvent::Notification {
+        method: "session/update".to_string(),
+        params,
+        session_id: session_id.clone(),
+        ui_session_id: ui_session_id.clone(),
+        author_id: author_id.clone(),
+    };
+    bus.emit_json(
+        "acp.notification",
+        true,
+        Meta {
+            profile_id: Some(profile_id.to_string()),
+            session_id,
+            ui_session_id,
+            author_id,
+        },
+        &event,
+    );
+}
+
 /// 把合批好的一段正文发出去。形状与单条 chunk 完全一致 ——
 /// 前端不需要知道「这条是合并过的」，它只会收到更少的 IPC 事件。
 fn emit_text(
     flush: Option<crate::coalesce::Flush>,
     bus: &Arc<crate::wire::EventBus>,
+    agent_turns: &AgentTurns,
+    replay: &ReplayCapture,
+    db: &Arc<crate::db::Db>,
     profile_id: &str,
 ) {
     let Some(f) = flush else { return };
@@ -1984,46 +2161,22 @@ fn emit_text(
         update["messageId"] = serde_json::Value::String(message_id);
     }
     let params = serde_json::json!({
-        "sessionId": f.session_id,
+        "sessionId": f.session_id.clone(),
         "update": update,
     });
-    let event = AcpEvent::Notification {
-        method: "session/update".to_string(),
-        params,
-        session_id: f.session_id,
-        ui_session_id: f.ui_session_id,
-        author_id: f.author_id,
-    };
-    bus.emit_json(
-        "acp.notification",
-        true,
-        Meta {
-            profile_id: Some(profile_id.to_string()),
-            session_id: event_session(&event),
-            ui_session_id: event_ui(&event),
-            author_id: event_author(&event),
+    forward_session_update(
+        &UpdateRoute {
+            bus,
+            agent_turns,
+            replay,
+            db,
+            profile_id,
         },
-        &event,
+        f.session_id,
+        f.ui_session_id,
+        f.author_id,
+        params,
     );
-}
-
-fn event_session(e: &AcpEvent) -> Option<String> {
-    match e {
-        AcpEvent::Notification { session_id, .. } => session_id.clone(),
-        _ => None,
-    }
-}
-fn event_ui(e: &AcpEvent) -> Option<String> {
-    match e {
-        AcpEvent::Notification { ui_session_id, .. } => ui_session_id.clone(),
-        _ => None,
-    }
-}
-fn event_author(e: &AcpEvent) -> Option<String> {
-    match e {
-        AcpEvent::Notification { author_id, .. } => author_id.clone(),
-        _ => None,
-    }
 }
 
 /// 把一条 ACP 消息落成轨迹事件（思考 / 工具调用 / 权限 / 模式 / 用量）。
@@ -2166,9 +2319,11 @@ async fn teardown_profile(
     for session_id in &dead {
         state.take_cancel(session_id).await;
         state.turns.end(session_id).await;
+        state.agent_turns.clear_session(session_id);
         state.turn_approvals.clear_session(session_id).await;
     }
     for session_id in state.routes.acp_session_ids_of(profile_id).await {
+        state.agent_turns.clear_session(&session_id);
         state.turn_approvals.clear_session(&session_id).await;
     }
     state.pending.clear(profile_id).await;
@@ -2230,6 +2385,8 @@ pub async fn agent_connect(
     let db_for_trace = state.db.clone();
     let turns_for_trace = state.turns.clone();
     let replay_for_trace = state.replay.clone();
+    // 客户端没发 prompt、agent 自己继续推 update 时，由它合成轮边界（§32）。
+    let agent_turns_for_task = state.agent_turns.clone();
     let turn_approvals_for_task = state.turn_approvals.clone();
     let locks = state.locks.clone();
     tokio::spawn(async move {
@@ -2266,7 +2423,14 @@ pub async fn agent_connect(
                 },
                 // 没有新消息时把攒着的正文发出去：否则一段说完就停住，界面像卡了
                 _ = ticker.tick() => {
-                    emit_text(text.flush(), &bus, &profile_for_task);
+                    emit_text(
+                        text.flush(),
+                        &bus,
+                        &agent_turns_for_task,
+                        &replay_for_trace,
+                        &db_for_trace,
+                        &profile_for_task,
+                    );
                     continue;
                 }
             };
@@ -2284,7 +2448,14 @@ pub async fn agent_connect(
                             == Some("agent_message_chunk")
             );
             if !is_text {
-                emit_text(text.flush(), &bus, &profile_for_task);
+                emit_text(
+                    text.flush(),
+                    &bus,
+                    &agent_turns_for_task,
+                    &replay_for_trace,
+                    &db_for_trace,
+                    &profile_for_task,
+                );
             }
 
             // 先冲正文缓冲、再落轨迹、再 emit。这里只记录 delegate 子会话的正文；
@@ -2421,7 +2592,14 @@ pub async fn agent_connect(
                             if message_id.is_none() {
                                 if let Some(aside_ui) = asides_for_task.pending_ui(acp_sid).await {
                                     // 回执与正文不能混在同一个合批里：先冲正文，再单独发 aside。
-                                    emit_text(text.flush(), &bus, &profile_for_task);
+                                    emit_text(
+                                        text.flush(),
+                                        &bus,
+                                        &agent_turns_for_task,
+                                        &replay_for_trace,
+                                        &db_for_trace,
+                                        &profile_for_task,
+                                    );
                                     if !chunk.is_empty() {
                                         let aside = AsideEvent {
                                             session_id: acp_sid.to_string(),
@@ -2455,6 +2633,9 @@ pub async fn agent_connect(
                                 &chunk,
                             ),
                             &bus,
+                            &agent_turns_for_task,
+                            &replay_for_trace,
+                            &db_for_trace,
                             &profile_for_task,
                         );
                         continue;
@@ -2579,6 +2760,28 @@ pub async fn agent_connect(
                                 .and_then(|(_, author)| author);
                         }
                     }
+                    // 合成轮的 idle 判定要能看见「还在等授权」：请求本身也是活动，
+                    // 会重置 8 秒定时器；回答后再重置一次。
+                    if let Some(acp_sid) = session_id.as_deref() {
+                        if let Some(generation) = agent_turns_for_task.permission_requested(
+                            &profile_for_task,
+                            acp_sid,
+                            id,
+                        ) {
+                            spawn_agent_turn_timer(
+                                bus.clone(),
+                                agent_turns_for_task.clone(),
+                                db_for_trace.clone(),
+                                SynthTarget {
+                                    profile_id: profile_for_task.clone(),
+                                    session_id: acp_sid.to_string(),
+                                    ui_session_id: ui_session_id.clone(),
+                                    author_id: author_id.clone(),
+                                },
+                                generation,
+                            );
+                        }
+                    }
                     let request_kind = params
                         .get("toolCall")
                         .and_then(|tool| tool.get("kind"))
@@ -2629,6 +2832,25 @@ pub async fn agent_connect(
                                                     turn = %turn_id, %kind,
                                                     "permission auto-answered by turn policy"
                                                 );
+                                                if let Some((answered_sid, generation)) =
+                                                    agent_turns_for_task.permission_answered(
+                                                        &profile_for_task,
+                                                        id,
+                                                    )
+                                                {
+                                                    spawn_agent_turn_timer(
+                                                        bus.clone(),
+                                                        agent_turns_for_task.clone(),
+                                                        db_for_trace.clone(),
+                                                        SynthTarget {
+                                                            profile_id: profile_for_task.clone(),
+                                                            session_id: answered_sid,
+                                                            ui_session_id: ui_session_id.clone(),
+                                                            author_id: author_id.clone(),
+                                                        },
+                                                        generation,
+                                                    );
+                                                }
                                                 continue;
                                             }
                                             Err(e) => {
@@ -2676,6 +2898,33 @@ pub async fn agent_connect(
                 },
                 "forward -> webview"
             );
+            // 两个 `session/update` choke point 都收敛到这里：正文合批走 emit_text，
+            // 工具调用等其余 update 走这条通用分支。
+            if let AcpEvent::Notification {
+                method,
+                params,
+                session_id,
+                ui_session_id,
+                author_id,
+            } = &payload
+            {
+                if method == "session/update" {
+                    forward_session_update(
+                        &UpdateRoute {
+                            bus: &bus,
+                            agent_turns: &agent_turns_for_task,
+                            replay: &replay_for_trace,
+                            db: &db_for_trace,
+                            profile_id: &profile_for_task,
+                        },
+                        session_id.clone(),
+                        ui_session_id.clone(),
+                        author_id.clone(),
+                        params.clone(),
+                    );
+                    continue;
+                }
+            }
             // 终态事件一律无损：丢了就等于「回答消失」。
             let (topic, lossless) = match &payload {
                 AcpEvent::Notification { .. } => ("acp.notification", true),
@@ -2712,9 +2961,17 @@ pub async fn agent_connect(
             };
             bus.emit_json(topic, lossless, meta, &payload);
         }
-        emit_text(text.flush(), &bus, &profile_for_task);
+        emit_text(
+            text.flush(),
+            &bus,
+            &agent_turns_for_task,
+            &replay_for_trace,
+            &db_for_trace,
+            &profile_for_task,
+        );
         // 连接已经没了：这条连接名下所有 ACP 会话的本轮策略一并作废。
         for acp_sid in routes.acp_session_ids_of(&profile_for_task).await {
+            agent_turns_for_task.clear_session(&acp_sid);
             turn_approvals_for_task.clear_session(&acp_sid).await;
         }
         bus.emit_json(
@@ -2980,11 +3237,15 @@ async fn load_resume_handle(
         "cwd": cwd,
         "mcpServers": req.mcp_servers,
     });
-    let v = match handle
+    // load 会把历史 `session/update` 重放一遍；这段时间必须禁止合成轮，
+    // 否则前端会把历史正文当成 agent 的新回答。
+    state.agent_turns.load_begin(acp_session_id);
+    let loaded = handle
         .proc
         .request("session/load", params, Duration::from_secs(120))
-        .await
-    {
+        .await;
+    state.agent_turns.load_end(acp_session_id);
+    let v = match loaded {
         Ok(v) => v,
         Err(e) => {
             // 明确拒绝才算会话失效；超时/断管是环境问题，交给重连处理。
@@ -4048,10 +4309,37 @@ pub async fn delegate_task(
     let own_turn_for_task = own_turn;
     let author_for_task = Some(member.id.clone());
     let cancels_for_task = state.cancels();
+    let agent_turns_for_task = state.agent_turns.clone();
     let turn_approvals_for_task = state.turn_approvals.clone();
     // ACP 的 session/prompt 终态是这一次 request 的响应，不经过 agent_connect 的入站循环；
     // 因此终态在这里收，正文 chunk 仍由转发 task 先追加进 buffer。
     tokio::spawn(async move {
+        if let Some(end) = agent_turns_for_task.client_begin(&child_for_task) {
+            tracing::info!(
+                target: "sincearc::ipc",
+                session = %child_for_task,
+                turn = %end.turn_id,
+                reason = %end.reason,
+                "TURN-SYNTH-END"
+            );
+            bus_for_task.emit_json(
+                "acp.prompt.result",
+                true,
+                crate::wire::Meta::for_session(
+                    target_profile_for_task.clone(),
+                    child_for_task.clone(),
+                    Some(parent_ui_for_task.clone()),
+                    author_for_task.clone(),
+                ),
+                &AcpEvent::PromptResult {
+                    session_id: child_for_task.clone(),
+                    ui_session_id: Some(parent_ui_for_task.clone()),
+                    author_id: author_for_task.clone(),
+                    origin: Some("agent".to_string()),
+                    result: serde_json::json!({ "stopReason": "end_turn" }),
+                },
+            );
+        }
         let meta = crate::wire::Meta::for_session(
             target_profile_for_task.clone(),
             child_for_task.clone(),
@@ -4070,6 +4358,7 @@ pub async fn delegate_task(
                 turn_id: parent_turn_for_task.clone(),
                 ui_session_id: Some(parent_ui_for_task.clone()),
                 author_id: author_for_task.clone(),
+                origin: None,
             },
         );
         let result = proc
@@ -4094,6 +4383,7 @@ pub async fn delegate_task(
                         session_id: child_for_task.clone(),
                         ui_session_id: Some(parent_ui_for_task.clone()),
                         author_id: author_for_task.clone(),
+                        origin: None,
                         result: value.clone(),
                     },
                 );
@@ -4112,6 +4402,7 @@ pub async fn delegate_task(
                 );
             }
         }
+        agent_turns_for_task.client_end(&child_for_task);
         let (agent_status, stop_reason) = match result {
             Ok(value) => (
                 DelegateStatus::Finished,
@@ -4375,6 +4666,10 @@ pub async fn session_prompt(
     );
 
     let sid = session_id.clone();
+    // 先置「客户端轮在飞」，再起轮/发请求：这样事件泵不会把随后到达的
+    // 任何 update 误判成 agent 自发起的轮。
+    let agent_turns = state.agent_turns.clone();
+    let synth_end = agent_turns.client_begin(&sid);
     // 一轮 = 一次 prompt。轨迹事件靠 turn id 归轮，prompt 之外收到的一律不落库。
     let turn_id = format!("turn-{}", crate::trace::now_ms());
     state.turns.start(&sid, &turn_id).await;
@@ -4412,6 +4707,36 @@ pub async fn session_prompt(
     let ui_for_event = record.ui_session_id.clone().or(ui_session_id);
     let author_for_event = record.author_id.clone();
 
+    // 真实轮要接管：如果上一轮是 agent 自发起的，先按客户端接管给它收尾，
+    // 免得前端同时看到两条重叠的生成链。
+    if let Some(end) = synth_end {
+        tracing::info!(
+            target: "sincearc::ipc",
+            session = %sid,
+            turn = %end.turn_id,
+            reason = %end.reason,
+            "TURN-SYNTH-END"
+        );
+        bus.emit_json(
+            "acp.prompt.result",
+            true,
+            Meta::for_session(
+                profile_id.clone(),
+                sid.clone(),
+                ui_for_event.clone(),
+                author_for_event.clone(),
+            ),
+            &AcpEvent::PromptResult {
+                session_id: sid.clone(),
+                ui_session_id: ui_for_event.clone(),
+                author_id: author_for_event.clone(),
+                origin: Some("agent".to_string()),
+                result: serde_json::json!({ "stopReason": "end_turn" }),
+            },
+        );
+    }
+    let agent_turns_for_task = agent_turns.clone();
+
     tokio::spawn(async move {
         // 先告诉界面「这一轮开始了」，UI 据此进入生成态
         tracing::info!(target: "sincearc::ipc", "forward -> webview kind=promptStarted");
@@ -4430,6 +4755,7 @@ pub async fn session_prompt(
                 turn_id: Some(turn_id_for_event),
                 ui_session_id: ui_for_event.clone(),
                 author_id: author_for_event.clone(),
+                origin: None,
             },
         );
 
@@ -4472,9 +4798,11 @@ pub async fn session_prompt(
                         session_id: sid,
                         ui_session_id: ui_for_event,
                         author_id: author_for_event,
+                        origin: None,
                         result,
                     },
                 );
+                agent_turns_for_task.client_end(&sid_for_trace);
             }
             Err(e) => {
                 tracing::warn!(target: "sincearc::ipc", session = %sid, error = %e, "prompt failed");
@@ -4511,6 +4839,7 @@ pub async fn session_prompt(
                     author_id: author_for_event,
                     msg: e.to_string(),
                 });
+                agent_turns_for_task.client_end(&sid_for_trace);
             }
         }
     });
@@ -4893,7 +5222,28 @@ pub async fn agent_respond_request(
         decision: decision.unwrap_or_default(),
     };
     match respond_permission(&state.db, &profile_id, &handle.proc, id, outcome, reply).await {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            // 授权答完 = 合成轮可以重新开始计静默；没答之前定时器会因 pending_perms 而放弃收尾。
+            if let Some((acp_sid, generation)) =
+                state.agent_turns.permission_answered(&profile_id, id)
+            {
+                if let Some(rec) = state.routes.get(&acp_sid).await {
+                    spawn_agent_turn_timer(
+                        state.bus.clone(),
+                        state.agent_turns.clone(),
+                        state.db.clone(),
+                        SynthTarget {
+                            profile_id: profile_id.clone(),
+                            session_id: acp_sid,
+                            ui_session_id: rec.ui_session_id,
+                            author_id: rec.author_id,
+                        },
+                        generation,
+                    );
+                }
+            }
+            Ok(())
+        }
         Err(e) => {
             // 写不进去就把登记还回去：用户可能想再点一次，别让请求凭空消失。
             state

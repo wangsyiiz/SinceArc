@@ -4,7 +4,9 @@
 //! 一个 profile 可以连多个 session，两者的生命周期不同。
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
@@ -106,6 +108,316 @@ pub struct DelegateEntry {
 #[derive(Default)]
 pub struct Turns {
     inner: Mutex<HashMap<String, String>>,
+}
+
+/// 合成的 agent 自发起轮：连续静默这么久才允许收尾（规范 §32.3）。
+pub const AGENT_TURN_IDLE_MS: u64 = 8_000;
+
+/// `session/load` 响应回来之后的短暂抑制窗口。
+///
+/// load 的重放事件在响应前后到达；若响应已回、残余重放才到，就会被误当成
+/// agent 自发起的一轮（历史正文被再渲染一遍、还多出一条轮次）。多等一会儿再放开。
+pub const LOAD_SETTLE_SUPPRESS_MS: u64 = 2_000;
+
+static SYNTH_TURN_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn next_synth_turn_id() -> String {
+    let seq = SYNTH_TURN_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("turn-agent-{}-{seq}", crate::trace::now_ms())
+}
+
+/// 是否应该为这条 update 合成一轮的开始。
+///
+/// 客户端有未决 prompt 时永远不合成；已有合成轮时也不重复开始。
+pub fn should_synthesize_start(client_pending: bool, has_synth: bool) -> bool {
+    !client_pending && !has_synth
+}
+
+/// 三个 idle 守卫同时成立才允许合成终态。
+pub fn should_synthesize_end(
+    generation_unchanged: bool,
+    pending_tools: usize,
+    pending_perms: usize,
+) -> bool {
+    generation_unchanged && pending_tools == 0 && pending_perms == 0
+}
+
+/// 按工具状态维护「还在跑」的 toolCallId 集合。未知状态与缺 id 都不动计数。
+fn apply_tool_update(pending: &mut HashSet<String>, update: &serde_json::Value) -> bool {
+    let Some(kind) = update
+        .get("sessionUpdate")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+    if !matches!(kind, "tool_call" | "tool_call_update") {
+        return false;
+    }
+    let Some(tool_call_id) = update
+        .get("toolCallId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+    else {
+        return false;
+    };
+    match update.get("status").and_then(serde_json::Value::as_str) {
+        Some("pending" | "in_progress") => {
+            pending.insert(tool_call_id.to_string());
+            true
+        }
+        Some("completed" | "failed") => {
+            pending.remove(tool_call_id);
+            true
+        }
+        _ => false,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SynthTurn {
+    turn_id: String,
+    pending_tools: HashSet<String>,
+    generation: u64,
+    last_event_at: Instant,
+}
+
+#[derive(Default)]
+struct AgentTurnState {
+    /// 客户端发起、还没落终态的轮（sessionPrompt 置位，PromptResult/PromptFailed 清除）
+    client_pending: bool,
+    /// `session/load` 正在重放：没有 prompt，但也不能把历史 update 当自发起轮。
+    load_pending: bool,
+    /// load 响应已回、但残余重放可能还在路上的抑制窗口。
+    suppress_until: Option<Instant>,
+    /// 已经合成的自发起轮
+    synth: Option<SynthTurn>,
+    /// 该 ACP 会话未作答的授权请求。按 request id 去重。
+    pending_perms: HashSet<u64>,
+    /// 每个会话单调递增。陈旧定时器靠它识别自己已经过期。
+    generation: u64,
+}
+
+/// 一次 update 推进状态机后，调用方需要做的事。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SynthSignal {
+    /// Some = 这条 update 开启了新一轮，需要先发 PromptStarted。
+    pub started_turn: Option<String>,
+    /// 当前合成轮的代次；定时器醒来时必须拿它比对。
+    pub generation: u64,
+}
+
+/// 合成轮收尾的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SynthEnd {
+    pub turn_id: String,
+    pub reason: String,
+}
+
+/// ACP 会话 → 自发起轮状态。
+///
+/// 用同步小锁而不是 tokio 锁：这里只做几次集合查询，不 await，也方便事件泵在
+/// 合批 flush 的同步路径里调用。
+#[derive(Clone, Default)]
+pub struct AgentTurns {
+    inner: Arc<StdMutex<HashMap<String, AgentTurnState>>>,
+    /// (profile, request id) → ACP 会话。回答权限时命令层只有 profile + id。
+    perm_sessions: Arc<StdMutex<HashMap<(String, u64), String>>>,
+}
+
+impl AgentTurns {
+    /// 推进一条 `session/update`。返回 None 表示客户端轮正在飞，原样转发即可。
+    pub fn on_session_update(
+        &self,
+        acp_session_id: &str,
+        update: &serde_json::Value,
+    ) -> Option<SynthSignal> {
+        let mut all = self.inner.lock().expect("agent turns poisoned");
+        let state = all.entry(acp_session_id.to_string()).or_default();
+        if state.client_pending || state.load_pending {
+            return None;
+        }
+        if state
+            .suppress_until
+            .is_some_and(|until| Instant::now() < until)
+        {
+            return None;
+        }
+
+        let started_turn = if should_synthesize_start(state.client_pending, state.synth.is_some()) {
+            state.generation = state.generation.saturating_add(1);
+            let turn_id = next_synth_turn_id();
+            state.synth = Some(SynthTurn {
+                turn_id: turn_id.clone(),
+                pending_tools: HashSet::new(),
+                generation: state.generation,
+                last_event_at: Instant::now(),
+            });
+            if let Some(synth) = state.synth.as_mut() {
+                apply_tool_update(&mut synth.pending_tools, update);
+            }
+            Some(turn_id)
+        } else {
+            state.generation = state.generation.saturating_add(1);
+            let generation = state.generation;
+            if let Some(synth) = state.synth.as_mut() {
+                synth.generation = generation;
+                synth.last_event_at = Instant::now();
+                apply_tool_update(&mut synth.pending_tools, update);
+            }
+            None
+        };
+
+        Some(SynthSignal {
+            started_turn,
+            generation: state.generation,
+        })
+    }
+
+    /// 客户端真实轮开始：置 client_pending，并把已有合成轮立即让位。
+    pub fn client_begin(&self, acp_session_id: &str) -> Option<SynthEnd> {
+        let mut all = self.inner.lock().expect("agent turns poisoned");
+        let state = all.entry(acp_session_id.to_string()).or_default();
+        state.client_pending = true;
+        state.suppress_until = None;
+        state.synth.take().map(|synth| SynthEnd {
+            turn_id: synth.turn_id,
+            reason: "client-takeover".to_string(),
+        })
+    }
+
+    /// 客户端真实轮终态到了：解除 busy 标记。
+    pub fn client_end(&self, acp_session_id: &str) {
+        let mut all = self.inner.lock().expect("agent turns poisoned");
+        let remove = if let Some(state) = all.get_mut(acp_session_id) {
+            state.client_pending = false;
+            // 真实轮已经落终态，它名下的未答授权不可能再生效。
+            state.pending_perms.clear();
+            state.synth.is_none() && state.pending_perms.is_empty()
+        } else {
+            false
+        };
+        if remove {
+            all.remove(acp_session_id);
+        }
+    }
+
+    /// 正常 `session/load` 开始：重放期间只转发，不合成新轮。
+    pub fn load_begin(&self, acp_session_id: &str) {
+        let mut all = self.inner.lock().expect("agent turns poisoned");
+        all.entry(acp_session_id.to_string())
+            .or_default()
+            .load_pending = true;
+    }
+
+    pub fn load_end(&self, acp_session_id: &str) {
+        self.load_end_with_suppress(acp_session_id, LOAD_SETTLE_SUPPRESS_MS);
+    }
+
+    /// `suppress_ms` 可调只为一件事：让「抑制窗口确实生效、且到点会放开」能被确定性地测到
+    /// （0 = 立即放开）。生产路径只有 `load_end` 一个调用者。
+    pub fn load_end_with_suppress(&self, acp_session_id: &str, suppress_ms: u64) {
+        let mut all = self.inner.lock().expect("agent turns poisoned");
+        // 抑制窗口内不能把这条记录删掉：删了就等于放开了合成。
+        if let Some(state) = all.get_mut(acp_session_id) {
+            state.load_pending = false;
+            state.suppress_until = if suppress_ms == 0 {
+                None
+            } else {
+                Some(Instant::now() + Duration::from_millis(suppress_ms))
+            };
+        }
+    }
+
+    /// 权限请求到达：登记到会话；若合成轮存在，同时重置它的 idle 定时器。
+    pub fn permission_requested(
+        &self,
+        profile_id: &str,
+        acp_session_id: &str,
+        request_id: u64,
+    ) -> Option<u64> {
+        self.perm_sessions
+            .lock()
+            .expect("permission sessions poisoned")
+            .insert((profile_id.to_string(), request_id), acp_session_id.to_string());
+
+        let mut all = self.inner.lock().expect("agent turns poisoned");
+        let state = all.entry(acp_session_id.to_string()).or_default();
+        state.pending_perms.insert(request_id);
+        state.synth.as_ref()?;
+        state.generation = state.generation.saturating_add(1);
+        let generation = state.generation;
+        if let Some(synth) = state.synth.as_mut() {
+            synth.generation = generation;
+            synth.last_event_at = Instant::now();
+        }
+        Some(generation)
+    }
+
+    /// 权限请求已答（或自动答）：从会话的未决集合里移除。
+    /// 返回 (ACP 会话, 新代次)；代次用于给合成轮重排 idle 定时器。
+    pub fn permission_answered(&self, profile_id: &str, request_id: u64) -> Option<(String, u64)> {
+        let acp_session_id = self
+            .perm_sessions
+            .lock()
+            .expect("permission sessions poisoned")
+            .remove(&(profile_id.to_string(), request_id))?;
+
+        let mut all = self.inner.lock().expect("agent turns poisoned");
+        let state = all.get_mut(&acp_session_id)?;
+        state.pending_perms.remove(&request_id);
+        if state.client_pending || state.synth.is_none() {
+            return None;
+        }
+        state.generation = state.generation.saturating_add(1);
+        let generation = state.generation;
+        if let Some(synth) = state.synth.as_mut() {
+            synth.generation = generation;
+            synth.last_event_at = Instant::now();
+        }
+        Some((acp_session_id, generation))
+    }
+
+    /// 定时器醒来后调用：代次没变、没有 pending 工具、没有未答授权，才收掉合成轮。
+    pub fn finish_if_idle(&self, acp_session_id: &str, generation: u64) -> Option<SynthEnd> {
+        let mut all = self.inner.lock().expect("agent turns poisoned");
+        let (synth, remove) = {
+            let state = all.get_mut(acp_session_id)?;
+            if state.client_pending || state.load_pending {
+                return None;
+            }
+            let synth = state.synth.as_ref()?;
+            debug_assert!(synth.last_event_at <= Instant::now());
+            let generation_unchanged = synth.generation == generation;
+            if !should_synthesize_end(
+                generation_unchanged,
+                synth.pending_tools.len(),
+                state.pending_perms.len(),
+            ) {
+                return None;
+            }
+            let synth = state.synth.take()?;
+            let remove = state.pending_perms.is_empty();
+            (synth, remove)
+        };
+        if remove {
+            all.remove(acp_session_id);
+        }
+        Some(SynthEnd {
+            turn_id: synth.turn_id,
+            reason: "idle".to_string(),
+        })
+    }
+
+    pub fn clear_session(&self, acp_session_id: &str) {
+        self.inner
+            .lock()
+            .expect("agent turns poisoned")
+            .remove(acp_session_id);
+        self.perm_sessions
+            .lock()
+            .expect("permission sessions poisoned")
+            .retain(|_, session| session != acp_session_id);
+    }
 }
 
 impl Turns {
@@ -394,6 +706,8 @@ pub struct AppState {
     pub pending: PendingRequests,
     /// 每个 ACP 会话当前这一轮的 id（轨迹事件靠它归轮）
     pub turns: Arc<Turns>,
+    /// 客户端没发 prompt、agent 却继续推 update 时，由这里合成轮边界（§32）。
+    pub agent_turns: AgentTurns,
     /// 「本轮同类全部允许」策略：内存态，轮结束/取消/断线即失效。
     pub turn_approvals: Arc<TurnApprovals>,
     /// 补录期间按 ACP 会话 id 捕获 `session/load` 重放事件；窗口关闭后缓冲即丢。
@@ -547,6 +861,7 @@ impl AppState {
             modes: Mutex::new(HashMap::new()),
             pending: PendingRequests::default(),
             turns: Arc::new(Turns::default()),
+            agent_turns: AgentTurns::default(),
             turn_approvals: Arc::new(TurnApprovals::default()),
             replay: Arc::new(ReplayCapture::default()),
             delegates: Arc::new(Delegates::default()),
@@ -649,14 +964,15 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::Arc;
 
     use tokio::sync::Notify;
 
     use super::{
-        Cancels, Captured, CommandDto, Commands, ContextMode, ContextReason, DelegateEntry,
-        DelegateStatus, Delegates, PendingRequests, ReplayCapture, Routes, SessionRecord,
-        TurnApprovals,
+        apply_tool_update, should_synthesize_end, should_synthesize_start, AgentTurns, Cancels,
+        Captured, CommandDto, Commands, ContextMode, ContextReason, DelegateEntry, DelegateStatus,
+        Delegates, PendingRequests, ReplayCapture, Routes, SessionRecord, TurnApprovals,
     };
 
     fn command(name: &str) -> CommandDto {
@@ -674,6 +990,191 @@ mod tests {
             ui_session_id: ui.map(str::to_string),
             author_id: author.map(str::to_string),
         }
+    }
+
+    fn update(kind: &str, tool_id: Option<&str>, status: Option<&str>) -> serde_json::Value {
+        let mut value = serde_json::json!({ "sessionUpdate": kind });
+        if let Some(tool_id) = tool_id {
+            value["toolCallId"] = serde_json::Value::String(tool_id.to_string());
+        }
+        if let Some(status) = status {
+            value["status"] = serde_json::Value::String(status.to_string());
+        }
+        value
+    }
+
+    #[test]
+    fn synth_start_requires_no_client_prompt_and_no_existing_synth() {
+        assert!(should_synthesize_start(false, false));
+        assert!(!should_synthesize_start(false, true));
+        assert!(!should_synthesize_start(true, false));
+        assert!(!should_synthesize_start(true, true));
+    }
+
+    #[test]
+    fn synth_end_requires_generation_tools_and_permissions_to_all_be_clear() {
+        assert!(should_synthesize_end(true, 0, 0));
+        assert!(!should_synthesize_end(false, 0, 0));
+        assert!(!should_synthesize_end(true, 1, 0));
+        assert!(!should_synthesize_end(true, 0, 1));
+        assert!(!should_synthesize_end(true, 2, 3));
+    }
+
+    #[test]
+    fn repeated_pending_tool_id_counts_once() {
+        let mut pending = HashSet::new();
+        assert!(apply_tool_update(
+            &mut pending,
+            &update("tool_call", Some("tool-1"), Some("pending"))
+        ));
+        assert!(apply_tool_update(
+            &mut pending,
+            &update("tool_call_update", Some("tool-1"), Some("in_progress"))
+        ));
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn completed_tool_drops_count_and_zero_is_the_floor() {
+        let mut pending = HashSet::new();
+        assert!(apply_tool_update(
+            &mut pending,
+            &update("tool_call", Some("tool-1"), Some("pending"))
+        ));
+        assert!(apply_tool_update(
+            &mut pending,
+            &update("tool_call_update", Some("tool-1"), Some("completed"))
+        ));
+        assert_eq!(pending.len(), 0);
+        // 重复终态是正常增量，不能减成负数。
+        assert!(apply_tool_update(
+            &mut pending,
+            &update("tool_call_update", Some("tool-1"), Some("failed"))
+        ));
+        assert_eq!(pending.len(), 0);
+    }
+
+    #[test]
+    fn unknown_tool_status_does_not_move_the_count() {
+        let mut pending = HashSet::new();
+        assert!(!apply_tool_update(
+            &mut pending,
+            &update("tool_call", Some("tool-1"), Some("queued"))
+        ));
+        assert!(pending.is_empty());
+        // 普通正文更不该被当成工具。
+        assert!(!apply_tool_update(
+            &mut pending,
+            &update("agent_message_chunk", None, Some("pending"))
+        ));
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn stale_generation_cannot_end_a_newer_synth() {
+        let turns = AgentTurns::default();
+        let first = turns
+            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .expect("start");
+        assert!(first.started_turn.is_some());
+        let second = turns
+            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .expect("same synth");
+        assert!(second.started_turn.is_none());
+        assert_ne!(first.generation, second.generation);
+
+        assert!(turns.finish_if_idle("acp-1", first.generation).is_none(), "旧定时器必须作废");
+        assert!(turns.finish_if_idle("acp-1", second.generation).is_some());
+    }
+
+    #[test]
+    fn pending_tool_blocks_synth_end_until_it_completes() {
+        let turns = AgentTurns::default();
+        turns
+            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .expect("start");
+        let busy = turns
+            .on_session_update(
+                "acp-1",
+                &update("tool_call_update", Some("tool-1"), Some("in_progress")),
+            )
+            .expect("tool");
+        assert!(turns.finish_if_idle("acp-1", busy.generation).is_none());
+
+        let done = turns
+            .on_session_update(
+                "acp-1",
+                &update("tool_call_update", Some("tool-1"), Some("completed")),
+            )
+            .expect("tool done");
+        assert!(turns.finish_if_idle("acp-1", done.generation).is_some());
+    }
+
+    #[test]
+    fn first_event_can_already_be_a_pending_tool() {
+        let turns = AgentTurns::default();
+        let started = turns
+            .on_session_update(
+                "acp-1",
+                &update("tool_call", Some("tool-1"), Some("pending")),
+            )
+            .expect("start");
+        assert!(turns.finish_if_idle("acp-1", started.generation).is_none());
+    }
+
+    #[test]
+    fn pending_permission_blocks_synth_end_until_answered() {
+        let turns = AgentTurns::default();
+        turns
+            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .expect("start");
+        let waiting = turns
+            .permission_requested("profile-1", "acp-1", 42)
+            .expect("synth timer reset");
+        assert!(turns.finish_if_idle("acp-1", waiting).is_none());
+
+        let (answered_sid, generation) = turns
+            .permission_answered("profile-1", 42)
+            .expect("answer clears pending");
+        assert_eq!(answered_sid, "acp-1");
+        assert!(turns.finish_if_idle("acp-1", generation).is_some());
+    }
+
+    #[test]
+    fn client_takeover_ends_synth_immediately() {
+        let turns = AgentTurns::default();
+        turns
+            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .expect("start");
+        let end = turns.client_begin("acp-1").expect("takeover ends synth");
+        assert_eq!(end.reason, "client-takeover");
+        assert!(turns
+            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .is_none(), "client_pending 为真时必须原样转发");
+    }
+
+    #[test]
+    fn session_load_replay_does_not_synthesize_a_turn() {
+        let turns = AgentTurns::default();
+        turns.load_begin("acp-1");
+        assert!(turns
+            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .is_none());
+        // 响应已回、残余重放还在路上：抑制窗口内也不能合成，否则历史正文会被再说一遍。
+        turns.load_end("acp-1");
+        assert!(turns
+            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .is_none());
+    }
+
+    #[test]
+    fn session_load_release_synthesizes_once_window_passes() {
+        let turns = AgentTurns::default();
+        turns.load_begin("acp-1");
+        turns.load_end_with_suppress("acp-1", 0);
+        assert!(turns
+            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .is_some());
     }
 
     fn delegate(handle: &str, parent: &str, child: &str, status: DelegateStatus) -> DelegateEntry {

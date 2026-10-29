@@ -84,6 +84,12 @@ function stopReasonOf(result: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+/** 合成轮边界会带 origin；真实轮没有这个字段。只用于诊断，不参与任何分支。 */
+function originOf(event: AcpEvent): string | null {
+  if (event.kind !== "promptStarted" && event.kind !== "promptResult") return null;
+  return typeof event.origin === "string" ? event.origin : null;
+}
+
 /**
  * `session.lock` 是与 `AcpEvent` 并列的 topic 载荷。事件层现在会把 topic 一起交过来，
  * 所以按 topic 判断，不再靠「没有 kind 且带 count」这种形状约定去猜。
@@ -574,6 +580,7 @@ export function useAcpEvents({
   const onAgentEvent = useCallback(
     (profileId: string, event: AcpEvent, topic: string) => {
       setEventCount((n) => n + 1);
+      const origin = originOf(event);
 
       // 进程没了 = 这个 profile 下次必须重新连接。停止/断开都会走到这里；
       // 不清映射的话，下一轮会复用已经死掉的 AgentProcess。
@@ -725,7 +732,7 @@ export function useAcpEvents({
             text:
               event.kind === "notification" || event.kind === "request"
                 ? `${event.kind}:${event.method}${kindLabel ? ` / ${kindLabel}` : ""}${preview ? ` · ${preview}` : ""}`
-                : event.kind,
+                : `${event.kind}${origin ? `:${origin}` : ""}`,
           },
         ].slice(-80),
       );
@@ -1113,7 +1120,7 @@ export function useAcpEvents({
         const fullLength = streamsForTurn.reduce((sum, [, stream]) => sum + stream.text.length, 0);
         clog(
           "RESULT",
-          `acp=${acpSid ?? "-"} ui=${uiSid} kind=${event.kind} stop=${stopReason ?? "-"} streams=${streamsForTurn.length} len=${fullLength}`,
+          `acp=${acpSid ?? "-"} ui=${uiSid} kind=${event.kind}${origin ? `:${origin}` : ""} stop=${stopReason ?? "-"} streams=${streamsForTurn.length} len=${fullLength}`,
         );
         if (failed) {
           console.warn("[acp] prompt failed", event.msg);
