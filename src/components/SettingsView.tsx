@@ -32,6 +32,7 @@ import { cn } from "@/lib/utils";
 import { newId } from "@/lib/ids";
 import type { CodeThemeId } from "@/lib/highlight/themes";
 import { normalizeLanguage, type Language } from "@/i18n/normalize";
+import type { BusyInputMode } from "@/lib/busy-input";
 import {
   canSaveConnection,
   createEmptyConnection,
@@ -100,6 +101,8 @@ interface SettingsViewProps {
   onCycleTheme: (t: ThemeMode) => void;
   /** 新会话默认自动同意档（客户端应答策略，不是 agent 的审批档） */
   onChangeAutoApproveDefault: (level: AutoApproveLevel) => void;
+  /** running 时发送的默认动作（全局偏好） */
+  onChangeBusyInputMode: (mode: BusyInputMode) => void;
   /** 新建连接默认继承整份 MCP 目录（只影响新连接） */
   onChangeMcpInheritDefault: (value: boolean) => void;
   /** 流式回答是否按到达节奏平滑推进（只影响渲染层） */
@@ -171,6 +174,12 @@ function LongTextHover({
 const AUTO_APPROVE_OPTIONS: { value: AutoApproveLevel; labelKey: MessageKey }[] = [
   { value: "off", labelKey: "settings.chat.autoApprove.off" },
   { value: "edits", labelKey: "settings.chat.autoApprove.edits" },
+];
+
+const BUSY_MODE_OPTIONS: { value: BusyInputMode; labelKey: MessageKey }[] = [
+  { value: "interrupt", labelKey: "composer.busyMode.interrupt" },
+  { value: "queue", labelKey: "composer.busyMode.queue" },
+  { value: "steer", labelKey: "composer.busyMode.steer" },
 ];
 
 const SSH_AUTH_OPTIONS: { value: SshAuth; labelKey: MessageKey }[] = [
@@ -295,6 +304,7 @@ export function SettingsView({
   onChangeContext,
   onCycleTheme,
   onChangeAutoApproveDefault,
+  onChangeBusyInputMode,
   onChangeMcpInheritDefault,
   onChangeTweenEnabled,
   onChangeReplySound,
@@ -1427,6 +1437,25 @@ export function SettingsView({
                           }))}
                           value={settings.autoApproveDefault}
                           onChange={onChangeAutoApproveDefault}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-6 py-4">
+                        <div className="min-w-0">
+                          <div className="text-ui text-ink-1">
+                            {t("settings.busyMode.label")}
+                          </div>
+                          <p className="mt-1 text-caption text-ink-3">
+                            {t("settings.busyMode.hint")}
+                          </p>
+                        </div>
+                        <Segmented
+                          ariaLabel={t("settings.busyMode.label")}
+                          options={BUSY_MODE_OPTIONS.map(({ value, labelKey }) => ({
+                            value,
+                            label: t(labelKey),
+                          }))}
+                          value={settings.busyInputMode}
+                          onChange={onChangeBusyInputMode}
                         />
                       </div>
                       <div className="flex items-center justify-between gap-6 py-4">

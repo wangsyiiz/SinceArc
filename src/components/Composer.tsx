@@ -12,7 +12,6 @@ import { SessionMcpButton } from "./SessionMcpMenu";
 import { UsageRing } from "./UsageRing";
 import { SlashMenu } from "./SlashMenu";
 import { Tooltip } from "./ui/Tooltip";
-import { Segmented } from "./ui/Segmented";
 import { filterCommands, slashQuery, type SlashCommand } from "@/lib/slash-filter";
 import { steerUnavailableReason, type SteerGate } from "@/lib/steer-availability";
 import type { BusyInputMode } from "@/lib/busy-input";
@@ -45,7 +44,6 @@ interface ComposerProps {
   usage?: { text: string; warn: boolean; percent: number } | null;
   /** running 时发送的默认动作（§28.5） */
   busyInputMode?: BusyInputMode;
-  onBusyInputModeChange?: (mode: BusyInputMode) => void;
   /** 已发出 cancel、正在等本轮终态 */
   interrupting?: boolean;
   /** 当前会话已排队的消息数 */
@@ -71,7 +69,6 @@ export function Composer({
   onReconnectMcp,
   usage,
   busyInputMode = "interrupt",
-  onBusyInputModeChange,
   interrupting = false,
   queuedCount = 0,
 }: ComposerProps) {
@@ -203,12 +200,6 @@ export function Composer({
   const autoApproveText =
     autoApprove === "edits" ? t("settings.chat.autoApprove.edits") : t("composer.autoApprove.off");
 
-  const busyModeOptions: { value: BusyInputMode; label: string }[] = [
-    { value: "interrupt", label: t("composer.busyMode.interrupt") },
-    { value: "queue", label: t("composer.busyMode.queue") },
-    { value: "steer", label: t("composer.busyMode.steer") },
-  ];
-
   const submit = () => {
     if (interrupting) return;
     if (busy) {
@@ -312,21 +303,13 @@ export function Composer({
             </span>
           </span>
         )}
-        <div className="ml-1 flex min-w-0 items-center gap-1.5">
-          <span className="shrink-0 text-micro text-ink-3">{t("composer.busyMode.label")}</span>
-          <Segmented
-            compact
-            ariaLabel={t("composer.busyMode.aria")}
-            options={busyModeOptions}
-            value={busyInputMode}
-            onChange={(mode) => onBusyInputModeChange?.(mode)}
-          />
-          {queuedCount > 0 && (
+        {queuedCount > 0 && (
+          <div className="ml-1 flex min-w-0 items-center gap-1.5">
             <span className="shrink-0 text-micro text-warn-1">
               {t("composer.busy.queueCount", { count: queuedCount })}
             </span>
-          )}
-        </div>
+          </div>
+        )}
 
         <div className="ml-auto flex items-center gap-1">
           {sessionId && (

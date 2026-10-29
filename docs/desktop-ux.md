@@ -2003,3 +2003,32 @@ agent 被唤醒这一轮**不是客户端发起的**，Agent Client Protocol 里
 4. **裁剪与锚点互踩**：锚点补偿未落定时，`useTrimAnchor` 跳过本次裁剪（延后一帧再算）。
 5. **留痕**：`WINDOW-TRIM head=N tail=N top=… h=…`、`WINDOW-PIN-SHRINK plan=…→…`、
    `WINDOW-ANCHOR-LOST`、`FOLLOW-END reason=…` 四条诊断，出问题直接读日志，不再靠猜。
+## 34. 思考行图标居中 + 运行中发送模式全局化（2026-10-29 定）
+
+### 34.1 思考行头部图标垂直居中
+
+现状是"手调偏移"：头像用 `mt-0.5` 往下推、三点容器用 `items-end`、定位按钮里的 `Waypoints` 直接落在
+文本基线上（svg 默认 `display: inline`，基线对齐会带上 descender 空间 → 视觉上偏上）。
+手调的值只在某一种字号/行高下成立，换字号就又歪，所以不修数值、改结构：
+
+1. 前置指示器（running 的品牌 loader、历史的三个点）统一包进**固定尺寸盒**：
+   `inline-flex h-4 w-4 shrink-0 items-center justify-center`，内部元素 `block`（消掉基线参与）。
+2. 历史分支三点容器的 `items-end` 改 `items-center`，同样放进上面的盒子里。
+3. 「定位 / 轨迹」按钮：图标与文字放 `inline-flex items-center`，文字加 `leading-none`，
+   不再依赖 Button 内部的基线对齐。
+4. 顶部名字行的头像：`mt-0.5` 手调改 `self-center`（让它跟着行盒中心走，而不是猜一个像素）。
+
+验收是数值口径：指示器盒的中心与同一行的文字行盒中心**相差 0px**（由所有者做视觉终判，数值只保证不自相矛盾）。
+
+### 34.2 运行中发送模式移入设置（全局）
+
+`busyInputMode`（打断 / 排队 / 引导）本来就是**全局的单一份设置**（Rust `AppSettingsDto.busyInputMode`，
+已持久化），只是入口长在输入框工具行上，看起来像"每会话"的东西。改法：
+
+- **删掉** Composer 工具行里的 `Segmented`（连同 `composer.busyMode.label` 文案的使用）；
+- **加到** 设置 → Chat 区，作为一项全局偏好（`settings.busyMode.label` + `.hint`），选项文案沿用现有三条；
+- **行为不变**：默认仍是 `interrupt`；忙碌时发送键的语义、排队计数提示、插话可用的判定全部照旧；
+- Composer 仍要能拿到 `busyInputMode`（行为需要），只是不再渲染选择器。
+
+为什么移到设置：它是全局偏好，放在每轮都要看一眼的输入行上，会让人误以为"只对当前会话生效"，
+也占了输入行本来就紧的横向空间。
