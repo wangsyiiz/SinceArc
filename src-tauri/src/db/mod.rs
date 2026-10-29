@@ -34,6 +34,8 @@ const SETTINGS_KEY_TWEEN: &str = "tween_enabled";
 const SETTINGS_KEY_CODE_THEME: &str = "code_theme";
 const SETTINGS_KEY_LANGUAGE: &str = "language";
 const SETTINGS_KEY_BUSY_INPUT_MODE: &str = "busy_input_mode";
+const SETTINGS_KEY_REPLY_SOUND: &str = "reply_sound";
+const SETTINGS_KEY_REPLY_TOAST: &str = "reply_toast";
 
 /// 结构版本：与 schema.sql 不符时整表重建（自用工具，会话数据可再生）
 const SCHEMA_VERSION: i64 = 6;
@@ -1037,6 +1039,13 @@ impl Db {
                     tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
                     issues.push(note);
                 }
+                // 布尔只有 true/false 两种合法值；看不出来就按默认值处理，不打扰用户。
+                SETTINGS_KEY_REPLY_SOUND => {
+                    settings.reply_sound = value.parse::<bool>().unwrap_or(true)
+                }
+                SETTINGS_KEY_REPLY_TOAST => {
+                    settings.reply_toast = value.parse::<bool>().unwrap_or(true)
+                }
                 _ => {}
             }
         }
@@ -1098,6 +1107,16 @@ impl Db {
             "INSERT INTO settings(key, value) VALUES(?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![SETTINGS_KEY_BUSY_INPUT_MODE, settings.busy_input_mode.as_str()],
+        )?;
+        tx.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![SETTINGS_KEY_REPLY_SOUND, settings.reply_sound.to_string()],
+        )?;
+        tx.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![SETTINGS_KEY_REPLY_TOAST, settings.reply_toast.to_string()],
         )?;
         tx.commit()
     }
@@ -2597,6 +2616,8 @@ mod tests {
         assert!(settings.tween_enabled);
         assert_eq!(settings.code_theme, DEFAULT_CODE_THEME);
         assert_eq!(settings.busy_input_mode, "interrupt");
+        assert!(settings.reply_sound);
+        assert!(settings.reply_toast);
         std::fs::remove_file(&path).ok();
     }
 
@@ -2622,6 +2643,8 @@ mod tests {
             code_theme: "solarized".into(),
             language: None,
             busy_input_mode: "interrupt".into(),
+            reply_sound: true,
+            reply_toast: true,
         })
         .expect("save settings");
         assert_eq!(
@@ -2644,6 +2667,8 @@ mod tests {
             code_theme: "github-dark".into(),
             language: None,
             busy_input_mode: "queue".into(),
+            reply_sound: false,
+            reply_toast: false,
         })
         .expect("save settings");
 
@@ -2653,6 +2678,8 @@ mod tests {
         assert_eq!(settings.auto_approve_default, "edits");
         assert!(!settings.mcp_inherit_default);
         assert!(!settings.tween_enabled);
+        assert!(!settings.reply_sound);
+        assert!(!settings.reply_toast);
         assert_eq!(settings.busy_input_mode, "queue");
         std::fs::remove_file(&path).ok();
     }
@@ -2732,6 +2759,8 @@ mod tests {
             code_theme: "github-dark".into(),
             language: None,
             busy_input_mode: "interrupt".into(),
+            reply_sound: true,
+            reply_toast: true,
         })
         .expect("save settings");
         let loaded = db.load_settings().expect("load settings");
@@ -2786,6 +2815,8 @@ mod tests {
             code_theme: "github-dark".into(),
             language: None,
             busy_input_mode: "interrupt".into(),
+            reply_sound: true,
+            reply_toast: true,
         })
         .expect("save settings");
         let (_, clean) = db.load_settings_report().expect("load report");
@@ -2868,6 +2899,8 @@ mod tests {
             code_theme: "github-dark".into(),
             language: None,
             busy_input_mode: "interrupt".into(),
+            reply_sound: true,
+            reply_toast: true,
         })
         .expect("save settings");
 
@@ -2902,6 +2935,8 @@ mod tests {
             code_theme: "github-dark".into(),
             language: None,
             busy_input_mode: "interrupt".into(),
+            reply_sound: true,
+            reply_toast: true,
         })
         .expect("save settings");
 

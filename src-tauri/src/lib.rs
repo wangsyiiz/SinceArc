@@ -174,6 +174,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // 更新装完后重启自己
         .plugin(tauri_plugin_process::init())
+        // 回复完成通知（docs/desktop-ux.md §31）；失败静默降级，不参与单例语义
+        .plugin(tauri_plugin_notification::init())
         // 首页加载完成后再显示窗口（§27.1）。放在 Rust 侧而不是前端：前端崩了就没有调用者了。
         .on_page_load(|webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {

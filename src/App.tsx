@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 import { ActivityRail } from "@/components/ActivityRail";
 import { Composer } from "@/components/Composer";
 import { ConnectErrorState } from "@/components/ConnectErrorState";
@@ -33,6 +38,11 @@ import { delegateCancelFailureKey, type DelegatePhase } from "@/lib/delegate-sta
 import { acpSessionIdOfActivity } from "@/lib/activity-row";
 import { mergeMessages } from "@/lib/messages-merge";
 import { buildPlayers } from "@/lib/players";
+import {
+  REPLY_NOTIFY_COALESCE_MS,
+  planReplyNotify,
+  summarizeReply,
+} from "@/lib/reply-notify";
 import { steerGate, type SteerGate } from "@/lib/steer-availability";
 import {
   dequeuePrompt,
@@ -152,6 +162,46 @@ interface TurnPolicy {
   acpSessionId: string;
   turnId: string;
   kinds: string[];
+}
+
+const REPLY_SOUND_URL = new URL("./assets/notify-reply.wav", import.meta.url).href;
+
+let replyAudio: HTMLAudioElement | null = null;
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** 常驻一个 Audio 对象；自动播放被拦时只留诊断，不打扰用户。 */
+function playReplySound(diag: (text: string) => void): void {
+  try {
+    replyAudio ??= new Audio(REPLY_SOUND_URL);
+    replyAudio.currentTime = 0;
+    void replyAudio.play().catch((error) => {
+      diag(`REPLY-SOUND-FAIL ${describeError(error)}`);
+    });
+  } catch (error) {
+    diag(`REPLY-SOUND-FAIL ${describeError(error)}`);
+  }
+}
+
+/** 权限查询/请求与发送失败都静默降级为只发音频（§31.4）。 */
+async function sendReplyNotification(
+  title: string,
+  body: string,
+  diag: (text: string) => void,
+): Promise<void> {
+  try {
+    let granted = await isPermissionGranted();
+    if (!granted) granted = (await requestPermission()) === "granted";
+    if (!granted) {
+      diag("REPLY-TOAST-SKIP permission-denied");
+      return;
+    }
+    await sendNotification({ title, body });
+  } catch (error) {
+    diag(`REPLY-TOAST-SKIP ${describeError(error)}`);
+  }
 }
 
 interface SendInGroupOptions {
@@ -607,6 +657,99 @@ export default function App() {
     },
     [permissions.expire, sessions],
   );
+
+  const tRef = useRef(t);
+  const diagRef = useRef<(text: string) => void>(() => {});
+  const settingsRef = useRef(settings);
+  const lastSessionIdRef = useRef(lastSessionId);
+  tRef.current = t;
+  settingsRef.current = settings;
+  lastSessionIdRef.current = lastSessionId;
+
+  /** 音效节流 + 通知合并窗口；计时器在卸载时清掉。 */
+  const replyNotifyRef = useRef({
+    lastSoundAt: 0,
+    lastSoundEventAt: 0,
+    toastTimer: null as number | null,
+    toastLastAt: 0,
+    toastSessions: new Set<string>(),
+    toastText: "",
+  });
+  useEffect(() => {
+    return () => {
+      if (replyNotifyRef.current.toastTimer !== null) {
+        window.clearTimeout(replyNotifyRef.current.toastTimer);
+      }
+    };
+  }, []);
+
+  const onTurnFinished = useCallback(
+    async (args: {
+      uiSid: string;
+      stopReason: string | null;
+      outcome: "ok" | "failed";
+      text: string;
+    }) => {
+      const finishedAt = Date.now();
+      let windowFocused = false;
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        windowFocused = await getCurrentWindow().isFocused();
+      } catch (error) {
+        diagRef.current(`REPLY-FOCUS-FAIL ${describeError(error)}`);
+      }
+
+      const current = settingsRef.current;
+      const plan = planReplyNotify({
+        soundEnabled: current.replySound,
+        toastEnabled: current.replyToast,
+        windowFocused,
+        // 焦点查询是异步的：await 之后再读当前会话，避免用切换前的旧值做判断。
+        viewingSession: args.uiSid === lastSessionIdRef.current,
+        stopReason: args.stopReason,
+        outcome: args.outcome,
+      });
+
+      if (plan.sound) {
+        const at = Date.now();
+        const pending = replyNotifyRef.current;
+        if (
+          finishedAt >= pending.lastSoundEventAt &&
+          at - pending.lastSoundAt >= REPLY_NOTIFY_COALESCE_MS
+        ) {
+          pending.lastSoundEventAt = finishedAt;
+          replyNotifyRef.current.lastSoundAt = at;
+          playReplySound((text) => diagRef.current(text));
+        }
+      }
+
+      if (!plan.toast) return;
+      const pending = replyNotifyRef.current;
+      pending.toastSessions.add(args.uiSid);
+      // 焦点查询是异步的：旧事件可能晚于新事件返回，不能拿旧正文覆盖新正文。
+      if (finishedAt >= pending.toastLastAt) {
+        pending.toastLastAt = finishedAt;
+        pending.toastText = args.text;
+        if (pending.toastTimer !== null) window.clearTimeout(pending.toastTimer);
+        pending.toastTimer = window.setTimeout(() => {
+          const count = pending.toastSessions.size;
+          const latestText = pending.toastText;
+          pending.toastTimer = null;
+          pending.toastSessions = new Set();
+          pending.toastText = "";
+
+          const title = tRef.current("replyNotify.title");
+          const summary = summarizeReply(latestText);
+          const completed =
+            count > 1 ? tRef.current("replyNotify.sessionsDone", { count }) : "";
+          const body = [completed, summary].filter(Boolean).join("\n");
+          void sendReplyNotification(title, body, (text) => diagRef.current(text));
+        }, REPLY_NOTIFY_COALESCE_MS);
+      }
+    },
+    [],
+  );
+
   const {
     eventCount,
     lastEvent,
@@ -633,6 +776,7 @@ export default function App() {
     onTraceChanged: () => setTraceTick((t) => t + 1),
     onNotice: pushUiNotice,
     onDisconnect: clearUiNotices,
+    onTurnFinished,
     // §29.4 主判据：未作答的授权请求遇到该会话的新活动 = 已被 agent 丢掉
     onSessionActivity: (uiSid, acpSid) =>
       permissions.expireByActivity(
@@ -644,6 +788,7 @@ export default function App() {
 
   useEffect(() => {
     permissionDiagRef.current = diag;
+    diagRef.current = diag;
   }, [diag]);
 
   // 切换会话时计数归零（§26.2 ③）；断开连接已在 hook 的 conn.exited 分支清空。
@@ -691,10 +836,6 @@ export default function App() {
   // 依赖必须是空数组：`t` 的标识随语言切换而变，若把它列进依赖，切语言会让这个 effect 重新
   // 读一次库、把刚改的 settings 覆盖回库里的旧值 —— 表现就是「点 English 又弹回中文」。
   // 需要最新 `t` / `diag` 的地方走 ref，effect 本身只跑一次。
-  const tRef = useRef(t);
-  const diagRef = useRef(diag);
-  tRef.current = t;
-  diagRef.current = diag;
   useEffect(() => {
     let alive = true;
     settingsLoad()
@@ -2347,6 +2488,12 @@ export default function App() {
               }
               onChangeTweenEnabled={(tweenEnabled) =>
                 setSettings((s) => ({ ...s, tweenEnabled }))
+              }
+              onChangeReplySound={(replySound) =>
+                setSettings((s) => ({ ...s, replySound }))
+              }
+              onChangeReplyToast={(replyToast) =>
+                setSettings((s) => ({ ...s, replyToast }))
               }
               onChangeCodeTheme={(codeTheme) =>
                 setSettings((s) => ({ ...s, codeTheme }))

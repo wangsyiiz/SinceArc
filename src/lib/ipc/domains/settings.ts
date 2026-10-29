@@ -47,6 +47,8 @@ export async function settingsLoad(): Promise<{
       codeTheme: normalizeCodeThemeId(report.settings.codeTheme),
       language: asLanguage(report.settings.language),
       busyInputMode: asBusyInputMode(report.settings.busyInputMode),
+      replySound: report.settings.replySound,
+      replyToast: report.settings.replyToast,
     },
     issues: report.issues,
   };

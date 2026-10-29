@@ -104,6 +104,10 @@ interface SettingsViewProps {
   onChangeMcpInheritDefault: (value: boolean) => void;
   /** 流式回答是否按到达节奏平滑推进（只影响渲染层） */
   onChangeTweenEnabled: (value: boolean) => void;
+  /** 一轮正常结束后是否播放提示音（§31.3） */
+  onChangeReplySound: (value: boolean) => void;
+  /** 窗口不在前台时是否发系统通知（§31.4） */
+  onChangeReplyToast: (value: boolean) => void;
   /** markdown 代码块配色（独立于界面主题） */
   onChangeCodeTheme: (value: CodeThemeId) => void;
   /** 界面语言（docs/i18n.md §2.3）：改完立即生效，同时落库 */
@@ -293,6 +297,8 @@ export function SettingsView({
   onChangeAutoApproveDefault,
   onChangeMcpInheritDefault,
   onChangeTweenEnabled,
+  onChangeReplySound,
+  onChangeReplyToast,
   onChangeCodeTheme,
   onChangeLanguage,
   discovery = null,
@@ -1421,6 +1427,36 @@ export function SettingsView({
                           }))}
                           value={settings.autoApproveDefault}
                           onChange={onChangeAutoApproveDefault}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-6 py-4">
+                        <div className="min-w-0">
+                          <div className="text-ui text-ink-1">
+                            {t("settings.replySound.label")}
+                          </div>
+                          <p className="mt-1 text-caption text-ink-3">
+                            {t("settings.replySound.hint")}
+                          </p>
+                        </div>
+                        <Switch
+                          checked={settings.replySound}
+                          label={t("settings.replySound.label")}
+                          onChange={onChangeReplySound}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-6 py-4">
+                        <div className="min-w-0">
+                          <div className="text-ui text-ink-1">
+                            {t("settings.replyToast.label")}
+                          </div>
+                          <p className="mt-1 text-caption text-ink-3">
+                            {t("settings.replyToast.hint")}
+                          </p>
+                        </div>
+                        <Switch
+                          checked={settings.replyToast}
+                          label={t("settings.replyToast.label")}
+                          onChange={onChangeReplyToast}
                         />
                       </div>
                       {heavy && (
