@@ -1832,3 +1832,69 @@ schema 里唯一一句相关注释是 *Background activity may still emit other 
 4. 用户点停止（`cancelled`）或这一轮失败 → **不响**。
 5. 关掉两个开关 → 都不响；只关音效 → 通知照发；只关通知 → 音效照放。
 6. 两个会话几乎同时结束 → 音效只放一次。
+
+## 32. agent 自发起的轮（2026-10-29 定）
+
+### 32.1 现象与实证
+
+后台任务（如 `terminal(background=true)` 跑 Codex）结束时，agent 会被唤醒继续干活，但界面**完全没反应**。
+
+`sincearc.log`（UTC，晚上那次）：
+
+```
+11:43:11.747  forward -> webview kind=promptResult                     ← 上一轮正常结束
+11:47:25.860  forward -> webview kind=notification:session/update ×367 ← 唤醒后的整轮，367 个事件
+              （其间没有 promptStarted，也没有 promptResult）
+11:53:07.070  forward -> webview kind=request:session/request_permission
+```
+
+事件全都到了 WebView，界面上一个字都没有。
+
+### 32.2 根因
+
+`promptStarted` 只在客户端发起 `session/prompt` 时产生（`commands.rs` 的 `sessionPrompt` 分支）。
+agent 被唤醒这一轮**不是客户端发起的**，Agent Client Protocol 里也没有对应的「轮开始」消息 ——
+服务端直接推 `session/update`。
+
+前端收到 `agent_message_chunk` 时用 `shouldAcceptChunk(inFlight, lateUntil, now)` 过滤：
+
+- `inFlight` 在上一轮 `promptResult` 时清掉，此刻为 `false`；
+- `lateUntil` 是 `session/load` 之后的重放窗口，此时早过期。
+
+于是**每一块都被当成重放丢弃**（诊断里是 `DROP-REPLAY`，367 次），界面不进生成态、不显示正文；
+也没有 `promptResult`，所以「进行中」不归零、计时不收尾、§31 的回复通知也不会触发
+—— 通知功能的触发点正是 `promptResult`，这个场景下它根本不存在。
+
+### 32.3 做法：由 Rust 侧合成轮边界
+
+判定权只可能在 Rust：只有它知道「客户端此刻没有未决的 `session/prompt` 请求」。
+
+1. **轮开始**：某 ACP 会话**无未决 prompt 请求**，却收到 `session/update`（正文或工具调用）
+   → 判定为 agent 自发起，先合成 `PromptStarted`（新 `turn_id`，`origin: "agent"`），再转发原事件。
+2. **轮结束**：同时满足三条才合成 `PromptResult { stop_reason: "end_turn", origin: "agent" }`：
+   - 该会话连续 **8 秒**没有任何事件（`AGENT_TURN_IDLE_MS = 8_000`）；
+   - 没有 pending / in_progress 的工具调用（§26 那套判据）；
+   - 没有未作答的授权请求（§29 那套判据）。
+3. 客户端发起的正常轮**行为完全不变**：有未决 prompt 请求时，原始 `promptStarted` / `promptResult` 照旧，
+   合成逻辑一步都不介入。
+
+### 32.4 `origin` 字段
+
+`PromptStarted` / `PromptResult` 增加 `origin: "client" | "agent"`（缺省 `client`，向后兼容）。
+用途：诊断与轮次列表可以标出「这轮不是我发的」；界面暂不加视觉标记（等真需要再说）。
+
+### 32.5 为什么可以接受「静默推断」
+
+- 协议没有结束信号，静默是唯一可用的近似；
+- 两个 busy 守卫挡住了大多数误判：长工具调用期间有 pending tool call，等待授权期间有未答授权请求；
+- 真误判（长思考、无工具、>8 秒）的后果是**提前收尾**，后续 chunk 会再开一轮 ——
+  表现为多一条轮次记录，**内容不丢**，也不影响本轮的持久化。
+
+### 32.6 验收
+
+1. 后台任务唤醒后：界面**立刻**进入生成态，正文、工具调用、进行中计数全部照常；
+2. 这一轮结束后：生成态退出、计时收尾、§31 的回复通知按三分法触发；
+3. 客户端自己发的轮：行为与现在完全一致（`promptStarted` 与 `promptResult` 仍来自真实请求）；
+4. 自发起轮期间等授权（>8 秒无事件）：**不**被判结束，直到作答后继续；
+5. 长工具调用（>8 秒无事件）：**不**被判结束；
+6. 诊断里能看到合成的轮边界（`TURN-SYNTH-START` / `TURN-SYNTH-END`，带 turnId 与原因）。
