@@ -158,6 +158,18 @@ fn reveal_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 
 pub fn run() {
     let app = tauri::Builder::default()
+        // 单例启动（docs/desktop-ux.md §30）：**必须是第一个注册的插件**，否则它跑在其他插件之后，
+        // 第二个实例可能在拿到锁之前就已经把窗口/数据库初始化了一遍。
+        // 第二个实例只负责把已有窗口还原并提到前台，然后自己退出；它的命令行参数直接丢弃（E14 再说）。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // 只 set_focus 不够：最小化时 focus 不会还原窗口 —— 顺序必须是 unminimize → show → focus。
+            use tauri::Manager as _;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         // 自动更新：更新包走 minisign 签名（与 Authenticode 无关），端点见 docs/distribution.md §9
         .plugin(tauri_plugin_updater::Builder::new().build())
         // 更新装完后重启自己
