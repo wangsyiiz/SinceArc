@@ -281,6 +281,7 @@ export default function App() {
     measureRow,
     scrollToIndex: scrollToMessageIndex,
     scrollToEnd,
+    forceScrollToEnd,
     atBottom: messageAtBottom,
     beginAnchorShift,
     endAnchorShift,
@@ -914,6 +915,18 @@ export default function App() {
   // 一次重渲染也滚到最底部（真机上表现为点一次翻页就被拽走）。
   const scrollToEndRef = useRef(scrollToEnd);
   scrollToEndRef.current = scrollToEnd;
+
+  /**
+   * 发送后无条件跳底（docs/desktop-ux.md §27.2）。
+   * 滚两次：第二次在下一帧，等虚拟列表把刚追加的那一行量准（行高是估算的）。
+   * 用 ref 拿最新实现，identity 稳定，不必挂进 sendInGroup 的依赖。
+   */
+  const forceScrollToEndRef = useRef(forceScrollToEnd);
+  forceScrollToEndRef.current = forceScrollToEnd;
+  const jumpToBottomAfterSend = useCallback(() => {
+    forceScrollToEndRef.current();
+    requestAnimationFrame(() => forceScrollToEndRef.current());
+  }, []);
   useEffect(() => {
     if (!messageAtBottom) return;
     const raf = requestAnimationFrame(() => scrollToEndRef.current());
@@ -1415,6 +1428,7 @@ export default function App() {
           cwd: resolved.cwd,
         });
         refreshTitles();
+        jumpToBottomAfterSend();
         return r;
       }
 
@@ -1429,8 +1443,9 @@ export default function App() {
 
       await send(raw);
       refreshTitles();
+      jumpToBottomAfterSend();
     },
-    [send, lastSessionId, patchSession, refreshTitles, t],
+    [send, lastSessionId, patchSession, refreshTitles, jumpToBottomAfterSend, t],
   );
 
   const sendSteer = useCallback(
