@@ -1972,3 +1972,34 @@ agent 被唤醒这一轮**不是客户端发起的**，Agent Client Protocol 里
 
 `probe-vlist.html` + `src/probe-vlist.tsx` 作为可重复的压测入口保留（不参与正式页面），
 用法：`npm run build` 后起静态服务访问 `/probe-vlist.html?n=5000&md=0.3&cache=0`。
+
+### 33.7 修订：裁剪的竞态与 pin 过宽（2026-10-29 晚间实测反馈）
+
+上线 0.0.7 后出现两个问题，都是 33.3 的实现缺陷，不是设计错方向：
+
+**① 滚到底不裁** —— `pinned` 把「被引用的原消息」也放进去了。`planWindow` 收缩边界的方式是
+「pinned 落在裁剪区间内 → 边界收到 pinned 之前」，于是会话里只要**任何位置**有一条引用，
+它的下标就会把 `dropHead` 从几百压到接近 0，等于永不裁剪。这与 33.3 里「引用被裁 → 显示『更早的消息』」
+的降级设计自相矛盾：有前者，后者永远用不上。
+
+**② 向上翻阅时滚条跳回底部** —— 裁剪会同时改 `scrollHeight` 与 `scrollTop`，而贴底跟随的判据
+`atBottom = scrollHeight - scrollTop - clientHeight <= 8` 是在**变化中途**采样的：
+
+```
+裁剪 → scrollHeight 骤减 → 浏览器把 scrollTop 夹到新 max
+     → 这一刻差值 ≤ 8 → atBottom 被判为 true → 贴底跟随 effect 触发 scrollToEnd()
+```
+
+裁尾时 `use-trim-anchor` 还把 `scrollTop` 夹进 `[0, max]`，正好制造这个瞬间。
+另外 `endAnchorShift` 在锚点行被裁掉时会回退到 `index 0` 并 `scrollToIndex`，同样是一次跳。
+
+修订后的规则：
+
+1. **pin 只保留两样**：正在流式的消息、未发送气泡。「被引用的原消息」不再 pin（用占位降级）；
+   「运行中 turn 的消息」只在**末尾 60 行内**才 pin —— 历史里若有状态卡住的 turn，不许它压住窗口边界。
+2. **程序化滚动不许改 `atBottom`**：裁剪与锚点补偿期间置标记，该窗口内的 scroll 事件不得把
+   `atBottom` 置为 `true`；`count` / `totalSize` 变化只允许据此**置 false**，不许置 true。
+3. **锚点行被裁时不做 `scrollToIndex`**：`endAnchorShift` 找不到锚点 key 时只清状态，位置交给裁剪补偿。
+4. **裁剪与锚点互踩**：锚点补偿未落定时，`useTrimAnchor` 跳过本次裁剪（延后一帧再算）。
+5. **留痕**：`WINDOW-TRIM head=N tail=N top=… h=…`、`WINDOW-PIN-SHRINK plan=…→…`、
+   `WINDOW-ANCHOR-LOST`、`FOLLOW-END reason=…` 四条诊断，出问题直接读日志，不再靠猜。
