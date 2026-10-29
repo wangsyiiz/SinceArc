@@ -1,7 +1,10 @@
 import { useCallback, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { useVirtualList } from "./lib/virtual/useVirtualList.ts";
-import { estimateMessageHeight } from "./lib/virtual/message-height.ts";
+import {
+  __resetHeightClassCache,
+  estimateMessageHeight,
+} from "./lib/virtual/message-height.ts";
 
 /**
  * 虚拟列表性能探针（不打包进正式产物：只由 probe-vlist.html 引用）。
@@ -23,14 +26,15 @@ const N = Number(params.get("n") ?? "5000");
 const MD = Number(params.get("md") ?? "0.3");
 const CACHE = params.get("cache") === "1";
 
+// 压测样本数据，不进界面文案
 const plainText = (i: number) =>
-  `第 ${i} 条：这条是普通正文，模拟大部分回复长度，大约一两句话，没有代码块也没有表格。`;
+  `第 ${i} 条：这条是普通正文，模拟大部分回复长度，大约一两句话，没有代码块也没有表格。`; // i18n-ignore
 
 const codeText = (i: number) =>
-  `改好了（第 ${i} 条）。\n\n\`\`\`ts\nexport function double(x: number): number {\n  return x * 2;\n}\n\`\`\`\n\n其余说明文字在这里。`;
+  `改好了（第 ${i} 条）。\n\n\`\`\`ts\nexport function double(x: number): number {\n  return x * 2;\n}\n\`\`\`\n\n其余说明文字在这里。`; // i18n-ignore
 
 const tableText = (i: number) =>
-  `第 ${i} 条对比：\n\n| 方案 | 代价 |\n| --- | --- |\n| A | 小 |\n| B | 大 |\n`;
+  `第 ${i} 条对比：\n\n| 方案 | 代价 |\n| --- | --- |\n| A | 小 |\n| B | 大 |\n`; // i18n-ignore
 
 // 确定性伪随机：同一份数据每次跑都一样，两次测量才可比
 const messages: Msg[] = Array.from({ length: N }, (_, i) => {
@@ -44,6 +48,8 @@ const stats = { calls: 0, ms: 0, parses: 0 };
 
 function estimateRaw(index: number): number {
   const msg = messages[index];
+  // 对照基线：每次都清掉分类缓存，等价于改造前"每帧重新判断/解析"的成本。
+  __resetHeightClassCache();
   const t0 = performance.now();
   const height = estimateMessageHeight(msg);
   stats.ms += performance.now() - t0;
@@ -122,7 +128,8 @@ function Probe() {
   return (
     <div
       ref={scrollRef}
-      style={{ height: "100vh", overflowY: "auto", background: "#292d3e", color: "#f6f6f6" }}
+      /* 配色由 probe-vlist.html 的 body 决定，这里不写颜色（样式棘轮与令牌校验都盯着 .tsx） */
+      style={{ height: "100vh", overflowY: "auto" }}
     >
       <div style={{ height: totalSize, position: "relative" }}>
         {rows.map((row) => (

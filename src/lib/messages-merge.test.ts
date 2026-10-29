@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mergeMessages, minSeq } from "./messages-merge.ts";
+import { maxSeq, mergeMessages, minSeq } from "./messages-merge.ts";
 import type { Message } from "@/types";
 
 const msg = (id: string, text = id): Message =>
@@ -29,4 +29,9 @@ test("没有 seq 的流式消息稳定地留在已知历史之后", () => {
 test("minSeq 取最小值；没有已知 seq 时为 null", () => {
   assert.equal(minSeq({ a: 5, b: 2, c: 9 }), 2);
   assert.equal(minSeq({}), null);
+});
+
+test("maxSeq 取最大值；没有已知 seq 时为 null", () => {
+  assert.equal(maxSeq({ a: 5, b: 2, c: 9 }), 9);
+  assert.equal(maxSeq({}), null);
 });

@@ -2,10 +2,14 @@
 import type { MessageRow } from "./MessageRow";
 
 /**
- * 一页历史消息。游标分页只相信这里的 `has_more`，前端不自己算剩余条数。
+ * 一页历史消息。游标分页只相信这里的 `has_more` / `has_newer`，前端不自己算剩余条数。
  */
 export type MessagePage = { 
 /**
  * 按 seq 升序，界面可直接作为一段连续历史追加
  */
-messages: Array<MessageRow>, hasMore: boolean, };
+messages: Array<MessageRow>, hasMore: boolean, 
+/**
+ * 反向分页（after_seq）时是否还有更新的消息；普通历史页恒为 false。
+ */
+hasNewer: boolean, };

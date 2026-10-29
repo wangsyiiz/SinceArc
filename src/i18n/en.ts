@@ -656,6 +656,7 @@ export const en: Record<MessageKey, string> = {
   "ui.button.interruptSend": "Interrupt & send",
   "ui.button.queueSend": "Queue",
   "chat.undelivered": "Not sent",
+  "messages.quote.trimmed": "Earlier message",
   "notice.dismiss": "Dismiss notice",
   "notice.agent.title": "Agent notice",
   "notice.absorbed.title": "This message did not take effect",

@@ -244,7 +244,7 @@ pub struct MessageRow {
     pub created_at: i64,
 }
 
-/// 一页历史消息。游标分页只相信这里的 `has_more`，前端不自己算剩余条数。
+/// 一页历史消息。游标分页只相信这里的 `has_more` / `has_newer`，前端不自己算剩余条数。
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
@@ -253,6 +253,9 @@ pub struct MessagePage {
     pub messages: Vec<MessageRow>,
     #[serde(rename = "hasMore")]
     pub has_more: bool,
+    /// 反向分页（after_seq）时是否还有更新的消息；普通历史页恒为 false。
+    #[serde(rename = "hasNewer")]
+    pub has_newer: bool,
 }
 
 /// 一个可加入群聊的玩家（docs/group-chat.md §1）
@@ -2145,17 +2148,57 @@ impl Db {
         Ok(out)
     }
 
-    /// 游标分页：`before_seq` 为 None 取最新一页，否则取严格早于该 seq 的一页。
+    /// 游标分页：`before_seq` 取严格早于该 seq 的一页；`after_seq` 取严格晚于该 seq 的一页。
     ///
-    /// 多取一条只用于判定 `has_more`，不返回给界面；返回顺序与 `load_messages` 一致（升序）。
+    /// 两者互斥；调用方同时传入时以 `after_seq` 为准。多取一条只用于判定
+    /// `has_more` / `has_newer`，不返回给界面；返回顺序始终升序。
     pub fn load_messages_page(
         &self,
         session_id: &str,
         limit: i64,
         before_seq: Option<i64>,
+        after_seq: Option<i64>,
     ) -> rusqlite::Result<MessagePage> {
         let limit = limit.max(0);
         let conn = self.conn.lock().expect("db poisoned");
+        if let Some(after_seq) = after_seq {
+            let mut stmt = conn.prepare(
+                "SELECT id, seq, role, kind, payload_json, created_at, author_id, turn_id, atom_kind
+                 FROM messages
+                 WHERE session_id = ?1 AND seq > ?2
+                 ORDER BY seq ASC LIMIT ?3",
+            )?;
+            let mut messages = stmt
+                .query_map(
+                    params![session_id, after_seq, limit.saturating_add(1)],
+                    |r| {
+                        let payload: String = r.get(4)?;
+                        Ok(MessageRow {
+                            id: r.get(0)?,
+                            seq: r.get(1)?,
+                            role: r.get(2)?,
+                            kind: r.get(3)?,
+                            atom_kind: r.get(8)?,
+                            payload: serde_json::from_str(&payload)
+                                .unwrap_or(serde_json::Value::Null),
+                            created_at: r.get(5)?,
+                            author_id: r.get(6)?,
+                            turn_id: r.get(7)?,
+                        })
+                    },
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let has_newer = messages.len() > limit as usize;
+            if has_newer {
+                messages.pop();
+            }
+            return Ok(MessagePage {
+                messages,
+                has_more: false,
+                has_newer,
+            });
+        }
+
         let mut stmt = conn.prepare(
             "SELECT id, seq, role, kind, payload_json, created_at, author_id, turn_id, atom_kind
              FROM messages
@@ -2191,6 +2234,7 @@ impl Db {
         Ok(MessagePage {
             messages,
             has_more,
+            has_newer: false,
         })
     }
 
@@ -4876,10 +4920,11 @@ mod tests {
         seed_sixty_messages(&db);
 
         let page = db
-            .load_messages_page("s-1", 50, None)
+            .load_messages_page("s-1", 50, None, None)
             .expect("latest page");
         assert_eq!(page.messages.len(), 50);
         assert!(page.has_more);
+        assert!(!page.has_newer);
         assert_eq!(page.messages.first().expect("first").seq, 11);
         assert_eq!(page.messages.last().expect("last").seq, 60);
         assert_eq!(page.messages.last().expect("last").id, "m60");
@@ -4895,11 +4940,11 @@ mod tests {
         seed_sixty_messages(&db);
 
         let latest = db
-            .load_messages_page("s-1", 50, None)
+            .load_messages_page("s-1", 50, None, None)
             .expect("latest page");
         let cursor = latest.messages.first().expect("oldest latest").seq;
         let older = db
-            .load_messages_page("s-1", 50, Some(cursor))
+            .load_messages_page("s-1", 50, Some(cursor), None)
             .expect("older page");
 
         assert_eq!(older.messages.len(), 10);
@@ -4920,16 +4965,49 @@ mod tests {
     }
 
     #[test]
+    fn page_after_cursor_returns_newer_in_order() {
+        let (db, path) = temp_db();
+        db.save_profiles(&[sample()]).expect("save");
+        db.upsert_session(&session("s-1", None)).expect("insert");
+        seed_sixty_messages(&db);
+
+        let first = db
+            .load_messages_page("s-1", 20, None, Some(0))
+            .expect("newer page");
+        assert_eq!(first.messages.len(), 20);
+        assert_eq!(first.messages.first().expect("first").seq, 1);
+        assert_eq!(first.messages.last().expect("last").seq, 20);
+        assert!(first.has_newer);
+        assert!(!first.has_more);
+
+        let cursor = first.messages.last().expect("cursor").seq;
+        let second = db
+            .load_messages_page("s-1", 50, None, Some(cursor))
+            .expect("final newer page");
+        assert_eq!(second.messages.len(), 40);
+        assert_eq!(second.messages.first().expect("first").seq, 21);
+        assert_eq!(second.messages.last().expect("last").seq, 60);
+        assert!(!second.has_newer);
+        assert!(second
+            .messages
+            .windows(2)
+            .all(|pair| pair[0].seq < pair[1].seq));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn page_on_empty_session() {
         let (db, path) = temp_db();
         db.save_profiles(&[sample()]).expect("save");
         db.upsert_session(&session("s-1", None)).expect("insert");
 
         let page = db
-            .load_messages_page("s-1", 50, None)
+            .load_messages_page("s-1", 50, None, None)
             .expect("empty page");
         assert!(page.messages.is_empty());
         assert!(!page.has_more);
+        assert!(!page.has_newer);
 
         std::fs::remove_file(&path).ok();
     }

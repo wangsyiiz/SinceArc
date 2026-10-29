@@ -148,6 +148,11 @@ import { useTabs } from "@/hooks/useTabs";
 import { useTheme } from "@/hooks/useTheme";
 import { estimateMessageHeight } from "@/lib/virtual/message-height";
 import { useVirtualList } from "@/lib/virtual/useVirtualList";
+import {
+  WINDOW_EDGE,
+  type WindowPlan,
+} from "@/lib/messages-window";
+import { useTrimAnchor, visibleIndexRange } from "@/lib/virtual/use-trim-anchor";
 
 const SETTINGS_SAVE_DEBOUNCE_MS = 300;
 /**
@@ -337,8 +342,23 @@ export default function App() {
 
   const { sessions, setSessions, reload: reloadSessions } = useSessionList();
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab } = useTabs(sessions);
-  const { state, patchSession, initSession, sessionState, hasMore, loadOlder, loadingOlder, opening } =
-    useSessionState(lastSessionId);
+  const {
+    state,
+    patchSession,
+    initSession,
+    sessionState,
+    hasMore,
+    loadOlder,
+    loadingOlder,
+    loadNewer,
+    trimmedHead,
+    trimmedTail,
+    trimWindow,
+    opening,
+  } = useSessionState(lastSessionId);
+  /** estimate/keyOf 的函数身份必须稳定，否则流式正文一更新就会作废整份测量缓存。 */
+  const msgsRef = useRef(state.msgs);
+  msgsRef.current = state.msgs;
 
   /** 当前界面会话的 live notice 收件箱；切会话/断连即清空。 */
   const [noticesBySession, setNoticesBySession] = useState<Record<string, UiNotice[]>>({});
@@ -418,12 +438,12 @@ export default function App() {
   }, [lastSessionId, patchSession, sessionState]);
 
   const messageKeyOf = useCallback(
-    (index: number) => state.msgs[index]?.id ?? `message-index-${index}`,
-    [state.msgs],
+    (index: number) => msgsRef.current[index]?.id ?? `message-index-${index}`,
+    [],
   );
   const estimateMessage = useCallback(
-    (index: number) => estimateMessageHeight(state.msgs[index]),
-    [state.msgs],
+    (index: number) => estimateMessageHeight(msgsRef.current[index]),
+    [],
   );
   const {
     rows: virtualRows,
@@ -441,6 +461,53 @@ export default function App() {
     estimate: estimateMessage,
     scrollRef,
     stickToBottom: true,
+  });
+
+  const visibleMessageIds = useMemo(
+    () => new Set(state.msgs.map((message) => message.id)),
+    [state.msgs],
+  );
+  const pinnedMessageIndexes = useMemo(() => {
+    const runningTurns = new Set<string>();
+    for (const turn of state.turns) {
+      if (turn.status !== "running") continue;
+      const id = normaliseTurnId(turn.id);
+      if (id) runningTurns.add(id);
+    }
+    const quotedMessageIds = new Set<string>();
+    for (const message of state.msgs) {
+      if (message.role !== "user") continue;
+      const quotedId = message.quoted?.messageId;
+      if (quotedId) quotedMessageIds.add(quotedId);
+    }
+
+    const pinned: number[] = [];
+    state.msgs.forEach((message, index) => {
+      const streaming = message.role === "player" && message.streaming === true;
+      const unsent = message.role === "user" && message.undelivered === true;
+      const turnId = normaliseTurnId(message.turnId);
+      const runningTurn = turnId !== null && runningTurns.has(turnId);
+      if (streaming || unsent || runningTurn || quotedMessageIds.has(message.id)) {
+        pinned.push(index);
+      }
+    });
+    return pinned;
+  }, [state.msgs, state.turns]);
+
+  const handleWindowTrim = useCallback(
+    (plan: WindowPlan) => {
+      if (!lastSessionId) return;
+      trimWindow(lastSessionId, plan);
+    },
+    [lastSessionId, trimWindow],
+  );
+  useTrimAnchor({
+    scrollRef,
+    rows: virtualRows,
+    count: state.msgs.length,
+    scopeKey: lastSessionId,
+    pinned: pinnedMessageIndexes,
+    onTrim: handleWindowTrim,
   });
 
   // 打开会话时读一次；每轮结束（busy 收起、流式标记也已清掉）后再读一次。
@@ -1173,9 +1240,25 @@ export default function App() {
 
   const handleMessageScroll = useCallback(() => {
     const el = scrollRef.current;
-    if (!el || !hasMore || loadingOlder) return;
-    if (el.scrollTop <= 24) requestOlder();
-  }, [hasMore, loadingOlder, requestOlder]);
+    if (!el) return;
+    const range = visibleIndexRange(virtualRows, el);
+    if (!range) return;
+    if (range.firstVisible <= WINDOW_EDGE && (hasMore || trimmedHead)) requestOlder();
+    if (
+      range.lastVisible >= state.msgs.length - 1 - WINDOW_EDGE &&
+      trimmedTail
+    ) {
+      void loadNewer();
+    }
+  }, [
+    hasMore,
+    loadNewer,
+    requestOlder,
+    state.msgs.length,
+    trimmedHead,
+    trimmedTail,
+    virtualRows,
+  ]);
 
   useLayoutEffect(() => {
     const anchor = scrollAnchorRef.current;
@@ -1567,8 +1650,14 @@ export default function App() {
 
   /** 轨迹 → 正文：滚到该轮第一条消息，并短暂用 accent 环标一下。 */
   const locateMessage = useCallback((messageId: string) => {
-    const index = state.msgs.findIndex((message) => message.id === messageId);
-    if (index < 0) return;
+    const index = msgsRef.current.findIndex((message) => message.id === messageId);
+    if (index < 0) {
+      clog(
+        "WINDOW-SKIP",
+        `ui=${lastSessionId ?? "-"} message=${messageId} window=${msgsRef.current.length}`,
+      );
+      return;
+    }
     scrollToMessageIndex(index, "center");
     setHighlightMessageId(messageId);
     if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
@@ -1576,7 +1665,7 @@ export default function App() {
       setHighlightMessageId((current) => (current === messageId ? null : current));
       highlightTimerRef.current = null;
     }, 1_200);
-  }, [scrollToMessageIndex, state.msgs]);
+  }, [lastSessionId, scrollToMessageIndex]);
 
   /** 正文 → 轨迹：打开面板，并把当前轮作为定位目标。 */
   const locateTraceTurn = useCallback((turnId: string) => {
@@ -2315,6 +2404,11 @@ export default function App() {
                                           m.role === "user" && m.delegate
                                             ? delegateRunning[m.delegate.handleId]
                                             : undefined
+                                        }
+                                        quoteTargetMissing={
+                                          m.role === "user" &&
+                                          !!m.quoted?.messageId &&
+                                          !visibleMessageIds.has(m.quoted?.messageId ?? "")
                                         }
                                         onCancelDelegate={cancelDelegate}
                                         onLocateTrace={locateTraceTurn}

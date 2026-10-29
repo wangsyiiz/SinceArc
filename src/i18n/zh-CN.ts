@@ -656,6 +656,7 @@ export const zhCN = {
   "ui.button.interruptSend": "打断并发送",
   "ui.button.queueSend": "排队",
   "chat.undelivered": "未发送",
+  "messages.quote.trimmed": "更早的消息",
   "notice.dismiss": "关闭提示",
   "notice.agent.title": "Agent 提示",
   "notice.absorbed.title": "这条消息没有生效",
