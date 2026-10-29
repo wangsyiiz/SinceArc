@@ -9,8 +9,12 @@ import { Tooltip } from "./ui/Tooltip";
 
 export function DiagnosticsPanel({
   eventLog,
+  eventCount = 0,
+  lastEvent,
 }: {
   eventLog: { at: number; text: string }[];
+  eventCount?: number;
+  lastEvent?: string;
 }) {
   const { t } = useTranslation();
   const { triggerRef, panelRef, open, toggle, style } = useAnchoredLayer({
@@ -74,6 +78,13 @@ export function DiagnosticsPanel({
           style={{ ...style, animation: "sc-pop 150ms var(--ease-pop)" }}
           className="sc-glass sc-z-popover w-96 rounded-card p-3"
         >
+          <div className="mb-2 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 border-b border-line-1/50 pb-2 text-micro text-ink-3">
+            <span>{t("statusbar.events.received", { eventCount })}</span>
+            <span aria-hidden="true">·</span>
+            <span className="break-all font-mono">
+              {t("statusbar.events.last", { lastEvent: lastEvent ?? "-" })}
+            </span>
+          </div>
           <div className="flex items-start justify-between gap-3">
             <p className="text-caption text-ink-3">
               <Trans

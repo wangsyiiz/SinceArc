@@ -31,6 +31,19 @@ test("running 分支的次行用 view.bodyLine 条件渲染，不留空元素", 
   assert.match(branch, /\{view\.bodyLine && \(/);
 });
 
+test("running 分支用 BrandLoader 给出「在动」的信号，历史分支仍保留三点", () => {
+  const branch = runningBranch();
+  // 0.0.3 的回归：running 换标签后三点被顺手吃掉，最该动的那一行反而没有动的信号
+  assert.match(branch, /<BrandLoader variant="comet" size=\{16\} label=\{t\("thinking\.loading"\)\} \/>/);
+  assert.match(branch, /style=\{\{ color: player\.color \}\}/);
+
+  const elseAt = source.indexOf(") : (");
+  assert.ok(elseAt > 0);
+  const elseBranch = source.slice(elseAt);
+  assert.match(elseBranch, /sc-dot/, "历史行的三点不许被换掉");
+  assert.equal(elseBranch.includes("BrandLoader"), false);
+});
+
 test("锁图标与 ×N 各自条件渲染，图标来自 lucide-react 的 FileLock", () => {
   const branch = runningBranch();
   assert.match(source, /import \{[^}]*\bFileLock\b[^}]*\} from "lucide-react"/);

@@ -1190,6 +1190,61 @@ payload 形状：`{ toolCallId, title, kind, status, rawInput?, content?, locati
 - 不把多个 agent 的活动合并成一条。
 - 不给锁图标加文字标签（图标 + Tooltip 足够，避免整行三段文字）。
 
+### 21.8 进行中行的 loading：S 作容器（2026-10-29 定）
+
+**决定**：进行中行**左侧恢复一个动效指示**，但不用原来的三点，改用品牌 S 作容器；抽成独立组件
+`ui/BrandLoader`，`variant` 三档（`comet` 默认 / `fill` / `draw`），三档都保留在代码里。
+
+**为什么**：§21 把三点留在了历史行、进行中行换成标签，结果是**最该「在动」的那一行反而没有动的信号**——
+标签是状态文字，不是活动指示。三点本身的问题不在「动」，而在它只表达「在动」、不表达归属与品牌；
+S 是 `BrandMark` 的同一份几何，延伸即识别，且能长期循环而不用换姿势。
+
+**动作（三档共用一套时序，只换「进度长什么样」）**：
+
+| 阶段 | 时长 | 说明 |
+| --- | --- | --- |
+| 去程 | 1400ms | 起点 → 终点，两端 `ease-in-out`（往复才像呼吸，不是匀速传送带） |
+| 到端停顿 | 60ms | 只为了让「到头」被看见 |
+| 翻转 | 520ms | `scaleY(-1)`（上下反转），`ease-in-out`。**不低于 400ms**——200ms 那版看着像抽搐 |
+| 回程 | 1400ms | **沿原路返回，不重置到起点**（回程里 S 是翻转态，亮点原地折返） |
+| 再翻转 | 520ms | 回到正向，进入下一圈 |
+
+一圈约 3.8s，无限循环。**「满格」不是语义**：这是 loading，不是进度条 ——
+不显示百分比、不回调完成、不因为"走满"改变任何状态。
+
+**三档 variant**（`variant?: "comet" | "fill" | "draw"`，默认 `comet`）：
+
+| variant | 进度形态 | 实现 | 适用 |
+| --- | --- | --- | --- |
+| `comet` | 亮点 + 三层拖尾沿 S 巡游，折返时拖尾自动换到运动方向的反侧 | `path.getPointAtLength()` + rAF，拖尾偏移 70 / 140 / 210（1024 坐标系，**正的**，位置按 `d - dir*offset` 算） | 行内（默认） |
+| `fill` | S 作遮罩，内部一条实心竖条被裁出 S 形往右扫，到端原地退回 | SVG `mask` + 竖条 `translateX(150→962)` | 需要"能读出到端"的场合 |
+| `draw` | S 从起点圆点一笔写出来，到端沿原路把笔画收回去 | `stroke-dashoffset`（`L → 0 → L`） | 需要"书写感"的场合 |
+
+**几何只有一份**：`S_PATH`、`S_GROUP`（`translate(46 46) translate(-197.6 -215.6) scale(1.386)`）、
+`SWEEP_FROM/TO` 抽到 `src/lib/brand-mark.ts`，`BrandMark` 与 `BrandLoader` 共用，禁止在两处各写一遍 d。
+`fill` 的遮罩里必须**同时**含路径与起点圆点，否则圆点永远暗着。
+
+**尺寸与颜色**：`size` 14 / 16 / 20（行内默认 16）；一律 `currentColor`，由容器决定 ——
+活动行里跟随 `player.color`（与原来三点一致），输入区连接态用 `text-ink-3`。
+**16px 下行内 S 的描边约 1.6px**，`comet` 的亮点直径约 2.2px：这是选它的已知代价，
+嫌细就在 `size` 上加到 20，不要改路径或加粗描边（那会让它偏离 `BrandMark`）。
+
+**`prefers-reduced-motion`**：降级为静态 S + 透明度呼吸（0.45 ↔ 1，2.4s），**不做位移**，
+不做翻转 —— 位移类动效对前庭敏感人群是硬伤，而 loading 的语义（"还在跑"）用呼吸足够。
+
+**验收（DOM 数值，不看图）**：
+
+1. 进行中行里 `[data-brand-loader]` 存在且 `width === height === size`；历史行仍是三点、没有该元素。
+2. `comet`：单向内 head 位移单调，相邻采样步进 < 1.5 × 平均速（证明没有「重置回起点」的瞬跳）；
+   折返只发生在翻转窗口内。
+3. 翻转：`scaleY` 在 520ms 内**经过中间值**（不是 1→-1 瞬跳），且两次翻转之间差约 1.4s + 0.06s。
+4. `fill` / `draw` 在探针页各渲染一份，尺寸与颜色与 `comet` 一致（只换形态）。
+5. `reduced-motion` 下：无 `transform` 动画、S 静态可读。
+6. 三档都只动 `transform` / `stroke-dashoffset` / 属性写值，**不改布局**（容器 rect 前后一致）。
+
+**交接**：本决定即看板 `t_c322870d`（E15.3 BrandLoader）的落地口径，把那卡的「方案 A 单档」
+扩展为「三档 + 往复动作」；`S_PATH` 抽常量、`reduced-motion` 降级、`ui/BrandLoader` 命名沿用该卡。
+
 ## 22. 输入区两行化：工具栏在上、输入框在下（2026-10-29 定）
 
 **决定**：把 `Composer` 从「输入框 + 底栏」的上下顺序反过来 —— **上排工具、下排输入**，
@@ -1359,3 +1414,51 @@ payload 形状：`{ toolCallId, title, kind, status, rawInput?, content?, locati
 上（卡片→工具行） 4    中（工具行→输入框） 4    左 4    右 4    下 4
 工具行左缘 4        卡片高 120（= 4+32+4+76+4）
 ```
+
+## 25. 三个小优化：代码复制 / 事件并入诊断 / 会话计时（2026-10-29 定）
+
+三件同一性质（可用性打磨），**同一个 PR**。共同约束：都用既有令牌与组件，不新增颜色、
+不新增 arbitrary value（样式棘轮）、文案 `zh-CN.ts` / `en.ts` 两边同时改。
+
+### 25.1 代码块的复制
+
+- **围栏代码块**（`Markdown.tsx` 的 `pre[data-code-tokens]`）右上角出现复制按钮：
+  `Copy` → 点击后变 `Check` 1.2s → 回 `Copy`；Tooltip 用既有 `ui.button.copy` / `ui.button.copied`。
+- 复制的必须是**原始代码文本**（`inline.text` 拼回来的原文），**不是**高亮 token 的 DOM 文本 ——
+  后者会带上省略提示与缩进差异。
+- 按钮**不占布局**：绝对定位在块内右上角（块内不滚动，滚动的是 `pre` 自己，所以按钮跟块走、不跟滚动走）；
+  默认 `opacity` 0.6，`:hover` / `:focus-visible` 到 1。**必须有 `focus-visible` 指示**（样式棘轮要求）。
+- **行内 `code`：单击即复制**，复制后 1.2s 内换成 `Check` 图标；**用户正在选字时不抢**
+  （`window.getSelection()?.toString()` 非空就只当普通点击）。
+- 复制逻辑抽到 `src/lib/clipboard.ts`（`copyText()` 现在埋在 `Markdown.tsx` 里），
+  **链接复制、代码块、行内 code 三处共用一份**，禁止第三份实现。
+- 不复制语言标签、不复制「高亮已省略（N 行）」这类降级提示行。
+
+### 25.2 事件信息并入诊断
+
+- **删掉**状态栏右侧的 `EventStats` chip（`statusbar.events.short*` 的那段可见文本与它的 HoverCard）。
+- 诊断浮层顶部加一行摘要：`收到 N 条事件 · 最后一条 <method>`，键沿用
+  `statusbar.events.received` / `statusbar.events.last`（改的是**位置**，不是文案）。
+- 状态栏不保留任何事件计数；`eventCount` / `lastEvent` 只作为诊断面板入参。
+- 空事件流：摘要显示 0 条，复制按钮维持 `disabled`。
+
+### 25.3 会话计时
+
+- 位置：状态栏右侧，**连接状态（`ProfileStatus`）左侧** —— 即 §25.2 腾出来的位置。
+- 形态：`Clock` 图标 + 等宽数字，`font-mono text-micro text-ink-3`，与 `SessionTag` 同档；
+  **无 `sessionId` 时不渲染**。
+- 读数：**从「本次打开该会话」起算的累计时长**。切到别的会话再切回来 → **重新起算**；
+  不跨重启、不持久化、不读历史记录、不跟 ACP 会话 id 绑定。
+- 格式：`< 1h` → `m:ss`（如 `3:07`）；`≥ 1h` → `h:mm:ss`。每秒更新一次（1s `setInterval`，卸载即清）。
+- 悬停：Tooltip 显示「自打开起计时」+ 开始时刻（本地 `HH:MM`）。
+- **它不是一个进度**：没有总量、没有倒计时、不受 `prefers-reduced-motion` 影响（数字不做动画）。
+
+### 25.4 验收（DOM 数值，不看图）
+
+1. 代码块：`pre` 内有复制键且 `position: absolute`，块内不含它时 `pre` 的 `getBoundingClientRect` 不变
+   （不占布局）；点击后剪贴板内容 === 原始代码（含缩进、不含省略提示）。
+2. 行内 `code`：有选区时点击不复制、无选区时点击复制；两档都出现 `Check` 且 1.2s 后消失。
+3. 状态栏：`statusbar.events.*` 的文本节点**不再出现**在 `header` 内；诊断面板打开后有摘要且数字 === `eventCount`。
+4. 会话计时：存在 `[data-session-elapsed]`，文本匹配 `^\d+:\d{2}$` 或 `^\d+:\d{2}:\d{2}$`；
+   1.2s 后文本变化（证明在走）；切会话后读数回到 `0:00`。
+5. 三处按钮都有 `focus-visible` 类（样式棘轮）；`npm test` / `check-i18n` 绿。

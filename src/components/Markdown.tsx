@@ -2,26 +2,121 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
+import { Check, Copy, X } from "lucide-react";
 import type { Block, Inline } from "@/lib/markdown";
 import { parseMarkdown } from "@/lib/markdown";
 import { openExternal } from "@/lib/ipc";
 import { highlightCode } from "@/lib/highlight/highlight";
+import { copyText } from "@/lib/clipboard";
 import { Tooltip } from "./ui/Tooltip";
 
-async function copyText(text: string): Promise<void> {
-  try {
-    if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand("copy");
-    textarea.remove();
-  }
+function useFlash(): {
+  state: "idle" | "copied" | "failed";
+  flash: (next: "copied" | "failed") => void;
+} {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  const flash = (next: "copied" | "failed") => {
+    setState(next);
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      setState("idle");
+      timerRef.current = null;
+    }, 1200);
+  };
+
+  return { state, flash };
+}
+
+function CodeCopyButton({ text }: { text: string }) {
+  const { t } = useTranslation();
+  const { state, flash } = useFlash();
+
+  const copy = async () => {
+    try {
+      await copyText(text);
+      flash("copied");
+    } catch {
+      flash("failed");
+    }
+  };
+
+  return (
+    <Tooltip
+      label={
+        state === "copied"
+          ? t("ui.button.copied")
+          : state === "failed"
+            ? t("markdown.code.copyFailed")
+            : t("ui.button.copy")
+      }
+    >
+      <button
+        type="button"
+        data-code-copy
+        onClick={() => void copy()}
+        aria-label={
+          state === "copied"
+            ? t("markdown.code.copied")
+            : state === "failed"
+              ? t("markdown.code.copyFailed")
+              : t("markdown.code.copy")
+        }
+        className="absolute right-1.5 top-1.5 grid size-6 place-items-center rounded-mark text-ink-3 opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+      >
+        {state === "copied" ? (
+          <Check className="size-3" />
+        ) : state === "failed" ? (
+          <X className="size-3 text-danger-1" />
+        ) : (
+          <Copy className="size-3" />
+        )}
+      </button>
+    </Tooltip>
+  );
+}
+
+function InlineCode({ text }: { text: string }) {
+  const { t } = useTranslation();
+  const { state, flash } = useFlash();
+
+  const copy = async () => {
+    if (window.getSelection()?.toString()) return;
+    try {
+      await copyText(text);
+      flash("copied");
+    } catch {
+      flash("failed");
+    }
+  };
+
+  return (
+    <Tooltip
+      label={state === "copied" ? t("markdown.code.copied") : t("markdown.inlineCode.copy")}
+    >
+      <code
+        role="button"
+        tabIndex={0}
+        data-copied={state === "copied" ? "" : undefined}
+        onClick={() => void copy()}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          void copy();
+        }}
+        className="cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+      >
+        {text}
+      </code>
+    </Tooltip>
+  );
 }
 
 function LinkButton({ href, children }: { href: string; children: ReactNode }) {
@@ -113,7 +208,7 @@ function renderInlines(inlines: Inline[], taskMarker = false, caret = false): Re
       case "del":
         return <del key={index}>{renderInlines(inline.children)}</del>;
       case "code":
-        return <code key={index}>{inline.text}</code>;
+        return <InlineCode key={index} text={inline.text} />;
       case "link":
         return (
           <LinkButton key={index} href={inline.href}>
@@ -184,10 +279,11 @@ function renderBlock(block: Block, key: number, t: TFunction, caret = false): Re
         <Fragment key={key}>
           <div className="relative">
             {label && (
-              <span className="pointer-events-none absolute right-2.5 top-1.5 text-micro text-ink-3">
+              <span className="pointer-events-none absolute right-8 top-1.5 text-micro text-ink-3">
                 {label}
               </span>
             )}
+            <CodeCopyButton text={block.text} />
             <pre data-code-tokens>
               <code>{content}</code>
             </pre>

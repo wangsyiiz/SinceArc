@@ -6,6 +6,7 @@
  * 应用内的标题栏/空态是 chrome，按设计语言走扁平 + 边框，不加光晕。
  */
 import { cn } from "@/lib/utils";
+import { BRAND_VIEWBOX, S_GROUP, S_PATH, S_START, S_STROKE } from "@/lib/brand-mark";
 
 export function BrandMark({
   className,
@@ -17,22 +18,22 @@ export function BrandMark({
 }) {
   return (
     <svg
-      viewBox="0 0 1024 1024"
+      viewBox={BRAND_VIEWBOX}
       className={cn("shrink-0 text-ink-1", className)}
       role={title ? "img" : "presentation"}
       aria-hidden={title ? undefined : true}
       aria-label={title}
     >
       {title ? <title>{title}</title> : null}
-      <g transform="translate(46 46) translate(-197.6 -215.6) scale(1.386)">
+      <g transform={S_GROUP}>
         <path
-          d="M 300 240 C 700 240, 760 430, 512 520 C 264 610, 324 810, 724 810"
+          d={S_PATH}
           fill="none"
           stroke="currentColor"
-          strokeWidth={75}
+          strokeWidth={S_STROKE}
           strokeLinecap="round"
         />
-        <circle cx="300" cy="240" r="66.4" fill="currentColor" />
+        <circle cx={S_START.cx} cy={S_START.cy} r={S_START.r} fill="currentColor" />
       </g>
     </svg>
   );

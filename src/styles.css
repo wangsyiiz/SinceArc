@@ -478,6 +478,10 @@ dialog.sc-dialog[open] {
   border-radius: var(--code-radius);
   padding: 1px 6px;
 }
+.sc-prose code[data-copied] {
+  color: var(--a1);
+  border-color: var(--a1);
+}
 .sc-prose pre {
   margin: 8px 0;
   background: var(--code-bg);
@@ -600,6 +604,15 @@ dialog.sc-dialog[open] {
 }
 .sc-dot:nth-child(2) { animation-delay: 0.16s; }
 .sc-dot:nth-child(3) { animation-delay: 0.32s; }
+
+/* BrandLoader reduced-motion：只做透明度呼吸，不做位移/翻转（§21.8） */
+@keyframes sc-brand-loader-breathe {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+.sc-brand-loader-breathe {
+  animation: sc-brand-loader-breathe 2.4s ease-in-out infinite;
+}
 
 /* 轨迹节点定位后的淡出 */
 @keyframes sc-halo-out {

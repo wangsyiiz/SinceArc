@@ -7,6 +7,7 @@ import { profileLabel } from "@/lib/format";
 import { localizeText } from "@/lib/i18n-text";
 import { ModeSelect } from "@/components/ModeSelect";
 import { DiagnosticsPanel } from "@/components/DiagnosticsPanel";
+import { SessionElapsed } from "@/components/SessionElapsed";
 import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { useHoverCard } from "./ui/HoverCard";
@@ -82,7 +83,11 @@ export function StatusBar({
         </Button>
       </Tooltip>
 
-      <DiagnosticsPanel eventLog={eventLog} />
+      <DiagnosticsPanel
+        eventLog={eventLog}
+        eventCount={eventCount}
+        lastEvent={lastEvent}
+      />
 
       <Button
         variant="ghost"
@@ -108,7 +113,7 @@ export function StatusBar({
         {right}
         {resume && <ResumeStatus resume={resume} />}
         {sessionId && <SessionTag sessionId={sessionId} />}
-        {eventCount > 0 && <EventStats eventCount={eventCount} lastEvent={lastEvent} />}
+        {sessionId && <SessionElapsed sessionId={sessionId} />}
         {profile && (
           <ProfileStatus
             profile={profile}
@@ -177,39 +182,6 @@ function SessionTag({ sessionId }: { sessionId: string }) {
         <span className="break-all font-mono">
           {t("statusbar.sessionTag", { id: sessionId })}
         </span>,
-      )}
-    </>
-  );
-}
-
-function EventStats({
-  eventCount,
-  lastEvent,
-}: {
-  eventCount: number;
-  lastEvent?: string;
-}) {
-  const { t } = useTranslation();
-  const [el, setEl] = useState<HTMLSpanElement | null>(null);
-  const hover = useHoverCard();
-  return (
-    <>
-      <span
-        ref={setEl}
-        {...hover.triggerProps(el)}
-        className="mr-1 max-w-40 truncate font-mono text-micro text-ink-3"
-      >
-        {lastEvent
-          ? t("statusbar.events.shortWithLast", { eventCount, lastEvent })
-          : t("statusbar.events.short", { eventCount })}
-      </span>
-      {hover.card(
-        <div>
-          <div>{t("statusbar.events.received", { eventCount })}</div>
-          <div className="mt-1 break-all font-mono text-caption text-ink-2">
-            {t("statusbar.events.last", { lastEvent: lastEvent ?? "-" })}
-          </div>
-        </div>,
       )}
     </>
   );
