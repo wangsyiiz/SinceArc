@@ -562,6 +562,12 @@ pub struct AppSettingsDto {
     /// running 时发送的默认动作：interrupt | queue | steer；脏值回落 interrupt。
     #[serde(default = "default_busy_input_mode")]
     pub busy_input_mode: String,
+    /// 一轮正常结束后播放提示音；默认开。
+    #[serde(default = "default_true")]
+    pub reply_sound: bool,
+    /// 窗口不在前台时发系统通知；默认开。
+    #[serde(default = "default_true")]
+    pub reply_toast: bool,
 }
 
 fn default_true() -> bool {
@@ -587,6 +593,8 @@ impl Default for AppSettingsDto {
             code_theme: DEFAULT_CODE_THEME.into(),
             language: None,
             busy_input_mode: default_busy_input_mode(),
+            reply_sound: true,
+            reply_toast: true,
         }
     }
 }
@@ -5931,6 +5939,8 @@ mod settings_tests {
             code_theme: DEFAULT_CODE_THEME.into(),
             language: None,
             busy_input_mode: "interrupt".into(),
+            reply_sound: true,
+            reply_toast: true,
         };
         let err = settings.validate().expect_err("99 必须被拒");
         assert_eq!(err.code, 50001);
@@ -5948,6 +5958,8 @@ mod settings_tests {
             code_theme: DEFAULT_CODE_THEME.into(),
             language: None,
             busy_input_mode: "interrupt".into(),
+            reply_sound: true,
+            reply_toast: true,
         };
         let err = settings.validate().expect_err("未知主题必须被拒");
         assert_eq!(err.code, 50001);

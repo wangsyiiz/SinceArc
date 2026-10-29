@@ -25,4 +25,12 @@ language: string | null,
 /**
  * running 时发送的默认动作：interrupt | queue | steer；脏值回落 interrupt。
  */
-busyInputMode: string, };
+busyInputMode: string, 
+/**
+ * 一轮正常结束后播放提示音；默认开。
+ */
+replySound: boolean, 
+/**
+ * 窗口不在前台时发系统通知；默认开。
+ */
+replyToast: boolean, };

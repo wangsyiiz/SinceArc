@@ -293,6 +293,10 @@ export interface ThreadSettings {
   language: Language | null;
   /** running 时发送的默认动作；脏值由 IPC 收窄回 interrupt。 */
   busyInputMode: BusyInputMode;
+  /** 一轮正常结束后播放提示音；默认开 */
+  replySound: boolean;
+  /** 窗口不在前台时发系统通知；默认开 */
+  replyToast: boolean;
 }
 
 export const CONTEXT_MESSAGES_MAX = 20;
@@ -306,4 +310,6 @@ export const DEFAULT_THREAD_SETTINGS: ThreadSettings = {
   codeTheme: DEFAULT_CODE_THEME_ID,
   language: null,
   busyInputMode: "interrupt",
+  replySound: true,
+  replyToast: true,
 };

@@ -217,6 +217,7 @@ export function useAcpEvents({
   onNotice,
   onDisconnect,
   onSessionActivity,
+  onTurnFinished,
 }: {
   patchSession: PatchSession;
   /** 会话绑定 ACP session 后要回写列表（acpSessionId / profileId） */
@@ -258,6 +259,13 @@ export function useAcpEvents({
    * 授权请求的惰性过期主判据靠它：等待授权期间 agent 完全阻塞，一旦又出活动就是那条授权已失效。
    */
   onSessionActivity?: (uiSid: string, acpSessionId: string) => void;
+  /** 一轮真正收口后（失败也算）：正文取这一轮最后一条 player 消息，拿不到就是空串。 */
+  onTurnFinished?: (args: {
+    uiSid: string;
+    stopReason: string | null;
+    outcome: "ok" | "failed";
+    text: string;
+  }) => void;
 }) {
   const [sessionsByProfile, setSessionsByProfile] = useState<Record<string, string>>({});
   const [eventCount, setEventCount] = useState(0);
@@ -1015,6 +1023,7 @@ export function useAcpEvents({
         const streamsForTurn = acpSid
           ? Object.entries(streams.current).filter(([, stream]) => stream.acpSid === acpSid)
           : [];
+        const lastPlayerText = streamsForTurn.at(-1)?.[1].text ?? "";
         const streamingIds = new Set(streamsForTurn.map(([, stream]) => stream.msgId));
         const actId = `act-stream-${acpSid ?? "x"}`;
         const turnId = acpSid ? acpToTurn.current[acpSid] : undefined;
@@ -1167,6 +1176,12 @@ export function useAcpEvents({
           delete awaiting.current[acpSid];
           delete sendTraces.current[acpSid];
         }
+        onTurnFinished?.({
+          uiSid,
+          stopReason,
+          outcome: failed ? "failed" : "ok",
+          text: lastPlayerText,
+        });
         return;
       }
 
@@ -1184,6 +1199,7 @@ export function useAcpEvents({
       onTraceChanged,
       onNotice,
       onDisconnect,
+      onTurnFinished,
       patchSession,
       noteAcpSession,
       clearAllInFlight,

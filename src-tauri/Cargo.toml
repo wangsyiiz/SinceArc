@@ -27,6 +27,7 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 # 单例启动（docs/desktop-ux.md §30）：必须是第一个注册的插件
 tauri-plugin-single-instance = "2"
+tauri-plugin-notification = "2"
 ts-rs = { version = "12", features = ["serde-compat"] }
 
 [profile.release]

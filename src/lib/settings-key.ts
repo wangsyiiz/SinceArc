@@ -18,5 +18,7 @@ export function settingsKey(settings: ThreadSettings): string {
     settings.codeTheme,
     settings.language,
     settings.busyInputMode,
+    settings.replySound,
+    settings.replyToast,
   ]);
 }
