@@ -1529,3 +1529,54 @@ schema 里唯一一句相关注释是 *Background activity may still emit other 
 5. **喂 12 条**：卡片渲染 12 行（无截断、无「另有 N 个」）；12 行不高过上限时**不出滚动条是正确行为**。
    **喂 30 条**（实测：上限 448px / 内容 684px）：`scrollHeight > clientHeight`，滚到底能看到最后一行；鼠标移进卡片不关闭。
 6. 列表顺序 = 已跑时长降序；`m:ss` 每秒变化，且与 `formatElapsed` 同源。
+
+## 27. 启动不白闪 + 发送即跳底（2026-10-29 定）
+
+### 27.1 启动白闪：两层一起上
+
+**决定的不是"作品味"，是把窗口创建到首帧之间那段中间态藏起来。** 白是 WebView2/原生窗口给的，
+网页本身实测一秒都不白（`t=101ms` 时 body 已经是 `--s0`），所以只改 CSS 不解决问题。
+
+两层都做（所有者 2026-10-29 定）：
+
+| 层 | 手段 | 作用 |
+| --- | --- | --- |
+| 原生窗口底色 | `tauri.conf.json` → `app.windows[0].backgroundColor: "#292d3e"` | 窗口一创建就是应用底色。链路是实的：`tauri-utils` 的 `WindowConfig.background_color` → wry → WebView2 的 `SetDefaultBackgroundColor` |
+| 中间态不可见 | `visible: false` + 页面加载完成后 `show()` | 用户看不到「空窗口 → 首帧」的过程 |
+
+**实现要点（照抄，别自己发挥）：**
+
+- `show()` 放在 **Rust 侧**的 `Builder::on_page_load`，条件是 `PageLoadEvent::Finished`
+  （`tauri::webview::PageLoadEvent`）。不要从 JS 里 `show()`：那要额外的 `core:window:allow-show` 权限，
+  而且前端崩在加载阶段时连调用都发不出来。
+- **必须有兜底**：`setup()` 里起一个 3 秒的后台定时器，到点无条件 `show()`。
+  没有它，前端任何一次加载失败都等于「双击图标没反应」。
+- `backgroundColor` 只能是**静态值**（配置里），做不到跟随主题。选 `--s0` 的暗色 `#292d3e`：
+  浅色主题用户首帧是暗的、然后变浅 —— 跳一次色，但不再有白。
+- `index.html` 的 `html,body` 补一条内联背景（同一颜色），作为 CSS 加载前的保险；**必须内联在 `<head>`**，
+  外链在 dev 模式下不生效。
+- 不受 `tauri-plugin-window-state` 影响（本项目没装这个插件；装了的话它会记住 `visible` 把 `visible:false` 顶掉）。
+
+**验收（只能真机看，视觉判定归所有者）**：双击启动，全程不出现白色；连续启动 3 次表现一致；
+**故意把前端弄崩**（临时改坏 `main.tsx`）时窗口仍然在 3 秒内出现 —— 这条是对兜底的检验。
+
+### 27.2 发送即跳底：无条件
+
+**决定**：用户发出消息后，**无条件**滚到最底部，不管当时是不是在贴底。
+
+为什么不是"跟随"：现有的贴底跟随是 `stickToBottom && atBottom` 两个条件
+（`lib/virtual/virtual-math.ts` 的 `shouldFollowBottom`），而 `atBottom` 是滚动位置算出来的。
+用户上翻读历史时发消息 → 新消息追加到尾部但 `atBottom=false` → 两个 follow effect 都不动，
+**画面停在原处，自己刚发的那条看不见**；而全仓也没有「回到最新」的入口，等于没有回头的路。
+
+**动作**：
+
+1. `useVirtualList` 暴露 `forceScrollToEnd()`：`scrollToEnd()` + 把内部 `atBottom` 置回 `true`。
+2. `sendInGroup` 在**发送成功后**调用它（成员分支与默认 agent 分支各一次）；失败路径不跳。
+3. **滚两次**：调用后下一帧再滚一次 —— 虚拟列表行高是估算的，追加的那一行要等一次 measure，
+   只滚一次会差几十 px。
+
+**不做**：「回到底部」浮标（上翻时的提示）。这是另一个 UI 决定，目前不定。
+
+**验收**：上翻到列表中部 → 发一条 → 视口在下一帧内落到最底、能看到自己那条；
+停在最底部发送时视口不抖（不出现先跳后回弹）。
