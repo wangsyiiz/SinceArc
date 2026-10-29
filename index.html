@@ -3,6 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 启动不白闪（docs/desktop-ux.md §27.1）：CSS 到位之前先给窗口底色。
+         必须内联在 head —— 外链样式表在 dev 模式下不生效。 -->
+    <style>
+      html,
+      body {
+        background: #292d3e;
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      #root {
+        height: 100%;
+      }
+    </style>
     <title>SinceArc</title>
   </head>
   <body>

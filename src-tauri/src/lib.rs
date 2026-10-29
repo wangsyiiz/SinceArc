@@ -143,12 +143,33 @@ fn shutdown_agents(app: &tauri::AppHandle) {
     });
 }
 
+/// 启动不白闪（docs/desktop-ux.md §27.1）：主窗口以 `visible: false` 创建，
+/// 等首页真正加载完再显示，中间态用户看不到。但前端若崩在加载阶段，窗口就永远不会出现，
+/// 所以 `setup` 里还有一个兜底定时器 —— 没有它，任何一次加载失败都等于「双击图标没反应」。
+const SHOW_FALLBACK_MS: u64 = 3_000;
+
+fn reveal_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    use tauri::Manager as _;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         // 自动更新：更新包走 minisign 签名（与 Authenticode 无关），端点见 docs/distribution.md §9
         .plugin(tauri_plugin_updater::Builder::new().build())
         // 更新装完后重启自己
         .plugin(tauri_plugin_process::init())
+        // 首页加载完成后再显示窗口（§27.1）。放在 Rust 侧而不是前端：前端崩了就没有调用者了。
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                let window = webview.window();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        })
         .setup(|app| {
             use tauri::Manager as _;
             let dir = app.path().app_data_dir()?;
@@ -160,6 +181,13 @@ pub fn run() {
             app.manage(gh::GhState::new(std::sync::Arc::new(
                 gh::cli::RealGh::new(),
             )));
+
+            // 兜底（§27.1）：到点无条件显示，不管前端加载成什么样。
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(SHOW_FALLBACK_MS)).await;
+                reveal_main_window(&handle);
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

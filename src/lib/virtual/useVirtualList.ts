@@ -54,6 +54,20 @@ export function useVirtualList(opts: UseVirtualListOptions) {
     virtualizer.scrollToEnd();
   }, [count, virtualizer]);
 
+  /**
+   * 用户主动发起的跳底（docs/desktop-ux.md §27.2）：发消息后**无条件**回到底部。
+   *
+   * 不能只调 `scrollToEnd()`：贴底跟随的条件是 `stickToBottom && atBottom`，
+   * 上翻读历史时 `atBottom=false`，新消息追加后一个 effect 都不动 —— 自己刚发的那条看不见。
+   * 所以这里顺手把 `atBottom` 置回 true，让后续的跟随逻辑重新成立。
+   *
+   * 调用方负责下一帧再调一次：虚拟列表的行高是估算的，刚追加那一行要等一次 measure。
+   */
+  const forceScrollToEnd = useCallback(() => {
+    setAtBottom(true);
+    scrollToEnd();
+  }, [scrollToEnd]);
+
   const scrollToIndex = useCallback(
     (index: number, align: "start" | "center" | "end" = "start") => {
       if (count === 0) return;
@@ -204,6 +218,7 @@ export function useVirtualList(opts: UseVirtualListOptions) {
     measureRow: virtualizer.measureElement,
     scrollToIndex,
     scrollToEnd,
+    forceScrollToEnd,
     atBottom,
     beginAnchorShift,
     endAnchorShift,
