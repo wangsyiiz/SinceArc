@@ -2508,13 +2508,6 @@ export default function App() {
                               : t("app.composer.placeholder")
                           }
                           busyInputMode={settings.busyInputMode}
-                          onBusyInputModeChange={(mode) =>
-                            setSettings((prev) =>
-                              prev.busyInputMode === mode
-                                ? prev
-                                : { ...prev, busyInputMode: mode },
-                            )
-                          }
                           interrupting={isInterrupting}
                           queuedCount={queueCount(queuedBySession[lastSessionId] ?? [])}
                           players={players.filter((player) => !player.removed)}
@@ -2580,6 +2573,9 @@ export default function App() {
               onCycleTheme={(theme) => setSettings((s) => ({ ...s, theme }))}
               onChangeAutoApproveDefault={(autoApproveDefault) =>
                 setSettings((s) => ({ ...s, autoApproveDefault }))
+              }
+              onChangeBusyInputMode={(busyInputMode) =>
+                setSettings((s) => ({ ...s, busyInputMode }))
               }
               onChangeMcpInheritDefault={(mcpInheritDefault) =>
                 setSettings((s) => ({ ...s, mcpInheritDefault }))

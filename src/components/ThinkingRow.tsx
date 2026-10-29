@@ -26,7 +26,7 @@ export function ThinkingRow({ player, activity, onOpenTrace, queued, lock }: Thi
 
   return (
     <div className="flex gap-2.5">
-      <PlayerAvatar player={player} size={22} className="mt-0.5" />
+      <PlayerAvatar player={player} size={22} className="self-center" />
       <div className="min-w-0 flex-1">
         <div className="mb-1 flex items-baseline gap-2">
           <span className="text-caption font-medium" style={{ color: player.color }}>
@@ -38,8 +38,13 @@ export function ThinkingRow({ player, activity, onOpenTrace, queued, lock }: Thi
         <div className="flex items-center gap-2 rounded-card border border-dashed border-line-1/70 bg-surface-2/25 px-3 py-2">
           {view ? (
             <>
-              <span style={{ color: player.color }}>
-                <BrandLoader variant="comet" size={16} label={t("thinking.loading")} />
+              <span
+                className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
+                style={{ color: player.color }}
+              >
+                <span className="block">
+                  <BrandLoader variant="comet" size={16} label={t("thinking.loading")} />
+                </span>
               </span>
               <span className="shrink-0 text-caption text-ink-3">
                 {translateKey(t, view.labelKey)}
@@ -88,26 +93,30 @@ export function ThinkingRow({ player, activity, onOpenTrace, queued, lock }: Thi
                   className="h-auto shrink-0 gap-1 rounded-mark px-1.5 py-1 text-caption"
                   style={{ color: player.color }}
                 >
-                  <Waypoints className="size-3" />
-                  {t("thinking.trace")}
+                  <span className="inline-flex items-center gap-1">
+                    <Waypoints className="size-3" />
+                    <span className="leading-none">{t("thinking.trace")}</span>
+                  </span>
                 </Button>
               </Tooltip>
             </>
           ) : (
             <>
-              <span className="flex items-end gap-1">
-                <span
-                  className="sc-dot size-1 rounded-full"
-                  style={{ background: player.color }}
-                />
-                <span
-                  className="sc-dot size-1 rounded-full"
-                  style={{ background: player.color }}
-                />
-                <span
-                  className="sc-dot size-1 rounded-full"
-                  style={{ background: player.color }}
-                />
+              <span className="inline-flex h-4 shrink-0 items-center">
+                <span className="flex items-center gap-1">
+                  <span
+                    className="sc-dot block size-1 rounded-full"
+                    style={{ background: player.color }}
+                  />
+                  <span
+                    className="sc-dot block size-1 rounded-full"
+                    style={{ background: player.color }}
+                  />
+                  <span
+                    className="sc-dot block size-1 rounded-full"
+                    style={{ background: player.color }}
+                  />
+                </span>
               </span>
               <span className={cn("truncate text-caption", queued ? "text-ink-3" : "text-ink-2")}>
                 {queued
@@ -128,8 +137,10 @@ export function ThinkingRow({ player, activity, onOpenTrace, queued, lock }: Thi
                   className="ml-auto h-auto shrink-0 gap-1 rounded-mark px-1.5 py-1 text-caption"
                   style={{ color: player.color }}
                 >
-                  <Waypoints className="size-3" />
-                  {t("thinking.trace")}
+                  <span className="inline-flex items-center gap-1">
+                    <Waypoints className="size-3" />
+                    <span className="leading-none">{t("thinking.trace")}</span>
+                  </span>
                 </Button>
               </Tooltip>
             </>
