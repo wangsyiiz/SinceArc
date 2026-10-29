@@ -216,6 +216,7 @@ export function useAcpEvents({
   onTraceChanged,
   onNotice,
   onDisconnect,
+  onSessionActivity,
 }: {
   patchSession: PatchSession;
   /** 会话绑定 ACP session 后要回写列表（acpSessionId / profileId） */
@@ -236,6 +237,7 @@ export function useAcpEvents({
     requestId: number;
     params: unknown;
     authorId: string | null;
+    snapshot: { acpSessionId: string | null; turnId: string | null };
   }) => void;
   /** 轮终态/连接断开：队列里该会话的权限请求必须立刻标成过期 */
   onPermissionsExpired?: (args: {
@@ -251,6 +253,11 @@ export function useAcpEvents({
   onNotice?: (uiSid: string, notice: NoticeInput) => void;
   /** 连接退出：调用方清空内存态的 notice 等 */
   onDisconnect?: () => void;
+  /**
+   * 该会话出现了「agent 还在干活」的活动事件（正文/思考/工具调用）。
+   * 授权请求的惰性过期主判据靠它：等待授权期间 agent 完全阻塞，一旦又出活动就是那条授权已失效。
+   */
+  onSessionActivity?: (uiSid: string, acpSessionId: string) => void;
 }) {
   const [sessionsByProfile, setSessionsByProfile] = useState<Record<string, string>>({});
   const [eventCount, setEventCount] = useState(0);
@@ -737,6 +744,8 @@ export function useAcpEvents({
       ) {
         const trace = sendTraces.current[acpSid];
         if (trace && trace.resolvedAt === null) trace.sawStream = true;
+        // 未作答的授权请求遇到活动事件 = 已被 agent 丢掉（§29.4 主判据）
+        if (uiSid && acpSid) onSessionActivity?.(uiSid, acpSid);
       }
 
       if (observedUpdate === "notice") {
@@ -781,6 +790,11 @@ export function useAcpEvents({
             requestId: event.id,
             params: event.params,
             authorId,
+            // 入队一瞬间的归属；拿不到就如实留 null，不能拿「当前激活会话」补。
+            snapshot: {
+              acpSessionId: acpSid ?? null,
+              turnId: acpSid ? acpToTurn.current[acpSid] ?? null : null,
+            },
           });
         }
         return;

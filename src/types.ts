@@ -218,6 +218,10 @@ export interface PermissionRequest {
   expiredReason?: string;
   /** 开了自动同意但这条请求不满足条件时，弹窗里要说明为什么没自动答。 */
   autoSkippedReason?: string;
+  /** 入队那一刻的归属快照，用于作答，避免依赖"当前激活会话" */
+  profileId?: string;
+  acpSessionId?: string | null;
+  turnId?: string | null;
 }
 
 /* ---------- 右侧工作区标签 ---------- */
