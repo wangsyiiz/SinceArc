@@ -46,3 +46,11 @@ test("计时条根元素带 data-session-elapsed，供探针与验收选择器�
   assert.match(sessionElapsed, /setInterval/);
   assert.match(sessionElapsed, /clearInterval/);
 });
+
+test("进行中计数渲染在会话计时之前，空列表默认不渲染", () => {
+  const runningAt = statusBar.indexOf("<RunningCount");
+  const elapsedAt = statusBar.indexOf("<SessionElapsed");
+  assert.ok(runningAt > 0 && elapsedAt > runningAt, "计数应排在会话计时左侧");
+  assert.match(statusBar, /<RunningCount items=\{running\} onOpenTrace=\{onOpenTrace\} \/>/);
+  assert.match(statusBar, /running = \[\]/);
+});

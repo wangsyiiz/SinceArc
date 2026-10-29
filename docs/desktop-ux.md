@@ -1526,6 +1526,6 @@ schema 里唯一一句相关注释是 *Background activity may still emit other 
 2. 一条 `completed` → 2；一条 `failed` → 再减 1。
 3. 该 agent 的 `promptResult` 后 → 元素消失（不是显示 0）；`promptStarted` 后上一轮残条不延续。
 4. 群聊两成员各一条 → 2，悬停两行、成员名不同。
-5. **喂 12 条**：卡片渲染 12 行（无截断、无「另有 N 个」）；卡片高度 ≤ 设定上限；
-   `scrollHeight > clientHeight`，能滚到最后一行；鼠标移进卡片不关闭。
+5. **喂 12 条**：卡片渲染 12 行（无截断、无「另有 N 个」）；12 行不高过上限时**不出滚动条是正确行为**。
+   **喂 30 条**（实测：上限 448px / 内容 684px）：`scrollHeight > clientHeight`，滚到底能看到最后一行；鼠标移进卡片不关闭。
 6. 列表顺序 = 已跑时长降序；`m:ss` 每秒变化，且与 `formatElapsed` 同源。

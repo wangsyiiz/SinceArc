@@ -19,6 +19,12 @@ import { now } from "@/lib/format";
 import { clog } from "@/lib/log";
 import { applyLock } from "@/lib/locks";
 import { applyToolCallFields, reduceToolCall, type ToolCallState } from "@/lib/tool-call";
+import {
+  clearInFlight,
+  listInFlight,
+  reduceInFlight,
+  type InFlightTool,
+} from "@/lib/running-count";
 import { newId } from "@/lib/ids";
 import {
   LATE_SETTLE_QUIET_MS,
@@ -268,6 +274,16 @@ export function useAcpEvents({
   const lateLastChunkAt = useRef<Record<string, number>>({});
   /** ACP 会话 -> 最近一次 tool_call 的合并状态（`tool_call_update` 是增量）。 */
   const toolCalls = useRef<Record<string, ToolCallState>>({});
+  /**
+   * 状态栏「进行中」计数（docs/desktop-ux.md §26.2）。
+   * 与 `toolCalls` 并存：那边只留最近一条画 §21 标签，这边按 toolCallId 去重计数。
+   */
+  const [inFlightTable, setInFlightTable] = useState<Record<string, InFlightTool>>({});
+  const inFlightItems = useMemo(() => listInFlight(inFlightTable), [inFlightTable]);
+  const clearInFlightFor = useCallback((acpSid: string) => {
+    setInFlightTable((prev) => clearInFlight(prev, acpSid));
+  }, []);
+  const clearAllInFlight = useCallback(() => setInFlightTable({}), []);
   const acpToTurn = useRef<Record<string, string>>({});
   const flushDiag = useRef(0);
 
@@ -437,6 +453,7 @@ export function useAcpEvents({
       // 进程没了 = 这个 profile 下次必须重新连接。停止/断开都会走到这里；
       // 不清映射的话，下一轮会复用已经死掉的 AgentProcess。
       if (topic === "conn.exited") {
+        clearAllInFlight();
         onPermissionsExpired?.({
           profileId,
           reason: i18nText("permission.expiredReason.disconnected"),
@@ -639,6 +656,10 @@ export function useAcpEvents({
           su?.update as Record<string, unknown> | undefined,
         );
         if (reduced) {
+          if (acpSid && su?.update) {
+            const update = su.update as Record<string, unknown>;
+            setInFlightTable((prev) => reduceInFlight(prev, acpSid, update, Date.now()));
+          }
           if (acpSid) toolCalls.current[acpSid] = reduced.nextState;
           const fields = reduced.fields;
           if (uiSid && acpSid && fields) {
@@ -739,6 +760,7 @@ export function useAcpEvents({
         awaiting.current[acpSid] = true;
         // 新一轮：上一条工具调用是上一轮的事，别让第一条 tool_call_update 继承它。
         delete toolCalls.current[acpSid];
+        clearInFlightFor(acpSid);
         // 这里**不清** messageId 的证据：它说的是「这个 agent 会不会给正文分组」这个属性，
         // 不是「这一轮有没有分过组」。每轮清掉会让每轮开头几秒都判定成「不能插话」，
         // 而 hermes 是先想后写，正好整段时间都插不进去。
@@ -778,6 +800,7 @@ export function useAcpEvents({
 
       if (event.kind === "promptResult" || event.kind === "promptFailed") {
         flushStream();
+        if (acpSid) clearInFlightFor(acpSid);
         if (acpSid) lateUntil.current[acpSid] = Date.now() + LATE_WINDOW_MS;
         if (!uiSid) {
           clog("RESULT-NOUI", `acp=${acpSid ?? "-"} kind=${event.kind}`);
@@ -943,6 +966,8 @@ export function useAcpEvents({
       onTraceChanged,
       patchSession,
       noteAcpSession,
+      clearAllInFlight,
+      clearInFlightFor,
       scheduleFlush,
       scheduleLateSettle,
       settleLateStream,
@@ -995,6 +1020,8 @@ export function useAcpEvents({
     commandsByAcpSession,
     messageIdByAcpSession,
     acpByUiSession,
+    inFlight: inFlightItems,
+    clearInFlight: clearAllInFlight,
     acpSessionForUi,
     noteAcpSession,
     flushStream,

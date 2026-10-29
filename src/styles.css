@@ -361,6 +361,11 @@ body {
   box-shadow: var(--edge-highlight);
 }
 
+/* 进行中明细（§26.4）：不截断，只给高度上限；超出由 HoverCard 面板内部滚动。 */
+.sc-running-card {
+  max-height: min(60vh, 28rem);
+}
+
 /*
  * 输入区卡片（§23）：取 reactbits `.lh-window` 的半径与失焦深度
  * （18px / blur 24px saturate 1.5），不取它的外投影 —— 它在消息流里，不是浮层。
