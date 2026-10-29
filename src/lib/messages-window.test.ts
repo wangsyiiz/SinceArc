@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   MESSAGE_WINDOW_MAX,
+  RUNNING_TURN_PIN_TAIL,
   WINDOW_EDGE,
+  pinIndexes,
   planWindow,
 } from "./messages-window.ts";
 
@@ -109,4 +111,94 @@ test("pinned rows outside the crop do not affect the plan", () => {
 
 test("pinned rows can prevent a trim completely", () => {
   assert.deepEqual(bottom(500, [0, 1, 2]), { dropHead: 0, dropTail: 0 });
+});
+
+test("pinIndexes keeps streaming and unsent rows, sorted and deduplicated", () => {
+  assert.deepEqual(
+    pinIndexes({
+      count: 10,
+      streaming: [8, 2],
+      undelivered: [2, 9],
+      runningTurn: [],
+    }),
+    [2, 8, 9],
+  );
+});
+
+test("pinIndexes only keeps running-turn rows inside the default tail window", () => {
+  const count = 200;
+  assert.deepEqual(
+    pinIndexes({
+      count,
+      streaming: [],
+      undelivered: [],
+      runningTurn: [
+        10,
+        count - RUNNING_TURN_PIN_TAIL - 1,
+        count - RUNNING_TURN_PIN_TAIL,
+        count - 1,
+      ],
+    }),
+    [count - RUNNING_TURN_PIN_TAIL, count - 1],
+  );
+});
+
+test("pinIndexes running-turn boundary is inclusive", () => {
+  assert.deepEqual(
+    pinIndexes({
+      count: 100,
+      streaming: [],
+      undelivered: [],
+      runningTurn: [39, 40],
+    }),
+    [40],
+  );
+});
+
+test("pinIndexes honours a custom tail window", () => {
+  assert.deepEqual(
+    pinIndexes({
+      count: 100,
+      streaming: [],
+      undelivered: [],
+      runningTurn: [79, 80, 89, 90],
+      tailWindow: 10,
+    }),
+    [90],
+  );
+  assert.deepEqual(
+    pinIndexes({
+      count: 100,
+      streaming: [],
+      undelivered: [],
+      runningTurn: [0, 50, 99],
+      tailWindow: 100,
+    }),
+    [0, 50, 99],
+  );
+});
+
+test("pinIndexes ignores invalid and out-of-range indexes", () => {
+  assert.deepEqual(
+    pinIndexes({
+      count: 5,
+      streaming: [-1, 1.5, 5, 2],
+      undelivered: [4],
+      runningTurn: [Number.NaN, 3, 8],
+      tailWindow: 5,
+    }),
+    [2, 3, 4],
+  );
+});
+
+test("pinIndexes returns nothing for an empty list", () => {
+  assert.deepEqual(
+    pinIndexes({
+      count: 0,
+      streaming: [0],
+      undelivered: [0],
+      runningTurn: [0],
+    }),
+    [],
+  );
 });
