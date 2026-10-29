@@ -7,6 +7,7 @@ import { profileLabel } from "@/lib/format";
 import { localizeText } from "@/lib/i18n-text";
 import { ModeSelect } from "@/components/ModeSelect";
 import { DiagnosticsPanel } from "@/components/DiagnosticsPanel";
+import { RunningCount } from "@/components/RunningCount";
 import { SessionElapsed } from "@/components/SessionElapsed";
 import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
@@ -44,6 +45,10 @@ interface StatusBarProps {
   } | null;
   /** 正在为这个会话连（无感连接 / 手动重试）：让「打开到可用」这一段也有可见的过渡 */
   connecting?: boolean;
+  /** 本轮内仍在跑的 tool_call；已按开始时间升序（§26.4） */
+  running?: { name: string; title: string; startedAt: number }[];
+  /** 与活动行右侧「轨迹」同一个入口 */
+  onOpenTrace?: () => void;
 }
 
 export function StatusBar({
@@ -62,6 +67,8 @@ export function StatusBar({
   resume,
   connectError,
   connecting = false,
+  running = [],
+  onOpenTrace,
 }: StatusBarProps) {
   const { t } = useTranslation();
   return (
@@ -113,6 +120,7 @@ export function StatusBar({
         {right}
         {resume && <ResumeStatus resume={resume} />}
         {sessionId && <SessionTag sessionId={sessionId} />}
+        <RunningCount items={running} onOpenTrace={onOpenTrace} />
         {sessionId && <SessionElapsed sessionId={sessionId} />}
         {profile && (
           <ProfileStatus

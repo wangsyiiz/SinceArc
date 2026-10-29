@@ -493,11 +493,16 @@ export default function App() {
     },
     [permissions.expire, sessions],
   );
-  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, commandsByAcpSession, messageIdByAcpSession, acpByUiSession, acpSessionForUi, noteAcpSession, onAgentEvent, onSession, acp } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired, onTraceChanged: () => setTraceTick((t) => t + 1) });
+  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, commandsByAcpSession, messageIdByAcpSession, acpByUiSession, acpSessionForUi, noteAcpSession, onAgentEvent, onSession, acp, inFlight, clearInFlight } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired, onTraceChanged: () => setTraceTick((t) => t + 1) });
 
   useEffect(() => {
     permissionDiagRef.current = diag;
   }, [diag]);
+
+  // 切换会话时计数归零（§26.2 ③）；断开连接已在 hook 的 conn.exited 分支清空。
+  useEffect(() => {
+    clearInFlight();
+  }, [lastSessionId, clearInFlight]);
 
   /** 恢复判定只有一个出口：错误态、诊断与会话头标记都从它更新。 */
   const reportResume = useCallback(
@@ -572,6 +577,23 @@ export default function App() {
   // 归属跟会话走，不再跟一个全局「选中连接」走：全局选中项的唯一入口（左下角列表）
   // 已经移除，靠它就等于靠一个永远空着的值
   const sessionProfile = profiles.find((p) => p.id === activeSession?.profileId) ?? activeProfile;
+  /** 进行中明细按 ACP 会话找成员；主 agent 没有成员记录，用当前会话连接的名字。 */
+  const runningItems = useMemo(
+    () =>
+      inFlight.map((item) => {
+        const member = members.find((m) => m.acpSessionId === item.acpSessionId);
+        const player = member
+          ? renderPlayers.find((candidate) => candidate.id === member.id)
+          : undefined;
+        return {
+          name: localizeText(player?.name ?? member?.name ?? mainAgentPlayer.name, t),
+          title: localizeText(item.title, t),
+          startedAt: item.startedAt,
+        };
+      }),
+    [inFlight, mainAgentPlayer.name, members, renderPlayers, t],
+  );
+
   // 命令属于 ACP 会话，不属于 UI 会话：没有 acpSessionId 就不传，块不出现。
   /**
    * **唯一的会话解析口**（docs/data-plane.md §2）：界面只持有 uiSessionId，其余 id 由它派生。
@@ -1689,6 +1711,11 @@ export default function App() {
                 eventCount={eventCount}
                 lastEvent={lastEvent}
                 eventLog={eventLog}
+                running={runningItems}
+                onOpenTrace={() => {
+                  setTraceOpen(true);
+                  setFocus(null);
+                }}
                 modes={activeModeView}
                 fallbackLabel={activeDefaultModeLabel}
                 resume={state.resume}
