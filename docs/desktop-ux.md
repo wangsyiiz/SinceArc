@@ -1414,3 +1414,51 @@ S 是 `BrandMark` 的同一份几何，延伸即识别，且能长期循环而�
 上（卡片→工具行） 4    中（工具行→输入框） 4    左 4    右 4    下 4
 工具行左缘 4        卡片高 120（= 4+32+4+76+4）
 ```
+
+## 25. 三个小优化：代码复制 / 事件并入诊断 / 会话计时（2026-10-29 定）
+
+三件同一性质（可用性打磨），**同一个 PR**。共同约束：都用既有令牌与组件，不新增颜色、
+不新增 arbitrary value（样式棘轮）、文案 `zh-CN.ts` / `en.ts` 两边同时改。
+
+### 25.1 代码块的复制
+
+- **围栏代码块**（`Markdown.tsx` 的 `pre[data-code-tokens]`）右上角出现复制按钮：
+  `Copy` → 点击后变 `Check` 1.2s → 回 `Copy`；Tooltip 用既有 `ui.button.copy` / `ui.button.copied`。
+- 复制的必须是**原始代码文本**（`inline.text` 拼回来的原文），**不是**高亮 token 的 DOM 文本 ——
+  后者会带上省略提示与缩进差异。
+- 按钮**不占布局**：绝对定位在块内右上角（块内不滚动，滚动的是 `pre` 自己，所以按钮跟块走、不跟滚动走）；
+  默认 `opacity` 0.6，`:hover` / `:focus-visible` 到 1。**必须有 `focus-visible` 指示**（样式棘轮要求）。
+- **行内 `code`：单击即复制**，复制后 1.2s 内换成 `Check` 图标；**用户正在选字时不抢**
+  （`window.getSelection()?.toString()` 非空就只当普通点击）。
+- 复制逻辑抽到 `src/lib/clipboard.ts`（`copyText()` 现在埋在 `Markdown.tsx` 里），
+  **链接复制、代码块、行内 code 三处共用一份**，禁止第三份实现。
+- 不复制语言标签、不复制「高亮已省略（N 行）」这类降级提示行。
+
+### 25.2 事件信息并入诊断
+
+- **删掉**状态栏右侧的 `EventStats` chip（`statusbar.events.short*` 的那段可见文本与它的 HoverCard）。
+- 诊断浮层顶部加一行摘要：`收到 N 条事件 · 最后一条 <method>`，键沿用
+  `statusbar.events.received` / `statusbar.events.last`（改的是**位置**，不是文案）。
+- 状态栏不保留任何事件计数；`eventCount` / `lastEvent` 只作为诊断面板入参。
+- 空事件流：摘要显示 0 条，复制按钮维持 `disabled`。
+
+### 25.3 会话计时
+
+- 位置：状态栏右侧，**连接状态（`ProfileStatus`）左侧** —— 即 §25.2 腾出来的位置。
+- 形态：`Clock` 图标 + 等宽数字，`font-mono text-micro text-ink-3`，与 `SessionTag` 同档；
+  **无 `sessionId` 时不渲染**。
+- 读数：**从「本次打开该会话」起算的累计时长**。切到别的会话再切回来 → **重新起算**；
+  不跨重启、不持久化、不读历史记录、不跟 ACP 会话 id 绑定。
+- 格式：`< 1h` → `m:ss`（如 `3:07`）；`≥ 1h` → `h:mm:ss`。每秒更新一次（1s `setInterval`，卸载即清）。
+- 悬停：Tooltip 显示「自打开起计时」+ 开始时刻（本地 `HH:MM`）。
+- **它不是一个进度**：没有总量、没有倒计时、不受 `prefers-reduced-motion` 影响（数字不做动画）。
+
+### 25.4 验收（DOM 数值，不看图）
+
+1. 代码块：`pre` 内有复制键且 `position: absolute`，块内不含它时 `pre` 的 `getBoundingClientRect` 不变
+   （不占布局）；点击后剪贴板内容 === 原始代码（含缩进、不含省略提示）。
+2. 行内 `code`：有选区时点击不复制、无选区时点击复制；两档都出现 `Check` 且 1.2s 后消失。
+3. 状态栏：`statusbar.events.*` 的文本节点**不再出现**在 `header` 内；诊断面板打开后有摘要且数字 === `eventCount`。
+4. 会话计时：存在 `[data-session-elapsed]`，文本匹配 `^\d+:\d{2}$` 或 `^\d+:\d{2}:\d{2}$`；
+   1.2s 后文本变化（证明在走）；切会话后读数回到 `0:00`。
+5. 三处按钮都有 `focus-visible` 类（样式棘轮）；`npm test` / `check-i18n` 绿。
