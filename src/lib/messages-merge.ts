@@ -41,3 +41,12 @@ export function minSeq(seqs: Record<string, number>): number | null {
   }
   return oldest;
 }
+
+/** 已加载消息里最大的 seq —— 向后回填的游标 */
+export function maxSeq(seqs: Record<string, number>): number | null {
+  let newest: number | null = null;
+  for (const seq of Object.values(seqs)) {
+    if (newest === null || seq > newest) newest = seq;
+  }
+  return newest;
+}

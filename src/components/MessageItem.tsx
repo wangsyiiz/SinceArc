@@ -52,14 +52,16 @@ function renderText(text: string, players: Player[]) {
   });
 }
 
-function QuoteBlock({ quoted }: { quoted: QuotedRef }) {
+function QuoteBlock({ quoted, missingText }: { quoted: QuotedRef; missingText?: string }) {
   const Icon = quoted.kind === "pr" ? GitPullRequest : quoted.kind === "issue" ? CircleDot : FileText;
   return (
     <div className="flex items-start gap-2 rounded-control border border-line-1/70 bg-surface-2/50 px-2.5 py-1.5">
       <Icon className="mt-0.5 size-3 shrink-0 text-ink-3" />
       <div className="min-w-0">
-        <div className="truncate text-caption text-ink-2">{quoted.label}</div>
-        {quoted.detail && (
+        <div className="truncate text-caption text-ink-2">
+          {missingText ?? quoted.label}
+        </div>
+        {!missingText && quoted.detail && (
           <div className="truncate font-mono text-micro text-ink-3">{quoted.detail}</div>
         )}
       </div>
@@ -72,6 +74,7 @@ export function MessageItem({
   players,
   tweenEnabled,
   delegatePhase,
+  quoteTargetMissing,
   onCancelDelegate,
   onLocateTrace,
 }: {
@@ -79,6 +82,7 @@ export function MessageItem({
   players: Player[];
   tweenEnabled: boolean;
   delegatePhase?: string | null;
+  quoteTargetMissing?: boolean;
   onCancelDelegate?: (handleId: string) => void | Promise<void>;
   onLocateTrace?: (turnId: string) => void;
 }) {
@@ -178,7 +182,14 @@ export function MessageItem({
   if (chatKind === "text.user" && message.role === "user") {
     return (
       <div className="flex flex-col items-end gap-1.5">
-        {message.quoted && <div className="max-w-3/4"><QuoteBlock quoted={message.quoted} /></div>}
+        {message.quoted && (
+          <div className="max-w-3/4">
+            <QuoteBlock
+              quoted={message.quoted}
+              missingText={quoteTargetMissing ? t("messages.quote.trimmed") : undefined}
+            />
+          </div>
+        )}
         <div
           className={cn(
             "max-w-3/4 rounded-card rounded-br-mark bg-surface-2 px-3.5 py-2.5 text-ui leading-relaxed whitespace-pre-wrap text-ink-1",

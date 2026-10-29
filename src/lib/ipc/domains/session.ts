@@ -123,12 +123,13 @@ export function messagesAppend(
 
 export function messagesLoad(
   sessionId: string,
-  opts?: { limit?: number; beforeSeq?: number },
+  opts?: { limit?: number; beforeSeq?: number; afterSeq?: number },
 ): Promise<MessagePage> {
   return invokeCmd<MessagePage>("messages_load", {
     sessionId,
     limit: opts?.limit ?? null,
     beforeSeq: opts?.beforeSeq ?? null,
+    afterSeq: opts?.afterSeq ?? null,
   });
 }
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { messageFromRow, messagesLoad, sessionUsage } from "@/lib/ipc";
-import { mergeMessages, minSeq } from "@/lib/messages-merge";
+import { maxSeq, mergeMessages, minSeq } from "@/lib/messages-merge";
+import type { WindowPlan } from "@/lib/messages-window";
 import { clog } from "@/lib/log";
 import type { SessionState } from "@/types";
 
@@ -21,7 +22,11 @@ export type PatchSession = (sid: string, fn: (s: SessionState) => SessionState) 
 export interface PageState {
   hasMore: boolean;
   oldestSeq: number | null;
+  newestSeq: number | null;
+  trimmedHead: boolean;
+  trimmedTail: boolean;
   loadingOlder: boolean;
+  loadingNewer: boolean;
 }
 
 export function useSessionState(lastSessionId: string) {
@@ -39,6 +44,9 @@ export function useSessionState(lastSessionId: string) {
   const pageRef = useRef<Record<string, PageState>>({});
   /** 每个会话已加载消息的 seq，翻页游标与合并排序都从这里取 */
   const seqBySession = useRef<Record<string, Record<string, number>>>({});
+  /** 最近一帧的会话快照：trimWindow 在 layout effect 里同步读它算切割边界。 */
+  const sessionStateRef = useRef<Record<string, SessionState>>(sessionState);
+  sessionStateRef.current = sessionState;
 
   const patchSession = useCallback((sid: string, fn: (s: SessionState) => SessionState) => {
     setSessionState((prev) => ({ ...prev, [sid]: fn(prev[sid] ?? emptySession()) }));
@@ -117,7 +125,11 @@ export function useSessionState(lastSessionId: string) {
           ? (previousPage?.hasMore ?? page.hasMore)
           : page.hasMore,
         oldestSeq: minSeq(nextSeqs),
+        newestSeq: maxSeq(nextSeqs),
+        trimmedHead: previousPage?.trimmedHead ?? false,
+        trimmedTail: false,
         loadingOlder: false,
+        loadingNewer: false,
       });
     })()
       .catch((e) => clog("LOAD", `ui=${sid} 读取失败：${String(e)}`)) // i18n-ignore: diagnostic log
@@ -134,16 +146,24 @@ export function useSessionState(lastSessionId: string) {
   const currentPage = pages[lastSessionId];
   const hasMore = !!currentPage?.hasMore;
   const loadingOlder = !!currentPage?.loadingOlder;
+  const loadingNewer = !!currentPage?.loadingNewer;
+  const trimmedHead = !!currentPage?.trimmedHead;
+  const trimmedTail = !!currentPage?.trimmedTail;
 
   const loadOlder = useCallback(async () => {
     const sid = lastSessionId;
     if (!sid) return;
     const current = pageRef.current[sid];
-    if (!current?.hasMore || current.loadingOlder) return;
+    if ((!current?.hasMore && !current?.trimmedHead) || current.loadingOlder) return;
 
     const beforeSeq = minSeq(seqBySession.current[sid] ?? {});
     if (beforeSeq === null) {
-      setPageState(sid, { ...current, hasMore: false, loadingOlder: false });
+      setPageState(sid, {
+        ...current,
+        hasMore: false,
+        trimmedHead: false,
+        loadingOlder: false,
+      });
       return;
     }
 
@@ -176,12 +196,122 @@ export function useSessionState(lastSessionId: string) {
       return { ...prev, [sid]: { ...cur, msgs: merged } };
     });
 
+    const latest = pageRef.current[sid] ?? current;
     setPageState(sid, {
+      ...latest,
       hasMore: page.hasMore,
       oldestSeq: minSeq(nextSeqs),
+      newestSeq: maxSeq(nextSeqs),
+      trimmedHead: latest.trimmedHead && page.hasMore,
       loadingOlder: false,
     });
   }, [lastSessionId, setPageState]);
+
+  const loadNewer = useCallback(async () => {
+    const sid = lastSessionId;
+    if (!sid) return;
+    const current = pageRef.current[sid];
+    if (!current?.trimmedTail || current.loadingNewer) return;
+
+    const afterSeq = current.newestSeq ?? maxSeq(seqBySession.current[sid] ?? {});
+    if (afterSeq === null) {
+      setPageState(sid, { ...current, trimmedTail: false, loadingNewer: false });
+      return;
+    }
+
+    setPageState(sid, { ...current, loadingNewer: true });
+    const page = await messagesLoad(sid, { afterSeq }).catch((e) => {
+      clog("PAGE-ERR", `ui=${sid} after=${afterSeq} ${String(e)}`);
+      return null;
+    });
+    if (!page) {
+      const latest = pageRef.current[sid] ?? current;
+      setPageState(sid, { ...latest, loadingNewer: false });
+      return;
+    }
+
+    const nextSeqs = { ...(seqBySession.current[sid] ?? {}) };
+    for (const row of page.messages) nextSeqs[row.id] = row.seq;
+    seqBySession.current[sid] = nextSeqs;
+    const newer = page.messages.map((r) => messageFromRow(r));
+
+    setSessionState((prev) => {
+      const cur = prev[sid] ?? emptySession();
+      const existing = new Set(cur.msgs.map((m) => m.id));
+      if (!newer.some((m) => !existing.has(m.id))) return prev;
+      const merged = mergeMessages(cur.msgs, newer, nextSeqs);
+      clog(
+        "PAGE",
+        `ui=${sid} after=${afterSeq} added=${newer.length} total=${merged.length}`,
+      );
+      return { ...prev, [sid]: { ...cur, msgs: merged } };
+    });
+
+    const latest = pageRef.current[sid] ?? current;
+    setPageState(sid, {
+      ...latest,
+      oldestSeq: minSeq(nextSeqs),
+      newestSeq: maxSeq(nextSeqs),
+      trimmedTail: page.hasNewer,
+      loadingNewer: false,
+    });
+  }, [lastSessionId, setPageState]);
+
+  const trimWindow = useCallback(
+    (sid: string, plan: WindowPlan) => {
+      if (!sid || (plan.dropHead === 0 && plan.dropTail === 0)) return;
+      const current = sessionStateRef.current[sid];
+      if (!current || current.msgs.length === 0) return;
+
+      const dropHead = Math.min(Math.max(0, plan.dropHead), current.msgs.length);
+      const dropTail = Math.min(
+        Math.max(0, plan.dropTail),
+        current.msgs.length - dropHead,
+      );
+      if (dropHead === 0 && dropTail === 0) return;
+
+      const end = current.msgs.length - dropTail;
+      const removed = [
+        ...current.msgs.slice(0, dropHead),
+        ...current.msgs.slice(end),
+      ];
+      const nextSeqs = { ...(seqBySession.current[sid] ?? {}) };
+      for (const message of removed) delete nextSeqs[message.id];
+      seqBySession.current[sid] = nextSeqs;
+
+      setSessionState((prev) => {
+        const latest = prev[sid];
+        if (!latest) return prev;
+        return {
+          ...prev,
+          [sid]: {
+            ...latest,
+            msgs: latest.msgs.slice(dropHead, latest.msgs.length - dropTail),
+          },
+        };
+      });
+
+      const page = pageRef.current[sid] ?? {
+        hasMore: false,
+        oldestSeq: null,
+        newestSeq: null,
+        trimmedHead: false,
+        trimmedTail: false,
+        loadingOlder: false,
+        loadingNewer: false,
+      };
+      setPageState(sid, {
+        ...page,
+        // 裁掉的头来自数据库时，更早的那一段仍然在库里，可以继续向上回填。
+        hasMore: page.hasMore || dropHead > 0,
+        oldestSeq: minSeq(nextSeqs),
+        newestSeq: maxSeq(nextSeqs),
+        trimmedHead: page.trimmedHead || dropHead > 0,
+        trimmedTail: page.trimmedTail || dropTail > 0,
+      });
+    },
+    [setPageState],
+  );
 
   const initSession = useCallback((id: string) => {
     setSessionState((prev) => ({ ...prev, [id]: emptySession() }));
@@ -197,5 +327,10 @@ export function useSessionState(lastSessionId: string) {
     hasMore,
     loadOlder,
     loadingOlder,
+    loadNewer,
+    loadingNewer,
+    trimmedHead,
+    trimmedTail,
+    trimWindow,
   };
 }

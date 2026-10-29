@@ -183,6 +183,8 @@ export interface QuotedRef {
   kind: "pr" | "issue" | "file";
   label: string;
   detail?: string;
+  /** 可选：引用会话内某条原消息时，用 id 参与窗口裁剪 pin 与缺失降级。 */
+  messageId?: string;
 }
 
 /* ---------- Git / 权限 ---------- */

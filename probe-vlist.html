@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>虚拟列表性能探针</title>
+    <style>
+      /* 探针专用配色：颜色字面量只许待在这里，.tsx 里引用变量（样式棘轮） */
+      :root {
+        --probe-bg: #292d3e;
+        --probe-fg: #f6f6f6;
+      }
+      html,
+      body,
+      #root {
+        height: 100%;
+        margin: 0;
+        background: var(--probe-bg);
+        color: var(--probe-fg);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/probe-vlist.tsx"></script>
+  </body>
+</html>
