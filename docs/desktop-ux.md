@@ -1803,6 +1803,8 @@ schema 里唯一一句相关注释是 *Background activity may still emit other 
 ### 31.3 音效
 
 - 资源：`src/assets/notify-reply.wav`（16-bit / 44.1kHz / 单声道，≤0.8s，峰值压到约 −11 dBFS）。
+  **定稿为候选 A**：D5(587.33Hz) → A5(880Hz) 纯五度上行，低八度垫底，0.75s。
+  合成参数留档在 `~/.hermes/cache/scratch/sfx/gen.py`（正弦 + 泛音 + 指数包络，软起音、20ms 尾部淡出）。
 - 播放：webview 里一个常驻 `Audio` 对象，`currentTime = 0` 后 `play()`；失败（自动播放被拦）静默降级并写一条诊断，**不弹错误框**。
 - 可以关：设置里「回复音效」独立开关，默认开。
 - 音高/时长/音量可调，但**不做"音量滑杆"**：只有开/关，避免多一个要维护的偏好。
