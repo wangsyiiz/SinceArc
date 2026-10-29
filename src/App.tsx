@@ -28,6 +28,7 @@ import { profileLabel } from "@/lib/format";
 import { i18nText, localizeText, translateKey } from "@/lib/i18n-text";
 import { errorTextOf } from "@/lib/errors";
 import { pushSystemNotice } from "@/lib/notices";
+import { resolvePermissionTurn } from "@/lib/permission-timeout";
 import { delegateCancelFailureKey, type DelegatePhase } from "@/lib/delegate-status";
 import { acpSessionIdOfActivity } from "@/lib/activity-row";
 import { mergeMessages } from "@/lib/messages-merge";
@@ -531,10 +532,21 @@ export default function App() {
   }, []);
   const permissionDiagRef = useRef<(text: string) => void>(() => {});
   const permissionDiag = useCallback((text: string) => permissionDiagRef.current(text), []);
+  const onPermissionTimeout = useCallback(
+    (uiSid: string) => {
+      pushUiNotice(uiSid, {
+        severity: "warning",
+        title: t("permission.expiredNotice.title"),
+        description: t("permission.expiredNotice.description"),
+      });
+    },
+    [pushUiNotice, t],
+  );
   const permissions = usePermissions({
     onHead: onPermHead,
     getAutoApprove,
     diag: permissionDiag,
+    onTimeout: onPermissionTimeout,
   });
   const onPermission = useCallback(
     (args: {
@@ -543,6 +555,7 @@ export default function App() {
       requestId: number;
       params: unknown;
       authorId: string | null;
+      snapshot: { acpSessionId: string | null; turnId: string | null };
     }) => {
       void permissions.enqueue(
         args.uiSid,
@@ -550,6 +563,7 @@ export default function App() {
         args.requestId,
         args.params,
         args.authorId,
+        args.snapshot,
       );
     },
     [permissions.enqueue],
@@ -619,6 +633,13 @@ export default function App() {
     onTraceChanged: () => setTraceTick((t) => t + 1),
     onNotice: pushUiNotice,
     onDisconnect: clearUiNotices,
+    // §29.4 主判据：未作答的授权请求遇到该会话的新活动 = 已被 agent 丢掉
+    onSessionActivity: (uiSid, acpSid) =>
+      permissions.expireByActivity(
+        uiSid,
+        acpSid,
+        i18nText("permission.expiredReason.agentTimeout"),
+      ),
   });
 
   useEffect(() => {
@@ -762,12 +783,17 @@ export default function App() {
 
   const allowTurnPolicy = useCallback(async () => {
     const request = state.pendingPerm;
-    const profileId = activeSession?.profileId ?? sessionProfile?.id;
-    const acpSessionId = activeAcpSid;
-    const turnId = acpSessionId ? acp.acpToTurn.current[acpSessionId] : undefined;
     if (!request?.kind) throw { code: 50300, msg: t("app.permission.allowTurn.noKind") };
+    // 请求入队时的归属优先。只要快照有任何一项，就整组使用快照，
+    // 不用当前激活 tab 去补缺 —— 否则会把别的会话的 turn 配给这条请求。
+    const liveTurn = {
+      profileId: activeSession?.profileId ?? sessionProfile?.id,
+      acpSessionId: activeAcpSid,
+      turnId: activeAcpSid ? acp.acpToTurn.current[activeAcpSid] : undefined,
+    };
+    const { profileId, acpSessionId, turnId } = resolvePermissionTurn(request, liveTurn);
     if (!lastSessionId || !profileId || !acpSessionId || !turnId) {
-      throw { code: 50300, msg: t("app.permission.allowTurn.noTurn") };
+      throw { msg: t("permission.expiredReason.unknownTurn") };
     }
     await permissionAllowTurn(profileId, acpSessionId, turnId, request.kind);
     const kind = request.kind;
