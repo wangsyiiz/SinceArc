@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  AlertTriangle,
   CircleDot,
   FileText,
   GitPullRequest,
@@ -178,9 +179,20 @@ export function MessageItem({
     return (
       <div className="flex flex-col items-end gap-1.5">
         {message.quoted && <div className="max-w-3/4"><QuoteBlock quoted={message.quoted} /></div>}
-        <div className="max-w-3/4 rounded-card rounded-br-mark bg-surface-2 px-3.5 py-2.5 text-ui leading-relaxed whitespace-pre-wrap text-ink-1">
+        <div
+          className={cn(
+            "max-w-3/4 rounded-card rounded-br-mark bg-surface-2 px-3.5 py-2.5 text-ui leading-relaxed whitespace-pre-wrap text-ink-1",
+            message.undelivered && "border border-warn-1/60 bg-warn-1/5",
+          )}
+        >
           {renderText(message.text, players)}
         </div>
+        {message.undelivered && (
+          <span className="flex items-center gap-1 text-caption text-warn-1">
+            <AlertTriangle className="size-3" aria-hidden="true" />
+            {t("chat.undelivered")}
+          </span>
+        )}
       </div>
     );
   }

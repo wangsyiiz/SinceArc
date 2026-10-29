@@ -17,5 +17,6 @@ export function settingsKey(settings: ThreadSettings): string {
     settings.tweenEnabled,
     settings.codeTheme,
     settings.language,
+    settings.busyInputMode,
   ]);
 }

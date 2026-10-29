@@ -34,11 +34,13 @@ import {
 } from "@/lib/late-window";
 import { pushSystemNotice } from "@/lib/notices";
 import { i18nText } from "@/lib/i18n-text";
+import { asNoticeSeverity, type NoticeInput } from "@/lib/notice-inbox";
+import { isAbsorbedSend, type SendTrace } from "@/lib/send-ack";
 import { keyOf } from "@/lib/stream-key";
 import { replaceTurnId, turnIdForPersist } from "@/lib/turn-id";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import type { UsageDto } from "@/lib/ipc/types.gen/UsageDto";
-import type { SessionSummary } from "@/types";
+import type { Message, SessionSummary } from "@/types";
 import { MAIN_AGENT_ID } from "./usePrompt";
 import type { PatchSession } from "./useSessionState";
 
@@ -66,6 +68,15 @@ interface StreamState {
   /** promptResult 之后迟到窗口里新建的流：需要自己 settle 落库 */
   late?: boolean;
 }
+
+interface AbsorbedCapture {
+  uiSid: string;
+  text: string;
+  timer: number | null;
+}
+
+/** promptResult 可能先于最后一批合批正文到达；静默这么久再收口成 notice。 */
+const ABSORBED_CAPTURE_QUIET_MS = 200;
 
 function stopReasonOf(result: unknown): string | null {
   if (!result || typeof result !== "object" || !("stopReason" in result)) return null;
@@ -182,6 +193,17 @@ function pickUsage(byAuthor: Record<string, UsageDto>): UsageDto | null {
 export interface AcpRefs {
   /** ACP 会话 -> 当前这一轮的 turn id（轨迹栏用） */
   acpToTurn: React.RefObject<Record<string, string>>;
+  /** ACP 会话 -> 本次 prompt 的兜底判定状态 */
+  sendTraces: React.RefObject<Record<string, ActiveSendTrace>>;
+}
+
+export interface ActiveSendTrace extends SendTrace {
+  uiSid: string;
+  userMsg: Extract<Message, { role: "user" }>;
+  /** 后端回执里的真实 turn id；拿到后替换本地占位 */
+  turnId: string | null;
+  userPersisted: boolean;
+  absorbed: boolean;
 }
 
 export function useAcpEvents({
@@ -192,6 +214,8 @@ export function useAcpEvents({
   onPermission,
   onPermissionsExpired,
   onTraceChanged,
+  onNotice,
+  onDisconnect,
 }: {
   patchSession: PatchSession;
   /** 会话绑定 ACP session 后要回写列表（acpSessionId / profileId） */
@@ -223,6 +247,10 @@ export function useAcpEvents({
   }) => void;
   /** 轨迹变了（派活开始/结束这类不改 busy 的写入）：给 uiSessionId，未归属给 null */
   onTraceChanged?: (uiSessionId: string | null) => void;
+  /** 收到 ACP live notice；只进内存收件箱，不落库 */
+  onNotice?: (uiSid: string, notice: NoticeInput) => void;
+  /** 连接退出：调用方清空内存态的 notice 等 */
+  onDisconnect?: () => void;
 }) {
   const [sessionsByProfile, setSessionsByProfile] = useState<Record<string, string>>({});
   const [eventCount, setEventCount] = useState(0);
@@ -274,6 +302,10 @@ export function useAcpEvents({
   const lateLastChunkAt = useRef<Record<string, number>>({});
   /** ACP 会话 -> 最近一次 tool_call 的合并状态（`tool_call_update` 是增量）。 */
   const toolCalls = useRef<Record<string, ToolCallState>>({});
+  /** 判定为「被吞掉」后，继续接住迟到正文，避免它又变成 agent 气泡。 */
+  const absorbedCaptures = useRef<Record<string, AbsorbedCapture>>({});
+  /** 已收口后迟到的正文仍然丢弃，直到迟到窗口结束。 */
+  const absorbedDone = useRef<Record<string, number>>({});
   /**
    * 状态栏「进行中」计数（docs/desktop-ux.md §26.2）。
    * 与 `toolCalls` 并存：那边只留最近一条画 §21 标签，这边按 toolCallId 去重计数。
@@ -285,11 +317,17 @@ export function useAcpEvents({
   }, []);
   const clearAllInFlight = useCallback(() => setInFlightTable({}), []);
   const acpToTurn = useRef<Record<string, string>>({});
+  const sendTraces = useRef<Record<string, ActiveSendTrace>>({});
   const flushDiag = useRef(0);
 
   useEffect(() => {
     return () => {
       for (const timer of Object.values(lateTimers.current)) window.clearTimeout(timer);
+      for (const capture of Object.values(absorbedCaptures.current)) {
+        if (capture.timer !== null) window.clearTimeout(capture.timer);
+      }
+      absorbedCaptures.current = {};
+      absorbedDone.current = {};
     };
   }, []);
 
@@ -446,6 +484,78 @@ export function useAcpEvents({
     [settleLateStream],
   );
 
+  const dropAbsorbedCapture = useCallback((acpSid: string) => {
+    const capture = absorbedCaptures.current[acpSid];
+    if (!capture) return;
+    if (capture.timer !== null) window.clearTimeout(capture.timer);
+    delete absorbedCaptures.current[acpSid];
+  }, []);
+
+  const finalizeAbsorbedCapture = useCallback(
+    (acpSid: string) => {
+      const capture = absorbedCaptures.current[acpSid];
+      if (!capture) return;
+      dropAbsorbedCapture(acpSid);
+      // 收口后可能还有极短的一段合并正文在路上；继续丢掉，别让它变成气泡。
+      absorbedDone.current[acpSid] = Date.now() + LATE_WINDOW_MS;
+      const description = capture.text.trim();
+      onNotice?.(capture.uiSid, {
+        severity: "warning",
+        title: i18nText("notice.absorbed.title"),
+        ...(description ? { description } : {}),
+      });
+    },
+    [dropAbsorbedCapture, onNotice],
+  );
+
+  const scheduleAbsorbedFinalize = useCallback(
+    (acpSid: string) => {
+      const capture = absorbedCaptures.current[acpSid];
+      if (!capture) return;
+      if (capture.timer !== null) window.clearTimeout(capture.timer);
+      capture.timer = window.setTimeout(
+        () => finalizeAbsorbedCapture(acpSid),
+        ABSORBED_CAPTURE_QUIET_MS,
+      );
+    },
+    [finalizeAbsorbedCapture],
+  );
+
+  const startAbsorbedCapture = useCallback(
+    (acpSid: string, uiSid: string, text: string) => {
+      dropAbsorbedCapture(acpSid);
+      delete absorbedDone.current[acpSid];
+      absorbedCaptures.current[acpSid] = { uiSid, text, timer: null };
+      scheduleAbsorbedFinalize(acpSid);
+    },
+    [dropAbsorbedCapture, scheduleAbsorbedFinalize],
+  );
+
+  /** 返回 true 表示这段正文属于已判定被吞掉的发送，不能再开 agent 气泡。 */
+  const appendAbsorbedText = useCallback(
+    (acpSid: string, text: string) => {
+      const capture = absorbedCaptures.current[acpSid];
+      if (capture) {
+        capture.text += text;
+        scheduleAbsorbedFinalize(acpSid);
+        return true;
+      }
+      const doneUntil = absorbedDone.current[acpSid];
+      if (doneUntil === undefined) return false;
+      if (Date.now() < doneUntil) return true;
+      delete absorbedDone.current[acpSid];
+      return false;
+    },
+    [scheduleAbsorbedFinalize],
+  );
+
+  const clearAbsorbedCaptures = useCallback(() => {
+    for (const acpSid of Object.keys(absorbedCaptures.current)) {
+      dropAbsorbedCapture(acpSid);
+    }
+    absorbedDone.current = {};
+  }, [dropAbsorbedCapture]);
+
   const onAgentEvent = useCallback(
     (profileId: string, event: AcpEvent, topic: string) => {
       setEventCount((n) => n + 1);
@@ -454,6 +564,9 @@ export function useAcpEvents({
       // 不清映射的话，下一轮会复用已经死掉的 AgentProcess。
       if (topic === "conn.exited") {
         clearAllInFlight();
+        clearAbsorbedCaptures();
+        sendTraces.current = {};
+        onDisconnect?.();
         onPermissionsExpired?.({
           profileId,
           reason: i18nText("permission.expiredReason.disconnected"),
@@ -614,6 +727,40 @@ export function useAcpEvents({
       const acpSid: string | null = "sessionId" in event ? (event.sessionId ?? null) : null;
       const authorId: string | null = "authorId" in event ? (event.authorId ?? null) : null;
 
+      const observedUpdate = su?.update?.sessionUpdate;
+      if (
+        acpSid &&
+        (observedUpdate === "agent_message_chunk" ||
+          observedUpdate === "agent_thought_chunk" ||
+          observedUpdate === "tool_call" ||
+          observedUpdate === "tool_call_update")
+      ) {
+        const trace = sendTraces.current[acpSid];
+        if (trace && trace.resolvedAt === null) trace.sawStream = true;
+      }
+
+      if (observedUpdate === "notice") {
+        const update = su?.update as Record<string, unknown> | undefined;
+        if (!uiSid) {
+          clog("NOTICE-NOUI", `acp=${acpSid ?? "-"}`);
+          return;
+        }
+        const title =
+          typeof update?.title === "string" && update.title.trim()
+            ? update.title
+            : i18nText("notice.agent.title");
+        const description =
+          typeof update?.description === "string" && update.description.trim()
+            ? update.description
+            : undefined;
+        onNotice?.(uiSid, {
+          severity: asNoticeSeverity(update?.severity),
+          title,
+          ...(description ? { description } : {}),
+        });
+        return;
+      }
+
       // 界面会话 → ACP 会话：事件自己带着这两样，不必等数据库那一列回填。
       // 新建会话的 `sessions.acp_session_id` 只在恢复路径落库，第一轮可能还是空的，
       // 而命令列表 / 能力面板 / 插话入口都挂在 ACP 会话上（见 docs/steering.md §5）。
@@ -687,6 +834,7 @@ export function useAcpEvents({
       if (su?.update?.sessionUpdate === "agent_message_chunk") {
         const text = su.update.content?.text ?? "";
         if (!text) return;
+        if (acpSid && appendAbsorbedText(acpSid, text)) return;
         if (!acpSid || !uiSid) {
           // 不猜：宁可少显示一条，也不把回答写进别的会话
           clog("DROP-NOMAP", `acp=${acpSid ?? "-"} ui=- len=${text.length}`);
@@ -742,6 +890,9 @@ export function useAcpEvents({
 
       if (event.kind === "promptStarted") {
         if (!acpSid) return;
+        finalizeAbsorbedCapture(acpSid);
+        // 新一轮的正文不能再被上一轮的「被吞」标记吃掉。
+        delete absorbedDone.current[acpSid];
         // 事件里的 turnId 是首选；拿不到时保留本地占位，等 sessionPrompt 回执再替换。
         const eventTurnId = turnIdForPersist(event.turnId);
         if (eventTurnId) {
@@ -799,7 +950,29 @@ export function useAcpEvents({
       }
 
       if (event.kind === "promptResult" || event.kind === "promptFailed") {
-        flushStream();
+        const failed = event.kind === "promptFailed";
+        const stopReason = event.kind === "promptResult" ? stopReasonOf(event.result) : null;
+        if (acpSid) finalizeAbsorbedCapture(acpSid);
+        const trace = acpSid ? sendTraces.current[acpSid] : undefined;
+        if (trace) {
+          trace.resolvedAt = Date.now();
+          trace.stopReason = stopReason;
+        }
+        const absorbed = trace ? isAbsorbedSend(trace) : false;
+        const absorbedTrace = absorbed ? trace : undefined;
+        let absorbedText = "";
+        const absorbedIds = new Set<string>();
+        if (absorbedTrace && acpSid) {
+          for (const [streamKey, stream] of Object.entries(streams.current)) {
+            if (stream.acpSid !== acpSid) continue;
+            absorbedText += stream.text + stream.buf;
+            absorbedIds.add(stream.msgId);
+            delete streams.current[streamKey];
+          }
+          absorbedTrace.absorbed = true;
+        } else {
+          flushStream();
+        }
         if (acpSid) clearInFlightFor(acpSid);
         if (acpSid) lateUntil.current[acpSid] = Date.now() + LATE_WINDOW_MS;
         if (!uiSid) {
@@ -810,6 +983,7 @@ export function useAcpEvents({
               if (stream.acpSid === acpSid) delete streams.current[streamKey];
             }
             delete awaiting.current[acpSid];
+            delete sendTraces.current[acpSid];
           }
           return;
         }
@@ -834,8 +1008,6 @@ export function useAcpEvents({
         for (const [, stream] of streamsForTurn) {
           if (!stream.turnId && persistTurnId) stream.turnId = persistTurnId;
         }
-        const failed = event.kind === "promptFailed";
-        const stopReason = event.kind === "promptResult" ? stopReasonOf(event.result) : null;
         const cancelled = stopReason === "cancelled";
 
         patchSession(uiSid, (s) => ({
@@ -860,18 +1032,23 @@ export function useAcpEvents({
               )
             : s.turns,
           msgs: [
-            ...s.msgs.map((m) =>
-              streamingIds.has(m.id) && m.role === "player"
-                ? {
-                    ...m,
-                    streaming: false,
-                    stopped: cancelled || m.stopped,
-                    // 出错与「用户点停止」在渲染层要区分：两者都当帧拉满，但只有停止会显示「已停止」。
-                    failed: failed || m.failed,
-                    ...(persistTurnId && !m.turnId ? { turnId: persistTurnId } : {}),
-                  }
-                : m,
-            ),
+            ...s.msgs
+              .filter((m) => !(absorbedTrace && absorbedIds.has(m.id)))
+              .map((m) => {
+                if (absorbedTrace && m.id === absorbedTrace.userMsg.id && m.role === "user") {
+                  return { ...m, undelivered: true };
+                }
+                return streamingIds.has(m.id) && m.role === "player"
+                  ? {
+                      ...m,
+                      streaming: false,
+                      stopped: cancelled || m.stopped,
+                      // 出错与「用户点停止」在渲染层要区分：两者都当帧拉满，但只有停止会显示「已停止」。
+                      failed: failed || m.failed,
+                      ...(persistTurnId && !m.turnId ? { turnId: persistTurnId } : {}),
+                    }
+                  : m;
+              }),
             ...(failed
               ? [
                   {
@@ -886,6 +1063,29 @@ export function useAcpEvents({
               : []),
           ],
         }));
+
+        if (absorbedTrace) {
+          // 判定当下可能还没收到合批后的那句正文；先进入捕获窗口，
+          // 200ms 内的迟到正文都转成同一条 notice，而不是 agent 气泡。
+          startAbsorbedCapture(acpSid!, uiSid, absorbedText);
+        }
+
+        if (trace && !absorbed && !trace.userPersisted) {
+          trace.userPersisted = true;
+          const turnId = turnIdForPersist(
+            acpSid ? acpToTurn.current[acpSid] ?? trace.turnId : trace.turnId,
+          );
+          if (turnId) trace.turnId = turnId;
+          messagesAppend(uiSid, [
+            {
+              id: trace.userMsg.id,
+              role: "user",
+              kind: "text",
+              payload: turnId ? { ...trace.userMsg, turnId } : trace.userMsg,
+              ...(turnId ? { turnId } : { nonTurn: true }),
+            },
+          ]).catch((e) => console.warn("[db] append deferred user message failed", e));
+        }
 
         const fullLength = streamsForTurn.reduce((sum, [, stream]) => sum + stream.text.length, 0);
         clog(
@@ -951,6 +1151,7 @@ export function useAcpEvents({
             if (streams.current[streamKey] === stream) delete streams.current[streamKey];
           }
           delete awaiting.current[acpSid];
+          delete sendTraces.current[acpSid];
         }
         return;
       }
@@ -960,16 +1161,22 @@ export function useAcpEvents({
     [
       diag,
       flushStream,
+      appendAbsorbedText,
+      clearAbsorbedCaptures,
+      finalizeAbsorbedCapture,
       onAgentSwitch,
       onPermission,
       onPermissionsExpired,
       onTraceChanged,
+      onNotice,
+      onDisconnect,
       patchSession,
       noteAcpSession,
       clearAllInFlight,
       clearInFlightFor,
       scheduleFlush,
       scheduleLateSettle,
+      startAbsorbedCapture,
       settleLateStream,
     ],
   );
@@ -1009,7 +1216,7 @@ export function useAcpEvents({
     [noteAcpSession, onSessionBound, setSessions],
   );
 
-  const acp = useMemo<AcpRefs>(() => ({ acpToTurn }), []);
+  const acp = useMemo<AcpRefs>(() => ({ acpToTurn, sendTraces }), []);
 
   return {
     eventCount,

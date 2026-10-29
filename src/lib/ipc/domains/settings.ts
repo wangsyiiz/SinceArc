@@ -1,6 +1,7 @@
 import type { SettingsReport as SettingsReportDto } from "../types.gen";
 import type { AutoApproveLevel } from "@/lib/auto-approve";
 import type { ThemeMode, ThreadSettings } from "@/types";
+import { asBusyInputMode } from "@/lib/busy-input";
 import { invokeCmd } from "../client";
 import { normalizeCodeThemeId } from "@/lib/highlight/themes";
 import { isSupportedLanguage, type Language } from "@/i18n/normalize";
@@ -45,6 +46,7 @@ export async function settingsLoad(): Promise<{
       tweenEnabled: report.settings.tweenEnabled,
       codeTheme: normalizeCodeThemeId(report.settings.codeTheme),
       language: asLanguage(report.settings.language),
+      busyInputMode: asBusyInputMode(report.settings.busyInputMode),
     },
     issues: report.issues,
   };

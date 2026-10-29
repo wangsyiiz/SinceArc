@@ -17,8 +17,8 @@ use crate::acp::AgentCaps;
 use serde::{Deserialize, Serialize};
 
 use crate::commands::{
-    is_valid_auto_approve, is_valid_code_theme, is_valid_language, is_valid_theme,
-    normalize_code_theme,
+    is_valid_auto_approve, is_valid_busy_input_mode, is_valid_code_theme, is_valid_language,
+    is_valid_theme, normalize_code_theme,
     AppSettingsDto, ProfileDto, CONTEXT_MESSAGES_MAX, DEFAULT_CODE_THEME,
 };
 
@@ -33,6 +33,7 @@ const SETTINGS_KEY_MCP_INHERIT_DEFAULT: &str = "mcp_inherit_default";
 const SETTINGS_KEY_TWEEN: &str = "tween_enabled";
 const SETTINGS_KEY_CODE_THEME: &str = "code_theme";
 const SETTINGS_KEY_LANGUAGE: &str = "language";
+const SETTINGS_KEY_BUSY_INPUT_MODE: &str = "busy_input_mode";
 
 /// 结构版本：与 schema.sql 不符时整表重建（自用工具，会话数据可再生）
 const SCHEMA_VERSION: i64 = 6;
@@ -1025,6 +1026,17 @@ impl Db {
                     tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
                     issues.push(note);
                 }
+                SETTINGS_KEY_BUSY_INPUT_MODE if is_valid_busy_input_mode(&value) => {
+                    settings.busy_input_mode = value
+                }
+                SETTINGS_KEY_BUSY_INPUT_MODE => {
+                    let note = format!(
+                        "设置项 {key} 的值 `{value}` 不认识（应为 interrupt/queue/steer），已用默认值 {}",
+                        settings.busy_input_mode
+                    );
+                    tracing::warn!(target: "sincearc::settings", key = %key, value = %value, "{note}");
+                    issues.push(note);
+                }
                 _ => {}
             }
         }
@@ -1082,6 +1094,11 @@ impl Db {
                 params![SETTINGS_KEY_LANGUAGE, language.as_str()],
             )?;
         }
+        tx.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![SETTINGS_KEY_BUSY_INPUT_MODE, settings.busy_input_mode.as_str()],
+        )?;
         tx.commit()
     }
 
@@ -2579,6 +2596,7 @@ mod tests {
         assert!(settings.mcp_inherit_default);
         assert!(settings.tween_enabled);
         assert_eq!(settings.code_theme, DEFAULT_CODE_THEME);
+        assert_eq!(settings.busy_input_mode, "interrupt");
         std::fs::remove_file(&path).ok();
     }
 
@@ -2603,6 +2621,7 @@ mod tests {
             tween_enabled: true,
             code_theme: "solarized".into(),
             language: None,
+            busy_input_mode: "interrupt".into(),
         })
         .expect("save settings");
         assert_eq!(
@@ -2624,6 +2643,7 @@ mod tests {
             tween_enabled: false,
             code_theme: "github-dark".into(),
             language: None,
+            busy_input_mode: "queue".into(),
         })
         .expect("save settings");
 
@@ -2633,6 +2653,7 @@ mod tests {
         assert_eq!(settings.auto_approve_default, "edits");
         assert!(!settings.mcp_inherit_default);
         assert!(!settings.tween_enabled);
+        assert_eq!(settings.busy_input_mode, "queue");
         std::fs::remove_file(&path).ok();
     }
 
@@ -2710,6 +2731,7 @@ mod tests {
             tween_enabled: true,
             code_theme: "github-dark".into(),
             language: None,
+            busy_input_mode: "interrupt".into(),
         })
         .expect("save settings");
         let loaded = db.load_settings().expect("load settings");
@@ -2740,16 +2762,19 @@ mod tests {
             .execute_batch(
                 "INSERT INTO settings(key, value) VALUES
                    ('contextMessages', '999'),
-                   ('theme', 'neon');",
+                   ('theme', 'neon'),
+                   ('busy_input_mode', 'later');",
             )
             .expect("seed settings");
 
         let (settings, issues) = db.load_settings_report().expect("load report");
         assert_eq!(settings.context_messages, 5, "仍然回落默认值，不能让应用打不开");
         assert_eq!(settings.theme, "dark");
-        assert_eq!(issues.len(), 2, "两条脏值都要有说明：{issues:?}");
+        assert_eq!(settings.busy_input_mode, "interrupt");
+        assert_eq!(issues.len(), 3, "三条脏值都要有说明：{issues:?}");
         assert!(issues.iter().any(|i| i.contains("contextMessages") && i.contains("999")));
         assert!(issues.iter().any(|i| i.contains("theme") && i.contains("neon")));
+        assert!(issues.iter().any(|i| i.contains("busy_input_mode") && i.contains("later")));
 
         // 合法库不该产生任何噪音
         db.save_settings(&AppSettingsDto {
@@ -2760,6 +2785,7 @@ mod tests {
             tween_enabled: true,
             code_theme: "github-dark".into(),
             language: None,
+            busy_input_mode: "interrupt".into(),
         })
         .expect("save settings");
         let (_, clean) = db.load_settings_report().expect("load report");
@@ -2841,6 +2867,7 @@ mod tests {
             tween_enabled: false,
             code_theme: "github-dark".into(),
             language: None,
+            busy_input_mode: "interrupt".into(),
         })
         .expect("save settings");
 
@@ -2874,6 +2901,7 @@ mod tests {
             tween_enabled: false,
             code_theme: "github-dark".into(),
             language: None,
+            busy_input_mode: "interrupt".into(),
         })
         .expect("save settings");
 

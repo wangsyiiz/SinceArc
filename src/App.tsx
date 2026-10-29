@@ -7,6 +7,7 @@ import { ConnectErrorState } from "@/components/ConnectErrorState";
 import { EmptyState } from "@/components/EmptyState";
 import { EmptyState as LoadingState } from "@/components/ui/EmptyState";
 import { MessageItem } from "@/components/MessageItem";
+import { NoticeStack } from "@/components/NoticeStack";
 import { PermissionDialog } from "@/components/PermissionDialog";
 import { PrView } from "@/components/PrView";
 import { RepoBrowser } from "@/components/RepoBrowser";
@@ -24,7 +25,7 @@ import { settingsKey } from "@/lib/settings-key";
 import { normalizeCodeThemeId } from "@/lib/highlight/themes";
 import { copyText } from "@/lib/clipboard";
 import { profileLabel } from "@/lib/format";
-import { localizeText, translateKey } from "@/lib/i18n-text";
+import { i18nText, localizeText, translateKey } from "@/lib/i18n-text";
 import { errorTextOf } from "@/lib/errors";
 import { pushSystemNotice } from "@/lib/notices";
 import { delegateCancelFailureKey, type DelegatePhase } from "@/lib/delegate-status";
@@ -32,6 +33,18 @@ import { acpSessionIdOfActivity } from "@/lib/activity-row";
 import { mergeMessages } from "@/lib/messages-merge";
 import { buildPlayers } from "@/lib/players";
 import { steerGate, type SteerGate } from "@/lib/steer-availability";
+import {
+  dequeuePrompt,
+  enqueuePrompt,
+  queueCount,
+  type QueuedPrompt,
+} from "@/lib/busy-input";
+import {
+  dismissNotice,
+  pushNotice,
+  type NoticeInput,
+  type UiNotice,
+} from "@/lib/notice-inbox";
 import { resolveAcpSessionId } from "@/lib/session-view";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
@@ -138,6 +151,15 @@ interface TurnPolicy {
   acpSessionId: string;
   turnId: string;
   kinds: string[];
+}
+
+interface SendInGroupOptions {
+  /** 指定界面会话（后台队列续发）；不传就是当前打开的会话 */
+  sid?: string;
+  /** 用户发起时本轮已在跑：用于 400ms 兜底判定 */
+  busyAtSend?: boolean;
+  /** 从本地队列续发：不再进入忙碌分流 */
+  fromQueue?: boolean;
 }
 
 export default function App() {
@@ -266,6 +288,83 @@ export default function App() {
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab } = useTabs(sessions);
   const { state, patchSession, initSession, sessionState, hasMore, loadOlder, loadingOlder, opening } =
     useSessionState(lastSessionId);
+
+  /** 当前界面会话的 live notice 收件箱；切会话/断连即清空。 */
+  const [noticesBySession, setNoticesBySession] = useState<Record<string, UiNotice[]>>({});
+  /** notice 是 live event：页面已经切走时，晚到的条目直接丢弃，切回去不能“复活”。 */
+  const noticeSessionRef = useRef(lastSessionId);
+  noticeSessionRef.current = lastSessionId;
+  /** running 时排队的原文（仅内存，按界面会话分开）。 */
+  const [queuedBySession, setQueuedBySession] = useState<Record<string, QueuedPrompt[]>>({});
+  const queuedBySessionRef = useRef<Record<string, QueuedPrompt[]>>({});
+  const [queueTick, setQueueTick] = useState(0);
+  const flushingQueueRef = useRef<Set<string>>(new Set());
+  /** 已发出 cancel、正在等本轮终态的界面会话。 */
+  const [interrupting, setInterrupting] = useState<Record<string, boolean>>({});
+  const sessionStateRef = useRef(sessionState);
+  useEffect(() => {
+    sessionStateRef.current = sessionState;
+  }, [sessionState]);
+
+  const pushUiNotice = useCallback((sid: string, notice: NoticeInput) => {
+    if (!sid || sid !== noticeSessionRef.current) return;
+    setNoticesBySession((prev) => ({
+      ...prev,
+      [sid]: pushNotice(prev[sid] ?? [], { ...notice, at: Date.now() }),
+    }));
+  }, []);
+  const clearUiNotices = useCallback(() => setNoticesBySession({}), []);
+  const dismissUiNotice = useCallback(
+    (sid: string, id: string) => {
+      setNoticesBySession((prev) => {
+        if (!prev[sid]) return prev;
+        return { ...prev, [sid]: dismissNotice(prev[sid] ?? [], id) };
+      });
+    },
+    [],
+  );
+
+  const previousSessionId = useRef(lastSessionId);
+  useEffect(() => {
+    const previous = previousSessionId.current;
+    if (previous === lastSessionId) return;
+    previousSessionId.current = lastSessionId;
+    if (previous) {
+      // 「未发送」只活在这一页：离开时连同 notice 一起消失。
+      patchSession(previous, (s) => ({
+        ...s,
+        msgs: s.msgs.filter(
+          (message) => !(message.role === "user" && message.undelivered),
+        ),
+      }));
+    }
+    setNoticesBySession((prev) => {
+      const next = { ...prev };
+      delete next[previous];
+      delete next[lastSessionId];
+      return next;
+    });
+  }, [lastSessionId, patchSession]);
+
+  /** 后台会话晚到的「未发送」结果也不该在切回去时出现。 */
+  useEffect(() => {
+    for (const [sid, session] of Object.entries(sessionState)) {
+      if (sid === lastSessionId) continue;
+      if (
+        !session.msgs.some(
+          (message) => message.role === "user" && message.undelivered,
+        )
+      ) {
+        continue;
+      }
+      patchSession(sid, (s) => ({
+        ...s,
+        msgs: s.msgs.filter(
+          (message) => !(message.role === "user" && message.undelivered),
+        ),
+      }));
+    }
+  }, [lastSessionId, patchSession, sessionState]);
 
   const messageKeyOf = useCallback(
     (index: number) => state.msgs[index]?.id ?? `message-index-${index}`,
@@ -494,7 +593,33 @@ export default function App() {
     },
     [permissions.expire, sessions],
   );
-  const { eventCount, lastEvent, eventLog, diag, sessionsByProfile, commandsByAcpSession, messageIdByAcpSession, acpByUiSession, acpSessionForUi, noteAcpSession, onAgentEvent, onSession, acp, inFlight, clearInFlight } = useAcpEvents({ patchSession, setSessions, onSessionBound, onAgentSwitch, onPermission, onPermissionsExpired, onTraceChanged: () => setTraceTick((t) => t + 1) });
+  const {
+    eventCount,
+    lastEvent,
+    eventLog,
+    diag,
+    sessionsByProfile,
+    commandsByAcpSession,
+    messageIdByAcpSession,
+    acpByUiSession,
+    acpSessionForUi,
+    noteAcpSession,
+    onAgentEvent,
+    onSession,
+    acp,
+    inFlight,
+    clearInFlight,
+  } = useAcpEvents({
+    patchSession,
+    setSessions,
+    onSessionBound,
+    onAgentSwitch,
+    onPermission,
+    onPermissionsExpired,
+    onTraceChanged: () => setTraceTick((t) => t + 1),
+    onNotice: pushUiNotice,
+    onDisconnect: clearUiNotices,
+  });
 
   useEffect(() => {
     permissionDiagRef.current = diag;
@@ -621,6 +746,7 @@ export default function App() {
     activeAcpSid ? !!messageIdByAcpSession[activeAcpSid] : false,
   );
   const isStopping = !!cancelling[lastSessionId] && state.busy;
+  const isInterrupting = !!interrupting[lastSessionId];
   const activeTurnId = activeAcpSid ? acp.acpToTurn.current[activeAcpSid] ?? null : null;
   const activeTurnPolicy = (() => {
     const policy = lastSessionId ? turnPolicies[lastSessionId] : undefined;
@@ -1404,49 +1530,48 @@ export default function App() {
     void reloadSessions();
   }, [reloadSessions]);
 
-  const sendInGroup = useCallback(
-    async (raw: string) => {
-      let resolved: Awaited<ReturnType<typeof mentionResolve>>;
-      try {
-        // 谁在群里、他连的哪条连接、cwd 是什么：全部由后端一次判定。
-        resolved = await mentionResolve(lastSessionId, raw);
-      } catch (e) {
-        const err = asCmdError(e);
-        pushSystemNotice(patchSession, lastSessionId, localizeText(err.msg, t));
-        return;
-      }
+  const enqueueForSession = useCallback((sid: string, text: string) => {
+    const next = enqueuePrompt(queuedBySessionRef.current[sid] ?? [], {
+      id: newId("queued"),
+      text,
+    });
+    queuedBySessionRef.current = { ...queuedBySessionRef.current, [sid]: next };
+    setQueuedBySession((prev) => ({ ...prev, [sid]: next }));
+  }, []);
 
-      if (resolved.memberId) {
-        if (!resolved.profileId || !resolved.acpSessionId) {
-          pushSystemNotice(patchSession, lastSessionId, t("app.notice.memberIncomplete"));
+  const markUndelivered = useCallback(
+    (sid: string, text: string) => {
+      const message: Extract<Message, { role: "user" }> = {
+        id: newId("u"),
+        role: "user",
+        atomKind: "text.user",
+        text,
+        at: now(),
+        turnId: null,
+        undelivered: true,
+      };
+      patchSession(sid, (s) => ({ ...s, msgs: [...s.msgs, message] }));
+    },
+    [patchSession],
+  );
+
+  const waitForSessionIdle = useCallback((sid: string, timeoutMs: number) => {
+    return new Promise<boolean>((resolve) => {
+      const deadline = Date.now() + timeoutMs;
+      const tick = () => {
+        if (!sessionStateRef.current[sid]?.busy) {
+          resolve(true);
           return;
         }
-        const r = await send(raw, {
-          profileId: resolved.profileId,
-          acpSessionId: resolved.acpSessionId,
-          authorId: resolved.memberId,
-          cwd: resolved.cwd,
-        });
-        refreshTitles();
-        jumpToBottomAfterSend();
-        return r;
-      }
-
-      if (resolved.token) {
-        pushSystemNotice(
-          patchSession,
-          lastSessionId,
-          t("app.notice.memberNotInGroup", { token: resolved.token }),
-        );
-        return;
-      }
-
-      await send(raw);
-      refreshTitles();
-      jumpToBottomAfterSend();
-    },
-    [send, lastSessionId, patchSession, refreshTitles, jumpToBottomAfterSend, t],
-  );
+        if (Date.now() >= deadline) {
+          resolve(false);
+          return;
+        }
+        window.setTimeout(tick, 50);
+      };
+      tick();
+    });
+  }, []);
 
   const sendSteer = useCallback(
     async (raw: string) => {
@@ -1492,6 +1617,157 @@ export default function App() {
     },
     [acp, activeAcpSid, lastSessionId, patchSession, t],
   );
+
+  const sendInGroup = useCallback(
+    async (raw: string, opts: SendInGroupOptions = {}) => {
+      const sid = opts.sid ?? lastSessionId;
+      const busyNow = !!sessionStateRef.current[sid]?.busy;
+      if (busyNow && !opts.fromQueue) {
+        if (settings.busyInputMode === "queue") {
+          enqueueForSession(sid, raw);
+          return;
+        }
+        if (settings.busyInputMode === "steer") {
+          await sendSteer(raw);
+          return;
+        }
+      }
+
+      let resolved: Awaited<ReturnType<typeof mentionResolve>>;
+      try {
+        // 谁在群里、他连的哪条连接、cwd 是什么：全部由后端一次判定。
+        resolved = await mentionResolve(sid, raw);
+      } catch (e) {
+        const err = asCmdError(e);
+        pushSystemNotice(patchSession, sid, localizeText(err.msg, t));
+        return;
+      }
+
+      const target =
+        resolved.memberId && resolved.profileId && resolved.acpSessionId
+          ? {
+              profileId: resolved.profileId,
+              acpSessionId: resolved.acpSessionId,
+              authorId: resolved.memberId,
+              cwd: resolved.cwd,
+            }
+          : undefined;
+
+      if (resolved.memberId && !target) {
+        pushSystemNotice(patchSession, sid, t("app.notice.memberIncomplete"));
+        return;
+      }
+
+      if (resolved.token) {
+        pushSystemNotice(
+          patchSession,
+          sid,
+          t("app.notice.memberNotInGroup", { token: resolved.token }),
+        );
+        return;
+      }
+
+      if (busyNow && !opts.fromQueue && settings.busyInputMode === "interrupt") {
+        const queuedSession = sessions.find((session) => session.id === sid);
+        const profileId =
+          target?.profileId ??
+          queuedSession?.profileId ??
+          (sid === lastSessionId ? sessionProfile?.id : undefined);
+        const acpSessionId = target?.acpSessionId ?? acpSessionOf(sid);
+        if (!profileId || !acpSessionId) {
+          markUndelivered(sid, raw);
+          pushUiNotice(sid, {
+            severity: "error",
+            title: i18nText("notice.interruptFailed.title"),
+            description: i18nText("app.notice.stopNoSession"),
+          });
+          return;
+        }
+
+        setInterrupting((prev) => ({ ...prev, [sid]: true }));
+        try {
+          await sessionCancel(profileId, acpSessionId);
+          const idle = await waitForSessionIdle(sid, 5_000);
+          if (!idle) {
+            markUndelivered(sid, raw);
+            pushUiNotice(sid, {
+              severity: "error",
+              title: i18nText("notice.interruptTimeout.title"),
+              description: i18nText("notice.interruptTimeout.description"),
+            });
+            return;
+          }
+          // 用户这次发送确实发生在 running 期间；即使刚等到了 cancelled，
+          // 仍要保留这个事实，Hermes 在服务端还没真正放开时才能触发兜底判定。
+          await send(raw, target, true, sid);
+          refreshTitles();
+          if (sid === lastSessionId) jumpToBottomAfterSend();
+        } catch (e) {
+          const err = asCmdError(e);
+          markUndelivered(sid, raw);
+          pushUiNotice(sid, {
+            severity: "error",
+            title: i18nText("notice.interruptFailed.title"),
+            description: localizeText(err.msg, t),
+          });
+        } finally {
+          setInterrupting((prev) => {
+            if (!prev[sid]) return prev;
+            const next = { ...prev };
+            delete next[sid];
+            return next;
+          });
+        }
+        return;
+      }
+
+      await send(raw, target, opts.busyAtSend ?? false, sid);
+      refreshTitles();
+      if (sid === lastSessionId) jumpToBottomAfterSend();
+    },
+    [
+      acpSessionOf,
+      enqueueForSession,
+      jumpToBottomAfterSend,
+      lastSessionId,
+      markUndelivered,
+      patchSession,
+      pushUiNotice,
+      refreshTitles,
+      send,
+      sendSteer,
+      sessions,
+      sessionProfile?.id,
+      settings.busyInputMode,
+      t,
+      waitForSessionIdle,
+    ],
+  );
+
+  const sendInGroupRef = useRef(sendInGroup);
+  useEffect(() => {
+    sendInGroupRef.current = sendInGroup;
+  }, [sendInGroup]);
+
+  /** 轮终态（busy 收起）后按序续发各会话的本地队列。 */
+  useEffect(() => {
+    for (const [sid, queued] of Object.entries(queuedBySessionRef.current)) {
+      if (queued.length === 0) continue;
+      if (sessionStateRef.current[sid]?.busy) continue;
+      if (interrupting[sid] || flushingQueueRef.current.has(sid)) continue;
+      const { next, rest } = dequeuePrompt(queued);
+      if (!next) continue;
+      queuedBySessionRef.current = { ...queuedBySessionRef.current, [sid]: rest };
+      setQueuedBySession((prev) => ({ ...prev, [sid]: rest }));
+      flushingQueueRef.current.add(sid);
+      void sendInGroupRef
+        .current(next.text, { fromQueue: true, busyAtSend: false, sid })
+        .finally(() => {
+          flushingQueueRef.current.delete(sid);
+          setQueueTick((tick) => tick + 1);
+        });
+    }
+  }, [interrupting, queueTick, queuedBySession, sessionState]);
 
   /**
    * 停止按钮必须把取消送到 agent，而不是只关掉本地的「生成中」。
@@ -1935,6 +2211,16 @@ export default function App() {
                         </button>
                       )}
                       <div className="pointer-events-auto">
+                        <NoticeStack
+                          notices={noticesBySession[lastSessionId] ?? []}
+                          onDismiss={(id) => dismissUiNotice(lastSessionId, id)}
+                        />
+                        {isInterrupting && (
+                          <div className="sc-glass mb-2 flex items-center gap-2 rounded-card px-3 py-1.5 text-caption text-ink-2">
+                            <span className="size-1.5 animate-pulse rounded-full bg-warn-1" />
+                            {t("composer.busy.interrupting")}
+                          </div>
+                        )}
                         {isStopping && (
                           <div className="sc-glass mb-2 flex items-center gap-2 rounded-card px-3 py-1.5 text-caption text-ink-2">
                             <span className="size-1.5 animate-pulse rounded-full bg-warn-1" />
@@ -1950,10 +2236,22 @@ export default function App() {
                           commands={acpCommands}
                           onStop={stopGeneration}
                           placeholder={
-                            isStopping
+                            isInterrupting
+                              ? t("composer.busy.interrupting")
+                              : isStopping
                               ? t("app.composer.stopping")
                               : t("app.composer.placeholder")
                           }
+                          busyInputMode={settings.busyInputMode}
+                          onBusyInputModeChange={(mode) =>
+                            setSettings((prev) =>
+                              prev.busyInputMode === mode
+                                ? prev
+                                : { ...prev, busyInputMode: mode },
+                            )
+                          }
+                          interrupting={isInterrupting}
+                          queuedCount={queueCount(queuedBySession[lastSessionId] ?? [])}
                           players={players.filter((player) => !player.removed)}
                           autoApprove={activeAutoApprove}
                           autoApproveCovered={autoApproveCoveredByAgent}

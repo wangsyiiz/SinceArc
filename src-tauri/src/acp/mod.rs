@@ -359,7 +359,10 @@ pub async fn initialize(
         // 高危操作甩给客户端，然后等一个永远不会来的响应。
         "clientCapabilities": {
             "fs": { "readTextFile": true, "writeTextFile": false },
-            "terminal": false
+            "terminal": false,
+            // ACP session notices are capability-gated: without this field the
+            // agent must not send `session/update` notices at all.
+            "session": { "notices": {} }
         }
     });
 

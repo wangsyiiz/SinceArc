@@ -1580,3 +1580,83 @@ schema 里唯一一句相关注释是 *Background activity may still emit other 
 
 **验收**：上翻到列表中部 → 发一条 → 视口在下一帧内落到最底、能看到自己那条；
 停在最底部发送时视口不抖（不出现先跳后回弹）。
+
+## 28. 插话语义：notice 呈现 + running 时三档输入（2026-10-29 定）
+
+### 28.1 先记事实（这些是查证过的，别再重查）
+
+| 事实 | 出处 |
+| --- | --- |
+| `session/update` 有 `notice` 变体（severity / title / description / `_meta`） | ACP RFD「Session Notices」，2026-10-09 稳定；schema 1.12.0 `client.rs` |
+| notice 受**客户端能力门控**：agent MUST NOT 发，除非客户端 `initialize` 声明 `clientCapabilities.session.notices: {}` | 同上；不声明时协议允许 agent 用普通 agent 消息兜底 |
+| 我们此前**没有声明**（`clientCapabilities` 只有 `fs` / `terminal`） | `src-tauri/src/acp/mod.rs:360` |
+| Hermes 适配器在轮内收到 prompt：redirect 成功回一句文本，否则入队回一句文本，两者都 `stop_reason=end_turn` 立刻返回 | `acp_adapter/server.py:729` `_claim_turn_or_queue` |
+| `StopReason` 只有 end_turn / max_tokens / max_turn_requests / refusal / cancelled —— **没有 queued/absorbed** | schema `agent.rs` |
+| Hermes 的 python `acp` 是 0.9.0，**没有 Notice 实现** | venv site-packages 内 grep（只有一处无关 docstring） |
+| 多声明一个能力字段不会炸握手：python `ClientCapabilities` 是 pydantic 模型，`model_config` 只设了 `populate_by_name`，多余字段默认 `ignore`；且 Hermes 的 `initialize` 根本没读 `client_capabilities` | `acp/schema.py:1372`、`acp_adapter/server.py:526` |
+
+**结论：现在真正"没生效"的信号是一条被伪装成模型正文的英文句子。这是本节的起因。**
+
+### 28.2 声明能力
+
+`initialize` 的 `clientCapabilities` 增加：
+
+```json
+{ "fs": { "readTextFile": true, "writeTextFile": false },
+  "terminal": false,
+  "session": { "notices": {} } }
+```
+
+声明在先，呈现能力其次：将来 Hermes 升级后发 notice，我们才收得到。**不声明就永远收不到**，这是门控的方向。
+
+### 28.3 notice 的呈现规则
+
+- **位置**：输入区上方（composer 上沿），**不进消息流**。它是"系统在说话"，不是对话内容。
+- **字段**：`severity`（`info` / `warning` / `error`，未知值按 `info` 处理）决定图标与色阶；`title` 必显；`description` 可选。
+- **不落库、不进轨迹、不进历史、不参与 `session/load` 重放**（协议明确 notice 是 live event；重放里出现旧提示比不提示更糟）。
+- **同类去重**：`title + description` 相同只保留一条，右上角计数 `×N`。
+- **手动关闭**，**不自动消失**：这条消息的语义是"你发的东西没生效"，不能自己溜走。
+- 切换会话 / 断连时清空。
+
+### 28.4 兜底判定（agent 不发 notice 时，现在的 Hermes 就是这类）
+
+三个条件**同时**满足才判定为"这一轮没有真正开始"：
+
+1. 发送时本地 `busy=true`（我们自己知道本轮在跑）；
+2. 该次 `session/prompt` 在 **≤400ms** 内返回，且 `stop_reason = end_turn`；
+3. 从发出到返回之间，该 session **没有任何** `agent_message_chunk` / `agent_thought_chunk` / `tool_call` / `tool_call_update`。
+
+判定的结果：这段时间里收到的文本（通常就是那句 `Queued for the next turn…`）**转成 notice 呈现**（`warning`，标题用我们的文案），
+不再以 agent 气泡呈现，并按 28.6 处理原消息。
+
+**误判边界（写清楚，不粉饰）**：真·秒答（<400ms、零工具、零思考）会被误判成"没生效"。
+判定只在 `busy=true` 时生效，idle 发送永远不会走这条路径，所以最坏情况是"极快的回答被当成排队提示"。
+
+### 28.5 running 时三档输入（Enter 默认 = 打断）
+
+| 档 | 行为 |
+| --- | --- |
+| **打断（默认）** | 发 `session/cancel` → 等 `stop_reason=cancelled` → 再发新 `session/prompt` |
+| **排队** | 进本地队列，显示「已排队 N 条」；本轮结束（`promptResult` / `promptFailed`）后按序发出 |
+| **引导** | 走现有的 steer 路径（agent 支持 redirect 才有效） |
+
+- 档位在输入区工具行可见（三段控件），选择落库为设置项，默认 `interrupt`。
+- **打断必须有超时**：5 秒内没收到 `cancelled` → 不静默、不卡死，按 28.6 给「未发送」气泡 + 一条 notice 说明 agent 没有响应打断。
+- 打断期间输入框禁用并显示「正在打断…」，避免重复提交。
+- 顺序正确性：打断后的新一轮不能和旧轮的残留输出混在一起（旧轮之后到达的 chunk 属于已取消的轮，按现有轮次归属丢弃）。
+
+### 28.6 未发送气泡（所有者 2026-10-29 定）
+
+- 形态：消息流里一条 `role=user` 的**「未发送」气泡**，**含用户发送的原文**；与正常 user 气泡视觉可区分（警示描边 + 角标）。
+- **只放内存**：不进库、重启即消失、切会话即消失。
+- **原消息丢弃**：不塞回输入框、不自动重试。
+- 因为不落库，天然不会进入发给 agent 的上下文；实现上也不得走任何持久化路径。
+
+### 28.7 验收
+
+1. Hermes 在跑时发一条（Hermes 目前只回兜底文本）→ 出现 notice 样式提示，**不是** agent 气泡；消息流里出现「未发送」气泡且含原文，输入框被清空。
+2. `initialize` 带上 `session.notices` 后，Hermes 建会话/发消息一切正常（不握手失败）。
+3. 切走会话再切回：notice 与「未发送」气泡都不残留；`session/load` 重放里不出现 notice。
+4. 打断档：正在跑时发送 → 旧轮收到 `cancelled`、新轮开始；消息流里不出现两条 user 消息夹着旧回答的错序。
+5. 打断超时（agent 不回 cancelled）→ 5 秒后出现「未发送」气泡 + 提示，界面不卡在「正在打断…」。
+6. 排队档：显示「已排队 N 条」，轮结束后按序自动发出；idel 发送路径不受三档影响。

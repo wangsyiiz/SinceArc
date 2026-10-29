@@ -526,6 +526,11 @@ pub fn is_valid_auto_approve(level: &str) -> bool {
     matches!(level, "off" | "edits")
 }
 
+/// running 时三档输入：打断（默认）/ 排队 / 引导。
+pub fn is_valid_busy_input_mode(mode: &str) -> bool {
+    matches!(mode, "interrupt" | "queue" | "steer")
+}
+
 /// 界面语言的**唯一来源**（docs/i18n.md §2）：前端 `src/i18n/normalize.ts` 的 `LANGUAGES` 必须与它一致。
 pub const LANGUAGE_IDS: [&str; 2] = ["zh-CN", "en"];
 
@@ -554,6 +559,9 @@ pub struct AppSettingsDto {
     /// 脏值读回时也按 `None` 处理 —— 脏值不算用户的选择（docs/i18n.md §2.1）。
     #[serde(default)]
     pub language: Option<String>,
+    /// running 时发送的默认动作：interrupt | queue | steer；脏值回落 interrupt。
+    #[serde(default = "default_busy_input_mode")]
+    pub busy_input_mode: String,
 }
 
 fn default_true() -> bool {
@@ -562,6 +570,10 @@ fn default_true() -> bool {
 
 fn default_code_theme() -> String {
     DEFAULT_CODE_THEME.into()
+}
+
+fn default_busy_input_mode() -> String {
+    "interrupt".into()
 }
 
 impl Default for AppSettingsDto {
@@ -574,6 +586,7 @@ impl Default for AppSettingsDto {
             tween_enabled: true,
             code_theme: DEFAULT_CODE_THEME.into(),
             language: None,
+            busy_input_mode: default_busy_input_mode(),
         }
     }
 }
@@ -606,6 +619,13 @@ impl AppSettingsDto {
                 50001,
                 "err.settings.unknownAutoApprove",
                 "未知的自动同意档",
+            ));
+        }
+        if !is_valid_busy_input_mode(&self.busy_input_mode) {
+            return Err(CmdError::keyed(
+                50001,
+                "err.settings.unknownBusyInputMode",
+                "未知的运行中发送档",
             ));
         }
         // 显式报错而不是静默归一：写了不认识的语言就是调用方错了（docs/i18n.md §2）
@@ -2243,7 +2263,8 @@ pub async fn agent_connect(
                 }
             };
 
-            // 正文以外的任何事件都先把缓冲冲掉，保证顺序（工具调用不能跑到它前面的文字之前）
+            // 正文以外的任何事件都先把缓冲冲掉，保证顺序（工具调用不能跑到它前面的文字之前）。
+            // `notice` 也走这里：它不是正文，先冲掉旧缓冲，再作为普通通知原样转发给前端。
             let is_text = matches!(
                 &msg,
                 transport::Incoming::Notification { method, params }
@@ -5909,6 +5930,7 @@ mod settings_tests {
             tween_enabled: true,
             code_theme: DEFAULT_CODE_THEME.into(),
             language: None,
+            busy_input_mode: "interrupt".into(),
         };
         let err = settings.validate().expect_err("99 必须被拒");
         assert_eq!(err.code, 50001);
@@ -5925,10 +5947,22 @@ mod settings_tests {
             tween_enabled: true,
             code_theme: DEFAULT_CODE_THEME.into(),
             language: None,
+            busy_input_mode: "interrupt".into(),
         };
         let err = settings.validate().expect_err("未知主题必须被拒");
         assert_eq!(err.code, 50001);
         assert_eq!(err.msg, "未知主题");
+    }
+
+    #[test]
+    fn settings_reject_unknown_busy_input_mode_with_50001() {
+        let settings = AppSettingsDto {
+            busy_input_mode: "later".into(),
+            ..Default::default()
+        };
+        let err = settings.validate().expect_err("未知运行中发送档必须被拒");
+        assert_eq!(err.code, 50001);
+        assert_eq!(err.msg, "未知的运行中发送档");
     }
 }
 
