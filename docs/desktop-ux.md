@@ -1737,3 +1737,44 @@ schema 里唯一一句相关注释是 *Background activity may still emit other 
 3. 关掉弹框 → agent 立刻收到应答（日志有 `PERM-ANSWER`），后续动作继续进来。
 4. 正常点击（<300 秒）行为不变：一次作答、一个 `PERM-ANSWER`、没有多余 notice。
 5. 轮终态 / 断连导致的过期仍然照旧（新计时器不得覆盖这两条路径）。
+
+## 30. 单例启动（2026-10-29 定）
+
+### 30.1 为什么不是观感问题
+
+没有单例保护时，多开的代价是实打实的：
+
+- 两个进程同时打开同一个 `sincearc.db`（`%APPDATA%\com.sincearc.app`），SQLite 写冲突不可控；
+- 每个实例各起一套 ACP agent 子进程，同一份历史里两条会话互相踩；
+- 两个 updater 同时检查/下载更新；
+- 「点了没反应 → 再点一次」是最常见的重复启动来源，现在会真的开出两个窗口。
+
+### 30.2 做法
+
+`tauri-plugin-single-instance`（v2 线，本次解析到 **2.5.5**）：
+
+- **必须是 `Builder` 上第一个注册的插件**。晚于其他插件注册，第二个实例可能在拿到锁之前已经把窗口/数据库初始化过一轮。
+- 第二个实例的行为：把已有窗口 **`unminimize()` → `show()` → `set_focus()`**，然后自己退出。
+  只 `set_focus()` 不够 —— 窗口最小化时 focus 不会把它还原。
+- callback 里**不做重活、不 panic**：它跑在第二个实例的进程上下文里，panic 会表现成「双击图标没反应」。
+- 窗口 label 用默认 `main`（`tauri.conf.json` 的 `app.windows[0]` 没写 label）。
+  锁的键来自 `identifier = com.sincearc.app`：Windows 是命名 mutex。
+- **不转发 CLI 参数**：当前没有「用某个目录/文件启动」的语义，第二个实例的参数直接丢弃；
+  等 E14（项目与位置）落地后若要做「再次启动打开指定项目」，再扩 callback 的 `args`。
+
+### 30.3 已知坑
+
+1. **dev 与 release 共用同一把锁**（同一个 identifier）：调试时如果打包版开着，
+   `npm run tauri dev` 会被顶掉或顶掉别人，表现是「窗口没起来但进程退了」。调试前先 `taskkill /IM sincearc.exe /F`。
+   要给 dev 单独的 identifier 得改一份 config，本卡不做。
+2. **更新器重启路径必须验**：`tauri-plugin-updater` 重启时旧进程先退、锁才释放；
+   旧进程没退干净的话，新进程会等约 10 秒再退出，用户看到的是「点了更新没反应」。
+3. 与 `visible: false`（§27.1）叠加时：第二个实例的 callback 里 `show()` 会直接显示第一个实例的窗口 ——
+   这正是想要的，不需要额外判断"是否已加载完成"。
+
+### 30.4 验收
+
+1. 开一个实例 → 再双击图标：**不出现第二个窗口**，已有窗口还原并到前台（最小化状态也成立）。
+2. 任务栏再点一次、开始菜单再点一次：行为同上。
+3. 更新器「重启」之后仍只有一个进程（`tasklist | findstr sincearc` 只有一行）。
+4. 任务管理器里始终只有 **一个** `sincearc.exe`；`sincearc.db` 没有被两个进程同时打开。
