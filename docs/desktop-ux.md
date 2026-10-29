@@ -1462,3 +1462,70 @@ S 是 `BrandMark` 的同一份几何，延伸即识别，且能长期循环而�
 4. 会话计时：存在 `[data-session-elapsed]`，文本匹配 `^\d+:\d{2}$` 或 `^\d+:\d{2}:\d{2}$`；
    1.2s 后文本变化（证明在走）；切会话后读数回到 `0:00`。
 5. 三处按钮都有 `focus-visible` 类（样式棘轮）；`npm test` / `check-i18n` 绿。
+
+## 26. 进行中计数：状态栏「N 个在跑」+ 悬停明细（2026-10-29 定）
+
+**决定**：状态栏显示**当前有几个任务在跑**，悬停给明细。**叫「进行中」，不叫「后台」**，
+并且只在**轮内**成立 —— 这是协议的边界，不是实现的取舍。
+
+### 26.1 为什么不是「后台任务」
+
+ACP 里没有「后台任务」这个一等公民：没有任务表、没有 `list` 方法、没有完成通知约定；
+schema 里唯一一句相关注释是 *Background activity may still emit other session updates while idle*。
+用「后台」命名，用户会期待一个**活过一轮 prompt** 的东西，而我们能数到的只在轮内成立：
+一轮结束（`promptResult` / `promptFailed`）后不再有更新，数字必须归零。
+
+**已核实（2026-10-29，本机 Hermes 的 ACP 适配器）**：`acp_adapter/` 里既**不发** `subagent_update`，
+也**不发** `notice`。所以第一阶段**只数 `tool_call` 的在途状态**，子会话计数不做 ——
+不为「可能存在」的字段预先写解析；哪天真有 agent 发，再按这一节的口径补。
+
+### 26.2 计数口径
+
+- 数据源：`session/update` 的 `tool_call` / `tool_call_update` 里的 `status`
+  （`pending` / `in_progress` 算在跑；`completed` / `failed` 出队）。
+- **按 `toolCallId` 去重**：`tool_call_update` 是增量，同一条更新一百次也只算一个。
+- **跨成员**：群聊里两个 agent 各跑一个 → 2。
+- **归零时机**（三处，都要实现）：① 该 agent 的 `promptResult` / `promptFailed`；
+  ② `promptStarted`（新一轮开始，上一轮的残条不能带过来）；③ 切换会话 / 断开连接。
+- **现有实现不能直接复用**：`useAcpEvents` 里的 `toolCalls.current[acpSid]` 只存**每个 agent 最近一条**的
+  合并态（§21 的标签用它）。计数要另建一张 `acpSid → toolCallId → { title, startedAt }` 的表，
+  并且**必须是 state 不是 ref**（要驱动渲染），但更新粒度是「事件到达」，不是「每秒」。
+
+### 26.3 计时起点
+
+`startedAt` = **客户端第一次看到这个 `toolCallId` 的时刻**（ACP 不给开始时间戳，差一个 RTT）。
+文案里不许写成「工具耗时」。格式复用 `lib/session-elapsed.ts` 的 `formatElapsed()`，
+**不要写第二份**。
+
+### 26.4 位置与形态
+
+- 状态栏右侧，**会话计时条左侧**（§25.3 那格的前面），`Loader` 图标 + 数字，`font-mono text-micro`，
+  与 `SessionTag` / 会话计时同档。
+- **0 个时不渲染**（不留「0 个在进行」的噪音）。
+- 悬停 → **HoverCard**（不是 Tooltip：结构化、多于一行）：每行 `成员名 · title · 已跑 m:ss`，
+  **按已跑时长降序**（最久的在最上，与 chip 的数字同源）。
+- **列表不设条数上限**（2026-10-29 所有者定，原「最多 8 行 + 另有 N 个」作废）：
+  卡片给**最高高度**、超出**内部滚动**。截断会把「最久的那条」挤掉，而它正是这个读数唯一的用处。
+  - 复用 `ui/HoverCard`：它的面板已经是 `overflow-y-auto` + `pointer-events-auto`，能滚、移进卡片不关闭。
+  - **高度上限要用样式棘轮允许的写法**：禁 arbitrary value。走既有间距刻度（`max-h-96`）或
+    往 `styles.css` 加一个小类（`max-height: min(60vh, 28rem)`）。上限必须低于窗口高度。
+- 点击 → 打开轨迹面板（与活动行右侧「轨迹」键同一入口），不新开面板。
+- 文案写清「本轮内」，避免被读成全局后台队列。
+
+### 26.5 不做
+
+- 不做命令输出、不做日志跟随、不做 kill（那要 `terminal/*` 与进程所有权，另一个量级）。
+- 不显示外部程序（如 Hermes 自己派发的 `codex exec`）的后台进程：SinceArc 是独立进程树，
+  ACP 没有跨程序发现机制。**注意**：agent 若把长任务维持成 `in_progress` 的 `tool_call`，
+  它就会自然出现在这个计数里 —— 这是被数到，不是客户端去探。
+- 不为计数新增后端命令：纯前端从已有事件派生。
+
+### 26.6 验收（DOM 数值）
+
+1. 三条不同 `toolCallId` 的 `in_progress` → 计数 3；同一条再发 `tool_call_update` → 仍 3（去重）。
+2. 一条 `completed` → 2；一条 `failed` → 再减 1。
+3. 该 agent 的 `promptResult` 后 → 元素消失（不是显示 0）；`promptStarted` 后上一轮残条不延续。
+4. 群聊两成员各一条 → 2，悬停两行、成员名不同。
+5. **喂 12 条**：卡片渲染 12 行（无截断、无「另有 N 个」）；卡片高度 ≤ 设定上限；
+   `scrollHeight > clientHeight`，能滚到最后一行；鼠标移进卡片不关闭。
+6. 列表顺序 = 已跑时长降序；`m:ss` 每秒变化，且与 `formatElapsed` 同源。
