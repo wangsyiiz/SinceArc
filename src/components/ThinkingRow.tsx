@@ -6,6 +6,7 @@ import { activityRowView } from "@/lib/activity-row";
 import type { Activity, Player } from "@/types";
 import { PlayerAvatar } from "./PlayerAvatar";
 import { Button } from "./ui/Button";
+import { BrandLoader } from "./ui/BrandLoader";
 import { Tooltip } from "./ui/Tooltip";
 
 interface ThinkingRowProps {
@@ -37,6 +38,9 @@ export function ThinkingRow({ player, activity, onOpenTrace, queued, lock }: Thi
         <div className="flex items-center gap-2 rounded-card border border-dashed border-line-1/70 bg-surface-2/25 px-3 py-2">
           {view ? (
             <>
+              <span style={{ color: player.color }}>
+                <BrandLoader variant="comet" size={16} label={t("thinking.loading")} />
+              </span>
               <span className="shrink-0 text-caption text-ink-3">
                 {translateKey(t, view.labelKey)}
               </span>
