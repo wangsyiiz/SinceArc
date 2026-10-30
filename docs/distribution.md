@@ -380,7 +380,32 @@ cargo tauri build --bundles nsis         # 直装版，不带该 feature
 用户想手动拉只能在商店「库 → 获取更新」。所以商店版能显示的只有「当前版本」，
 不显示"已是最新"，也不该出现下载进度条。
 
-### 13.5 本地怎么装（测试包）
+### 13.6 商店包必须内嵌前端（custom-protocol + dist）
+
+**2026-10-31 事故**：v0.0.13 的 MSIX 装上后双击即「连接 localhost 失败」。原因是打 MSIX 那步
+用的是裸 `cargo build`，没有 tauri-cli 在 `tauri build` 时自动加上的 `custom-protocol`
+feature —— 少了它 `generate_context!` **根本不读 `frontendDist`**，exe 里没有前端资源，
+运行时就去找 `devUrl`（`http://localhost:5173`）。makeappx 不会报任何错，包也装得上。
+
+三条防线（都已落地）：
+
+1. `src-tauri/Cargo.toml` 声明 `custom-protocol = ["tauri/custom-protocol"]`，
+   并让 `store = ["custom-protocol"]` 连带它 —— 商店包不该有 devUrl 可连。
+2. `lib.rs` 的 `compile_error!`：`feature store` 开着却没有 `custom-protocol` 时直接编译失败。
+3. CI 打 MSIX 前检查 `dist/index.html` 存在；`npm run build` 由 `tauri build` 的
+   `beforeBuildCommand` 负责跑，但这一刻必须确认它在。
+
+**手工打商店包的正确姿势**（本地验证用）：
+
+```bash
+npm run build                                        # 先有 dist
+cargo build --manifest-path src-tauri/Cargo.toml --release --features store --bin sincearc
+```
+
+判断内嵌成功与否：exe 体积会明显大于"没内嵌"的那份（0.0.13 是 11.4 MB，内嵌后到 15 MB 量级），
+更硬的判据是双击能出界面、日志里 `build channel channel=store`。
+
+### 13.7 本地怎么装（测试包）
 
 未签名的 MSIX 两件事都要满足，缺一个就报错：
 

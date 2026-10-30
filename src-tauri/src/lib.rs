@@ -14,6 +14,12 @@ pub mod wire;
 
 use state::AppState;
 
+// 商店包必须内嵌前端（docs/distribution.md §13.6）：少了 custom-protocol，
+// generate_context! 不读 frontendDist，出来的 exe 会去连 devUrl，双击就是「连接 localhost 失败」。
+// v0.0.13 的 MSIX 正是这样发出去的。这条断言放在编译期，别再靠人记得。
+#[cfg(all(feature = "store", not(feature = "custom-protocol")))]
+compile_error!("feature store 必须连带 custom-protocol，否则商店包里没有前端资源");
+
 #[tauri::command]
 fn app_info() -> serde_json::Value {
     serde_json::json!({

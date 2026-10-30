@@ -4,6 +4,11 @@ User-facing notes for each release. `release.yml` takes the `## v<version>` sect
 alongside the Chinese one in `CHANGELOG.md` and ships both in the same update payload
 (docs/distribution.md §11). Earlier versions were Chinese-only and are not back-translated.
 
+## v0.0.14
+
+- **Fixed a hard blocker**: the Microsoft Store build (MSIX) failed on launch with "cannot connect to localhost". The UI assets were not embedded at package time, so it tried to reach the dev server. They are embedded now, and the pipeline fails outright if that step is ever skipped — no more "installs fine, won't start" packages.
+- Everything from 0.0.13 is included (store builds open Microsoft Store from the update section, markdown release notes, unread badge position, no self-spawned turn after switching sessions, "thinking" on the first message of a new session).
+
 ## v0.0.13
 
 - **In the Microsoft Store build, the "check for updates" button now opens Microsoft Store.** Store builds are updated by the Store; previously they still fetched the update manifest from GitHub and logged an error whenever that failed.
