@@ -107,7 +107,15 @@ promptResult → 现有逻辑按同一 id 收尾（ok / error / stopped）
 判定抽成纯函数 `ensureRunningAct(acts, actId, at)` 并单测（已有 running 不重置时间戳、没有才插、id 不匹配不误伤），
 `useAcpEvents` 只负责在合成轮的 `promptStarted` 分支里调它。
 
-**状态**：截至本文写作时**尚未实现**（分支 `fix/agent-turn-thinking` 计划中）。修完后本节改为「已补」并写明提交。
+**状态：已补**（分支 `fix/agent-turn-thinking`）。落点三处：
+
+- `src/lib/turn-act.ts` —— `ensureRunningAct()`（幂等：已有 running 行走原样返回同一引用，不重置 `at`）
+  与 `streamActId()`（活动行 id 的唯一口径）；
+- `src/hooks/useAcpEvents.ts` 的 `promptStarted` 分支 —— `origin === "agent"` 时补活动行并 `busy = true`；
+- 单测 `src/lib/turn-act.test.ts`（5 条：插入 / 幂等不重置时间戳 / 上一轮同 id 已收尾要替换 / 群聊不误伤别的行 / id 口径）。
+
+真机验法：让 agent 从后台被唤醒，正文之前应当先出现「思考中」那一行；
+若仍然直接出字，先看 `promptStarted` 到底有没有带 `origin=agent`（没带就是 Rust 合成那一侧没走到）。
 
 ## 7. 出问题时的最快止血
 
