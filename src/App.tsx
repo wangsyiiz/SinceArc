@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Route, Routes, useNavigate } from "react-router";
 import { ArrowUp, X } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 import {
@@ -14,14 +15,14 @@ import { EmptyState as LoadingState } from "@/components/ui/EmptyState";
 import { MessageItem } from "@/components/MessageItem";
 import { NoticeStack } from "@/components/NoticeStack";
 import { PermissionDialog } from "@/components/PermissionDialog";
-import { PrView } from "@/components/PrView";
-import { RepoBrowser } from "@/components/RepoBrowser";
 import { ResizeHandles } from "@/components/ResizeHandles";
-import { SettingsView } from "@/components/SettingsView";
 import { AgentCapabilities } from "@/components/AgentCapabilities";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DelegateDialog } from "@/components/DelegateDialog";
 import { MemberDetailPanel } from "@/components/MemberDetailPanel";
+import { PrRoute } from "@/routes/PrRoute";
+import { RepoRoute } from "@/routes/RepoRoute";
+import { SettingsRoute } from "@/routes/SettingsRoute";
 import { MAIN_AGENT_ID } from "@/hooks/usePrompt";
 import { initI18n } from "@/i18n";
 import { normalizeLanguage } from "@/i18n/normalize";
@@ -29,6 +30,7 @@ import { autoApproveCovered, type AutoApproveLevel } from "@/lib/auto-approve";
 import { settingsKey } from "@/lib/settings-key";
 import { normalizeCodeThemeId } from "@/lib/highlight/themes";
 import { copyText } from "@/lib/clipboard";
+import { pathOfTab } from "@/lib/route";
 import { profileLabel } from "@/lib/format";
 import { i18nText, localizeText, translateKey } from "@/lib/i18n-text";
 import { errorTextOf } from "@/lib/errors";
@@ -379,6 +381,12 @@ export default function App() {
 
   const { sessions, setSessions, reload: reloadSessions } = useSessionList();
   const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab, pinned, onPin, onUnpin } = useTabs(sessions);
+
+  const navigate = useNavigate();
+  useEffect(() => {
+    const path = activeTab ? pathOfTab(activeTab) : null;
+    navigate(path ?? "/", { replace: true });
+  }, [activeTab, navigate]);
   const {
     state,
     patchSession,
@@ -2789,119 +2797,120 @@ export default function App() {
               </div>
             </>
           )}
-          {activeTab?.kind === "repo" && activeRepo && (
-            <RepoBrowser
-              repo={activeRepo}
-              phase={ghPhases[activeRepo.id] ?? { kind: "checking" }}
-              onRedetect={redetectGhRepo}
-              onCopy={(text) => void copyText(text)}
-              onChooseRepo={() => {
-                setMode("code");
-                setAddRepoSignal((signal) => signal + 1);
-              }}
-              onOpenPr={(pr) =>
-                openTab({
-                  kind: "pr",
-                  title: `#${pr.number} ${pr.title}`,
-                  subtitle: `${identityByRepo[activeRepo.id]?.owner ?? activeRepo.name}/${identityByRepo[activeRepo.id]?.name ?? ""} · ${pr.head} → ${pr.base}`,
-                  repoId: activeRepo.id,
-                  prNumber: pr.number,
-                })
+          <Routes>
+            <Route
+              path="/repo/:repoId"
+              element={
+                activeRepo ? (
+                  <RepoRoute
+                    repo={activeRepo}
+                    phase={ghPhases[activeRepo.id] ?? { kind: "checking" }}
+                    onRedetect={redetectGhRepo}
+                    onCopy={(text) => void copyText(text)}
+                    onChooseRepo={() => {
+                      setMode("code");
+                      setAddRepoSignal((signal) => signal + 1);
+                    }}
+                    onOpenPr={(pr) =>
+                      openTab({
+                        kind: "pr",
+                        title: `#${pr.number} ${pr.title}`,
+                        subtitle: `${identityByRepo[activeRepo.id]?.owner ?? activeRepo.name}/${identityByRepo[activeRepo.id]?.name ?? ""} · ${pr.head} → ${pr.base}`,
+                        repoId: activeRepo.id,
+                        prNumber: pr.number,
+                      })
+                    }
+                  />
+                ) : null
               }
             />
-          )}
-          {activeTab?.kind === "settings" && (
-            <SettingsView
-              settings={settings}
-              profiles={profiles}
-              theme={settings.theme}
-              onUpdateProfile={updateProfile}
-              onAddProfile={(draft) => addProfile(draft)}
-              discovery={discovery.outcome}
-              discoveryScanning={discovery.scanning}
-              discoveryError={discovery.error}
-              onScanDiscovery={discovery.scan}
-              onUseDiscovered={useDiscovered}
-              onRemoveProfile={removeProfileAndPerms}
-              onConnect={connect}
-              onDisconnect={disconnect}
-              onDisconnected={permissions.dropProfile}
-              modesFor={(pid) => modesByProfile[pid] ?? null}
-              onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}
-              onCycleTheme={(theme) => setSettings((s) => ({ ...s, theme }))}
-              onChangeAutoApproveDefault={(autoApproveDefault) =>
-                setSettings((s) => ({ ...s, autoApproveDefault }))
+            <Route
+              path="/pr/:repoId/:prNumber"
+              element={
+                activeRepo && activePrNumber != null ? (
+                  <PrRoute
+                    repo={activeRepo}
+                    identity={prIdentity}
+                    prNumber={activePrNumber}
+                    detail={activePrDetail?.detail}
+                    detailError={activePrDetail?.error}
+                    diff={activeDiff}
+                    diffPhase={activeDiffPhase}
+                    diffError={activeDiffError}
+                    onDiffPage={(page) =>
+                      setDiffPageByPr((prev) => ({ ...prev, [prKey ?? ""]: page }))
+                    }
+                    onRetryDiff={() => {
+                      if (prIdentity && activePrNumber != null && activeDiffKey) {
+                        loadDiffPage(prIdentity, activePrNumber, activeDiffPage, activeDiffKey, true);
+                      }
+                    }}
+                    onRetryDetail={() => {
+                      if (prIdentity && activePrNumber != null && prKey) {
+                        retryPrDetail(prIdentity, activePrNumber, prKey);
+                      }
+                    }}
+                    onQuote={() => {
+                      const sourcePr =
+                        activePrDetail?.detail?.pr ??
+                        prsByRepo[activeRepo.id]?.find((item) => item.number === activePrNumber);
+                      if (sourcePr) quotePr(sourcePr, activeRepo, activePrDetail?.detail);
+                    }}
+                    onOpenExternal={(url) => {
+                      if (url) void openExternal(url);
+                    }}
+                  />
+                ) : null
               }
-              onChangeBusyInputMode={(busyInputMode) =>
-                setSettings((s) => ({ ...s, busyInputMode }))
-              }
-              onChangeMcpInheritDefault={(mcpInheritDefault) =>
-                setSettings((s) => ({ ...s, mcpInheritDefault }))
-              }
-              onChangeTweenEnabled={(tweenEnabled) =>
-                setSettings((s) => ({ ...s, tweenEnabled }))
-              }
-              onChangeReplySound={(replySound) =>
-                setSettings((s) => ({ ...s, replySound }))
-              }
-              onChangeReplyToast={(replyToast) =>
-                setSettings((s) => ({ ...s, replyToast }))
-              }
-              onChangeCodeTheme={(codeTheme) =>
-                setSettings((s) => ({ ...s, codeTheme }))
-              }
-              onChangeLanguage={(language) => setSettings((s) => ({ ...s, language }))}
             />
-          )}
-          {activeTab?.kind === "pr" && activeRepo && activePrNumber != null && prIdentity && (
-            <PrView
-              repo={activeRepo}
-              identity={prIdentity}
-              prNumber={activePrNumber}
-              detail={activePrDetail?.detail}
-              detailError={activePrDetail?.error}
-              diff={activeDiff}
-              diffPhase={activeDiffPhase}
-              diffError={activeDiffError}
-              onDiffPage={(page) =>
-                setDiffPageByPr((prev) => ({ ...prev, [prKey ?? ""]: page }))
+            <Route
+              path="/settings"
+              element={
+                <SettingsRoute
+                  settings={settings}
+                  profiles={profiles}
+                  theme={settings.theme}
+                  onUpdateProfile={updateProfile}
+                  onAddProfile={(draft) => addProfile(draft)}
+                  discovery={discovery.outcome}
+                  discoveryScanning={discovery.scanning}
+                  discoveryError={discovery.error}
+                  onScanDiscovery={discovery.scan}
+                  onUseDiscovered={useDiscovered}
+                  onRemoveProfile={removeProfileAndPerms}
+                  onConnect={connect}
+                  onDisconnect={disconnect}
+                  onDisconnected={permissions.dropProfile}
+                  modesFor={(pid) => modesByProfile[pid] ?? null}
+                  onChangeContext={(n) => setSettings((s) => ({ ...s, contextMessages: n }))}
+                  onCycleTheme={(theme) => setSettings((s) => ({ ...s, theme }))}
+                  onChangeAutoApproveDefault={(autoApproveDefault) =>
+                    setSettings((s) => ({ ...s, autoApproveDefault }))
+                  }
+                  onChangeBusyInputMode={(busyInputMode) =>
+                    setSettings((s) => ({ ...s, busyInputMode }))
+                  }
+                  onChangeMcpInheritDefault={(mcpInheritDefault) =>
+                    setSettings((s) => ({ ...s, mcpInheritDefault }))
+                  }
+                  onChangeTweenEnabled={(tweenEnabled) =>
+                    setSettings((s) => ({ ...s, tweenEnabled }))
+                  }
+                  onChangeReplySound={(replySound) =>
+                    setSettings((s) => ({ ...s, replySound }))
+                  }
+                  onChangeReplyToast={(replyToast) =>
+                    setSettings((s) => ({ ...s, replyToast }))
+                  }
+                  onChangeCodeTheme={(codeTheme) =>
+                    setSettings((s) => ({ ...s, codeTheme }))
+                  }
+                  onChangeLanguage={(language) => setSettings((s) => ({ ...s, language }))}
+                />
               }
-              onRetryDiff={() => {
-                if (prIdentity && activePrNumber != null && activeDiffKey) {
-                  loadDiffPage(prIdentity, activePrNumber, activeDiffPage, activeDiffKey, true);
-                }
-              }}
-              onRetryDetail={() => {
-                if (prIdentity && activePrNumber != null && prKey) {
-                  retryPrDetail(prIdentity, activePrNumber, prKey);
-                }
-              }}
-              onQuote={() => {
-                const sourcePr =
-                  activePrDetail?.detail?.pr ??
-                  prsByRepo[activeRepo.id]?.find((item) => item.number === activePrNumber);
-                if (sourcePr) quotePr(sourcePr, activeRepo, activePrDetail?.detail);
-              }}
-              onOpenExternal={(url) => {
-                if (url) void openExternal(url);
-              }}
             />
-          )}
-          {/* PR 标签先于仓库身份就绪（直接打开历史标签）：显示骨架，等三步回来再渲染。 */}
-          {activeTab?.kind === "pr" && activeRepo && activePrNumber != null && !prIdentity && (
-            <div className="flex h-full flex-col">
-              <header className="shrink-0 border-b border-line-1/60 px-4 py-3">
-                <div className="mx-auto max-w-3xl font-mono text-body text-ink-3">#{activePrNumber}</div>
-              </header>
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                <div className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-3.5">
-                  <span className="h-3 w-2/3 animate-pulse rounded-control bg-surface-2" />
-                  <span className="h-3 w-full animate-pulse rounded-control bg-surface-2" />
-                  <span className="h-20 w-full animate-pulse rounded-control bg-surface-2" />
-                </div>
-              </div>
-            </div>
-          )}
+            <Route path="*" element={null} />
+          </Routes>
         </main>
       </div>
       <ResizeHandles />

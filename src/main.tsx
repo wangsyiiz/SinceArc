@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { I18nextProvider } from "react-i18next";
+import { HashRouter } from "react-router";
 import App from "./App";
 import { i18n, initI18n } from "./i18n";
 import { normalizeLanguage } from "./i18n/normalize";
@@ -16,7 +17,9 @@ initI18n(normalizeLanguage(navigator.language));
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <I18nextProvider i18n={i18n}>
-      <App />
+      <HashRouter>
+        <App />
+      </HashRouter>
     </I18nextProvider>
   </StrictMode>,
 );
