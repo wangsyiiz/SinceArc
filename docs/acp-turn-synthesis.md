@@ -166,6 +166,51 @@ promptResult → 现有逻辑按同一 id 收尾（ok / error / stopped）
 验收（真机 + 库）：新建会话发首条消息能看到「思考中」；答完之后不许再冒出思考行；
 库里新回答的 `turn_id` 必须等于对应问题的 `turn_id`。
 
+### 6.3 判据收紧 + 取消锁（2026-10-30 二次修，0.0.12）
+
+§6.2 修完仍有两条漏网，都是 0.0.11 真机日志里的现场：
+
+```
+22:46:42.116384  session created
+22:46:42.116498  forward session/update            ← session/new 之后 114µs 的首包
+22:46:42.116523  TURN-SYNTH-START turn-agent-…-1    ← 白名单按 kind 判，空首包也算「内容」
+22:46:42.121496  prompt sent chars=77
+22:46:42.122035  TURN-SYNTH-END reason=client-takeover   ← 让位结果，早于真轮 promptStarted
+22:46:42.122092  promptStarted
+```
+
+```
+22:50:57.540  prompt finished stop=cancelled
+22:51:10.517  TURN-SYNTH-START turn-agent-…-2       ← 取消 13 秒后，尾巴变成「新一轮问答」
+22:51:12.797  session cancel requested
+```
+
+四条判据，缺一条就有一条路回来：
+
+1. **开轮必须有内容，不是「类型上像内容」**（`state.rs` `update_has_content`）：
+   `agent_message_chunk` / `agent_thought_chunk` 的 `content` 里文本非空白（非文本内容块
+   有 `type` 即可）；`tool_call` / `tool_call_update` 必须带非空 `toolCallId`。
+   空包、只有 kind 没有 body、元信息式首包 —— 一律只转发。
+2. **终态后的尾巴窗按标识认人**（`CLIENT_END_TAIL_MS = 30s`）：窗口开在
+   `client_end` 之后，但只挡**带着刚结束那一轮标识**（`messageId` / `toolCallId`）的
+   update。带新标识的照常开轮 —— agent 在后台被唤醒干活不能因为「刚好在窗口内」被吞掉。
+3. **取消锁**（`cancel_hold`）：用户取消之后不开合成轮，直到**下一次真 prompt**；
+   安全阀 `CANCEL_HOLD_QUIET_MS = 60s` —— 持有期间连续静默满一分钟说明尾巴结束，
+   之后的动静算新的事（agent 后台唤醒不该被一次取消永久挡住）。
+4. **前端：让位结果整条不进界面**（`shouldIgnoreAgentResult(origin, result)`）：
+   后端在让位那条 `promptResult` 的 `result` 里打 `synthHandover: true`，前端据此整条忽略
+   —— 不关活动行、不清 `busy`、不做收尾。合成轮**自己的**终态（不带这个标记）照旧收尾，
+   否则 agent 自发轮那一行「思考中」会永远收不掉。
+   以前用「真轮 sendTrace 还在飞」当判据，而让位结果**早于**真轮 `promptStarted`
+   到达，等于拿一个还没出现的条件去挡一个已经发生的事件。
+
+**代价（明确接受）**：取消之后 agent 继续产出的正文不再显示、也不再落库 —— 它属于
+你叫停的那一轮；要留下就重新发一次。正常 `end_turn` 不受影响，只挡同一轮的尾巴；
+静默满一分钟之后的动静重新算新的一轮。
+
+验收（真机 + 库）：新建会话发首条消息依次能看到「思考中」→ 正文；回答期间按停止，
+之后不再冒新的问答行；agent 后台唤醒（跨轮、新 `messageId`）仍能开轮。
+
 ## 7. 出问题时的最快止血
 
 按代价从小到大：

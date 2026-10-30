@@ -997,8 +997,14 @@ export function useAcpEvents({
       }
 
       if (event.kind === "promptResult" || event.kind === "promptFailed") {
-        // 合成轮让位结果不能收掉真轮：真轮的 sendTrace 还在飞时整体忽略。
-        if (shouldIgnoreAgentResult(origin, Boolean(acpSid && sendTraces.current[acpSid]))) {
+        // 合成轮的让位结果整条不进界面（docs/acp-turn-synthesis.md §6.3）：
+        // 它不是真轮的终态，建不建行都不该由它决定。
+        if (
+          shouldIgnoreAgentResult(
+            origin,
+            event.kind === "promptResult" ? event.result : undefined,
+          )
+        ) {
           return;
         }
         const failed = event.kind === "promptFailed";

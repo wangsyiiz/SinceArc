@@ -119,11 +119,24 @@ pub const AGENT_TURN_IDLE_MS: u64 = 8_000;
 /// agent 自发起的一轮（历史正文被再渲染一遍、还多出一条轮次）。多等一会儿再放开。
 pub const LOAD_SETTLE_SUPPRESS_MS: u64 = 2_000;
 
-/// 客户端真实轮落终态之后的抑制窗口。
+/// 客户端真实轮落终态之后，判定「尾巴」的时间上限。
 ///
 /// 终态与最后一批 update 可能错序：终态先到、尾巴后到，尾巴会被误判成 agent
-/// 自发起的下一轮，回答就记到了假轮上。终态后短暂只转发、不开轮。
-pub const CLIENT_END_SUPPRESS_MS: u64 = 1_500;
+/// 自发起的下一轮，回答就记到了假轮上。窗口内**且还带着刚结束那一轮的标识**
+/// （`messageId` / `toolCallId`）的 update 只转发、不开轮；
+/// 带新标识的照常开轮 —— agent 在后台被唤醒干活不能被一条时间规则吞掉。
+pub const CLIENT_END_TAIL_MS: u64 = 30_000;
+
+/// 取消锁的安全阀：持有期间若连续静默这么久，说明那一段尾巴已经结束，
+/// 之后的动静算新的事（agent 后台唤醒不该被一次取消永久挡住）。
+pub const CANCEL_HOLD_QUIET_MS: u64 = 60_000;
+
+/// 取消锁到点没有：`held_at` 是持有期间最后一次活动的时间。
+pub fn cancel_hold_released(held_at: Option<Instant>, now: Instant) -> bool {
+    held_at.is_some_and(|at| {
+        now.saturating_duration_since(at) >= Duration::from_millis(CANCEL_HOLD_QUIET_MS)
+    })
+}
 
 static SYNTH_TURN_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -135,23 +148,107 @@ fn next_synth_turn_id() -> String {
 /// 是否应该为这条 update 合成一轮的开始。
 ///
 /// 客户端有未决 prompt 时永远不合成；已有合成轮时也不重复开始。
-/// 只有内容类 update 能开轮：通知类 update 不是轮的开端（例如 `session/new` 后的首条通知）。
+/// 只有**真的带内容**的 update 能开轮：只按 kind 判定不够 —— `session/new` 之后
+/// agent 会先发一条「看着像正文、其实没有正文」的首包，按 kind 就会开出一个假轮，
+/// 真轮接手时又要让位，界面上那条「思考中」就被让位结果抢跑收掉。
 pub fn should_synthesize_start(
     client_pending: bool,
     has_synth: bool,
-    kind: Option<&str>,
+    update: &serde_json::Value,
 ) -> bool {
-    !client_pending
-        && !has_synth
-        && matches!(
-            kind,
-            Some(
-                "agent_message_chunk"
-                    | "agent_thought_chunk"
-                    | "tool_call"
-                    | "tool_call_update"
-            )
-        )
+    !client_pending && !has_synth && update_has_content(update)
+}
+
+/// 这条 update 自己带不带内容（不是「类型上像内容」）。
+pub fn update_has_content(update: &serde_json::Value) -> bool {
+    let Some(kind) = update
+        .get("sessionUpdate")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+    match kind {
+        "agent_message_chunk" | "agent_thought_chunk" => {
+            content_has_payload(update.get("content"))
+        }
+        "tool_call" => has_text_field(update, "toolCallId"),
+        // 增量更新的 id 是同一个：只要它带着 id，就说明它在描述一件真事。
+        "tool_call_update" => has_text_field(update, "toolCallId"),
+        _ => false,
+    }
+}
+
+/// 内容块里到底有没有东西：文本块要非空白；图片/音频/资源这类没有 `text` 的，
+/// 有 `type` 就算有内容；裸字符串老实现按非空白算。
+fn content_has_payload(content: Option<&serde_json::Value>) -> bool {
+    let Some(content) = content else {
+        return false;
+    };
+    if let Some(text) = content.as_str() {
+        return !text.trim().is_empty();
+    }
+    match content
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("text") => content
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty()),
+        Some(_) => true,
+        None => false,
+    }
+}
+
+fn has_text_field(value: &serde_json::Value, key: &str) -> bool {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty())
+}
+
+/// 这一轮用过的标识。尾巴之所以能被认出来，就靠它。
+#[derive(Default)]
+struct TurnIds {
+    messages: HashSet<String>,
+    tools: HashSet<String>,
+}
+
+impl TurnIds {
+    fn record(&mut self, update: &serde_json::Value) {
+        if let Some(id) = update
+            .get("messageId")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+        {
+            // 消息 id 每条会话就那么几个，不清空也不会长；但给个上限免得被异常实现喂爆。
+            if self.messages.len() < 64 {
+                self.messages.insert(id.to_string());
+            }
+        }
+        if let Some(id) = update
+            .get("toolCallId")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+        {
+            if self.tools.len() < 256 {
+                self.tools.insert(id.to_string());
+            }
+        }
+    }
+
+    /// 这条 update 是不是「刚结束那一轮」的尾巴。
+    fn covers(&self, update: &serde_json::Value) -> bool {
+        let message = update
+            .get("messageId")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| self.messages.contains(id));
+        let tool = update
+            .get("toolCallId")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| self.tools.contains(id));
+        message || tool
+    }
 }
 
 /// 三个 idle 守卫同时成立才允许合成终态。
@@ -208,8 +305,19 @@ struct AgentTurnState {
     client_pending: bool,
     /// `session/load` 正在重放：没有 prompt，但也不能把历史 update 当自发起轮。
     load_pending: bool,
-    /// load 响应已回、但残余重放可能还在路上的抑制窗口。
+    /// load 响应已回、但残余重放可能还在路上的抑制窗口（**无条件**，不看标识）。
     suppress_until: Option<Instant>,
+    /// 客户端真轮终态之后的尾巴窗（**有条件的**：只挡带 `tail_ids` 标识的 update）。
+    tail_until: Option<Instant>,
+    /// 用户**取消**过这一轮：到下一次真 prompt（或连续静默 60 秒）之前都不许再开合成轮。
+    /// 取消是用户的明确意思，之后 agent 的尾巴不该变成一轮新的问答。
+    cancel_hold: bool,
+    /// 取消锁持有期间最后一次活动的时间（安全阀用它数静默）。
+    cancel_hold_at: Option<Instant>,
+    /// 当前这一轮用过的 `messageId` / `toolCallId`（客户端轮与合成轮都记）。
+    live_ids: TurnIds,
+    /// 刚结束那一轮用过的标识；尾巴靠它认。
+    tail_ids: TurnIds,
     /// 已经合成的自发起轮
     synth: Option<SynthTurn>,
     /// 该 ACP 会话未作答的授权请求。按 request id 去重。
@@ -255,28 +363,46 @@ impl AgentTurns {
     ) -> Option<SynthSignal> {
         let mut all = self.inner.lock().expect("agent turns poisoned");
         let state = all.entry(acp_session_id.to_string()).or_default();
+        // 用户取消过这一轮：到下一次真 prompt 之前都不开合成轮。
+        // 取消之后 agent 还在吐的尾巴属于那一轮，不该变成一条新的问答。
+        // 安全阀：持有期间连续静默 60 秒，说明尾巴结束，之后的动静算新的事。
+        if state.cancel_hold {
+            let now = Instant::now();
+            if !cancel_hold_released(state.cancel_hold_at, now) {
+                state.cancel_hold_at = Some(now);
+                return None;
+            }
+            state.cancel_hold = false;
+            state.cancel_hold_at = None;
+        }
         if state.client_pending || state.load_pending {
+            state.live_ids.record(update);
             return None;
         }
         if state
             .suppress_until
             .is_some_and(|until| Instant::now() < until)
         {
+            // session/load 的残余重放：无条件挡，它不带任何可核对的标识。
+            return None;
+        }
+        if state
+            .tail_until
+            .is_some_and(|until| Instant::now() < until)
+            // 窗口内**且带着刚结束那一轮的标识**：尾巴，只转发不开轮。
+            // 带新标识说明是 agent 新起的事（后台被唤醒干活），照常开轮。
+            && state.tail_ids.covers(update)
+        {
             return None;
         }
 
-        let kind = update
-            .get("sessionUpdate")
-            .and_then(serde_json::Value::as_str);
-        let can_start = should_synthesize_start(
-            state.client_pending,
-            state.synth.is_some(),
-            kind,
-        );
+        let can_start = should_synthesize_start(false, state.synth.is_some(), update);
         if state.synth.is_none() && !can_start {
             // 不是轮的内容：只转发，不建合成轮，也别给不存在的轮起定时器。
             return None;
         }
+
+        state.live_ids.record(update);
 
         let started_turn = if can_start {
             state.generation = state.generation.saturating_add(1);
@@ -313,16 +439,37 @@ impl AgentTurns {
         let mut all = self.inner.lock().expect("agent turns poisoned");
         let state = all.entry(acp_session_id.to_string()).or_default();
         state.client_pending = true;
+        state.cancel_hold = false;
+        state.cancel_hold_at = None;
         state.suppress_until = None;
+        state.tail_until = None;
+        state.live_ids = TurnIds::default();
         state.synth.take().map(|synth| SynthEnd {
             turn_id: synth.turn_id,
             reason: "client-takeover".to_string(),
         })
     }
 
-    /// 客户端真实轮终态到了：解除 busy 标记，并开启终态后的抑制窗。
+    /// 客户端真实轮终态到了：解除 busy 标记，并开启终态后的尾巴窗。
     pub fn client_end(&self, acp_session_id: &str) {
-        self.client_end_with_suppress(acp_session_id, CLIENT_END_SUPPRESS_MS);
+        self.client_end_with_suppress(acp_session_id, CLIENT_END_TAIL_MS);
+    }
+
+    /// 用户取消后的终态：到下一次真 prompt 之前都不许再开合成轮。
+    ///
+    /// 取消是用户的明确意思。之后 agent 还在吐的尾巴属于被叫停的那一轮 ——
+    /// 让它变成一轮新的问答，正是「切回会话像自己聊了一句」的来路。
+    pub fn client_end_cancelled(&self, acp_session_id: &str) {
+        let mut all = self.inner.lock().expect("agent turns poisoned");
+        let state = all.entry(acp_session_id.to_string()).or_default();
+        state.client_pending = false;
+        state.pending_perms.clear();
+        state.cancel_hold = true;
+        state.cancel_hold_at = Some(Instant::now());
+        state.suppress_until = None;
+        state.tail_until = None;
+        state.tail_ids = std::mem::take(&mut state.live_ids);
+        state.synth = None;
     }
 
     /// `suppress_ms` 可调只为一件事：让窗口的生效与过期能被确定性地测到（0 = 立即放开）。
@@ -336,15 +483,21 @@ impl AgentTurns {
         // （测试里就是这种顺序）。没有记录时也必须把窗口设上，否则抑制窗根本不存在。
         let state = all.entry(acp_session_id.to_string()).or_default();
         state.client_pending = false;
+        state.cancel_hold = false;
         // 真实轮已经落终态，它名下的未答授权不可能再生效。
         state.pending_perms.clear();
-        state.suppress_until = if suppress_ms == 0 {
+        // 这一轮用过的标识转成「尾巴特征」，窗口内带它们的 update 不再开轮。
+        state.tail_ids = std::mem::take(&mut state.live_ids);
+        // 客户端终态开的是**有条件的**尾巴窗：只有带着上一轮标识的 update 才被挡。
+        // 无条件的窗口只属于 session/load 的重放（suppress_until）。
+        state.tail_until = if suppress_ms == 0 {
             None
         } else {
             Some(now + Duration::from_millis(suppress_ms))
         };
+        state.suppress_until = None;
         // 窗口内不能删记录：删了就等于放开了合成。
-        let window_elapsed = state.suppress_until.map_or(true, |until| now >= until);
+        let window_elapsed = state.tail_until.map_or(true, |until| now >= until);
         let remove = state.synth.is_none() && state.pending_perms.is_empty() && window_elapsed;
         if remove {
             all.remove(acp_session_id);
@@ -1021,10 +1174,11 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::{
-        apply_tool_update, should_synthesize_end, should_synthesize_start, AgentTurns, Cancels,
+        apply_tool_update, should_synthesize_end, should_synthesize_start, update_has_content,
+        AgentTurns, Cancels,
         Captured, CommandDto, Commands, ContextMode, ContextReason, DelegateEntry, DelegateStatus,
         Delegates, PendingRequests, ReplayCapture, Routes, SessionRecord, TurnApprovals,
-        CLIENT_END_SUPPRESS_MS,
+        cancel_hold_released, CLIENT_END_TAIL_MS, CANCEL_HOLD_QUIET_MS,
     };
 
     fn command(name: &str) -> CommandDto {
@@ -1055,43 +1209,60 @@ mod tests {
         value
     }
 
+    /// 正文 chunk（带内容，才能开轮）。`message_id` 参与「尾巴」判定。
+    fn chunk(kind: &str, text: &str, message_id: Option<&str>) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "sessionUpdate": kind,
+            "content": { "type": "text", "text": text },
+        });
+        if let Some(id) = message_id {
+            value["messageId"] = serde_json::Value::String(id.to_string());
+        }
+        value
+    }
+
     #[test]
     fn synth_start_requires_no_client_prompt_and_no_existing_synth() {
+        let body = chunk("agent_message_chunk", "hi", None);
+        assert!(should_synthesize_start(false, false, &body));
+        assert!(!should_synthesize_start(false, true, &body));
+        assert!(!should_synthesize_start(true, false, &body));
+        assert!(!should_synthesize_start(true, true, &body));
+    }
+
+    #[test]
+    fn synth_start_requires_real_content_not_just_a_content_kind() {
+        // `session/new` 之后 agent 先发的那条：kind 像正文，content 里没有正文。
+        let empty = chunk("agent_message_chunk", "", None);
+        assert!(!should_synthesize_start(false, false, &empty));
+        let blank = chunk("agent_thought_chunk", "   \n", None);
+        assert!(!should_synthesize_start(false, false, &blank));
+        // 只有 kind、没有 content 字段
+        assert!(!should_synthesize_start(
+            false,
+            false,
+            &update("agent_message_chunk", None, None)
+        ));
+        // 非文本内容块（图片/资源）有 type 就算有内容
+        assert!(update_has_content(&serde_json::json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "image", "data": "…", "mimeType": "image/png" },
+        })));
+        // tool_call 必须有 id
+        assert!(!should_synthesize_start(
+            false,
+            false,
+            &update("tool_call", None, Some("pending"))
+        ));
         assert!(should_synthesize_start(
             false,
             false,
-            Some("agent_message_chunk")
-        ));
-        assert!(!should_synthesize_start(
-            false,
-            true,
-            Some("agent_message_chunk")
-        ));
-        assert!(!should_synthesize_start(
-            true,
-            false,
-            Some("agent_message_chunk")
-        ));
-        assert!(!should_synthesize_start(
-            true,
-            true,
-            Some("agent_message_chunk")
+            &update("tool_call", Some("t1"), Some("pending"))
         ));
     }
 
     #[test]
-    fn synth_start_whitelists_content_updates_only() {
-        for kind in [
-            "agent_message_chunk",
-            "agent_thought_chunk",
-            "tool_call",
-            "tool_call_update",
-        ] {
-            assert!(
-                should_synthesize_start(false, false, Some(kind)),
-                "内容类 update 必须能开轮：{kind}"
-            );
-        }
+    fn synth_start_ignores_notification_updates() {
         for kind in [
             "session_info_update",
             "available_commands_update",
@@ -1099,26 +1270,38 @@ mod tests {
             "usage_update",
         ] {
             assert!(
-                !should_synthesize_start(false, false, Some(kind)),
+                !should_synthesize_start(false, false, &update(kind, None, None)),
                 "通知类 update 不许开轮：{kind}"
             );
         }
-        assert!(!should_synthesize_start(false, false, None));
+        assert!(!should_synthesize_start(
+            false,
+            false,
+            &serde_json::json!({})
+        ));
     }
 
     #[test]
     fn only_content_session_updates_start_a_synth_turn() {
-        for kind in [
-            "agent_message_chunk",
-            "agent_thought_chunk",
-            "tool_call",
-            "tool_call_update",
+        for (kind, body) in [
+            ("agent_message_chunk", chunk("agent_message_chunk", "hi", None)),
+            (
+                "agent_thought_chunk",
+                chunk("agent_thought_chunk", "想想", None),
+            ),
         ] {
             let turns = AgentTurns::default();
             let started = turns
-                .on_session_update("acp-1", &update(kind, None, None))
+                .on_session_update("acp-1", &body)
                 .and_then(|signal| signal.started_turn);
-            assert!(started.is_some(), "内容类 update 必须开轮：{kind}");
+            assert!(started.is_some(), "带内容的内容类 update 必须开轮：{kind}");
+        }
+        for kind in ["tool_call", "tool_call_update"] {
+            let turns = AgentTurns::default();
+            let started = turns
+                .on_session_update("acp-1", &update(kind, Some("t1"), Some("pending")))
+                .and_then(|signal| signal.started_turn);
+            assert!(started.is_some(), "带 id 的工具 update 必须开轮：{kind}");
         }
         for kind in [
             "session_info_update",
@@ -1132,6 +1315,12 @@ mod tests {
                 .and_then(|signal| signal.started_turn);
             assert!(started.is_none(), "通知类 update 不许开轮：{kind}");
         }
+        // 真机现场（22:46:42）：`session/new` 之后 114µs 到的空首包。
+        let turns = AgentTurns::default();
+        let started = turns
+            .on_session_update("acp-1", &chunk("agent_message_chunk", "", None))
+            .and_then(|signal| signal.started_turn);
+        assert!(started.is_none(), "空首包不许开轮");
         let turns = AgentTurns::default();
         let started = turns
             .on_session_update("acp-1", &serde_json::json!({}))
@@ -1140,29 +1329,84 @@ mod tests {
     }
 
     #[test]
-    fn client_end_suppresses_a_chunk_500ms_later_inside_the_window() {
+    fn tail_chunk_inside_the_window_does_not_open_a_turn() {
         let turns = AgentTurns::default();
-        // 生产顺序：客户端开轮 → 终态。也验证「终态比首条 update 更早到」时不丢窗口。
         turns.client_begin("acp-1");
+        // 真轮里的最后一段正文：此时 client_pending，标识会被记进 live_ids。
+        let _ = turns.on_session_update("acp-1", &chunk("agent_message_chunk", "答", Some("m1")));
         let ended_at = Instant::now() - Duration::from_millis(500);
-        turns.client_end_at("acp-1", ended_at, CLIENT_END_SUPPRESS_MS);
+        turns.client_end_at("acp-1", ended_at, CLIENT_END_TAIL_MS);
         let started = turns
-            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .on_session_update("acp-1", &chunk("agent_message_chunk", "尾巴", Some("m1")))
             .and_then(|signal| signal.started_turn);
-        assert!(started.is_none(), "终态后 500ms 仍在抑制窗内");
+        assert!(started.is_none(), "同一 messageId 的迟到正文不许开轮");
+    }
+
+    #[test]
+    fn a_fresh_identifier_inside_the_window_still_opens_a_turn() {
+        // agent 在后台被唤醒干活：窗口内但它带的是新 messageId，不能被吞掉。
+        let turns = AgentTurns::default();
+        turns.client_begin("acp-1");
+        let _ = turns.on_session_update("acp-1", &chunk("agent_message_chunk", "答", Some("m1")));
+        turns.client_end_at("acp-1", Instant::now() - Duration::from_millis(200), CLIENT_END_TAIL_MS);
+        let started = turns
+            .on_session_update("acp-1", &chunk("agent_message_chunk", "新任务", Some("m2")))
+            .and_then(|signal| signal.started_turn);
+        assert!(started.is_some(), "新 messageId 的自发起轮必须照常开");
     }
 
     #[test]
     fn synth_can_start_again_after_the_client_end_window_expires() {
         let turns = AgentTurns::default();
         let ended_at = Instant::now()
-            - Duration::from_millis(CLIENT_END_SUPPRESS_MS)
+            - Duration::from_millis(CLIENT_END_TAIL_MS)
             - Duration::from_millis(1);
-        turns.client_end_at("acp-1", ended_at, CLIENT_END_SUPPRESS_MS);
+        turns.client_end_at("acp-1", ended_at, CLIENT_END_TAIL_MS);
         let signal = turns
-            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .on_session_update("acp-1", &chunk("agent_message_chunk", "醒了", Some("m1")))
             .expect("窗口过期后应恢复合成");
         assert!(signal.started_turn.is_some());
+    }
+
+    #[test]
+    fn cancel_holds_off_new_turns_until_the_next_client_prompt() {
+        let turns = AgentTurns::default();
+        turns.client_begin("acp-1");
+        let _ = turns.on_session_update("acp-1", &chunk("agent_message_chunk", "答", Some("m1")));
+        turns.client_end_cancelled("acp-1");
+        // 取消之后，哪怕是全新的标识、哪怕等很久，也不许再开一轮。
+        let started = turns
+            .on_session_update("acp-1", &update("tool_call", Some("t9"), Some("pending")))
+            .and_then(|signal| signal.started_turn);
+        assert!(started.is_none(), "取消后不许再开合成轮");
+        // 下一次真 prompt 解除锁定。
+        turns.client_begin("acp-1");
+        turns.client_end_at("acp-1", Instant::now(), 0);
+        let signal = turns
+            .on_session_update("acp-1", &chunk("agent_message_chunk", "新的一轮", Some("m2")))
+            .expect("下一个真 prompt 之后必须恢复合成");
+        assert!(signal.started_turn.is_some());
+    }
+
+    #[test]
+    fn cancel_hold_releases_after_a_quiet_minute() {
+        let now = Instant::now();
+        assert!(!cancel_hold_released(Some(now), now), "刚取消时不许放开");
+        assert!(
+            !cancel_hold_released(
+                Some(now - Duration::from_millis(CANCEL_HOLD_QUIET_MS - 1)),
+                now
+            ),
+            "差 1ms 也不放开"
+        );
+        assert!(
+            cancel_hold_released(
+                Some(now - Duration::from_millis(CANCEL_HOLD_QUIET_MS)),
+                now
+            ),
+            "静默满一分钟 = 尾巴结束，放开"
+        );
+        assert!(!cancel_hold_released(None, now));
     }
 
     #[test]
@@ -1171,17 +1415,17 @@ mod tests {
         turns.client_end_at(
             "acp-1",
             Instant::now() - Duration::from_millis(500),
-            CLIENT_END_SUPPRESS_MS,
+            CLIENT_END_TAIL_MS,
         );
         turns.client_begin("acp-1");
         {
             let all = turns.inner.lock().expect("agent turns poisoned");
             let state = all.get("acp-1").expect("窗口内记录必须保留");
-            assert!(state.suppress_until.is_none(), "client_begin 必须清窗");
+            assert!(state.tail_until.is_none(), "client_begin 必须清窗");
         }
         turns.client_end_at("acp-1", Instant::now(), 0);
         let signal = turns
-            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .on_session_update("acp-1", &chunk("agent_message_chunk", "开轮", None))
             .expect("清窗后应能开轮");
         assert!(signal.started_turn.is_some());
     }
@@ -1249,11 +1493,11 @@ mod tests {
     fn stale_generation_cannot_end_a_newer_synth() {
         let turns = AgentTurns::default();
         let first = turns
-            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .on_session_update("acp-1", &chunk("agent_message_chunk", "文字", None))
             .expect("start");
         assert!(first.started_turn.is_some());
         let second = turns
-            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .on_session_update("acp-1", &chunk("agent_message_chunk", "文字", None))
             .expect("same synth");
         assert!(second.started_turn.is_none());
         assert_ne!(first.generation, second.generation);
@@ -1266,7 +1510,7 @@ mod tests {
     fn pending_tool_blocks_synth_end_until_it_completes() {
         let turns = AgentTurns::default();
         turns
-            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .on_session_update("acp-1", &chunk("agent_message_chunk", "文字", None))
             .expect("start");
         let busy = turns
             .on_session_update(
@@ -1301,7 +1545,7 @@ mod tests {
     fn pending_permission_blocks_synth_end_until_answered() {
         let turns = AgentTurns::default();
         turns
-            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .on_session_update("acp-1", &chunk("agent_message_chunk", "文字", None))
             .expect("start");
         let waiting = turns
             .permission_requested("profile-1", "acp-1", 42)
@@ -1319,12 +1563,12 @@ mod tests {
     fn client_takeover_ends_synth_immediately() {
         let turns = AgentTurns::default();
         turns
-            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .on_session_update("acp-1", &chunk("agent_message_chunk", "文字", None))
             .expect("start");
         let end = turns.client_begin("acp-1").expect("takeover ends synth");
         assert_eq!(end.reason, "client-takeover");
         assert!(turns
-            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .on_session_update("acp-1", &chunk("agent_message_chunk", "文字", None))
             .is_none(), "client_pending 为真时必须原样转发");
     }
 
@@ -1333,12 +1577,12 @@ mod tests {
         let turns = AgentTurns::default();
         turns.load_begin("acp-1");
         assert!(turns
-            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .on_session_update("acp-1", &chunk("agent_message_chunk", "文字", None))
             .is_none());
         // 响应已回、残余重放还在路上：抑制窗口内也不能合成，否则历史正文会被再说一遍。
         turns.load_end("acp-1");
         assert!(turns
-            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .on_session_update("acp-1", &chunk("agent_message_chunk", "文字", None))
             .is_none());
     }
 
@@ -1348,7 +1592,7 @@ mod tests {
         turns.load_begin("acp-1");
         turns.load_end_with_suppress("acp-1", 0);
         assert!(turns
-            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .on_session_update("acp-1", &chunk("agent_message_chunk", "文字", None))
             .is_some());
     }
 

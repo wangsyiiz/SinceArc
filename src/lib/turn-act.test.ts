@@ -51,18 +51,19 @@ test("streamActId 的口径与收尾处一致", () => {
   assert.equal(streamActId("abc"), "act-stream-abc");
 });
 
-test("agent 让位结果 + 真轮在飞：忽略", () => {
-  assert.equal(shouldIgnoreAgentResult("agent", true), true);
+test("让位结果（synthHandover）一律忽略", () => {
+  assert.equal(shouldIgnoreAgentResult("agent", { synthHandover: true }), true);
 });
 
-test("agent 让位结果 + 没有在飞真轮：不忽略", () => {
-  assert.equal(shouldIgnoreAgentResult("agent", false), false);
+test("合成轮自己的终态：不忽略（否则那一行的思考中永远收不掉）", () => {
+  assert.equal(shouldIgnoreAgentResult("agent", { stopReason: "end_turn" }), false);
 });
 
-test("真实轮终态（origin=null）+ 有在飞真轮：不忽略", () => {
-  assert.equal(shouldIgnoreAgentResult(null, true), false);
+test("真实轮终态（origin=null）：不忽略", () => {
+  assert.equal(shouldIgnoreAgentResult(null, { synthHandover: true }), false);
 });
 
-test("空 origin + 有在飞真轮：不忽略", () => {
-  assert.equal(shouldIgnoreAgentResult("", true), false);
+test("空 origin / 无 result：不忽略", () => {
+  assert.equal(shouldIgnoreAgentResult("", { synthHandover: true }), false);
+  assert.equal(shouldIgnoreAgentResult("agent", undefined), false);
 });

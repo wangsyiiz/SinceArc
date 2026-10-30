@@ -36,12 +36,18 @@ export function streamActId(acpSessionId: string): string {
 }
 
 /**
- * 合成轮让位时发出的 `promptResult(origin=agent)` 不是真轮的终态。
- * 真轮仍在飞（有 sendTrace）时必须忽略它，否则会提前关掉真轮的思考行、清掉 busy。
+ * 合成轮的「让位结果」不进界面：它只是替合成轮收尾，真轮马上开始。
+ *
+ * 判据是后端打的 `synthHandover` 标记，不是「真轮 sendTrace 还在飞」——
+ * 让位结果**早于**真轮 `promptStarted` 到达，拿一个还没出现的条件去挡一个
+ * 已经发生的事件，等于没挡（0.0.11 实测：新会话首条消息的「思考中」被它收掉）。
+ * 合成轮自己的终态（不带这个标记）照旧由这里收尾。
  */
-export function shouldIgnoreAgentResult(
-  origin: string | null,
-  hasTraceInFlight: boolean,
-): boolean {
-  return origin === "agent" && hasTraceInFlight;
+export function shouldIgnoreAgentResult(origin: string | null, result: unknown): boolean {
+  if (origin !== "agent") return false;
+  return (
+    !!result &&
+    typeof result === "object" &&
+    (result as { synthHandover?: unknown }).synthHandover === true
+  );
 }
