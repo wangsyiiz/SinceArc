@@ -140,10 +140,17 @@ jobs:
           MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME || 'SinceArc.Dev' }}
           MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER || 'CN=SinceArc Dev, OID.2.25.311729368913984317654407730594956997722=1' }}
           MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME || 'SinceArc' }}
+          # 商店产品 ID：建完产品才有；留空时「更新」按钮退回商店搜索页（§13.4）
+          SINCEARC_STORE_PRODUCT_ID: ${{ vars.SINCEARC_STORE_PRODUCT_ID }}
         run: |
           $v = "${{ steps.ver.outputs.version }}"
           $exe = "src-tauri/target/release/sincearc.exe"
           if (-not (Test-Path $exe)) { throw "缺少 $exe（tauri build 没产出）" }
+
+          # 商店版必须带 feature store（§13.4）：不注册内置更新器，更新入口跳商店。
+          # 上一步 tauri build 出的是直装版，这里覆盖成商店版再打包 —— NSIS 已产好，不受影响。
+          cargo build --release --features store --bin sincearc
+          if ($LASTEXITCODE -ne 0) { throw "商店版编译失败（cargo build --features store）" }
 
           $layout = "artifacts/msix/layout"
           Remove-Item $layout -Recurse -Force -ErrorAction SilentlyContinue

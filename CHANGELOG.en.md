@@ -4,6 +4,13 @@ User-facing notes for each release. `release.yml` takes the `## v<version>` sect
 alongside the Chinese one in `CHANGELOG.md` and ships both in the same update payload
 (docs/distribution.md §11). Earlier versions were Chinese-only and are not back-translated.
 
+## v0.0.13
+
+- **In the Microsoft Store build, the "check for updates" button now opens Microsoft Store.** Store builds are updated by the Store; previously they still fetched the update manifest from GitHub and logged an error whenever that failed.
+- Store builds no longer show "you're up to date" or download progress: there is no on-demand check, updates are delivered by Microsoft Store in the background (pull them manually from Library → Get updates).
+- The installer / portable builds behave exactly as before.
+- The test MSIX package now installs without fuss (publisher carries the unsigned-namespace part; install it from an elevated PowerShell).
+
 ## v0.0.12
 
 - **The unread count moved to the bottom-right of each session row** (just below the `⋯` menu). It used to sit after the title and squeezed the title once the count grew.
