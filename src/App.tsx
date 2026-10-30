@@ -355,7 +355,7 @@ export default function App() {
   }, [activeProfile, t]);
 
   const { sessions, setSessions, reload: reloadSessions } = useSessionList();
-  const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab } = useTabs(sessions);
+  const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab, pinned, onPin, onUnpin } = useTabs(sessions);
   const {
     state,
     patchSession,
@@ -2331,9 +2331,12 @@ export default function App() {
           <TabStrip
             tabs={tabs}
             activeId={activeTabId}
+            pinned={pinned}
             badgeOf={badgeOf}
             onSelect={selectTab}
             onClose={closeSessionTab}
+            onPin={onPin}
+            onUnpin={onUnpin}
           />
           {!activeTab && <WorkspaceEmpty onNewSession={newSession} />}
           {activeTab?.kind === "session" && (

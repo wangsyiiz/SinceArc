@@ -38,6 +38,8 @@
   --radius-sm: 6px;
   --radius: 8px;
   --radius-lg: 12px;
+  /* 组件尺寸下限（design-language §13）：标签栏单个标签，低于它不再压缩、改走溢出菜单 */
+  --tab-min-w: 120px;
 
   /* 分段控件：暗色档 轨道 n-3 / 滑块 n-4；
      浅色档反过来 —— 轨道是淡黑水洗、滑块纯白（同 sincecloud 的
