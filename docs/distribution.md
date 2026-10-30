@@ -328,11 +328,23 @@ makeappx pack /d layout /p out/SinceArc_<version>_x64.msix        （Windows SDK
 | | 便携版 / NSIS 安装包 | MSIX（商店版） |
 | --- | --- | --- |
 | 安装位置 | 用户选的目录 / NSIS 默认目录 | `C:\Program Files\WindowsApps\`（受保护，不可改） |
-| 数据 | `%APPDATA%\com.sincearc.app\` | `%LOCALAPPDATA%\Packages\<包族名>\LocalCache\Roaming\com.sincearc.app\` |
+| 数据 | `%APPDATA%\com.sincearc.app\` | **同一份** `%APPDATA%\com.sincearc.app\`（实测互通，见下） |
 | 更新来源 | `latest.json` + GitHub releases | Microsoft Store 服务 |
 | SmartScreen | 未签名会拦 | 无（商店签名） |
 
-同一台机器可以同时装两个形态，但**库、日志、草稿互不相通** —— 交付时必须讲清用户在哪一边。
+**更正（2026-10-30 真机实测 + 文档复核）**：上一版这里写「MSIX 版数据会落到
+`%LOCALAPPDATA%\Packages\<PFN>\LocalCache\Roaming\…`」——**只对 appContainer 应用成立**。
+MS 文档《Understanding how packaged desktop apps run on Windows》把该节标为
+「This section applies only to virtualized apps」；我们的包是 `mediumIL`（full trust），
+**不做文件重定向**，写入直接落在真实的 `%APPDATA%`。实测证据：
+MSIX 版启动后 `%APPDATA%\com.sincearc.app\sincearc.db` 的 mtime 跟着变，
+而 `%LOCALAPPDATA%\Packages\SinceArc.Dev_<hash>\LocalCache\Roaming\` 下只有 WebView2 自己的
+`Microsoft\` 目录，没有 `com.sincearc.app`。
+
+**副作用（必须知道）**：两个形态**共用同一个 SQLite 库和同一份 `logs\sincearc.log`**。
+所以：① 别同时开两个形态（两个进程写一个库，WAL 顶得住并发但语义会乱，版本还可能不同）；
+② 单实例守卫是否跨形态生效**还没测** —— 若生效，点 MSIX 版图标可能只是聚焦已在跑的便携版；
+③ 换渠道安装不会丢数据，这是好事，但要写进交付说明。
 
 ### 13.4 商店版必须关掉应用内更新（待批准，本版未改）
 
