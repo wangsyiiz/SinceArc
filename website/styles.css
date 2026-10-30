@@ -717,3 +717,56 @@ footer .fine {
     scroll-behavior: auto;
   }
 }
+
+/* 文档页（隐私策略等）：同一套色板，只加排版，不引入新颜色 */
+.doc {
+  width: min(720px, calc(100% - 40px));
+  padding: 80px 0 104px;
+}
+.doc h2 {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink-1);
+  margin: 34px 0 10px;
+  letter-spacing: -0.01em;
+}
+.doc p, .doc li {
+  font-size: var(--fs-body);
+  line-height: 1.72;
+  color: var(--ink-2);
+  margin: 0 0 10px;
+}
+.doc strong { color: var(--ink-1); font-weight: 600; }
+.doc .meta { font-size: var(--fs-small); color: var(--ink-3); margin: 0 0 3px; }
+.doc ul, .doc ol { margin: 0 0 14px; padding-left: 22px; }
+.doc li { margin-bottom: 8px; }
+.doc table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin: 12px 0 18px;
+  font-size: var(--fs-small);
+}
+.doc th, .doc td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.doc th:first-child, .doc td:first-child { width: 46%; }
+.doc th { color: var(--ink-1); font-weight: 600; }
+.doc code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  color: var(--ink-1);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+.doc a { color: var(--ink-1); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.doc-back { font-size: var(--fs-small); color: var(--ink-3); margin: 0 0 22px; }
+.doc-foot { margin-top: 44px; margin-bottom: 0; }

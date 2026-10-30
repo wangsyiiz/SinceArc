@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Privacy Policy — SinceArc</title>
+    <meta name="description" content="SinceArc privacy policy: no accounts, no analytics, no telemetry. Everything stays on your device." />
+    <link rel="canonical" href="https://sincearc.com/privacy/" />
+    <meta property="og:url" content="https://sincearc.com/privacy/" />
+    <link rel="icon" href="../assets/logo-128.png" />
+    <link rel="stylesheet" href="../styles.css" />
+    <script>
+      (() => { try { const t = localStorage.getItem("sincearc.theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch {} })();
+    </script>
+  </head>
+  <body>
+    <div class="backdrop" aria-hidden="true"></div>
+    <main class="wrap doc">
+      <p class="doc-back"><a href="../">← SinceArc</a></p>
+        <p><strong>Effective date:</strong> 2026-10-30 <strong>Applies to:</strong> SinceArc for Windows (desktop application, all versions) <strong>Publisher:</strong> wangsyiiz ("we", "us") <strong>Contact:</strong> <a href="https://github.com/wangsyiiz/SinceArc/issues" rel="noreferrer">https://github.com/wangsyiiz/SinceArc/issues</a></p>
+        <h2>Summary</h2>
+        <p>SinceArc is a desktop client for AI coding agents that run on your own computer. It has no user accounts, no analytics, no telemetry and no crash reporting. <strong>We do not collect, receive or store your personal data on any server.</strong> Everything SinceArc knows about you — sessions, messages, settings, logs — stays in a local folder on your PC and is only sent somewhere when you yourself configure a tool or service that asks for it.</p>
+        <p>This policy explains exactly what is stored, what leaves your machine and under whose control.</p>
+        <h2>1. Information we collect</h2>
+        <p><strong>We collect nothing.</strong> SinceArc has no sign-up, no login, no usage statistics, no advertising identifiers, and no background reporting to the publisher. There is no server operated by us that receives data from the application.</p>
+        <p>We therefore cannot and do not sell, rent, share or otherwise disclose personal information, because we never receive any.</p>
+        <h2>2. Information stored on your device</h2>
+        <p>SinceArc stores its working data locally, in your Windows user profile:</p>
+        <table>
+        <tr><th>Location</th><th>Contents</th></tr>
+        <tr><td><code>%APPDATA%\com.sincearc.app\sincearc.db</code></td><td>Sessions, messages, turn records, per-session state, application settings</td></tr>
+        <tr><td><code>%APPDATA%\com.sincearc.app\logs\sincearc.log</code></td><td>Technical log of local events (used for troubleshooting)</td></tr>
+        <tr><td><code>%APPDATA%\com.sincearc.app\*.db-wal</code>, <code>*.db-shm</code></td><td>SQLite working files for the database above</td></tr>
+        </table>
+        <p>This data may contain whatever you type into the application — prompts, agent replies, file paths, repository names, code snippets and any personal details you choose to include in a message. It is stored <strong>unencrypted</strong> and protected by your Windows account permissions, the same way your documents are. It never leaves your device unless you copy it out or a tool you configured (see section 3) receives it.</p>
+        <p>You can delete a single session inside the app, or remove everything at once by closing SinceArc and deleting the <code>%APPDATA%\com.sincearc.app</code> folder.</p>
+        <h2>3. Network connections</h2>
+        <p>SinceArc is offline-first. The following connections are the only ones the application itself can make:</p>
+        <ol>
+        <li><strong>Update check (optional, user-initiated).</strong> When you click *Check for updates* in Settings, SinceArc requests a small version manifest from GitHub Releases (<code>https://github.com/wangsyiiz/SinceArc/releases/...</code>). The request contains no personal data beyond what any HTTP request carries (your IP address is visible to GitHub, as with any website). We do not receive or log these requests. If a newer version exists and you choose to install it, the installer is downloaded from the same GitHub Releases page. GitHub's own privacy statement governs that traffic. SinceArc never checks for updates silently in the background. If you installed SinceArc from the Microsoft Store, updates are delivered by the Microsoft Store and this GitHub request is not made.</li>
+        <li><strong>Agents you configure.</strong> SinceArc drives external agent programs (for example command-line coding agents) that you install and configure yourself. Your prompts and the files they read are handled by those programs, under their own terms and privacy policies. If such an agent talks to a cloud model provider, your content goes to that provider — not to us.</li>
+        <li><strong>MCP servers you configure.</strong> If you add Model Context Protocol servers with a remote URL, SinceArc connects to the addresses you entered. Those servers are third parties of your choosing.</li>
+        <li><strong>GitHub CLI.</strong> Repository and pull-request features use the GitHub CLI (<code>gh</code>) that is already installed and authenticated on your machine, with <strong>your</strong> credentials. SinceArc does not store GitHub tokens; authentication lives in the GitHub CLI's own credential store. Requests go to GitHub under your account, subject to GitHub's privacy statement.</li>
+        <li><strong>Links you click.</strong> External links open in your default browser; SinceArc does not embed a browser and does not track what you open.</li>
+        </ol>
+        <p>Apart from these, SinceArc does not contact any server, and there is no remote configuration, remote feature flag, or A/B testing channel.</p>
+        <h2>4. Diagnostics and error handling</h2>
+        <p>SinceArc writes a local technical log (<code>logs\sincearc.log</code>) that you can inspect or share yourself. Nothing is uploaded automatically. If you choose to send us a log while reporting a problem, you do so deliberately and can review its contents first — logs may contain file paths and message text.</p>
+        <h2>5. Children</h2>
+        <p>SinceArc is a developer tool and is not directed at children. We do not knowingly collect information from anyone, including children under 13.</p>
+        <h2>6. Your rights and choices</h2>
+        <p>Because we hold no personal data about you, there is nothing for us to export, correct or erase on our side. You retain full control of the local data described in section 2: you can delete individual sessions in the app, delete the whole data folder at any time, and uninstall the application, which removes the program files. Uninstalling does not automatically delete <code>%APPDATA%\com.sincearc.app</code>; delete that folder if you want the data gone.</p>
+        <h2>7. Security</h2>
+        <p>Local data protection relies on your Windows account and disk. We recommend using a Windows account with a password and, where appropriate, BitLocker disk encryption. Since the application stores data unencrypted locally, anyone with access to your user profile can read it.</p>
+        <h2>8. Changes to this policy</h2>
+        <p>We may update this policy when the application's behaviour changes — for example if a future version adds an optional online feature. The effective date above always reflects the current version, and the policy is published at <a href="https://sincearc.com/privacy/." rel="noreferrer">https://sincearc.com/privacy/.</a></p>
+        <h2>9. Contact</h2>
+        <p>Questions about this policy or about data handling in SinceArc: <strong><a href="https://github.com/wangsyiiz/SinceArc/issues" rel="noreferrer">GitHub Issues</a></strong> (or the support address shown on the Microsoft Store listing)</p>
+      <p class="doc-back doc-foot"><a href="../">← SinceArc</a></p>
+    </main>
+  </body>
+</html>
