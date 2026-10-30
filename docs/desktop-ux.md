@@ -2293,11 +2293,13 @@ ACP 侧的标题被完全丢掉：`session_info_update` 收到就丢，`session/
 
 ### 43.1 决定
 
-- 引入**极小的 hash 路由**（`src/lib/route.ts`，纯函数 + `useHashRoute`，**不加任何依赖**）。
-- 主区改成 `<RouteOutlet />`：按当前路由渲染 `routes/SessionRoute` / `RepoRoute` / `SettingsRoute` / `PrRoute`。
-- **tabs 仍是唯一真源**（它承载 pin / 顺序 / 持久化）。URL 只是它的**投影**：激活项变化时用
-  `history.replaceState` 写 `location.hash`，**不产生历史条目**（Tauri 没有前进后退语义）。
-- 反向：hash → 标签只在**启动时**读一次（将来做深链用），运行期由 tabs 单向驱动 URL。
+- 用 **react-router 7**（`HashRouter`；Tauri 下 `tauri://` 与 dev 的 http 都可能，hash 最稳），
+  `<Routes>` 里四条 `<Route>`：`/session/:sessionId`、`/repo/:repoId`、`/pr/:repoId/:prNumber`、`/settings`。
+- **不再手写路由**（2026-10-30 定）：自维护只换来「零依赖」，参数解析、嵌套布局、守卫、重定向都要自己养，
+  而 tab 与路由的对应关系只会越长越复杂。库本身的成本是一次依赖 + 一个 lock 变更。
+- **tabs 仍是唯一真源**（它承载 pin / 顺序 / 持久化）。URL 只是它的**投影**：激活项变化时
+  `navigate(path, { replace: true })`，**不产生历史条目**（Tauri 没有前进后退语义）。
+- 反向（hash → 标签）只在**启动时**读一次，本批**不做**深链，但路由层已经就位。
 
 ### 43.2 口径
 
