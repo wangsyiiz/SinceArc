@@ -193,3 +193,47 @@ python3 -c "from PIL import Image; Image.open('header-4x.png').convert('RGB').re
 像素相等（v0.0.1 就是不等才发现的）；侧图与头图应与 `icons/installer/*.bmp` 字节相等 ——
 注意 NSIS 包里的文件名不变（Tauri 模板把它们放在 `$PLUGINSDIR/modern-wizard.bmp`、
 `modern-header.bmp`），**看内容不看名字**。看外观这件事仍归所有者，代码侧只保证「用的是我们的文件」。
+
+## 11. 更新说明带双语（临时办法，2026-10-30）
+
+### 11.1 为什么是临时办法
+
+三条实测约束决定了这一步不可能按「正规」做法走：
+
+1. **协议层只有一份说明**：线上 `latest.json` 的键是 `version / notes / pub_date / platforms`，
+   `notes` 是单个字符串，一版发两语在协议里没有位置；
+2. **客户端默认语言是英文**：`src/i18n/normalize.ts` 的 `DEFAULT_LANGUAGE = "en"`、`fallbackLng: "en"`，
+   而 `CHANGELOG.md` 只有中文 —— 系统不是中文的用户，看到的更新说明一直是中文；
+3. **GitHub 资产不带 CORS**：带 `Origin: https://tauri.localhost` 请求 `releases/latest/download/latest.json`，
+   302 与最终响应都没有 `access-control-allow-origin`。前端 `fetch` 拿不到 GitHub 上的说明
+   （现在能拿到是因为 updater 在 Rust 侧取，不受 CORS 限制）。
+
+### 11.2 做法
+
+- 文案源两份：`CHANGELOG.md`（中文）+ `CHANGELOG.en.md`（英文），段头都写 `## v<版本>`；
+- `release.yml` 各提一段，拼成**同一份 notes**：
+
+  ```
+  ### 中文
+
+  - …
+
+  ### English
+
+  - …
+  ```
+
+- 中文在前（主用户读它；英文用户多滚一段）。某语言缺段就不写那个小标题；两种都缺 → `- 见提交历史`；
+- 客户端不改代码：更新说明按 markdown 渲染（§44，`desktop-ux §44`），两个 `###` 自然成两节；
+- **历史段落不追译**：0.0.11 之前的旧版本保持中文单语（已发布的说明不改写）。
+
+### 11.3 什么时候换掉
+
+出现第三种语言时再讨论正规方案（自建端点按语言取文，或 Rust 侧取文绕过 CORS）。
+在那之前，双语的代价只是每版多写一份英文，换来零部署、零依赖、零协议改动。
+
+### 11.4 验收
+
+- 发布后拉 `latest.json`：`notes` 里同时有 `### 中文` 与 `### English` 两段，各自的项目符号完整、
+  缩进续行未被打散；
+- 客户端设置页检查更新：两段都按 markdown 渲染（加粗、反引号、列表），可滚动。
