@@ -35,6 +35,7 @@ import {
 import { isBetaVersion, versionLabel } from "@/lib/version-label";
 import { SessionMoreMenu } from "./SessionMcpMenu";
 import { StatusDot } from "./ui/Badge";
+import { Dialog } from "./ui/Dialog";
 import { useHoverCard } from "./ui/HoverCard";
 import { Tooltip } from "./ui/Tooltip";
 
@@ -368,23 +369,19 @@ export function Sidebar({
     rowRefs.current[next]?.focus();
   };
 
-  const rowKeyDown = (index: number) => (event: React.KeyboardEvent) => {
+  const listKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      focusRow(index + 1);
+      focusRow(activeRow + 1);
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      focusRow(index - 1);
+      focusRow(activeRow - 1);
     } else if (event.key === "Home") {
       event.preventDefault();
       focusRow(0);
     } else if (event.key === "End") {
       event.preventDefault();
       focusRow(rows.length - 1);
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      setPanelOpen(false);
     }
   };
 
@@ -542,39 +539,25 @@ export function Sidebar({
               );
             })}
 
-            <button
-              type="button"
-              aria-expanded={panelOpen}
-              aria-controls="sidebar-add-project"
-              onClick={() => setPanelOpen((open) => !open)}
-              className={cn(
-                "mt-1 flex w-full items-center gap-1.5 rounded-mark px-2.5 py-1.5 text-caption transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1",
-                panelOpen
-                  ? "bg-surface-3/55 text-ink-2"
-                  : "text-ink-3 hover:bg-surface-3 hover:text-ink-2",
-              )}
-            >
-              <Plus className="size-3" />
-              {t("sidebar.projects.add")}
-            </button>
-
-            {panelOpen && (
-              <div
-                id="sidebar-add-project"
-                role="region"
-                aria-label={t("sidebar.projects.panelTitle")}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    setPanelOpen(false);
-                  }
-                }}
-                className="mt-1 flex max-h-96 flex-col overflow-hidden rounded-control border border-line-1/60 bg-surface-1/30"
+            <div className="sc-control mt-1 flex w-full items-center rounded-control bg-surface-3/50 transition-colors hover:bg-surface-3/85">
+              <button
+                type="button"
+                aria-haspopup="dialog"
+                onClick={() => setPanelOpen(true)}
+                className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left text-small text-ink-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
               >
-                <div className="shrink-0 border-b border-line-1/50 px-2.5 py-1.5 text-micro font-medium text-ink-1">
-                  {t("sidebar.projects.panelTitle")}
-                </div>
-                <div className="flex min-h-0 flex-1 flex-col">
+                <Plus className="size-3.5 shrink-0 text-ink-2" />
+                {t("sidebar.projects.add")}
+              </button>
+            </div>
+
+            <Dialog
+              open={panelOpen}
+              onClose={() => setPanelOpen(false)}
+              title={t("sidebar.projects.panelTitle")}
+              width="md"
+            >
+              <div className="flex flex-col">
                   <div className="flex shrink-0 items-center justify-between gap-2 px-2.5 pt-2 pb-1">
                     <span
                       id="sidebar-add-project-title"
@@ -642,7 +625,8 @@ export function Sidebar({
                   <div
                     role="list"
                     aria-label={t("sidebar.projects.fromGh")}
-                    className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-1"
+                    onKeyDown={listKeyDown}
+                    className="max-h-80 overflow-y-auto px-1.5 pb-1"
                   >
                     {ghLoading && rows.length === 0 && (
                       <p className="px-1 py-1 text-micro text-ink-3">{t("ui.button.loading")}</p>
@@ -665,7 +649,6 @@ export function Sidebar({
                         <div
                           key={key}
                           role="listitem"
-                          onKeyDown={rowKeyDown(index)}
                           onFocusCapture={() => setActiveRow(index)}
                           className="group mb-0.5 rounded-mark transition-colors hover:bg-surface-3/45"
                         >
@@ -791,7 +774,6 @@ export function Sidebar({
                       {errorTextOf(actionError, t)}
                     </p>
                   )}
-                </div>
 
                 <div className="shrink-0 border-t border-line-1/60 px-2.5 py-2">
                   <div className="text-micro font-medium tracking-wide text-ink-2">
@@ -831,7 +813,7 @@ export function Sidebar({
                   )}
                 </div>
               </div>
-            )}
+            </Dialog>
           </div>
         </>
       )}
