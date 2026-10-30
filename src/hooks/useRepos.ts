@@ -72,11 +72,16 @@ export function useRepos(activeTab: Tab | null) {
 
   /** 侧栏沿用同名同签名；实际动作改成 IPC 落库后刷新列表。 */
   const addRepo = useCallback(
-    (path: string) => {
+    async (path: string) => {
       const normalized = normalizeRepoPath(path);
-      void reposAddLocal(normalized)
-        .then(() => refresh())
-        .catch((err: unknown) => setError(asCmdError(err)));
+      try {
+        await reposAddLocal(normalized);
+        await refresh();
+      } catch (err: unknown) {
+        // 调用方（添加项目面板）要在输入框下面显示具体原因；同时保留 hook 级错误。
+        setError(asCmdError(err));
+        throw err;
+      }
     },
     [refresh],
   );

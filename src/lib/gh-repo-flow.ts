@@ -59,6 +59,8 @@ export async function runGhRepoFlow(
   repoPath: string,
   force: boolean,
   onPhase: (phase: GhPhase) => void,
+  /** browseOnly 项目没有本地路径，身份直接来自 repos 表；有它就不必 resolve。 */
+  identityOverride?: RepoRefDto,
 ): Promise<GhPhase> {
   const emit = (phase: GhPhase): GhPhase => {
     onPhase(phase);
@@ -79,13 +81,17 @@ export async function runGhRepoFlow(
 
   emit({ kind: "resolving" });
   let identity: RepoRefDto;
-  try {
-    identity = await api.resolve(repoPath);
-  } catch (e) {
-    const error = toCmdError(e);
-    // 只有身份解析失败（50717）走「不是仓库 / 没远端」这块；
-    // 其它错误仍按通用失败呈现，不误导成仓库问题。
-    return emit(error.code === 50717 ? { kind: "resolveFailed", error } : { kind: "failed", error });
+  if (identityOverride) {
+    identity = identityOverride;
+  } else {
+    try {
+      identity = await api.resolve(repoPath);
+    } catch (e) {
+      const error = toCmdError(e);
+      // 只有身份解析失败（50717）走「不是仓库 / 没远端」这块；
+      // 其它错误仍按通用失败呈现，不误导成仓库问题。
+      return emit(error.code === 50717 ? { kind: "resolveFailed", error } : { kind: "failed", error });
+    }
   }
 
   emit({ kind: "loading" });
