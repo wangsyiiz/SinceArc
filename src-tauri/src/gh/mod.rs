@@ -15,7 +15,7 @@ use crate::commands::CmdError;
 
 use self::model::{
     Author, CheckState, DiffPage, FileChange, GhCli, GhError, GhStatus, PrDetail, PrState,
-    PrStateView, PullRequest, RepoListing, RepoRef,
+    PrStateView, PullRequest, RepoListing, RepoRef, Viewer,
 };
 use self::service::{
     DiffPageError, GhService, DEFAULT_REPO_LIST_LIMIT, MAX_PAGE_SIZE,
@@ -52,6 +52,16 @@ impl From<GhStatus> for GhStatusDto {
             cwd_ok: status.cwd_ok,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct ViewerDto {
+    pub state: String,
+    pub login: Option<String>,
+    pub name: Option<String>,
+    pub avatar_url: Option<String>,
 }
 
 impl From<RepoRef> for RepoRefDto {
@@ -441,6 +451,46 @@ pub async fn gh_status(
                 code = error.code(),
                 error = ?error,
                 "gh status check failed"
+            );
+            Err(to_cmd_error(error))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn gh_viewer(
+    state: State<'_, GhState>,
+    force: Option<bool>,
+) -> Result<ViewerDto, CmdError> {
+    match state.0.viewer(force.unwrap_or(false)).await {
+        Ok(Viewer {
+            login,
+            name,
+            avatar_url,
+        }) => Ok(ViewerDto {
+            state: "ready".to_string(),
+            login: Some(login),
+            name,
+            avatar_url,
+        }),
+        Err(GhError::NotLoggedIn) => Ok(ViewerDto {
+            state: "loggedOut".to_string(),
+            login: None,
+            name: None,
+            avatar_url: None,
+        }),
+        Err(GhError::NotInstalled) => Ok(ViewerDto {
+            state: "unavailable".to_string(),
+            login: None,
+            name: None,
+            avatar_url: None,
+        }),
+        Err(error) => {
+            tracing::warn!(
+                target: "sincearc::gh",
+                code = error.code(),
+                error = ?error,
+                "gh viewer failed"
             );
             Err(to_cmd_error(error))
         }

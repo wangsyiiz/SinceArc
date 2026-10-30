@@ -408,6 +408,8 @@ export const zhCN = {
   "ui.titleBar.minimize": "最小化",
   "ui.titleBar.maximize": "最大化",
   "ui.titleBar.close": "关闭",
+  "titleBar.identity.notLoggedIn": "未登录",
+  "titleBar.identity.githubAccount": "GitHub 账号 {{login}}",
   "ui.button.stop": "停止",
   "ui.button.steer": "插话",
   "ui.button.send": "发送",

@@ -47,4 +47,5 @@ export type { TraceBackfillDto } from "./TraceBackfillDto";
 export type { TraceItem } from "./TraceItem";
 export type { TraceTurn } from "./TraceTurn";
 export type { TurnRow } from "./TurnRow";
+export type { ViewerDto } from "./ViewerDto";
 export type { WireEvent } from "./WireEvent";

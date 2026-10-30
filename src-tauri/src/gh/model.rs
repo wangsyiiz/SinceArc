@@ -87,6 +87,13 @@ pub struct GhStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Viewer {
+    pub login: String,
+    pub name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileChange {
     pub path: String,
     pub additions: u32,
@@ -150,6 +157,7 @@ impl GhError {
 #[async_trait]
 pub trait GhCli: Send + Sync {
     async fn status(&self) -> Result<GhStatus, GhError>;
+    async fn viewer(&self) -> Result<Viewer, GhError>;
     async fn list_repos(
         &self,
         owner: Option<&str>,

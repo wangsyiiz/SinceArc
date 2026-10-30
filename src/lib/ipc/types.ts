@@ -49,6 +49,7 @@ export type {
   TraceItem as TraceItemDto,
   TraceTurn as TraceTurnDto,
   TurnRow,
+  ViewerDto,
 } from "./types.gen";
 
 

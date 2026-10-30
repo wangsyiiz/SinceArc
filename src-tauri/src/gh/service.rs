@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 
 use super::model::{
     DiffPage, GhCli, GhError, GhStatus, PrDetail, PrState, PullRequest, RepoListing, RepoRef,
-    MAX_REPO_LIST_LIMIT,
+    Viewer, MAX_REPO_LIST_LIMIT,
 };
 
 const STATUS_TTL: Duration = Duration::from_secs(30);
@@ -17,6 +17,7 @@ const DETAIL_TTL: Duration = Duration::from_secs(5 * 60);
 const DIFF_TTL: Duration = Duration::from_secs(5 * 60);
 /// 仓库列表 60s；key 只含 owner（不含 limit），缓存永远存最大那份。
 pub const GH_REPOS_TTL: Duration = Duration::from_secs(60);
+pub const VIEWER_TTL: Duration = Duration::from_secs(3600);
 
 pub const DEFAULT_PAGE_SIZE: u32 = 200;
 pub const MAX_PAGE_SIZE: u32 = 200;
@@ -44,6 +45,7 @@ pub struct GhService {
     detail_cache: Mutex<HashMap<PrCacheKey, (Instant, PrDetail)>>,
     diff_cache: Mutex<HashMap<PrCacheKey, (Instant, String)>>,
     repo_cache: Mutex<HashMap<String, (Instant, Vec<RepoListing>)>>,
+    viewer_cache: Mutex<Option<(Instant, Viewer)>>,
 }
 
 impl GhService {
@@ -55,6 +57,7 @@ impl GhService {
             detail_cache: Mutex::new(HashMap::new()),
             diff_cache: Mutex::new(HashMap::new()),
             repo_cache: Mutex::new(HashMap::new()),
+            viewer_cache: Mutex::new(None),
         }
     }
 
@@ -72,6 +75,28 @@ impl GhService {
             Ok(status) => {
                 *cache = Some((Instant::now(), status.clone()));
                 Ok(status)
+            }
+            Err(error) => {
+                *cache = None;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn viewer(&self, force: bool) -> Result<Viewer, GhError> {
+        let mut cache = self.viewer_cache.lock().await;
+        if !force {
+            if let Some((at, viewer)) = cache.as_ref() {
+                if at.elapsed() < VIEWER_TTL {
+                    return Ok(viewer.clone());
+                }
+            }
+        }
+
+        match self.cli.viewer().await {
+            Ok(viewer) => {
+                *cache = Some((Instant::now(), viewer.clone()));
+                Ok(viewer)
             }
             Err(error) => {
                 *cache = None;
@@ -294,11 +319,13 @@ mod tests {
 
     struct FakeGh {
         status_calls: AtomicUsize,
+        viewer_calls: AtomicUsize,
         repo_calls: AtomicUsize,
         list_calls: AtomicUsize,
         detail_calls: AtomicUsize,
         diff_calls: AtomicUsize,
         status_results: Mutex<VecDeque<Result<GhStatus, GhError>>>,
+        viewer_results: Mutex<VecDeque<Result<Viewer, GhError>>>,
         repo_results: Mutex<VecDeque<Result<Vec<RepoListing>, GhError>>>,
         list_results: Mutex<VecDeque<Result<Vec<PullRequest>, GhError>>>,
         detail_results: Mutex<VecDeque<Result<PrDetail, GhError>>>,
@@ -309,11 +336,13 @@ mod tests {
         fn new(results: Vec<Result<GhStatus, GhError>>) -> Arc<Self> {
             Arc::new(Self {
                 status_calls: AtomicUsize::new(0),
+                viewer_calls: AtomicUsize::new(0),
                 repo_calls: AtomicUsize::new(0),
                 list_calls: AtomicUsize::new(0),
                 detail_calls: AtomicUsize::new(0),
                 diff_calls: AtomicUsize::new(0),
                 status_results: Mutex::new(results.into()),
+                viewer_results: Mutex::new(VecDeque::new()),
                 repo_results: Mutex::new(VecDeque::new()),
                 list_results: Mutex::new(VecDeque::new()),
                 detail_results: Mutex::new(VecDeque::new()),
@@ -324,11 +353,13 @@ mod tests {
         fn with_lists(results: Vec<Result<Vec<PullRequest>, GhError>>) -> Arc<Self> {
             Arc::new(Self {
                 status_calls: AtomicUsize::new(0),
+                viewer_calls: AtomicUsize::new(0),
                 repo_calls: AtomicUsize::new(0),
                 list_calls: AtomicUsize::new(0),
                 detail_calls: AtomicUsize::new(0),
                 diff_calls: AtomicUsize::new(0),
                 status_results: Mutex::new(VecDeque::new()),
+                viewer_results: Mutex::new(VecDeque::new()),
                 repo_results: Mutex::new(VecDeque::new()),
                 list_results: Mutex::new(results.into()),
                 detail_results: Mutex::new(VecDeque::new()),
@@ -354,8 +385,18 @@ mod tests {
             fake
         }
 
+        fn with_viewers(results: Vec<Result<Viewer, GhError>>) -> Arc<Self> {
+            let fake = Self::new(Vec::new());
+            *fake.viewer_results.lock().unwrap() = results.into();
+            fake
+        }
+
         fn status_calls(&self) -> usize {
             self.status_calls.load(Ordering::SeqCst)
+        }
+
+        fn viewer_calls(&self) -> usize {
+            self.viewer_calls.load(Ordering::SeqCst)
         }
 
         fn list_calls(&self) -> usize {
@@ -380,6 +421,16 @@ mod tests {
         async fn status(&self) -> Result<GhStatus, GhError> {
             self.status_calls.fetch_add(1, Ordering::SeqCst);
             let mut results = self.status_results.lock().unwrap();
+            if results.len() > 1 {
+                results.pop_front().unwrap()
+            } else {
+                results.front().cloned().unwrap()
+            }
+        }
+
+        async fn viewer(&self) -> Result<Viewer, GhError> {
+            self.viewer_calls.fetch_add(1, Ordering::SeqCst);
+            let mut results = self.viewer_results.lock().unwrap();
             if results.len() > 1 {
                 results.pop_front().unwrap()
             } else {
@@ -485,6 +536,29 @@ mod tests {
         assert!(service.status(false).await.is_err());
         assert_eq!(service.status(false).await.unwrap(), expected);
         assert_eq!(fake.status_calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn viewer_cache_hits_within_ttl_and_force_bypasses() {
+        let first = Viewer {
+            login: "wangsyiiz".to_string(),
+            name: Some("X".to_string()),
+            avatar_url: Some("https://example.com/a.png".to_string()),
+        };
+        let second = Viewer {
+            login: "other".to_string(),
+            name: None,
+            avatar_url: None,
+        };
+        let fake = FakeGh::with_viewers(vec![Ok(first.clone()), Ok(second.clone())]);
+        let service = GhService::new(fake.clone());
+
+        assert_eq!(service.viewer(false).await.unwrap(), first);
+        assert_eq!(service.viewer(false).await.unwrap(), first);
+        assert_eq!(fake.viewer_calls(), 1, "TTL 内不应重复调用 gh");
+
+        assert_eq!(service.viewer(true).await.unwrap(), second);
+        assert_eq!(fake.viewer_calls(), 2);
     }
 
     fn sample_pr(number: u32, updated_at: &str) -> PullRequest {

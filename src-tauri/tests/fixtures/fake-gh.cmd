@@ -14,6 +14,7 @@ if "%1"=="pr" if "%2"=="list" if "%3"=="-R" goto pr_list
 if "%1"=="pr" if "%2"=="view" goto pr_view
 if "%1"=="pr" if "%2"=="diff" goto pr_diff
 if "%1"=="repo" if "%2"=="list" goto repo_list
+if "%1"=="api" if "%2"=="user" goto api_user
 if "%1"=="crash" goto crash
 goto unsupported
 
@@ -72,6 +73,16 @@ exit /b 0
 
 :repo_list
 type "%FAKE_GH_FIXTURE%"
+exit /b 0
+
+:api_user
+if "%FAKE_GH_MODE%"=="bad-cred" goto bad_cred
+if "%FAKE_GH_MODE%"=="empty-login" goto empty_login
+echo {"login":"wangsyiiz","name":"X","avatar_url":"https://avatars.githubusercontent.com/u/1?v=4"}
+exit /b 0
+
+:empty_login
+echo {"login":"","name":"X","avatar_url":"https://avatars.githubusercontent.com/u/1?v=4"}
 exit /b 0
 
 :pr_not_found

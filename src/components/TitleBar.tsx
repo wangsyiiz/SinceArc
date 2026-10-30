@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { AgentProfile } from "@/types";
 import { BrandMark } from "./BrandMark";
+import { GhIdentity } from "./GhIdentity";
 import { StatusDot } from "./ui/Badge";
 
 const IN_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -47,6 +48,10 @@ export function TitleBar({ profile, cwd }: TitleBarProps) {
         <span className="truncate font-mono text-caption text-ink-3" {...drag}>
           {profile ? profile.detail : t("statusbar.profile.statusDisconnected")} · {cwd}
         </span>
+      </div>
+
+      <div className="flex h-9 shrink-0 items-center pr-1">
+        <GhIdentity />
       </div>
 
       {/* 仿 Windows 原生：46×36、贴边、无圆角、无间距 */}
