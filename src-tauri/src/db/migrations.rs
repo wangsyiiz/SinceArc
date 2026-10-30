@@ -1,11 +1,11 @@
 //! 增量迁移。
 //!
-//! 迁移顺序编号：M1-01…M1-03，M2-01…M2-09。
+//! 迁移顺序编号：M1-01…M1-03，M2-01…M2-10。
 //!
 //! 执行约定：`Db::open` 在 `execute_batch(SCHEMA)` 与既有 `ensure_*` 调用之后调用
 //! `migrations::run(&mut conn)?`。
 //!
-//! 追加位置：新迁移函数加在 `run()` 末尾、编号递增（`M2-09`…），不要改已有步骤的
+//! 追加位置：新迁移函数加在 `run()` 末尾、编号递增（`M2-10`…），不要改已有步骤的
 //! 顺序与编号。
 //!
 //! 幂等要求：每一步必须能重复执行（`IF NOT EXISTS` / 查 `sqlite_master.type` /
@@ -28,6 +28,7 @@ pub fn run(conn: &mut Connection) -> rusqlite::Result<()> {
     m2_07_turns_prompt_atom_id(&tx)?;
     m2_08_chat_atom_kinds(&tx)?;
     m2_09_repos(&tx)?;
+    m2_10_session_meta(&tx)?;
     tx.commit()
 }
 
@@ -281,6 +282,30 @@ fn m2_09_repos(conn: &Connection) -> rusqlite::Result<()> {
            last_used_at INTEGER
          );
          CREATE INDEX IF NOT EXISTS idx_local_repos_repo ON local_repos(repo_id);",
+    )
+}
+
+/// M2-10：会话标题来源与已读水位。
+///
+/// 三件事：补 `title_source`（老行按首条用户消息兜底）、补 `last_read_at`（毫秒，0 =
+/// 从未读过）、给未读统计加 chat 原子的 `(session_id, at)` 索引。`ensure_column`
+/// 内部查 `pragma_table_info`，所以重复执行是 no-op。
+fn m2_10_session_meta(conn: &Connection) -> rusqlite::Result<()> {
+    super::ensure_column(
+        conn,
+        "sessions",
+        "title_source",
+        "TEXT NOT NULL DEFAULT 'user_msg'",
+    )?;
+    super::ensure_column(
+        conn,
+        "sessions",
+        "last_read_at",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_atoms_chat_read
+           ON atoms(session_id, at) WHERE channel = 'chat';",
     )
 }
 

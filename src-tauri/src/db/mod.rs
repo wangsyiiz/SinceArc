@@ -102,6 +102,32 @@ pub struct SessionRow {
     pub day_bucket: String,
     /// 供侧栏直接显示的简短时间：今天→`14:32`，更早→`10-21`
     pub display_time: String,
+    /// 未读的 chat 原子数：只算 player/system，且 `at > last_read_at`（毫秒）。
+    #[ts(type = "number")]
+    pub unread_count: i64,
+}
+
+/// 标题来源的优先级（docs/desktop-ux.md §40）。
+///
+/// 优先级：`user` > `agent` > `user_msg`。写入方只能把来源升级到同级或更高，
+/// 因此 agent 标题能盖掉首条用户消息，首条用户消息不能盖掉 agent 标题，用户改名
+/// （预留）不会被任何自动来源覆盖。同来源允许更新，重复推同一个值则不写。
+#[allow(dead_code)] // `user` 是预留写入方，本批没有调用点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleSource {
+    UserMsg,
+    Agent,
+    User,
+}
+
+impl TitleSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::UserMsg => "user_msg",
+            Self::Agent => "agent",
+            Self::User => "user",
+        }
+    }
 }
 
 /// 写会话时用的模型：**只含真实列**。
@@ -1140,7 +1166,13 @@ impl Db {
                             WHEN date(updated_at,'unixepoch','localtime') = date('now','localtime')
                               THEN strftime('%H:%M', updated_at,'unixepoch','localtime')
                             ELSE strftime('%m-%d', updated_at,'unixepoch','localtime')
-                          END AS display_time
+                          END AS display_time,
+                          (SELECT COUNT(*)
+                             FROM atoms a
+                            WHERE a.session_id = sessions.id
+                              AND a.channel = 'chat'
+                              AND a.role IN ('player', 'system')
+                              AND a.at > COALESCE(sessions.last_read_at, 0)) AS unread_count
                    FROM sessions
                    WHERE (?1 IS NULL OR profile_id = ?1)
                    ORDER BY updated_at DESC, created_at DESC";
@@ -1157,6 +1189,7 @@ impl Db {
                 mode_override: r.get(7)?,
                 day_bucket: r.get(8)?,
                 display_time: r.get(9)?,
+                unread_count: r.get(10)?,
             })
         })?;
         rows.collect()
@@ -1172,7 +1205,11 @@ impl Db {
                -- 绑定过的 ACP id 不能被一次空值覆盖掉
                acp_session_id = COALESCE(excluded.acp_session_id, sessions.acp_session_id),
                profile_id = excluded.profile_id,
-               title = excluded.title,
+               -- 自动标题已经升级到 agent/user 后，普通会话保存不能把标题改回占位名。
+               title = CASE
+                 WHEN sessions.title_source IN ('agent', 'user') THEN sessions.title
+                 ELSE excluded.title
+               END,
                cwd = excluded.cwd,
                -- mode_override 只由 set_mode_override 在用户手切成功后写；
                -- 普通会话保存不带该字段，跟着 excluded 更新会把覆盖值误清成 NULL。
@@ -1465,30 +1502,65 @@ impl Db {
         Ok(())
     }
 
-    /// 仅当会话标题仍是「未命名」时才写入。
+    /// 按来源优先级写入标题（docs/desktop-ux.md §40）。
     ///
-    /// 这里只执行 SQL：哪些值算「未命名」、标题从哪来，都是业务判断，
-    /// 由调用方（commands 层）决定 —— 见 docs/architecture.md §6.1。
+    /// `agent` 可覆盖 `user_msg`（同级也允许更新）；`user_msg` 只能覆盖占位名，
+    /// 且不能碰 `agent`；`user` 是最高优先级，但本批没有写入方。值相同或空标题不写。
+    /// 老库没有 `title_source` 时由 M2-10 补成 `user_msg`，所以首条用户消息仍能命名会话。
     pub fn set_title_if_unnamed(
         &self,
         session_id: &str,
         title: &str,
+        source: TitleSource,
         placeholders: &[&str],
     ) -> rusqlite::Result<usize> {
-        let mut conn = self.conn.lock().expect("db poisoned");
-        let tx = conn.transaction()?;
+        let title = title.trim();
+        if title.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().expect("db poisoned");
         let mut sql = String::from(
-            "UPDATE sessions SET title = ?1 WHERE id = ?2 AND (title IS NULL OR title = ''",
+            "UPDATE sessions
+                SET title = ?1, title_source = ?2
+              WHERE id = ?3
+                AND title <> ?1
+                AND (
+                  (?2 = 'agent'
+                    AND COALESCE(title_source, 'user_msg') IN ('user_msg', 'agent'))
+                  OR (?2 = 'user'
+                    AND COALESCE(title_source, 'user_msg') IN ('user_msg', 'agent', 'user'))
+                  OR (?2 = 'user_msg'
+                    AND COALESCE(title_source, 'user_msg') = 'user_msg'
+                    AND (title IS NULL OR title = ''",
         );
-        let mut binds: Vec<String> = vec![title.to_string(), session_id.to_string()];
+        let mut binds: Vec<String> = vec![
+            title.to_string(),
+            source.as_str().to_string(),
+            session_id.to_string(),
+        ];
         for ph in placeholders.iter().filter(|p| !p.is_empty()) {
             sql.push_str(&format!(" OR title = ?{}", binds.len() + 1));
             binds.push((*ph).to_string());
         }
-        sql.push(')');
-        let n = tx.execute(&sql, rusqlite::params_from_iter(binds.iter()))?;
-        tx.commit()?;
-        Ok(n)
+        sql.push_str(")))");
+        conn.execute(&sql, rusqlite::params_from_iter(binds.iter()))
+    }
+
+    /// 把已读水位推到该会话最新一条 chat 原子的 `at`（毫秒）。
+    ///
+    /// 没有 chat 原子时推 0，而不是 `now()`：打开一个空会话不该顺手把未来消息标成已读。
+    pub fn mark_read(&self, session_id: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "UPDATE sessions
+                SET last_read_at = COALESCE(
+                  (SELECT MAX(at) FROM atoms
+                    WHERE session_id = ?1 AND channel = 'chat'),
+                  0)
+              WHERE id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
     }
 
     pub fn delete_session(&self, id: &str) -> rusqlite::Result<()> {
@@ -3164,6 +3236,52 @@ mod tests {
         }
     }
 
+    fn chat_msg(id: &str, role: &str, text: &str) -> MessageInput {
+        MessageInput {
+            id: id.into(),
+            author_id: None,
+            turn_id: None,
+            non_turn: true,
+            role: role.into(),
+            kind: "text".into(),
+            payload: serde_json::json!({ "id": id, "role": role, "text": text }),
+            refs: None,
+            ext: None,
+            schema: None,
+        }
+    }
+
+    fn set_atom_at(db: &Db, id: &str, at: i64) {
+        db.conn
+            .lock()
+            .expect("db poisoned")
+            .execute("UPDATE atoms SET at = ?2 WHERE id = ?1", params![id, at])
+            .expect("set atom at");
+    }
+
+    fn last_read_at(db: &Db, id: &str) -> i64 {
+        db.conn
+            .lock()
+            .expect("db poisoned")
+            .query_row(
+                "SELECT last_read_at FROM sessions WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .expect("last_read_at")
+    }
+
+    fn set_last_read_at(db: &Db, id: &str, at: i64) {
+        db.conn
+            .lock()
+            .expect("db poisoned")
+            .execute(
+                "UPDATE sessions SET last_read_at = ?2 WHERE id = ?1",
+                params![id, at],
+            )
+            .expect("set last_read_at");
+    }
+
     fn thought(text: &str, turn_id: &str) -> EventInput {
         EventInput {
             turn_id: turn_id.into(),
@@ -3520,18 +3638,148 @@ mod tests {
         };
         db.append_messages("s-1", &[user("u1", "第一行标题\n第二行不要")])
             .expect("a");
-        // db 不知道「标题该怎么来」：调用方给什么就写什么（业务规则在 commands 层）
+        // 首条用户消息是兜底来源；占位名由来源优先级自然允许覆盖。
         let n = db
-            .set_title_if_unnamed("s-1", "第一行标题", &["新会话"])
+            .set_title_if_unnamed("s-1", "第一行标题", TitleSource::UserMsg, &["新会话"])
             .expect("title");
         assert_eq!(n, 1, "占位名可被覆盖");
         assert_eq!(db.list_sessions(None).expect("list")[0].title, "第一行标题");
 
         // 已有真实标题就不再覆盖
         let n2 = db
-            .set_title_if_unnamed("s-1", "第二条完全不同的话", &["新会话"])
+            .set_title_if_unnamed(
+                "s-1",
+                "第二条完全不同的话",
+                TitleSource::UserMsg,
+                &["新会话"],
+            )
             .expect("title2");
         assert_eq!(n2, 0, "非占位名不许改");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn agent_title_overrides_user_message_title() {
+        let (db, path) = db_with_session();
+
+        assert_eq!(
+            db.set_title_if_unnamed("s-1", "用户标题", TitleSource::UserMsg, &["新会话"])
+                .expect("user title"),
+            1
+        );
+        assert_eq!(
+            db.set_title_if_unnamed("s-1", "Agent 标题", TitleSource::Agent, &[])
+                .expect("agent title"),
+            1,
+            "agent 标题可以覆盖 user_msg"
+        );
+        assert_eq!(db.list_sessions(None).expect("list")[0].title, "Agent 标题");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn user_message_title_does_not_override_agent_title() {
+        let (db, path) = db_with_session();
+
+        assert_eq!(
+            db.set_title_if_unnamed("s-1", "Agent 标题", TitleSource::Agent, &[])
+                .expect("agent title"),
+            1
+        );
+        assert_eq!(
+            db.set_title_if_unnamed("s-1", "用户标题", TitleSource::UserMsg, &["新会话"])
+                .expect("user title"),
+            0,
+            "user_msg 不能覆盖 agent"
+        );
+        assert_eq!(db.list_sessions(None).expect("list")[0].title, "Agent 标题");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn setting_the_same_title_twice_is_idempotent() {
+        let (db, path) = db_with_session();
+
+        assert_eq!(
+            db.set_title_if_unnamed("s-1", "同一个标题", TitleSource::Agent, &[])
+                .expect("first"),
+            1
+        );
+        assert_eq!(
+            db.set_title_if_unnamed("s-1", "同一个标题", TitleSource::Agent, &[])
+                .expect("second"),
+            0,
+            "值相同不写"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn empty_title_is_not_written() {
+        let (db, path) = db_with_session();
+
+        assert_eq!(
+            db.set_title_if_unnamed("s-1", "", TitleSource::Agent, &[])
+                .expect("empty"),
+            0
+        );
+        assert_eq!(db.list_sessions(None).expect("list")[0].title, "新会话");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn unread_count_counts_player_and_system_and_excludes_user_and_boundary() {
+        let (db, path) = db_with_session();
+        db.append_messages(
+            "s-1",
+            &[
+                chat_msg("p1", "player", "agent 回复"),
+                chat_msg("s1", "system", "系统提示"),
+                chat_msg("u1", "user", "用户消息"),
+            ],
+        )
+        .expect("append");
+        set_atom_at(&db, "p1", 1_000);
+        set_atom_at(&db, "s1", 2_000);
+        set_atom_at(&db, "u1", 3_000);
+
+        let unread = |db: &Db| db.list_sessions(None).expect("list")[0].unread_count;
+        assert_eq!(unread(&db), 2, "player + system 计入，user 不计");
+
+        set_last_read_at(&db, "s-1", 1_000);
+        assert_eq!(unread(&db), 1, "at 更大才计入");
+
+        set_last_read_at(&db, "s-1", 2_000);
+        assert_eq!(unread(&db), 0, "at == last_read_at 不计");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn mark_read_moves_to_latest_chat_atom_not_now() {
+        let (db, path) = db_with_session();
+        db.append_messages(
+            "s-1",
+            &[
+                chat_msg("p1", "player", "第一条"),
+                chat_msg("p2", "player", "第二条"),
+            ],
+        )
+        .expect("append");
+        set_atom_at(&db, "p1", 1_000);
+        set_atom_at(&db, "p2", 5_000);
+
+        db.mark_read("s-1").expect("mark read");
+        assert_eq!(last_read_at(&db, "s-1"), 5_000);
+
+        db.upsert_session(&session("s-empty", None)).expect("empty");
+        db.mark_read("s-empty").expect("mark empty read");
+        assert_eq!(last_read_at(&db, "s-empty"), 0, "没有 chat 原子推到 0");
 
         std::fs::remove_file(&path).ok();
     }

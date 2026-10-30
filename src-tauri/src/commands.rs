@@ -2061,6 +2061,29 @@ fn forward_session_update(
         db,
         profile_id,
     } = *route;
+    // session/update 是标题进入本机的唯一出口：agent 推来的非空标题写回库。
+    // 写失败只留痕，不影响下面的事件转发。
+    if let Some(ui_sid) = ui_session_id.as_deref() {
+        let update = params.get("update");
+        if update
+            .and_then(|u| u.get("sessionUpdate"))
+            .and_then(serde_json::Value::as_str)
+            == Some("session_info_update")
+        {
+            if let Some(title) = update
+                .and_then(|u| u.get("title"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+            {
+                if let Err(e) =
+                    db.set_title_if_unnamed(ui_sid, title, db::TitleSource::Agent, &[])
+                {
+                    eprintln!("TITLE-ERR session={ui_sid} {e}");
+                }
+            }
+        }
+    }
     if let Some(sid) = session_id.as_deref() {
         if !replay.is_open(sid) {
             let signal = params
@@ -5348,6 +5371,21 @@ pub async fn session_bind_acp(
         })
 }
 
+#[tauri::command]
+pub async fn session_mark_read(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), CmdError> {
+    state.db.mark_read(&session_id).map_err(|e| {
+        CmdError::keyed_with(
+            50000,
+            "err.session.markReadFailed",
+            format!("标记会话已读失败：{e}"),
+            BTreeMap::from([("detail".to_string(), e.to_string())]),
+        )
+    })
+}
+
 /// 客户端侧日志：追到应用数据目录下的 sincearc.log。
 ///
 /// 为什么需要它：回答"到底有没有回复、有没有写进库"这类问题，只靠 console.warn
@@ -5423,10 +5461,12 @@ pub async fn messages_append(
     // 会话标题：默认所有会话都叫「新会话」，用户分不清谁是谁（实测过：在两个同名会话里找错回复）。
     // 属于业务规则，所以留在命令层，db 只负责「仍叫占位名时才写」这个动作。
     if let Some(title) = title_from_first_user_message(&messages) {
-        if let Err(e) = state
-            .db
-            .set_title_if_unnamed(&session_id, &title, DEFAULT_SESSION_TITLES)
-        {
+        if let Err(e) = state.db.set_title_if_unnamed(
+            &session_id,
+            &title,
+            db::TitleSource::UserMsg,
+            DEFAULT_SESSION_TITLES,
+        ) {
             // 标题失败不该影响消息落库，但必须留痕（stderr 会进应用日志）
             eprintln!("TITLE-ERR session={session_id} {e}");
         }

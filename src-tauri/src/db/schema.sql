@@ -47,7 +47,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   mcp_names_json TEXT,
   profile_id     TEXT REFERENCES profiles(id) ON DELETE CASCADE,  -- 草稿会话可以为空
   title          TEXT NOT NULL DEFAULT '新会话',
+  -- 标题来源：user_msg 是首条用户消息兜底，agent 是 ACP 推来的标题，user 预留给人改名。
+  title_source   TEXT NOT NULL DEFAULT 'user_msg',
   cwd            TEXT NOT NULL DEFAULT '',
+  -- 已读水位（毫秒，与 atoms.at 同单位）；0 = 从未读过。
+  last_read_at   INTEGER NOT NULL DEFAULT 0,
   created_at     INTEGER NOT NULL,
   updated_at     INTEGER NOT NULL
 );
@@ -81,6 +85,7 @@ CREATE TABLE IF NOT EXISTS atoms (
 
 CREATE INDEX IF NOT EXISTS idx_atoms_turn   ON atoms(session_id, turn_id);
 CREATE INDEX IF NOT EXISTS idx_atoms_kind   ON atoms(session_id, kind);
+CREATE INDEX IF NOT EXISTS idx_atoms_chat_read ON atoms(session_id, at) WHERE channel = 'chat';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_atoms_open
   ON atoms(session_id, turn_id, kind) WHERE sealed_at IS NULL;
 

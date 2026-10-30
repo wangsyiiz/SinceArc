@@ -107,6 +107,11 @@ export function sessionBindAcp(id: string, acpSessionId: string): Promise<void> 
   return invokeCmd<void>("session_bind_acp", { id, acpSessionId });
 }
 
+/** 把已读水位推到该会话最新一条 chat 原子（毫秒；不是 now）。 */
+export function sessionMarkRead(sessionId: string): Promise<void> {
+  return invokeCmd<void>("session_mark_read", { sessionId });
+}
+
 export function messagesAppend(
   sessionId: string,
   messages: {

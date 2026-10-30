@@ -94,6 +94,8 @@ export interface SessionSummary {
   acpSessionId?: string | null;
   /** 哪个连接配置下的会话 */
   profileId?: string;
+  /** 未读 chat 原子数（player/system）；0 不显示徽标 */
+  unreadCount: number;
 }
 
 /* ---------- 过程（不再进聊天流） ---------- */
