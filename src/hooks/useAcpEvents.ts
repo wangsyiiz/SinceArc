@@ -42,6 +42,7 @@ import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import type { UsageDto } from "@/lib/ipc/types.gen/UsageDto";
 import type { Message, SessionSummary } from "@/types";
 import { MAIN_AGENT_ID } from "./usePrompt";
+import { ensureRunningAct, streamActId } from "@/lib/turn-act";
 import type { PatchSession } from "./useSessionState";
 
 /**
@@ -938,6 +939,23 @@ export function useAcpEvents({
         settleLateStream(acpSid, "next-prompt");
         delete lateUntil.current[acpSid];
         awaiting.current[acpSid] = true;
+        // 合成轮（agent 自发起的）不经过 usePrompt，活动行没人建 —— 补一行「思考中」，
+        // 否则正文直接冒出来、没有思考态。幂等：已有 running 行不动（见 lib/turn-act.ts）。
+        if (origin === "agent" && uiSid) {
+          const actId = streamActId(acpSid);
+          const at = now();
+          patchSession(uiSid, (s) => {
+            const next = ensureRunningAct(s.acts, {
+              id: actId,
+              playerId: MAIN_AGENT_ID,
+              title: i18nText("thinking.running"),
+              at,
+            });
+            return next === s.acts
+              ? { ...s, busy: true }
+              : { ...s, busy: true, acts: [...next] };
+          });
+        }
         // 新一轮：上一条工具调用是上一轮的事，别让第一条 tool_call_update 继承它。
         delete toolCalls.current[acpSid];
         clearInFlightFor(acpSid);
