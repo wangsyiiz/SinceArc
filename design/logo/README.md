@@ -11,7 +11,7 @@ d-s-arc.svg         标识本体（1024，currentColor，无底）
 d-s-arc-16.svg      ≤24px 的加粗版（弧 150、点放大）
 d-tile.svg          桌面图标磁贴：实色 #1a1d26 + 上缘内高光 + 三层辉光
 d-tile-light.svg    浅色磁贴：纯白 + #d8d8d8 描边
-d-tile-16.svg       ≤24px 磁贴：去辉光、标识放大到 0.70
+d-tile-16.svg       ≤24px 磁贴：去辉光、标识放大到 0.79
 d-lockup.svg        磁贴 + 字标 sincearc（字标辉光三层 22/10/4）
 d-lockup-light.svg  浅色 lockup（辉光压到暗色的 1/3）
 icon-1024.png       栅格化结果，作为 `tauri icon` 的输入
