@@ -117,6 +117,55 @@ promptResult → 现有逻辑按同一 id 收尾（ok / error / stopped）
 真机验法：让 agent 从后台被唤醒，正文之前应当先出现「思考中」那一行；
 若仍然直接出字，先看 `promptStarted` 到底有没有带 `origin=agent`（没带就是 Rust 合成那一侧没走到）。
 
+### 6.2 假轮：`session/new` 之后与终态之后的错序（2026-10-30 实测）
+
+§6.1 修的是「合成轮没有活动行」；同一个状态机还有相反方向的毛病：**它把不是轮的东西当成了轮**。
+两条实证（本机日志 + 本地库；时间戳即为源码路径上可直接复核的现场）：
+
+```
+10:16:51.302712  session created
+10:16:51.302955  forward -> webview kind=notification:session/update   ← session/new 后的首条通知，不落任何原子
+10:16:51.302979  TURN-SYNTH-START turn-agent-…-29
+10:16:51.309110  prompt sent
+10:16:51.309714  TURN-SYNTH-END reason=client-takeover                 ← 真轮接手，发出 promptResult(origin=agent)
+10:16:51.309797  forward -> webview kind=promptStarted
+```
+
+前端 `promptResult` 收尾不看 `origin`，于是刚建好的 `act-stream-<acpSid>` 被这条**让位结果**关掉 ——
+用户看到的就是「新建会话发首条消息没有思考中」。
+
+第二条代价更高：
+
+```
+10:17:14.464  prompt finished
+10:17:14.489  TURN-SYNTH-START turn-agent-…-30
+10:17:22.506  TURN-SYNTH-END … reason=idle
+```
+
+终态之后 25ms 到达的尾巴 update 开了新轮。本地库 `turn-agent-*` 名下挂着 **38 条 `text.agent`**：
+回答被记到假轮上，`turn-*`（问题）与 `turn-agent-*`（回答）分家 —— 轨迹面板里问答不在同一轮。
+同一份日志的 76 个合成轮里有 **22 个**是在 `prompt finished` 后 2 秒内起头的。
+
+**判据**：一个「轮」必须由**内容**开张，且不能紧贴上一个真轮的终态。
+
+修法三处，缺一不可：
+
+1. **开轮白名单**（`state.rs`）：只有 `agent_message_chunk` / `agent_thought_chunk` / `tool_call` /
+   `tool_call_update` 允许开轮；`session_info_update` / `available_commands_update` /
+   `current_mode_update` / `usage_update` 是通知，不是轮。→ 挡住 `session/new` 那条。
+2. **终态后抑制窗**（`state.rs`）：`client_end` 之后 `suppress_until = now + 1~2s`，窗口内
+   `on_session_update` 只转发、不开轮。→ 挡住尾巴假轮与 38 条错位回答。
+   **坑**：`client_end` 现有收尾在 `synth.is_none() && pending_perms.is_empty()` 时会把整条记录从 map
+   删掉，删了就等于没设窗 —— 必须改删除条件（窗口未过期就不许删）。
+3. **前端保底**（`useAcpEvents.ts`）：`promptResult(origin=agent)` 在 `sendTraces[acpSid]` 还在飞时
+   **不得**关活动行、**不得**清 `busy` —— 让位结果不是真轮的终态。
+
+单测：白名单逐 kind 断言；抑制窗（终态后 500ms 的 chunk 不开轮、窗口过后开轮）；前端在飞时不收行。
+冷静期常量必须有名字（不许裸数字），与 `LOAD_SETTLE_SUPPRESS_MS` 并列在 `state.rs`。
+
+验收（真机 + 库）：新建会话发首条消息能看到「思考中」；答完之后不许再冒出思考行；
+库里新回答的 `turn_id` 必须等于对应问题的 `turn_id`。
+
 ## 7. 出问题时的最快止血
 
 按代价从小到大：
