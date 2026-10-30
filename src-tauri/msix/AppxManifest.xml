@@ -15,8 +15,10 @@
   为什么是 FullTrust + mediumIL：SinceArc 要起 gh / wsl / agent 这类外部进程，
   还要读写用户自选的项目目录 —— 必须在 AppContainer 之外跑，
   所以 EntryPoint=Windows.FullTrustApplication + rescap:runFullTrust。
-  代价：写入仍会被重定向到按用户的受管目录（%LOCALAPPDATA%\Packages\<PFN>\...），
-  已有 %APPDATA%\com.sincearc.app 的数据不会自动跟过去。
+
+  数据落点：full trust（mediumIL）**不做文件重定向**（MS 文档把 AppData 重定向那节标为
+  「applies only to virtualized apps」），所以商店版与便携版共用同一个
+  %APPDATA%\com.sincearc.app\ —— 实测互通（docs/distribution.md §13.3）。
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
