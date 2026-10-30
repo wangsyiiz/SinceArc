@@ -2321,3 +2321,14 @@ ACP 侧的标题被完全丢掉：`session_info_update` 收到就丢，`session/
 - `location.hash` 跟随激活标签变化，但窗口的「后退」不会改变界面（没有历史条目）；
 - 非法 hash（`#/session/`、`#/pr/x`、`#`）不崩、落到空态；
 - B2 之后 `App.tsx` 行数 < 1200，`routes/` 下每个文件单一职责。
+
+### 43.4 实测结果（2026-10-30）
+
+- `App.tsx`：3038 → **2813** 行（B1 −120，B2 −225）；`src/routes/` 五个文件共 682 行
+  （`SessionRoute` 385 / `workspace-context` 184 / `PrRoute` 72 / `RepoRoute` 33 / `SettingsRoute` 8）。
+- **没到 §43.2 写的 < 2600**：直接原因是 `Workspace` 那个 70 字段的对象字面量（72 行）必须留在 App 里做装配。
+  再往下压只能把装配逻辑拆成 `useSessionActions` 之类的 hook —— 那是独立一轮，不在 B 里夹带。
+  不为了对齐目标行数去改结构，也不改目标糊过去：这就是实测值。
+- 逐行核对：原 `session` 块 290 个非空行，在 `SessionRoute.tsx` 里**一行不缺**（脚本比对，缺失 0），
+  除缩进外无差异；`App.tsx` 里 `activeTab?.kind === "session"` 已归零。
+- 门禁：`tsc -b` 0 / `npm test` 462 pass / `check-i18n` 0-0-0。
