@@ -2281,3 +2281,54 @@ ACP 侧的标题被完全丢掉：`session_info_update` 收到就丢，`session/
 
 - 两个会话：在 A 里让 agent 跑完，切到 B，A 的未读数为 1；重启应用后仍是 1；打开 A 后归 0。
 - 未读跨多条时按钮显示条数，点击落在第一条未读上（不是最后一条、不是底部）。
+
+## 43. 主区的渲染分派：路由 + Outlet（2026-10-30 定）
+
+**问题**：`src/App.tsx` 已到 3000 行，其中 `main` 里靠四段
+`{activeTab?.kind === "session" && …}` / `"repo"` / `"settings"` / `"pr"` 内联分支决定渲染谁。
+每一段都直接从 App 的局部变量闭包里取十几到几十个值 —— 想改其中一块，必须先读懂整个 App。
+
+**这不是 bug，是结构债**：第 38 节那条 `key={lastSessionId}` 能修好串台，靠的是「人工记得把状态分桶」；
+四段内联分支意味着以后每加一个页面都要再抄一遍同样的闭包依赖。
+
+### 43.1 决定
+
+- 用 **react-router 7**（`HashRouter`；Tauri 下 `tauri://` 与 dev 的 http 都可能，hash 最稳），
+  `<Routes>` 里四条 `<Route>`：`/session/:sessionId`、`/repo/:repoId`、`/pr/:repoId/:prNumber`、`/settings`。
+- **不再手写路由**（2026-10-30 定）：自维护只换来「零依赖」，参数解析、嵌套布局、守卫、重定向都要自己养，
+  而 tab 与路由的对应关系只会越长越复杂。库本身的成本是一次依赖 + 一个 lock 变更。
+- **tabs 仍是唯一真源**（它承载 pin / 顺序 / 持久化）。URL 只是它的**投影**：激活项变化时
+  `navigate(path, { replace: true })`，**不产生历史条目**（Tauri 没有前进后退语义）。
+- 反向（hash → 标签）只在**启动时**读一次，本批**不做**深链，但路由层已经就位。
+
+### 43.2 口径
+
+- 路由路径：`/session/<uiSid>`、`/repo/<repoId>`、`/pr/<repoId>/<number>`、`/settings`（hash router，实际是 `#/…`）。
+- **只有 tab → 路径**这一侧是我们要写的纯函数（`pathOfTab`），它必须单测：四种 kind、缺字段（如 pr 没 number）
+  返回 `null`、未知 kind 返回 `null`。反向解析归 react-router（`useParams`），不另写一套。
+- 路径对不上任何 tab（手改 hash、历史遗留）→ 显示空态（`WorkspaceEmpty`），**不许抛异常、不许自动建标签**。
+- 迁移分两阶段，各自一次提交，**行为、样式、文案、事件一行都不许改**（纯搬运）：
+  - **B1**：路由 + `RouteOutlet` 骨架 + `repo` / `settings` / `pr` 三块搬进 `src/routes/`（JSX 原样搬，
+    props 由 App 组装），App 里删掉那三段内联分支与 PR 骨架块；
+  - **B2**：`session` 块搬进 `src/routes/SessionRoute.tsx`，跨层依赖用 **React context**（不引状态库）
+    收口；`App.tsx` 只留「状态 + 分派」，目标 **< 2600 行**（3029 行里约 2000 行是状态与 handler 装配，
+    搬 JSX 只能减 400 行左右；再往下把逻辑拆成 `useSessionActions` 一类属**独立一轮**，不在 B 里做）。
+- 每个阶段都必须 `tsc -b` 过 + 全量 `npm test` 数量不下降；测试数下降按红处理。
+
+### 43.3 验收
+
+- 四个标签来回切：渲染与改动前逐项一致（真机肉眼比对，所有者验收）；
+- `location.hash` 跟随激活标签变化，但窗口的「后退」不会改变界面（没有历史条目）；
+- 非法 hash（`#/session/`、`#/pr/x`、`#`）不崩、落到空态；
+- B2 之后 `App.tsx` 行数 < 1200，`routes/` 下每个文件单一职责。
+
+### 43.4 实测结果（2026-10-30）
+
+- `App.tsx`：3038 → **2813** 行（B1 −120，B2 −225）；`src/routes/` 五个文件共 682 行
+  （`SessionRoute` 385 / `workspace-context` 184 / `PrRoute` 72 / `RepoRoute` 33 / `SettingsRoute` 8）。
+- **没到 §43.2 写的 < 2600**：直接原因是 `Workspace` 那个 70 字段的对象字面量（72 行）必须留在 App 里做装配。
+  再往下压只能把装配逻辑拆成 `useSessionActions` 之类的 hook —— 那是独立一轮，不在 B 里夹带。
+  不为了对齐目标行数去改结构，也不改目标糊过去：这就是实测值。
+- 逐行核对：原 `session` 块 290 个非空行，在 `SessionRoute.tsx` 里**一行不缺**（脚本比对，缺失 0），
+  除缩进外无差异；`App.tsx` 里 `activeTab?.kind === "session"` 已归零。
+- 门禁：`tsc -b` 0 / `npm test` 462 pass / `check-i18n` 0-0-0。
