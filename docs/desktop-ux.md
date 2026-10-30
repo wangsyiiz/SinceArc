@@ -2311,7 +2311,8 @@ ACP 侧的标题被完全丢掉：`session_info_update` 收到就丢，`session/
   - **B1**：路由 + `RouteOutlet` 骨架 + `repo` / `settings` / `pr` 三块搬进 `src/routes/`（JSX 原样搬，
     props 由 App 组装），App 里删掉那三段内联分支与 PR 骨架块；
   - **B2**：`session` 块搬进 `src/routes/SessionRoute.tsx`，跨层依赖用 **React context**（不引状态库）
-    收口；目标 `App.tsx` < 1200 行。
+    收口；`App.tsx` 只留「状态 + 分派」，目标 **< 2600 行**（3029 行里约 2000 行是状态与 handler 装配，
+    搬 JSX 只能减 400 行左右；再往下把逻辑拆成 `useSessionActions` 一类属**独立一轮**，不在 B 里做）。
 - 每个阶段都必须 `tsc -b` 过 + 全量 `npm test` 数量不下降；测试数下降按红处理。
 
 ### 43.3 验收
