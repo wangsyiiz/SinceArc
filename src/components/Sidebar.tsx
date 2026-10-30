@@ -466,7 +466,7 @@ export function Sidebar({
                     >
                       <button
                         onClick={() => onSelect(s.id)}
-                        className="flex w-full flex-col gap-0.5 rounded-mark px-2.5 py-2 pr-8 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+                        className="flex w-full flex-col gap-0.5 rounded-mark px-2.5 py-2 pr-12 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
                       >
                         <span className="flex min-w-0 items-center gap-1.5">
                           <span
@@ -477,14 +477,6 @@ export function Sidebar({
                           >
                             {s.title}
                           </span>
-                          {busy && (
-                            <BrandLoader
-                              variant="comet"
-                              size={14}
-                              label={t("sidebar.session.running")}
-                              className="shrink-0"
-                            />
-                          )}
                         </span>
                         {profile && (
                           <span className="flex min-w-0 items-center gap-1 text-micro text-ink-3">
@@ -492,6 +484,18 @@ export function Sidebar({
                             <span className="min-w-0 truncate">
                               {profileLabel(profile, t)}
                             </span>
+                          </span>
+                        )}
+                        {/* 执行中：垂直居中于整行（§41.1，2026-10-30 改）。放右边缘往里一档
+                            （right-8），与右上 ⋯ 按钮同列会撞；标题行不再内联它，
+                            单行/双行都以行中线为准。 */}
+                        {busy && (
+                          <span className="pointer-events-none absolute right-8 top-1/2 -translate-y-1/2">
+                            <BrandLoader
+                              variant="comet"
+                              size={14}
+                              label={t("sidebar.session.running")}
+                            />
                           </span>
                         )}
                         {/* 未读徽标贴行右下角（§41.1，2026-10-30 改）：右边缘自上而下是 ⋯ / 未读数。
