@@ -149,6 +149,13 @@ import { useTheme } from "@/hooks/useTheme";
 import { estimateMessageHeight } from "@/lib/virtual/message-height";
 import { useVirtualList } from "@/lib/virtual/useVirtualList";
 import {
+  forget,
+  loadScroll,
+  saveScroll,
+  topVisibleRow,
+  type ScrollAnchor,
+} from "@/lib/view-state";
+import {
   pinIndexes,
   WINDOW_EDGE,
   type WindowPlan,
@@ -276,6 +283,12 @@ export default function App() {
     turnPoliciesRef.current = turnPolicies;
   }, [turnPolicies]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const visibleScrollAnchorRef = useRef<{
+    uiSid: string;
+    anchor: ScrollAnchor;
+  } | null>(null);
+  const lastScrollSaveAtRef = useRef(0);
+  const restoredViewSessionRef = useRef<string | null>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const scrollAnchorRef = useRef<{
     sessionId: string;
@@ -458,12 +471,15 @@ export default function App() {
     beginProgrammaticScroll,
     beginAnchorShift,
     endAnchorShift,
+    restoreAnchor,
+    isAdjusting: isMessageAdjusting,
   } = useVirtualList({
     count: state.msgs.length,
     keyOf: messageKeyOf,
     estimate: estimateMessage,
     scrollRef,
     stickToBottom: true,
+    scopeKey: activeTabId ?? lastSessionId,
     diag: clog,
   });
 
@@ -506,13 +522,38 @@ export default function App() {
     scrollRef,
     rows: virtualRows,
     count: state.msgs.length,
-    scopeKey: lastSessionId,
+    scopeKey: activeTabId ?? lastSessionId,
     pinned: pinnedMessageIndexes,
     blocked: messageAdjusting,
     diag: clog,
     onProgrammaticScroll: beginProgrammaticScroll,
     onTrim: handleWindowTrim,
   });
+
+  const restoreMessageScrollRef = useRef(restoreAnchor);
+  restoreMessageScrollRef.current = restoreAnchor;
+
+  useEffect(() => {
+    const sid = lastSessionId;
+    return () => {
+      const live = visibleScrollAnchorRef.current;
+      if (sid && live?.uiSid === sid) saveScroll(sid, live.anchor);
+    };
+  }, [activeTabId, lastSessionId]);
+
+  useEffect(() => {
+    restoredViewSessionRef.current = null;
+  }, [activeTabId, lastSessionId]);
+
+  useEffect(() => {
+    const sid = lastSessionId;
+    if (activeTab?.kind !== "session" || !sid || state.msgs.length === 0) return;
+    if (restoredViewSessionRef.current === sid) return;
+    restoredViewSessionRef.current = sid;
+    const anchor = loadScroll(sid);
+    restoreMessageScrollRef.current(anchor);
+    if (anchor) visibleScrollAnchorRef.current = { uiSid: sid, anchor };
+  }, [activeTab?.kind, activeTabId, lastSessionId, state.msgs.length]);
 
   // 打开会话时读一次；每轮结束（busy 收起、流式标记也已清掉）后再读一次。
   // 只读统计，不轮询、不写库。
@@ -1245,6 +1286,19 @@ export default function App() {
   const handleMessageScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
+    const top = topVisibleRow(virtualRows, el.scrollTop);
+    if (top && lastSessionId && !isMessageAdjusting()) {
+      const messageId = msgsRef.current[top.index]?.id;
+      if (messageId) {
+        const anchor = { messageId, offsetTop: top.start - el.scrollTop };
+        visibleScrollAnchorRef.current = { uiSid: lastSessionId, anchor };
+        const now = Date.now();
+        if (now - lastScrollSaveAtRef.current >= 200) {
+          saveScroll(lastSessionId, anchor);
+          lastScrollSaveAtRef.current = now;
+        }
+      }
+    }
     const range = visibleIndexRange(virtualRows, el);
     if (!range) return;
     if (range.firstVisible <= WINDOW_EDGE && (hasMore || trimmedHead)) requestOlder();
@@ -1256,6 +1310,8 @@ export default function App() {
     }
   }, [
     hasMore,
+    isMessageAdjusting,
+    lastSessionId,
     loadNewer,
     requestOlder,
     state.msgs.length,
@@ -1307,11 +1363,17 @@ export default function App() {
     forceScrollToEndRef.current();
     requestAnimationFrame(() => forceScrollToEndRef.current());
   }, []);
+  const scrollEndScopeRef = useRef(`${activeTabId ?? ""}:${lastSessionId}`);
   useEffect(() => {
+    const scope = `${activeTabId ?? ""}:${lastSessionId}`;
+    if (scrollEndScopeRef.current !== scope) {
+      scrollEndScopeRef.current = scope;
+      return;
+    }
     if (!messageAtBottom) return;
     const raf = requestAnimationFrame(() => scrollToEndRef.current());
     return () => cancelAnimationFrame(raf);
-  }, [activeTabId, composerH, state.pendingPerm]);
+  }, [activeTabId, composerH, lastSessionId, state.pendingPerm]);
 
   /**
    * 渲染侧对账：界面上到底拿到几条、最后一条是什么。
@@ -1324,7 +1386,7 @@ export default function App() {
     ro.observe(el);
     setComposerH(el.offsetHeight);
     return () => ro.disconnect();
-  }, []);
+  }, [activeTabId, lastSessionId]);
 
   useEffect(() => {
     const last = state.msgs[state.msgs.length - 1];
@@ -1783,6 +1845,10 @@ export default function App() {
       // 按会话 id 关，不查 tabs 快照：对话框是异步的，快照可能已经不新鲜。
       closeSessionTabs(target.id);
       clearAutoApprove(target.id);
+      if (visibleScrollAnchorRef.current?.uiSid === target.id) {
+        visibleScrollAnchorRef.current = null;
+      }
+      forget(target.id);
       setPendingDelete(null);
     } catch (e) {
       const err = asCmdError(e);
@@ -2336,7 +2402,7 @@ export default function App() {
                       : undefined
                   }
                 />
-                <div className="relative min-h-0 flex-1">
+                <div key={lastSessionId} className="relative min-h-0 flex-1">
                   <div
                     ref={scrollRef}
                     onScroll={handleMessageScroll}
@@ -2534,6 +2600,7 @@ export default function App() {
                           turnPolicyKinds={activeTurnPolicy?.kinds ?? []}
                           onRevokeTurnPolicy={() => void revokeTurnPolicy()}
                           sessionId={lastSessionId}
+                          uiSid={lastSessionId}
                           sessionProfile={sessionProfile}
                           onReconnectMcp={() =>
                             lastSessionId && sessionProfile

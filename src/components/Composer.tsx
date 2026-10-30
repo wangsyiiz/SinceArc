@@ -16,6 +16,7 @@ import { filterCommands, slashQuery, type SlashCommand } from "@/lib/slash-filte
 import { steerUnavailableReason, type SteerGate } from "@/lib/steer-availability";
 import type { BusyInputMode } from "@/lib/busy-input";
 import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
+import { clearDraft, loadDraft, saveDraft } from "@/lib/view-state";
 
 interface ComposerProps {
   busy: boolean;
@@ -37,6 +38,8 @@ interface ComposerProps {
   onRevokeTurnPolicy?: () => void;
   /** 当前界面会话；没有会话时不渲染 MCP 入口 */
   sessionId?: string | null;
+  /** 界面会话 id：草稿按它分桶 */
+  uiSid?: string | null;
   sessionProfile?: AgentProfile;
   /** 会话名单减少后的显式重连 */
   onReconnectMcp?: () => Promise<void>;
@@ -65,6 +68,7 @@ export function Composer({
   turnPolicyKinds = [],
   onRevokeTurnPolicy,
   sessionId,
+  uiSid,
   sessionProfile,
   onReconnectMcp,
   usage,
@@ -73,7 +77,7 @@ export function Composer({
   queuedCount = 0,
 }: ComposerProps) {
   const { t } = useTranslation();
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(() => (uiSid ? loadDraft(uiSid) : ""));
   const ref = useRef<HTMLTextAreaElement>(null);
   const inputBoxRef = useRef<HTMLDivElement>(null);
   /**
@@ -91,6 +95,11 @@ export function Composer({
   const candidates = mention
     ? players.filter((p) => p.handle.toLowerCase().startsWith(mention.query.toLowerCase()))
     : [];
+
+  useEffect(() => {
+    if (!uiSid) return;
+    saveDraft(uiSid, value);
+  }, [uiSid, value]);
 
   /**
    * 从「光标前那一段」判断是不是正在敲 @handle。
@@ -210,6 +219,7 @@ export function Composer({
         if (!canBusyActionSend) return;
         onSend(value.trim());
       }
+      if (uiSid) clearDraft(uiSid);
       setValue("");
       setMention(null);
       setSlashOpen(false);
@@ -217,6 +227,7 @@ export function Composer({
     }
     if (!canSend) return;
     onSend(value.trim());
+    if (uiSid) clearDraft(uiSid);
     setValue("");
     setMention(null);
     setSlashOpen(false);

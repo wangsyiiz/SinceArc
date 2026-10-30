@@ -6,6 +6,7 @@ import {
   isTailChange,
   shouldFollowBottom,
 } from "./virtual-math.ts";
+import { restoreAnchorScrollTop, type ScrollAnchor } from "../view-state.ts";
 
 export interface VirtualRow {
   key: string;
@@ -21,6 +22,7 @@ export interface UseVirtualListOptions {
   scrollRef: RefObject<HTMLDivElement | null>;
   overscan?: number;
   stickToBottom?: boolean;
+  scopeKey?: string | null;
   diag?: (tag: string, text: string) => void;
 }
 
@@ -39,6 +41,7 @@ export function useVirtualList(opts: UseVirtualListOptions) {
     scrollRef,
     overscan = 6,
     stickToBottom = false,
+    scopeKey = null,
     diag,
   } = opts;
   const virtualizer = useVirtualizer({
@@ -59,7 +62,17 @@ export function useVirtualList(opts: UseVirtualListOptions) {
   const programmaticUntil = useRef(0);
   const tailKeyRef = useRef<string | null>(null);
   const anchorFrameRef = useRef<number | null>(null);
+  const restoreFrameRef = useRef<number | null>(null);
+  const restoringRef = useRef(false);
+  const scopeRef = useRef<string | null>(scopeKey);
   const totalSize = virtualizer.getTotalSize();
+
+  if (scopeRef.current !== scopeKey) {
+    scopeRef.current = scopeKey;
+    restoringRef.current = true;
+    lastTotal.current = null;
+    tailKeyRef.current = null;
+  }
 
   const markProgrammatic = useCallback(() => {
     programmaticUntil.current = Date.now() + 120;
@@ -71,7 +84,10 @@ export function useVirtualList(opts: UseVirtualListOptions) {
     shiftingRef.current = next;
     setAdjusting(next);
   }, []);
-  const isAdjusting = useCallback(() => shiftingRef.current, []);
+  const isAdjusting = useCallback(
+    () => shiftingRef.current || restoringRef.current,
+    [],
+  );
 
   const scrollToEnd = useCallback(() => {
     if (count === 0) return;
@@ -107,7 +123,7 @@ export function useVirtualList(opts: UseVirtualListOptions) {
     const nextTail = count === 0 ? null : keyOf(count - 1);
     const tailChanged = isTailChange(tailKeyRef.current, nextTail);
     tailKeyRef.current = nextTail;
-    if (shiftingRef.current) return;
+    if (restoringRef.current || shiftingRef.current) return;
     if (Date.now() < programmaticUntil.current) return;
     if (!tailChanged) return;
     if (count === 0) return;
@@ -121,7 +137,7 @@ export function useVirtualList(opts: UseVirtualListOptions) {
   useEffect(() => {
     if (lastTotal.current === totalSize) return;
     lastTotal.current = totalSize;
-    if (shiftingRef.current) return;
+    if (restoringRef.current || shiftingRef.current) return;
     if (Date.now() < programmaticUntil.current) return;
     if (count === 0) return;
     if (!shouldFollowBottom(stickToBottom, atBottom)) return;
@@ -145,7 +161,7 @@ export function useVirtualList(opts: UseVirtualListOptions) {
     box.addEventListener("scroll", onScroll, { passive: true });
     onScroll();
     return () => box.removeEventListener("scroll", onScroll);
-  }, [hasContent, scrollRef]);
+  }, [hasContent, scopeKey, scrollRef]);
 
   useEffect(() => {
     const box = scrollRef.current;
@@ -258,11 +274,123 @@ export function useVirtualList(opts: UseVirtualListOptions) {
     virtualizer,
   ]);
 
+  const restoreAnchor = useCallback(
+    (anchor: ScrollAnchor | null) => {
+      if (restoreFrameRef.current !== null) {
+        cancelAnimationFrame(restoreFrameRef.current);
+        restoreFrameRef.current = null;
+      }
+      setShifting(false);
+      restoringRef.current = true;
+      markProgrammatic();
+
+      if (count === 0) {
+        restoringRef.current = false;
+        return;
+      }
+
+      let index = -1;
+      if (anchor) {
+        for (let candidate = 0; candidate < count; candidate += 1) {
+          if (keyOf(candidate) === anchor.messageId) {
+            index = candidate;
+            break;
+          }
+        }
+      }
+
+      if (!anchor || index < 0) {
+        restoringRef.current = false;
+        setAtBottom(true);
+        diag?.("VIEW-RESTORE", anchor ? `missing=${anchor.messageId}` : "none");
+        scrollToEnd();
+        return;
+      }
+
+      setShifting(true);
+      setAtBottom(false);
+      restoreFrameRef.current = requestAnimationFrame(() => {
+        restoreFrameRef.current = null;
+        const box = scrollRef.current;
+        if (!box) {
+          setShifting(false);
+          restoringRef.current = false;
+          return;
+        }
+
+        markProgrammatic();
+        virtualizer.scrollToIndex(index, { align: "start" });
+        virtualizer.cancelScroll();
+
+        const align = () => {
+          const row = virtualizer.getVirtualItems().find((item) => item.index === index);
+          const currentOffset = row ? row.start - box.scrollTop : 0;
+          const target = restoreAnchorScrollTop(anchor, box.scrollTop, currentOffset);
+          const max = Math.max(0, box.scrollHeight - box.clientHeight);
+          box.scrollTop = Math.max(0, Math.min(max, target));
+        };
+        align();
+
+        restoreFrameRef.current = requestAnimationFrame(() => {
+          restoreFrameRef.current = null;
+          const settledBox = scrollRef.current;
+          if (!settledBox) {
+            setShifting(false);
+            restoringRef.current = false;
+            return;
+          }
+          const row = virtualizer.getVirtualItems().find((item) => item.index === index);
+          if (row) {
+            const currentOffset = row.start - settledBox.scrollTop;
+            const target = restoreAnchorScrollTop(
+              anchor,
+              settledBox.scrollTop,
+              currentOffset,
+            );
+            const max = Math.max(0, settledBox.scrollHeight - settledBox.clientHeight);
+            const next = Math.max(0, Math.min(max, target));
+            if (Math.abs(next - settledBox.scrollTop) > 0.5) settledBox.scrollTop = next;
+          }
+          setAtBottom(isAtBottom(settledBox));
+          restoreFrameRef.current = requestAnimationFrame(() => {
+            restoreFrameRef.current = null;
+            setShifting(false);
+            restoringRef.current = false;
+            diag?.(
+              "VIEW-RESTORE",
+              `message=${anchor.messageId} index=${index} offset=${anchor.offsetTop}`,
+            );
+          });
+        });
+      });
+    },
+    [
+      count,
+      diag,
+      keyOf,
+      markProgrammatic,
+      scrollRef,
+      scrollToEnd,
+      setShifting,
+      virtualizer,
+    ],
+  );
+
   useEffect(
     () => () => {
       if (anchorFrameRef.current !== null) cancelAnimationFrame(anchorFrameRef.current);
     },
     [],
+  );
+
+  useEffect(
+    () => () => {
+      if (restoreFrameRef.current !== null) {
+        cancelAnimationFrame(restoreFrameRef.current);
+        restoreFrameRef.current = null;
+      }
+    },
+    [scopeKey],
   );
 
   const rows: VirtualRow[] = virtualizer.getVirtualItems().map((row) => ({
@@ -285,5 +413,6 @@ export function useVirtualList(opts: UseVirtualListOptions) {
     beginProgrammaticScroll: markProgrammatic,
     beginAnchorShift,
     endAnchorShift,
+    restoreAnchor,
   };
 }
