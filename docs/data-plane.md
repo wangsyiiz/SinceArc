@@ -61,6 +61,8 @@ useSessionView(uiSid) -> { profileId, acpSessionId, cwd, connected }
 ```
 
 判定只有一句：**切换后任何一个位置还在显示上一条会话的数据，就是 bug**；
+组件局部状态同样归 `uiSid`：滚动位置、输入草稿这些不是「数据源」，但它们在切换后留着，效果与串台一样（`docs/desktop-ux.md §38`：滚动位置按会话恢复、草稿按会话保留、其余重置）。
+
 「碰巧两边一样」不算正确（这正是串台能活到现在的原因）。
 
 兜底：解析不到 `acpSessionId` 就按「这条会话还没有 agent 会话」显示（空态 / 等正文 / 不可插话），
