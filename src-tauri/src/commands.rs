@@ -4754,7 +4754,9 @@ pub async fn session_prompt(
                 ui_session_id: ui_for_event.clone(),
                 author_id: author_for_event.clone(),
                 origin: Some("agent".to_string()),
-                result: serde_json::json!({ "stopReason": "end_turn" }),
+                // 让位结果：真轮要开始了，替合成轮收尾。前端据此整条忽略
+                // （建不建行、busy 与活动行都不该由它决定）。
+                result: serde_json::json!({ "stopReason": "end_turn", "synthHandover": true }),
             },
         );
     }
@@ -4825,7 +4827,13 @@ pub async fn session_prompt(
                         result,
                     },
                 );
-                agent_turns_for_task.client_end(&sid_for_trace);
+                // 取消之后的尾巴不再开新轮（state.rs 的 cancel_hold）：这是「切回会话
+                // 像自己聊了一轮」的来路，取消就是取消。
+                if stop_reason.as_deref() == Some("cancelled") {
+                    agent_turns_for_task.client_end_cancelled(&sid_for_trace);
+                } else {
+                    agent_turns_for_task.client_end(&sid_for_trace);
+                }
             }
             Err(e) => {
                 tracing::warn!(target: "sincearc::ipc", session = %sid, error = %e, "prompt failed");
@@ -4862,7 +4870,11 @@ pub async fn session_prompt(
                     author_id: author_for_event,
                     msg: e.to_string(),
                 });
-                agent_turns_for_task.client_end(&sid_for_trace);
+                if cancelled_by_user {
+                    agent_turns_for_task.client_end_cancelled(&sid_for_trace);
+                } else {
+                    agent_turns_for_task.client_end(&sid_for_trace);
+                }
             }
         }
     });
