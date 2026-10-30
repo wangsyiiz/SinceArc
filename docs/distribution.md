@@ -237,3 +237,50 @@ python3 -c "from PIL import Image; Image.open('header-4x.png').convert('RGB').re
 - 发布后拉 `latest.json`：`notes` 里同时有 `### 中文` 与 `### English` 两段，各自的项目符号完整、
   缩进续行未被打散；
 - 客户端设置页检查更新：两段都按 markdown 渲染（加粗、反引号、列表），可滚动。
+
+## 12. 应用图标的小尺寸档（Windows 任务栏）
+
+**现象（2026-10-30，所有者反馈）**：任务栏上的图标看着偏小。
+
+**实测**（`src-tauri/icons/icon.ico` 各帧，量的是「标记占磁贴的比例」与亮部均值）：
+
+| 版本 | 32px 磁贴 | 标记 | 占磁贴 | 亮部均值 |
+| --- | --- | --- | --- | --- |
+| 改前 | 30×30 | 15×19 | 0.50 × 0.63 | 196 |
+| 改后 | 30×30 | 19×23 | 0.63 × 0.77 | 216 |
+
+**根因**：`design/logo/d-tile-16.svg` 早就为小尺寸准备了「去辉光 + 标识放大」的变体，但它**从来没进过生成链路**。
+链路是 `raster d-tile.svg → icon-1024.png → tauri icon`，`tauri icon` 只吃一张 1024 PNG，
+16/24/32 帧都是它降采样来的 —— 拿到的是「标识 0.62 + 三层辉光」的版本。
+辉光在 30 像素的磁贴里糊成一圈，标记本身只占磁贴一半宽，于是看起来「一小团亮斑缩在深色方块里」。
+
+### 12.1 口径
+
+- **16 / 24 / 32 / 48 四档**：用 `d-tile-16.svg`（0.79、无辉光、`#ffffff` 标记、磁贴 960/1024），
+  **每档按目标尺寸原生渲染**，不降采样；
+- **64 / 256**：仍用 `d-tile.svg`（0.62 + 三层辉光）—— 大尺寸看得出辉光，是品牌元素；
+- `32x32.png` 同步换成 0.79 的 32px 渲染；`128x128*.png`、`icon.png`、`icon.icns`、`Square*Logo` 不动
+  （128 以上用辉光版本来就对，`icns`/`Square*` 在 Windows 这条线上不参与）；
+- `icon.ico` 六档仍是 **32 位 PNG 帧**（与 `tauri icon` 的输出编码一致），只是帧来源按上面的分工不同 ——
+  `tauri icon` 做不到「一张图管大档、另一张管小档」，所以这一支是手写 ICO 容器拼的。
+
+### 12.2 重生成
+
+```bash
+# 1) 各档原生渲染（Chromium 截图、透明背景、1 倍）
+for s in 16 24 32 48; do node raster-icon.cjs design/logo/d-tile-16.svg new-$s.png $s; done
+for s in 64 256;     do node raster-icon.cjs design/logo/d-tile.svg    new-$s.png $s; done
+# 2) 按 16/24/32/48/64/256 顺序写 ICO（每档 PNG 载荷，32bpp）
+python3 -c "<见 §12.3：拼 ICONDIR + ICONDIRENTRY + PNG 载荷>"
+cp new-32.png src-tauri/icons/32x32.png
+```
+
+`raster-icon.cjs` 与拼 ICO 的脚本都是**临时脚本、不入库**（与 `design/logo/README.md` 同规矩），产物入库。
+
+### 12.3 验收
+
+- `PIL.Image.open('icon.ico').info['sizes']` 恰好六档 16/24/32/48/64/256，全部 PNG 帧、`bpp=32`；
+- 每档与对应的渲染 PNG **逐像素相等**（2026-10-30 实测六档全 True）；
+- 32px 帧的标记占磁贴应为 **0.63 × 0.77**（改前 0.50 × 0.63）；
+- 发版后 `SinceArc.exe` 的 RT_ICON 六档应与新 `icon.ico` 逐档相等（§10 的旧读数同样适用）；
+  `setup.exe` 的 `installerIcon` 也会跟着变。
