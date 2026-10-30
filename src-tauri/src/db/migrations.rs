@@ -1,11 +1,11 @@
 //! 增量迁移。
 //!
-//! 迁移顺序编号：M1-01…M1-03，M2-01…M2-08。
+//! 迁移顺序编号：M1-01…M1-03，M2-01…M2-09。
 //!
 //! 执行约定：`Db::open` 在 `execute_batch(SCHEMA)` 与既有 `ensure_*` 调用之后调用
 //! `migrations::run(&mut conn)?`。
 //!
-//! 追加位置：新迁移函数加在 `run()` 末尾、编号递增（`M2-08`…），不要改已有步骤的
+//! 追加位置：新迁移函数加在 `run()` 末尾、编号递增（`M2-09`…），不要改已有步骤的
 //! 顺序与编号。
 //!
 //! 幂等要求：每一步必须能重复执行（`IF NOT EXISTS` / 查 `sqlite_master.type` /
@@ -27,6 +27,7 @@ pub fn run(conn: &mut Connection) -> rusqlite::Result<()> {
     m2_06_atoms_schema(&tx)?;
     m2_07_turns_prompt_atom_id(&tx)?;
     m2_08_chat_atom_kinds(&tx)?;
+    m2_09_repos(&tx)?;
     tx.commit()
 }
 
@@ -251,6 +252,35 @@ fn m2_08_chat_atom_kinds(conn: &Connection) -> rusqlite::Result<()> {
                   atoms.kind AS atom_kind,
                   payload_json, at AS created_at, author_id
              FROM atoms WHERE channel = 'chat';",
+    )
+}
+
+/// M2-09：项目落库。远端身份（repos）与本地副本（local_repos）分开存；
+/// 删除最后一个副本不能顺手删掉 repos —— pin 与身份要保留（docs/gh.md §2.2）。
+///
+/// 全部用 `IF NOT EXISTS`，新库（schema.sql 已建表）与重复执行都是 no-op。
+fn m2_09_repos(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS repos (
+           id             TEXT PRIMARY KEY,
+           host           TEXT NOT NULL,
+           owner          TEXT NOT NULL,
+           name           TEXT NOT NULL,
+           default_branch TEXT,
+           pinned_at      INTEGER,
+           created_at     INTEGER NOT NULL,
+           last_used_at   INTEGER,
+           UNIQUE(host, owner, name)
+         );
+         CREATE TABLE IF NOT EXISTS local_repos (
+           id           TEXT PRIMARY KEY,
+           repo_id      TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+           path         TEXT NOT NULL UNIQUE,
+           host_kind    TEXT NOT NULL DEFAULT 'local',
+           added_at     INTEGER NOT NULL,
+           last_used_at INTEGER
+         );
+         CREATE INDEX IF NOT EXISTS idx_local_repos_repo ON local_repos(repo_id);",
     )
 }
 

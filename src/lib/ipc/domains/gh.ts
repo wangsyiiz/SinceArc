@@ -5,6 +5,7 @@
 //! `repo` 一律是 `RepoRefDto`（camelCase，`host` 可缺省）。
 
 import type { DiffPageDto } from "../types.gen/DiffPageDto";
+import type { GhRepoListDto } from "../types.gen/GhRepoListDto";
 import type { GhStatusDto } from "../types.gen/GhStatusDto";
 import type { PrDetailDto } from "../types.gen/PrDetailDto";
 import type { PrListDto } from "../types.gen/PrListDto";
@@ -22,6 +23,15 @@ export function ghStatus(force = false): Promise<GhStatusDto> {
 /** 从本地目录的 `.git/config` 解析 `{ host, owner, name }`；不调 gh、不联网。 */
 export function ghRepoResolve(path: string): Promise<RepoRefDto> {
   return invokeCmd<RepoRefDto>("gh_repo_resolve", { path });
+}
+
+/** 「从 GitHub 添加」的仓库列表；owner 省略 = 当前账号及可访问组织。 */
+export function ghReposList(
+  owner?: string | null,
+  limit?: number,
+  force = false,
+): Promise<GhRepoListDto> {
+  return invokeCmd<GhRepoListDto>("gh_repos_list", { owner, limit, force });
 }
 
 /** PR 列表。`state` 缺省由后端取 `open`。 */

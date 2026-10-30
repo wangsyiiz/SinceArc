@@ -15,9 +15,11 @@ use crate::commands::CmdError;
 
 use self::model::{
     Author, CheckState, DiffPage, FileChange, GhCli, GhError, GhStatus, PrDetail, PrState,
-    PrStateView, PullRequest, RepoRef,
+    PrStateView, PullRequest, RepoListing, RepoRef,
 };
-use self::service::{DiffPageError, GhService, MAX_PAGE_SIZE};
+use self::service::{
+    DiffPageError, GhService, DEFAULT_REPO_LIST_LIMIT, MAX_PAGE_SIZE,
+};
 
 pub struct GhState(pub GhService);
 
@@ -153,6 +155,44 @@ pub struct DiffPageDto {
     pub total_lines: usize,
     #[ts(type = "number")]
     pub total_pages: u32,
+}
+
+/// `gh repo list` 的一行。列表用于「从 GitHub 添加」：身份 + 展示元数据，
+/// 不代表已经落库（落库由 `repos_add_remote` / `repos_add_local` 负责）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct GhRepoListingDto {
+    pub host: Option<String>,
+    pub owner: String,
+    pub name: String,
+    pub default_branch: Option<String>,
+    pub is_private: bool,
+    #[ts(type = "number | null")]
+    pub updated_at: Option<i64>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct GhRepoListDto {
+    pub items: Vec<GhRepoListingDto>,
+    pub has_more: bool,
+}
+
+impl From<RepoListing> for GhRepoListingDto {
+    fn from(listing: RepoListing) -> Self {
+        Self {
+            host: listing.repo.host,
+            owner: listing.repo.owner,
+            name: listing.repo.name,
+            default_branch: listing.default_branch,
+            is_private: listing.is_private,
+            updated_at: listing.updated_at,
+            description: listing.description,
+        }
+    }
 }
 
 impl From<Author> for AuthorDto {
@@ -407,6 +447,41 @@ pub async fn gh_status(
     }
 }
 
+/// 「从 GitHub 添加」的仓库列表。`limit` 缺省 30，上限 100；
+/// `hasMore` 表示切片前长度至少达到 limit（docs/gh.md §2.2 的分页口径）。
+#[tauri::command]
+pub async fn gh_repos_list(
+    state: State<'_, GhState>,
+    owner: Option<String>,
+    limit: Option<u32>,
+    force: Option<bool>,
+) -> Result<GhRepoListDto, CmdError> {
+    let owner = owner
+        .map(|owner| owner.trim().to_string())
+        .filter(|owner| !owner.is_empty());
+    let limit = limit.unwrap_or(DEFAULT_REPO_LIST_LIMIT);
+
+    match state
+        .0
+        .list_repos_page(owner.as_deref(), limit, force.unwrap_or(false))
+        .await
+    {
+        Ok(page) => Ok(GhRepoListDto {
+            items: page.items.into_iter().map(GhRepoListingDto::from).collect(),
+            has_more: page.has_more,
+        }),
+        Err(error) => {
+            tracing::warn!(
+                target: "sincearc::gh",
+                code = error.code(),
+                error = ?error,
+                "gh repo list failed"
+            );
+            Err(to_cmd_error(error))
+        }
+    }
+}
+
 /// 从本地目录解析仓库身份（docs/gh.md §2.1）。纯文件读，不调 gh、不起进程。
 #[tauri::command]
 pub fn gh_repo_resolve(path: String) -> Result<RepoRefDto, CmdError> {
@@ -432,7 +507,7 @@ pub fn gh_repo_resolve(path: String) -> Result<RepoRefDto, CmdError> {
         })
 }
 
-fn to_cmd_error(error: GhError) -> CmdError {
+pub(crate) fn to_cmd_error(error: GhError) -> CmdError {
     let code = u32::from(error.code());
     match error {
         GhError::NotInstalled => {

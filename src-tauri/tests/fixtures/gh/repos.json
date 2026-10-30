@@ -1,0 +1,16 @@
+[
+  {
+    "nameWithOwner": "wangsyiiz/SinceArc",
+    "isPrivate": false,
+    "defaultBranchRef": { "name": "main" },
+    "updatedAt": "2026-10-28T10:03:06Z",
+    "description": "ACP desktop client"
+  },
+  {
+    "nameWithOwner": "acme/private-api",
+    "isPrivate": true,
+    "defaultBranchRef": null,
+    "updatedAt": "2026-10-27T08:00:00Z",
+    "description": null
+  }
+]

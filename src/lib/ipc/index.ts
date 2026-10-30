@@ -10,3 +10,4 @@ export * from "./domains/settings";
 export * from "./domains/mcp";
 export * from "./domains/system";
 export * from "./domains/gh";
+export * from "./domains/repos";

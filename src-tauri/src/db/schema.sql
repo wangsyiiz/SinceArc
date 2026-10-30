@@ -196,3 +196,28 @@ CREATE TABLE IF NOT EXISTS session_bindings (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_binding_live
   ON session_bindings(session_id) WHERE superseded_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_binding_session ON session_bindings(session_id, bound_at DESC);
+
+-- 远端身份是项目的主键，本地路径只是它的副本（docs/gh.md §2.2）。
+-- 同一个远端可以有多份本地副本；host 为 '' 表示未知远端。
+CREATE TABLE IF NOT EXISTS repos (
+  id             TEXT PRIMARY KEY,
+  host           TEXT NOT NULL,
+  owner          TEXT NOT NULL,
+  name           TEXT NOT NULL,
+  default_branch TEXT,
+  pinned_at      INTEGER,
+  created_at     INTEGER NOT NULL,
+  last_used_at   INTEGER,
+  UNIQUE(host, owner, name)
+);
+
+CREATE TABLE IF NOT EXISTS local_repos (
+  id           TEXT PRIMARY KEY,
+  repo_id      TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  path         TEXT NOT NULL UNIQUE,
+  host_kind    TEXT NOT NULL DEFAULT 'local',
+  added_at     INTEGER NOT NULL,
+  last_used_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_local_repos_repo ON local_repos(repo_id);

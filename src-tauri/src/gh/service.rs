@@ -6,15 +6,21 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-use super::model::{DiffPage, GhCli, GhError, GhStatus, PrDetail, PrState, PullRequest, RepoRef};
+use super::model::{
+    DiffPage, GhCli, GhError, GhStatus, PrDetail, PrState, PullRequest, RepoListing, RepoRef,
+    MAX_REPO_LIST_LIMIT,
+};
 
 const STATUS_TTL: Duration = Duration::from_secs(30);
 const LIST_TTL: Duration = Duration::from_secs(30);
 const DETAIL_TTL: Duration = Duration::from_secs(5 * 60);
 const DIFF_TTL: Duration = Duration::from_secs(5 * 60);
+/// 仓库列表 60s；key 只含 owner（不含 limit），缓存永远存最大那份。
+pub const GH_REPOS_TTL: Duration = Duration::from_secs(60);
 
 pub const DEFAULT_PAGE_SIZE: u32 = 200;
 pub const MAX_PAGE_SIZE: u32 = 200;
+pub const DEFAULT_REPO_LIST_LIMIT: u32 = 30;
 
 type ListCacheKey = (String, String, String, PrState);
 type PrCacheKey = (String, String, String, u32);
@@ -25,12 +31,19 @@ pub enum DiffPageError {
     Gh(GhError),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoListPage {
+    pub items: Vec<RepoListing>,
+    pub has_more: bool,
+}
+
 pub struct GhService {
     cli: Arc<dyn GhCli>,
     cache: Mutex<Option<(Instant, GhStatus)>>,
     list_cache: Mutex<HashMap<ListCacheKey, (Instant, Vec<PullRequest>)>>,
     detail_cache: Mutex<HashMap<PrCacheKey, (Instant, PrDetail)>>,
     diff_cache: Mutex<HashMap<PrCacheKey, (Instant, String)>>,
+    repo_cache: Mutex<HashMap<String, (Instant, Vec<RepoListing>)>>,
 }
 
 impl GhService {
@@ -41,6 +54,7 @@ impl GhService {
             list_cache: Mutex::new(HashMap::new()),
             detail_cache: Mutex::new(HashMap::new()),
             diff_cache: Mutex::new(HashMap::new()),
+            repo_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -96,6 +110,39 @@ impl GhService {
                 items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
                 cache.insert(key, (Instant::now(), items.clone()));
                 Ok(items)
+            }
+            Err(error) => {
+                cache.remove(&key);
+                Err(error)
+            }
+        }
+    }
+
+    /// 仓库列表：按 owner 缓存 60s，缓存的是 `MAX_REPO_LIST_LIMIT` 拉满的那份；
+    /// 每次按调用方 limit 切片，`has_more` 用切片前的长度判断。
+    pub async fn list_repos_page(
+        &self,
+        owner: Option<&str>,
+        limit: u32,
+        force: bool,
+    ) -> Result<RepoListPage, GhError> {
+        let limit = limit.clamp(1, MAX_REPO_LIST_LIMIT);
+        let owner = owner.map(str::trim).filter(|owner| !owner.is_empty());
+        let key = owner.unwrap_or("*").to_string();
+
+        let mut cache = self.repo_cache.lock().await;
+        if !force {
+            if let Some((at, items)) = cache.get(&key) {
+                if at.elapsed() < GH_REPOS_TTL {
+                    return Ok(slice_repo_page(items, limit));
+                }
+            }
+        }
+
+        match self.cli.list_repos(owner, MAX_REPO_LIST_LIMIT).await {
+            Ok(items) => {
+                cache.insert(key, (Instant::now(), items.clone()));
+                Ok(slice_repo_page(&items, limit))
             }
             Err(error) => {
                 cache.remove(&key);
@@ -183,6 +230,14 @@ impl GhService {
     }
 }
 
+fn slice_repo_page(items: &[RepoListing], limit: u32) -> RepoListPage {
+    let limit = limit.clamp(1, MAX_REPO_LIST_LIMIT) as usize;
+    RepoListPage {
+        items: items.iter().take(limit).cloned().collect(),
+        has_more: items.len() >= limit,
+    }
+}
+
 fn pr_cache_key(repo: &RepoRef, number: u32) -> PrCacheKey {
     (
         repo.host.clone().unwrap_or_default(),
@@ -239,10 +294,12 @@ mod tests {
 
     struct FakeGh {
         status_calls: AtomicUsize,
+        repo_calls: AtomicUsize,
         list_calls: AtomicUsize,
         detail_calls: AtomicUsize,
         diff_calls: AtomicUsize,
         status_results: Mutex<VecDeque<Result<GhStatus, GhError>>>,
+        repo_results: Mutex<VecDeque<Result<Vec<RepoListing>, GhError>>>,
         list_results: Mutex<VecDeque<Result<Vec<PullRequest>, GhError>>>,
         detail_results: Mutex<VecDeque<Result<PrDetail, GhError>>>,
         diff_results: Mutex<VecDeque<Result<String, GhError>>>,
@@ -252,10 +309,12 @@ mod tests {
         fn new(results: Vec<Result<GhStatus, GhError>>) -> Arc<Self> {
             Arc::new(Self {
                 status_calls: AtomicUsize::new(0),
+                repo_calls: AtomicUsize::new(0),
                 list_calls: AtomicUsize::new(0),
                 detail_calls: AtomicUsize::new(0),
                 diff_calls: AtomicUsize::new(0),
                 status_results: Mutex::new(results.into()),
+                repo_results: Mutex::new(VecDeque::new()),
                 list_results: Mutex::new(VecDeque::new()),
                 detail_results: Mutex::new(VecDeque::new()),
                 diff_results: Mutex::new(VecDeque::new()),
@@ -265,10 +324,12 @@ mod tests {
         fn with_lists(results: Vec<Result<Vec<PullRequest>, GhError>>) -> Arc<Self> {
             Arc::new(Self {
                 status_calls: AtomicUsize::new(0),
+                repo_calls: AtomicUsize::new(0),
                 list_calls: AtomicUsize::new(0),
                 detail_calls: AtomicUsize::new(0),
                 diff_calls: AtomicUsize::new(0),
                 status_results: Mutex::new(VecDeque::new()),
+                repo_results: Mutex::new(VecDeque::new()),
                 list_results: Mutex::new(results.into()),
                 detail_results: Mutex::new(VecDeque::new()),
                 diff_results: Mutex::new(VecDeque::new()),
@@ -278,6 +339,12 @@ mod tests {
         fn with_details(results: Vec<Result<PrDetail, GhError>>) -> Arc<Self> {
             let fake = Self::new(Vec::new());
             *fake.detail_results.lock().unwrap() = results.into();
+            fake
+        }
+
+        fn with_repos(results: Vec<Result<Vec<RepoListing>, GhError>>) -> Arc<Self> {
+            let fake = Self::new(Vec::new());
+            *fake.repo_results.lock().unwrap() = results.into();
             fake
         }
 
@@ -295,6 +362,10 @@ mod tests {
             self.list_calls.load(Ordering::SeqCst)
         }
 
+        fn repo_calls(&self) -> usize {
+            self.repo_calls.load(Ordering::SeqCst)
+        }
+
         fn detail_calls(&self) -> usize {
             self.detail_calls.load(Ordering::SeqCst)
         }
@@ -309,6 +380,20 @@ mod tests {
         async fn status(&self) -> Result<GhStatus, GhError> {
             self.status_calls.fetch_add(1, Ordering::SeqCst);
             let mut results = self.status_results.lock().unwrap();
+            if results.len() > 1 {
+                results.pop_front().unwrap()
+            } else {
+                results.front().cloned().unwrap()
+            }
+        }
+
+        async fn list_repos(
+            &self,
+            _owner: Option<&str>,
+            _limit: u32,
+        ) -> Result<Vec<RepoListing>, GhError> {
+            self.repo_calls.fetch_add(1, Ordering::SeqCst);
+            let mut results = self.repo_results.lock().unwrap();
             if results.len() > 1 {
                 results.pop_front().unwrap()
             } else {
@@ -419,6 +504,20 @@ mod tests {
             mergeable: None,
             review_decision: None,
             checks: CheckState::Passing,
+        }
+    }
+
+    fn sample_repo_listing(index: u32) -> RepoListing {
+        RepoListing {
+            repo: RepoRef {
+                host: Some("github.com".to_string()),
+                owner: "acme".to_string(),
+                name: format!("repo-{index}"),
+            },
+            default_branch: Some("main".to_string()),
+            is_private: index % 2 == 0,
+            updated_at: Some(1_790_000_000 + i64::from(index)),
+            description: None,
         }
     }
 
@@ -680,5 +779,78 @@ mod tests {
             .unwrap();
         assert_eq!(forced.total_lines, 1);
         assert_eq!(fake.diff_calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn repo_list_cache_ignores_limit_and_slices_with_has_more() {
+        let items: Vec<RepoListing> = (0..5).map(sample_repo_listing).collect();
+        let fake = FakeGh::with_repos(vec![Ok(items.clone())]);
+        let service = GhService::new(fake.clone());
+
+        let first = service.list_repos_page(None, 2, false).await.unwrap();
+        assert_eq!(first.items, items[..2].to_vec());
+        assert!(first.has_more, "切片前有 5 条，limit=2 必须还有更多");
+        assert_eq!(fake.repo_calls(), 1);
+
+        let second = service.list_repos_page(None, 5, false).await.unwrap();
+        assert_eq!(second.items, items);
+        assert!(
+            second.has_more,
+            "切片前长度 == limit 时按契约仍算 has_more"
+        );
+        assert_eq!(fake.repo_calls(), 1, "缓存 key 不含 limit，第二次不应再调 gh");
+
+        let third = service.list_repos_page(None, 6, false).await.unwrap();
+        assert_eq!(third.items, items);
+        assert!(!third.has_more, "limit 大于总量时没有更多");
+        assert_eq!(fake.repo_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn repo_list_force_bypasses_cache_and_owner_has_its_own_key() {
+        let first: Vec<RepoListing> = (0..2).map(sample_repo_listing).collect();
+        let second: Vec<RepoListing> = (10..12).map(sample_repo_listing).collect();
+        let third: Vec<RepoListing> = vec![sample_repo_listing(20)];
+        let fake = FakeGh::with_repos(vec![
+            Ok(first.clone()),
+            Ok(second.clone()),
+            Ok(third.clone()),
+        ]);
+        let service = GhService::new(fake.clone());
+
+        assert_eq!(
+            service.list_repos_page(None, 2, false).await.unwrap().items,
+            first
+        );
+        assert_eq!(
+            service
+                .list_repos_page(Some("acme"), 2, false)
+                .await
+                .unwrap()
+                .items,
+            second
+        );
+        assert_eq!(
+            service.list_repos_page(None, 2, true).await.unwrap().items,
+            third
+        );
+        assert_eq!(fake.repo_calls(), 3);
+    }
+
+    #[tokio::test]
+    async fn repo_list_error_is_not_cached() {
+        let expected: Vec<RepoListing> = (0..2).map(sample_repo_listing).collect();
+        let fake = FakeGh::with_repos(vec![Err(GhError::Timeout), Ok(expected.clone())]);
+        let service = GhService::new(fake.clone());
+
+        assert_eq!(
+            service.list_repos_page(None, 2, false).await.unwrap_err(),
+            GhError::Timeout
+        );
+        assert_eq!(
+            service.list_repos_page(None, 2, false).await.unwrap().items,
+            expected
+        );
+        assert_eq!(fake.repo_calls(), 2);
     }
 }

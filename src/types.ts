@@ -188,13 +188,28 @@ export interface QuotedRef {
 }
 
 /* ---------- Git / 权限 ---------- */
+export interface LocalRepo {
+  id: string;
+  path: string;
+  /** local | wsl:<distro> | ssh:<host> */
+  hostKind: string;
+}
+
 /**
- * GitHub 项目：独立于聊天窗口，按路径绑定 gh 的工作目录。
- * 身份（host/owner/name）不在这里缓存 —— 由后端的 `gh_repo_resolve` 解析（docs/gh.md §2.1）。
+ * GitHub 项目：远端身份是主键，本地路径只是它的副本（docs/gh.md §2.2）。
+ * `path` 是第一个本地副本的路径；「只看不干」时为空串。
  */
 export interface GithubRepo {
   id: string;
+  host: string;
+  owner: string;
   name: string;
+  /** `host/owner/name`（host 为空时退化成 `owner/name`） */
+  slug: string;
+  defaultBranch: string | null;
+  pinned: boolean;
+  lastUsedAt: number | null;
+  locals: LocalRepo[];
   path: string;
 }
 

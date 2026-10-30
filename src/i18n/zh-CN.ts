@@ -468,6 +468,8 @@ export const zhCN = {
   "err.gh.prNotFound": "这个 PR 拿不到：{{detail}}",
   "err.gh.notGitRepo": "这个目录还不是 git 仓库：{{path}}",
   "err.gh.noRemote": "没找到可用的 origin 远端：{{detail}}",
+  "err.repos.pathRequired": "项目路径不能为空",
+  "err.repos.notFound": "项目不存在或已被移除: {{id}}",
   "err.gh.repoPathRequired": "仓库路径不能为空：{{path}}",
   "err.member.loadAgentUserFailed": "读 agent user 失败：{{detail}}",
   "err.member.loadMembersFailed": "读群成员失败：{{detail}}",
