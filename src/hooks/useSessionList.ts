@@ -13,7 +13,7 @@ export function useSessionList(): {
   sessions: SessionSummary[];
   setSessions: Dispatch<SetStateAction<SessionSummary[]>>;
   /** 重新读库：首条消息落地后标题会变（后端按第一条用户消息命名） */
-  reload: () => Promise<void>;
+  reload: () => Promise<SessionSummary[] | null>;
 } {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
 
@@ -29,15 +29,19 @@ export function useSessionList(): {
       playerIds: [],
       acpSessionId: r.acpSessionId ?? null,
       profileId: r.profileId ?? undefined,
+      unreadCount: r.unreadCount ?? 0,
     };
   };
 
   const reload = useCallback(async () => {
     try {
       const rows = await sessionsList();
-      setSessions(rows.map(toSummary));
+      const next = rows.map(toSummary);
+      setSessions(next);
+      return next;
     } catch {
       // 非 Tauri 环境：保持现状
+      return null;
     }
   }, []);
 

@@ -2209,3 +2209,75 @@ flex 默认可压缩 —— 压缩发生在标签内部，`shrink-0` 的关闭�
 最后一个仍被容器裁掉 —— 那正是这次要消灭的叠字。
 
 副产物：pin 与溢出菜单的取舍变成可推理的（`fitTabs` 的容量判据与实际宽度一致），单测才有意义。
+
+## 40. 会话标题的来源与优先级（2026-10-30 定）
+
+**现状**：标题只有一个来源 —— 首条用户消息落库时 `set_title_if_unnamed()` 截一段（`commands.rs`）。
+ACP 侧的标题被完全丢掉：`session_info_update` 收到就丢，`session/list` 也没用。
+
+**协议侧能力**（`agent-client-protocol-schema 1.12`，逐条查过）：
+
+| 入口 | 有 title | 说明 |
+| --- | --- | --- |
+| `session/new` 响应 | 否 | 只有 `sessionId` / `modes` / `configOptions` / `_meta` |
+| `session/update` → `session_info_update` | 是 | `title` / `updatedAt`，可 null 清空；本机 hermes 适配器在**回合开场自动起标题后就推**这条 |
+| `session/list` | 是 | `SessionInfo.title`，需 agent 广告该能力 |
+
+### 40.1 决定
+
+- **agent 推的标题优先**（所有者 2026-10-30 定）。
+- **首条用户消息是兜底**：不推标题的连接也必须有个名字。
+- **暂不做用户改名**（预留来源值 `user`，本批不实现）。
+
+### 40.2 口径
+
+- `sessions` 加 `title_source TEXT`（取值 `'user_msg'` / `'agent'` / `'user'`；老行初始 `'user_msg'`）。
+- 覆盖规则：`agent` 可以盖 `user_msg`；`user_msg` 不许盖 `agent`；`user` 谁都不许盖（本批无写入方）。
+- `session_info_update.title` 为空 / null → **忽略**（清空标题会把侧栏变成空白，不是我们要的语义）。
+- 同一标题重复推送要幂等（幂等按值比，不比时间戳）。
+
+### 40.3 验收
+
+- 用会推 `session_info_update` 的连接（本机 hermes）新建会话并发一条：标题在 agent 起完标题后更新，
+  且重启应用后仍是 agent 给的那个；断掉 agent 标题能力（或用一个不推的连接）时仍是首条用户消息。
+
+## 41. 侧栏会话列表项（2026-10-30 定）
+
+**现状**：标题 / 成员色点 / `cwd` / 右侧连接名徽标；执行态只在「更多」菜单里当禁用条件用。
+
+### 41.1 决定（所有者逐条指定）
+
+- **删掉 cwd 这一行**（会话属于哪个目录可以在会话头看，列表里占地方）。
+- **连接名搬到原 cwd 的位置**（标题下面那一行的最左），前面加 **agent logo**（`AgentLogo` / `lib/agent-brands.ts` 已有）。
+- 右侧最右加**红色未读数**（`count > 0` 才显示，`0` 不占位）。
+- 会话正在执行时，标题右侧显示 **loading 标**（复用 `ui/BrandLoader` 的 `comet`，尺寸跟行内一致）。
+
+### 41.2 口径
+
+- 未读数与 loading 同时在：优先保证两者都可见（loading 在标题行尾，未读数在整行最右）。
+- 颜色：未读数用 `--danger` 系（与权限告警的 `--warn` 区分开）；**不许**用纯红字面量，走令牌。
+- 行内不再放 `cwd` 之后，hover 卡片（若已有）继续给完整路径。
+
+## 42. 未读计数与跳转（2026-10-30 定）
+
+### 42.1 决定（所有者口径）
+
+- **系统提示也计入未读**；**跨重启保留**。
+- 打开会话时若还有未读：消息流与输入框之间给一个**浮动按钮**，点击跳到第一条未读位置；
+  到达后计数清零。
+
+### 42.2 口径
+
+- 数据源只认库，不认内存：`sessions.last_read_at INTEGER`（**毫秒**，与 `atoms.at` 同单位；
+  `sessions.created_at` 是秒，别混用）。
+- 未读数 = `count(atoms where session_id=? and channel='chat' and role in ('player','system') and at > last_read_at)`。
+- `sessions_list` 的 `SessionRow` 增加 `unread_count: number`；新增命令 `session_mark_read(sessionId)`：
+  把 `last_read_at` 推到「当前最新 chat 原子的 at」（不是 `now()` —— 否则打开期间新到的消息会被顺手读掉）。
+- 跳转位置由前端在打开会话那一刻定格（首条未读的 messageId），**不许**每次渲染重算。
+- 浮动按钮文案带条数；滚动到该位置或点击后：清 `unread_count`、写 `last_read_at`。
+- 消息滑动窗口会裁掉老消息：目标已不在窗口里时，先 `loadOlder` 逐页找，找不到就退到底部并清计数（不许卡住）。
+
+### 42.3 验收
+
+- 两个会话：在 A 里让 agent 跑完，切到 B，A 的未读数为 1；重启应用后仍是 1；打开 A 后归 0。
+- 未读跨多条时按钮显示条数，点击落在第一条未读上（不是最后一条、不是底部）。

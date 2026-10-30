@@ -108,6 +108,8 @@ src/lib/ipc/
 `Message`（`id/role/kind/payload`）、`Turn`（一轮：user 文本 → 终态）、
 `Activity`（tool_call/thinking/写锁，**后端产出**）。
 
+会话行的 `unread_count` 与 `session_mark_read(sessionId)` 属本域：口径见 `desktop-ux.md §42`（未读 = `channel='chat'` 且 `role in ('player','system')` 且 `at > last_read_at`，单位毫秒）。
+
 ### 群域（`group`）
 `AgentUser`（身份：profile + acp 会话 + 名字/handle/颜色）、`Membership`（群↔成员）。
 

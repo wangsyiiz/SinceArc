@@ -12,4 +12,8 @@ dayBucket: string,
 /**
  * 供侧栏直接显示的简短时间：今天→`14:32`，更早→`10-21`
  */
-displayTime: string, };
+displayTime: string, 
+/**
+ * 未读的 chat 原子数：只算 player/system，且 `at > last_read_at`（毫秒）。
+ */
+unreadCount: number, };

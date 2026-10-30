@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { ArrowUp, X } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 import {
   isPermissionGranted,
@@ -57,6 +57,7 @@ import {
   type UiNotice,
 } from "@/lib/notice-inbox";
 import { resolveAcpSessionId } from "@/lib/session-view";
+import { firstUnreadMessageId } from "@/lib/unread";
 import { Sidebar, type SidebarMode } from "@/components/Sidebar";
 import { Splitter } from "@/components/Splitter";
 import { StatusBar } from "@/components/StatusBar";
@@ -103,6 +104,7 @@ import {
   settingsLoad,
   settingsSave,
   sessionDelete,
+  sessionMarkRead,
   sessionCancel,
   sessionMemberRemove,
   sessionMembers,
@@ -175,6 +177,12 @@ interface TurnPolicy {
   acpSessionId: string;
   turnId: string;
   kinds: string[];
+}
+
+interface UnreadJump {
+  sessionId: string;
+  messageId: string | null;
+  count: number;
 }
 
 const REPLY_SOUND_URL = new URL("./assets/notify-reply.wav", import.meta.url).href;
@@ -305,6 +313,21 @@ export default function App() {
   /** handleId → 这次派活的界面阶段；终态后删掉，引用条不显示历史 */
   const [delegateRunning, setDelegateRunning] = useState<Record<string, DelegatePhase>>({});
   const [resumeBusy, setResumeBusy] = useState(false);
+  /** 打开会话那刻定格的首条未读；点击跳转后清空（不随每次渲染重算）。 */
+  const unreadTargetRef = useRef<UnreadJump | null>(null);
+  const [unreadJump, setUnreadJump] = useState<UnreadJump | null>(null);
+  /** 一次「切到会话」的加载周期：等 opening 真正走过 true→false 才处理未读。 */
+  const unreadOpenCycleRef = useRef<{
+    sid: string | null;
+    started: boolean;
+    refreshing: boolean;
+    done: boolean;
+  }>({
+    sid: null,
+    started: false,
+    refreshing: false,
+    done: false,
+  });
 
 
   useEffect(() => {
@@ -370,6 +393,13 @@ export default function App() {
     trimWindow,
     opening,
   } = useSessionState(lastSessionId);
+  const loadingOlderRef = useRef(loadingOlder);
+  loadingOlderRef.current = loadingOlder;
+  const loadOlderRef = useRef(loadOlder);
+  loadOlderRef.current = loadOlder;
+  /** requestOlder 的可用条件：库里还有更早的，或者内存头部被裁过。 */
+  const canLoadOlderRef = useRef(hasMore || trimmedHead);
+  canLoadOlderRef.current = hasMore || trimmedHead;
   /** estimate/keyOf 的函数身份必须稳定，否则流式正文一更新就会作废整份测量缓存。 */
   const msgsRef = useRef(state.msgs);
   msgsRef.current = state.msgs;
@@ -390,6 +420,69 @@ export default function App() {
   useEffect(() => {
     sessionStateRef.current = sessionState;
   }, [sessionState]);
+
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+
+  useEffect(() => {
+    unreadTargetRef.current = null;
+    setUnreadJump(null);
+  }, [lastSessionId]);
+
+  /**
+   * 会话成为当前会话时：写一次已读水位，并把首条未读的 messageId 定格到 ref。
+   *
+   * 必须等 `opening` 真正走完一遍再取消息，否则切到已有缓存的会话时会在旧快照上定格。
+   * 定格后不再随 `state.msgs` 变化重算 —— 浮动按钮的条数也要和打开那一刻一致。
+   */
+  useEffect(() => {
+    const sid = lastSessionId;
+    let cycle = unreadOpenCycleRef.current;
+    if (cycle.sid !== sid) {
+      cycle = { sid, started: false, refreshing: false, done: false };
+      unreadOpenCycleRef.current = cycle;
+    }
+    if (!sid) return;
+    if (opening) {
+      cycle.started = true;
+      return;
+    }
+    if (!cycle.started || cycle.done || cycle.refreshing) return;
+
+    cycle.refreshing = true;
+    void (async () => {
+      // 先读一次库再定格：后台会话的未读可能还没反映到当前 sessions 快照里。
+      const fresh = await reloadSessions();
+      if (unreadOpenCycleRef.current !== cycle) return;
+      cycle.refreshing = false;
+      const summary = (fresh ?? sessionsRef.current).find((session) => session.id === sid);
+      if (!summary) return;
+      if (summary.unreadCount > 0 && msgsRef.current.length === 0) return;
+
+      cycle.done = true;
+      const target =
+        summary.unreadCount > 0
+          ? {
+              sessionId: sid,
+              messageId: firstUnreadMessageId(msgsRef.current, summary.unreadCount),
+              count: summary.unreadCount,
+            }
+          : null;
+      unreadTargetRef.current = target;
+      setUnreadJump(target);
+      // 打开即归 0（§42.3）：浮动按钮仍用上面定格下来的条数与目标。
+      if (target) {
+        setSessions((prev) =>
+          prev.map((session) =>
+            session.id === sid && session.unreadCount !== 0
+              ? { ...session, unreadCount: 0 }
+              : session,
+          ),
+        );
+      }
+      void sessionMarkRead(sid).catch((e) => clog("UNREAD-MARK-ERR", String(e)));
+    })();
+  }, [lastSessionId, opening, reloadSessions, setSessions, state.msgs.length]);
 
   const pushUiNotice = useCallback((sid: string, notice: NoticeInput) => {
     if (!sid || sid !== noticeSessionRef.current) return;
@@ -482,6 +575,8 @@ export default function App() {
     scopeKey: activeTabId ?? lastSessionId,
     diag: clog,
   });
+  const scrollToMessageIndexRef = useRef(scrollToMessageIndex);
+  scrollToMessageIndexRef.current = scrollToMessageIndex;
 
   const visibleMessageIds = useMemo(
     () => new Set(state.msgs.map((message) => message.id)),
@@ -1359,6 +1454,70 @@ export default function App() {
    */
   const forceScrollToEndRef = useRef(forceScrollToEnd);
   forceScrollToEndRef.current = forceScrollToEnd;
+
+  const clearUnread = useCallback(
+    (sid: string) => {
+      unreadTargetRef.current = null;
+      setUnreadJump(null);
+      setSessions((prev) =>
+        prev.map((session) =>
+          session.id === sid && session.unreadCount !== 0
+            ? { ...session, unreadCount: 0 }
+            : session,
+        ),
+      );
+      void sessionMarkRead(sid).catch((e) => clog("UNREAD-MARK-ERR", String(e)));
+    },
+    [setSessions],
+  );
+
+  /**
+   * 跳到打开会话时定格的首条未读。
+   *
+   * 目标可能已被滑动窗口裁掉：最多向上回填 5 页；仍找不到就退到底部并清计数。
+   * 每页都检查「条数有没有增长」，没有进展立即收手，避免卡死或无限循环。
+   */
+  const jumpToFirstUnread = useCallback(async () => {
+    const target = unreadTargetRef.current;
+    if (!target || target.sessionId !== lastSessionId) return;
+    const nextFrame = () =>
+      new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const find = () =>
+      target.messageId
+        ? msgsRef.current.findIndex((message) => message.id === target.messageId)
+        : -1;
+
+    let index = find();
+    if (index < 0 && target.messageId && canLoadOlderRef.current) {
+      for (let page = 0; page < 5; page++) {
+        if (lastSessionIdRef.current !== target.sessionId) return;
+        // 自动滚动可能正在回填：等它收尾再判断，最多再等 30 帧，避免卡死。
+        for (let wait = 0; wait < 30 && loadingOlderRef.current; wait++) {
+          await nextFrame();
+        }
+        index = find();
+        if (index >= 0) break;
+        if (!canLoadOlderRef.current || loadingOlderRef.current) break;
+        const before = msgsRef.current.length;
+        await loadOlderRef.current();
+        await nextFrame();
+        if (lastSessionIdRef.current !== target.sessionId) return;
+        index = find();
+        if (index >= 0 || !canLoadOlderRef.current || msgsRef.current.length === before) {
+          break;
+        }
+      }
+    }
+
+    if (lastSessionIdRef.current !== target.sessionId) return;
+    if (index >= 0) {
+      scrollToMessageIndexRef.current(index, "center");
+    } else {
+      scrollToEndRef.current();
+    }
+    clearUnread(target.sessionId);
+  }, [clearUnread, lastSessionId]);
+
   const jumpToBottomAfterSend = useCallback(() => {
     forceScrollToEndRef.current();
     requestAnimationFrame(() => forceScrollToEndRef.current());
@@ -1810,7 +1969,7 @@ export default function App() {
       (profileIdChoice ? profiles.find((p) => p.id === profileIdChoice) : undefined) ??
       profiles.find((p) => p.id === activeSession?.profileId) ??
       activeProfile;
-    const summary: SessionSummary = { id, title: t("app.session.newTitle"), cwd: cwdOverride ?? inheritProfile?.cwd ?? "", updatedAt: t("app.session.justNow"), updatedAtSec: Math.floor(Date.now() / 1000), group: "今天", playerIds: [], acpSessionId: null, profileId: inheritProfile?.id }; // i18n-ignore
+    const summary: SessionSummary = { id, title: t("app.session.newTitle"), cwd: cwdOverride ?? inheritProfile?.cwd ?? "", updatedAt: t("app.session.justNow"), updatedAtSec: Math.floor(Date.now() / 1000), group: "今天", playerIds: [], acpSessionId: null, profileId: inheritProfile?.id, unreadCount: 0 }; // i18n-ignore
     setSessions((prev) => [summary, ...prev]);
     sessionUpsert({ id, acpSessionId: null, profileId: inheritProfile?.id ?? null, title: summary.title, cwd: summary.cwd, createdAt: summary.updatedAtSec!, updatedAt: summary.updatedAtSec! }).catch((e) => console.warn("[db] upsert session failed", e));
     openTab({ kind: "session", title: t("app.session.newTitle"), sessionId: id });
@@ -2543,6 +2702,18 @@ export default function App() {
                     className="pointer-events-none absolute inset-x-0 bottom-0 px-3 pb-3"
                   >
                     <div className="mx-auto max-w-3xl">
+                      {unreadJump?.sessionId === lastSessionId && unreadJump.count > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => void jumpToFirstUnread()}
+                          className="sc-glass pointer-events-auto mb-2 flex w-full items-center gap-2 rounded-card px-3 py-1.5 text-left text-caption text-danger-1 transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+                        >
+                          <ArrowUp className="size-3.5 shrink-0" />
+                          <span className="truncate">
+                            {t("app.unread.jump", { count: unreadJump.count })}
+                          </span>
+                        </button>
+                      )}
                       {state.pendingPerm && (
                         <button
                           onClick={() => setPermOpen(true)}

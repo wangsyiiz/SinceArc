@@ -33,11 +33,13 @@ import {
   type RepoRowState,
 } from "@/lib/repos-picker";
 import { isBetaVersion, versionLabel } from "@/lib/version-label";
+import { unreadBadgeText } from "@/lib/unread";
 import { SessionMoreMenu } from "./SessionMcpMenu";
+import { AgentLogo } from "./AgentLogo";
 import { StatusDot } from "./ui/Badge";
+import { BrandLoader } from "./ui/BrandLoader";
 import { Dialog } from "./ui/Dialog";
 import { useHoverCard } from "./ui/HoverCard";
-import { Tooltip } from "./ui/Tooltip";
 
 export type SidebarMode = "sessions" | "code";
 
@@ -134,7 +136,6 @@ export function Sidebar({
   sessions,
   activeId,
   profiles,
-  players,
   repos,
   prsByRepo,
   identityByRepo,
@@ -452,6 +453,9 @@ export function Sidebar({
                     ? profiles.find((p) => p.id === s.profileId)
                     : undefined;
                   const busy = isSessionBusy?.(s.id) ?? false;
+                  const unread = unreadBadgeText(s.unreadCount);
+                  const logoAgent =
+                    profile?.agentName?.trim() || profile?.program?.trim() || null;
                   return (
                     <div
                       key={s.id}
@@ -462,43 +466,44 @@ export function Sidebar({
                     >
                       <button
                         onClick={() => onSelect(s.id)}
-                        className="flex w-full flex-col gap-0.5 rounded-mark px-2.5 py-2 pr-7 text-left"
+                        className="flex w-full flex-col gap-0.5 rounded-mark px-2.5 py-2 pr-7 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
                       >
-                      <span
-                        className={cn(
-                          "truncate text-small",
-                          active ? "text-ink-1" : "text-ink-2 group-hover:text-ink-1",
-                        )}
-                      >
-                        {s.title}
-                      </span>
-                      <span className="flex min-w-0 items-center gap-1">
-                        {s.playerIds.slice(0, 3).map((pid) => {
-                          const pl = players.find((x) => x.id === pid);
-                          return pl ? (
-                            <Tooltip key={pid} label={localizeText(pl.name, t)}>
-                              <span
-                                className="size-1.5 rounded-full"
-                                style={{ background: pl.color }}
-                              />
-                            </Tooltip>
-                          ) : null;
-                        })}
-                        <span className="min-w-0 truncate font-mono text-micro text-ink-3">
-                          {s.cwd}
-                        </span>
-                        {profile && (
+                        <span className="flex min-w-0 items-center gap-1.5">
                           <span
                             className={cn(
-                              // 这里只说「这个会话属于谁」，不做连接状态着色 ——
-                              // 状态属于当前那个会话，在标题栏里显示，列在这里会变成一堆绿灰点。
-                              "ml-auto max-w-18 shrink-0 truncate rounded-mark bg-surface-3/35 px-1 py-px font-mono text-micro text-ink-3 transition-colors group-hover:bg-surface-3/55",
+                              "min-w-0 flex-1 truncate text-small",
+                              active ? "text-ink-1" : "text-ink-2 group-hover:text-ink-1",
                             )}
                           >
-                            {profileLabel(profile, t)}
+                            {s.title}
+                          </span>
+                          {busy && (
+                            <BrandLoader
+                              variant="comet"
+                              size={14}
+                              label={t("sidebar.session.running")}
+                              className="shrink-0"
+                            />
+                          )}
+                          {unread && (
+                            <span
+                              aria-label={t("sidebar.session.unreadBadge", {
+                                count: s.unreadCount,
+                              })}
+                              className="shrink-0 rounded-full bg-danger-1/15 px-1.5 py-px font-mono text-micro tabular-nums text-danger-1"
+                            >
+                              {unread}
+                            </span>
+                          )}
+                        </span>
+                        {profile && (
+                          <span className="flex min-w-0 items-center gap-1 text-micro text-ink-3">
+                            <AgentLogo agent={logoAgent} size={14} />
+                            <span className="min-w-0 truncate">
+                              {profileLabel(profile, t)}
+                            </span>
                           </span>
                         )}
-                      </span>
                       </button>
                       {/* hover 才出现：删除是低频破坏性操作，不该一直挂在那儿等误点 */}
                       <div className="absolute right-1 top-1.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
