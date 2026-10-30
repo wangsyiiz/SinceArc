@@ -149,8 +149,15 @@ jobs:
 
           # 商店版必须带 feature store（§13.4）：不注册内置更新器，更新入口跳商店。
           # 上一步 tauri build 出的是直装版，这里覆盖成商店版再打包 —— NSIS 已产好，不受影响。
-          cargo build --release --features store --bin sincearc
+          # 注意仓库根没有 Cargo.toml（它在 src-tauri/），所以必须用 --manifest-path：
+          # 否则 cargo 在仓库根直接报 "could not find Cargo.toml"（v0.0.13 首跑就死在这）。
+          $before = (Get-Item $exe).LastWriteTimeUtc
+          cargo build --manifest-path src-tauri/Cargo.toml --release --features store --bin sincearc
           if ($LASTEXITCODE -ne 0) { throw "商店版编译失败（cargo build --features store）" }
+          $after = (Get-Item $exe).LastWriteTimeUtc
+          if ($after -le $before) {
+            throw "商店版 exe 没被重编（时间戳没变）：别把直装版打进商店包"
+          }
 
           $layout = "artifacts/msix/layout"
           Remove-Item $layout -Recurse -Force -ErrorAction SilentlyContinue
