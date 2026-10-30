@@ -6,14 +6,18 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Button } from "@/components/ui/Button";
 import { Markdown } from "@/components/Markdown";
+import { asCmdError } from "@/lib/ipc/client";
+import { buildChannel, openStoreUpdate } from "@/lib/ipc/domains/system";
+import { normalizeUpdateChannel, type UpdateChannel } from "@/lib/update-channel";
 
 /**
  * 设置 → 更新。
  *
- * 口径见 docs/distribution.md §9：
- * - 只订阅正式通道（releases/latest/download/latest.json），预发布不推给用户；
- * - 点了才检查，不在启动时静默下载；
- * - 失败按原因分开说（网络 / 签名 / 安装器），不合并成一句「更新失败」。
+ * 两个渠道（docs/distribution.md §13.4）：
+ * - `direct`：只订阅正式通道（releases/latest/download/latest.json），点了才检查，
+ *   失败按原因分开说（网络 / 签名 / 安装器），不合并成一句「更新失败」—— §9；
+ * - `store`：**不注册**内置更新器，按钮改成「在 Microsoft Store 中打开」。
+ *   商店版没有「立即检查」能力，所以这里不画"已是最新"、也不画下载进度。
  */
 
 type Phase =
@@ -50,9 +54,29 @@ export function UpdateSection() {
   const { t } = useTranslation();
   const [version, setVersion] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  const [channel, setChannel] = useState<UpdateChannel>("direct");
+  const [storeError, setStoreError] = useState<string | null>(null);
+  const [storeOpening, setStoreOpening] = useState(false);
 
   useEffect(() => {
     void getVersion().then(setVersion).catch(() => setVersion(null));
+    // 渠道问后端；问不到就当直装版（见 update-channel.ts 的理由）
+    void buildChannel()
+      .then((raw) => setChannel(normalizeUpdateChannel(raw)))
+      .catch(() => setChannel("direct"));
+  }, []);
+
+  const openStore = useCallback(async () => {
+    setStoreError(null);
+    setStoreOpening(true);
+    try {
+      await openStoreUpdate();
+    } catch (e) {
+      // 后端只在「拉不起 cmd / 非 Windows 构建」时才报错，原话比自造的更准
+      setStoreError(asCmdError(e).msg);
+    } finally {
+      setStoreOpening(false);
+    }
   }, []);
 
   const runCheck = useCallback(async () => {
@@ -100,12 +124,36 @@ export function UpdateSection() {
           <div className="min-w-0">
             <span className="text-ui text-ink-1">{t("settings.update.currentVersion")}</span>
             <p className="mt-1 text-caption text-ink-3">
-              {t("settings.update.releaseOnly")}
+              {channel === "store"
+                ? t("settings.update.store.releaseNote")
+                : t("settings.update.releaseOnly")}
             </p>
           </div>
           <span className="font-mono text-ui text-ink-2">{version ? `v${version}` : "—"}</span>
         </div>
 
+        {channel === "store" ? (
+          <div className="py-4">
+            <div className="flex items-center justify-between gap-6">
+              <div className="min-w-0">
+                <span className="text-ui text-ink-1">{t("settings.update.check")}</span>
+                <p className="mt-1 text-caption text-ink-3">
+                  {storeError ?? t("settings.update.store.hint")}
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void openStore()}
+                disabled={storeOpening}
+              >
+                {storeOpening
+                  ? t("settings.update.store.opening")
+                  : t("settings.update.store.open")}
+              </Button>
+            </div>
+          </div>
+        ) : (
         <div className="py-4">
           <div className="flex items-center justify-between gap-6">
             <div className="min-w-0">
@@ -170,6 +218,7 @@ export function UpdateSection() {
             </p>
           )}
         </div>
+        )}
       </div>
     </div>
   );

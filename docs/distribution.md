@@ -353,11 +353,32 @@ MSIX 版启动后 `%APPDATA%\com.sincearc.app\sincearc.db` 的 mtime 跟着变�
 2. **商店版走 Store 更新后同理**：更新是后台完成的，若旧进程还在，点图标看到的仍是旧界面 ——
    验收时先看「设置 → 关于」里的版本号，而不是界面观感。
 
-### 13.4 商店版必须关掉应用内更新（待批准，本版未改）
+### 13.4 商店版的更新入口跳 Store，不关按钮
 
-两套更新机制不能同时跑：MSIX 由 Store 服务更新，内置 updater 再把 NSIS 包拉下来装进去只会打架。
-落地方式是构建期开关（`tauri.conf.json` 的 `plugins.updater` 在商店包里不配 endpoints，或加一个
-`app.storeBuild` 标记让前端不显示"检查更新"）。**这属于配置项改动，动手前先说明理由并经所有者批准。**
+两套更新机制不能同时跑（MSIX 由 Store 服务更新，内置 updater 再把 NSIS 包拉下来装进去只会打架），
+但**按钮不删**：删掉后用户找不到"怎么升级"，只能猜。口径是「入口保留、动作改向」。
+
+**编译标识**：Cargo feature `store`（默认关闭）。
+
+```bash
+cargo build --release --features store   # 商店包用的 exe
+cargo tauri build --bundles nsis         # 直装版，不带该 feature
+```
+
+- 商店包里**不注册 `tauri_plugin_updater`**，前端也就不会去打 `latest.json`
+  —— 顺带消掉当前日志里那三条连不上 GitHub 的 `ERROR tauri_plugin_updater`。
+- 前端靠 `build_channel` 命令（返回 `store` / `direct`）判断渠道，**不引 `VITE_*` 第二份配置**：
+  编译标识只允许有一个来源，否则迟早出现"后端是商店版、前端以为是直装版"。
+- `store` 渠道的 UI：标题还是「更新」，说明改成"由 Microsoft Store 管理"，
+  按钮文案「在 Microsoft Store 中打开」，点击调 `open_store_update` 打开
+  `ms-windows-store://pdp/?productid=<产品 ID>`。
+  产品 ID 由**编译期环境变量** `SINCEARC_STORE_PRODUCT_ID` 注入（Partner Center 建产品后才有）；
+  未注入时退化为 `ms-windows-store://search/?query=SinceArc`，避免按钮点了没反应。
+- `direct` 渠道的一切保持 §9 原样。
+
+**边界（要跟用户说清）**：商店版没有"立即检查"能力 —— 更新由 Store 后台推，
+用户想手动拉只能在商店「库 → 获取更新」。所以商店版能显示的只有「当前版本」，
+不显示"已是最新"，也不该出现下载进度条。
 
 ### 13.5 本地怎么装（测试包）
 

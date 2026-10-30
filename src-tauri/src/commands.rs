@@ -458,6 +458,81 @@ pub async fn open_external(url: String) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// 构建渠道（docs/distribution.md §13.4）。
+///
+/// 单一来源就是 Cargo feature `store`：商店包的 exe 用 `--features store` 编出来，
+/// 前端再通过 `build_channel` 问一次。**不要**并行加一套 `VITE_*` 环境变量 ——
+/// 两份配置迟早对不上，就会出现"后端是商店版、前端以为是直装版"。
+pub const fn channel() -> &'static str {
+    if cfg!(feature = "store") {
+        "store"
+    } else {
+        "direct"
+    }
+}
+
+/// 商店里这个应用的产品页地址。
+///
+/// 产品 ID 是编译期注入的（`SINCEARC_STORE_PRODUCT_ID`，Partner Center 建完产品才有），
+/// 因为运行时拿不到、也不该让用户配。没注入时退回商店搜索页 ——
+/// 比"按钮点了没反应"好，也比打不开的 pdp 链接诚实。
+fn store_update_url() -> String {
+    match option_env!("SINCEARC_STORE_PRODUCT_ID") {
+        Some(id) if !id.trim().is_empty() => {
+            format!("ms-windows-store://pdp/?productid={}", id.trim())
+        }
+        _ => "ms-windows-store://search/?query=SinceArc".to_string(),
+    }
+}
+
+/// 报当前构建渠道。前端据此决定「更新」这一行怎么画。
+#[tauri::command]
+pub fn build_channel() -> &'static str {
+    channel()
+}
+
+/// 打开 Microsoft Store 里的产品页（商店版的「更新」入口）。
+///
+/// 与 `open_external` 分开：那个只放行 http/https/mailto，而这里必须用
+/// `ms-windows-store:` 协议才能直接落到商店应用里。
+#[tauri::command]
+pub async fn open_store_update() -> Result<(), CmdError> {
+    let target = store_update_url();
+    let host = if target.contains("/pdp/") { "pdp" } else { "search" };
+    tracing::info!(target: "sincearc::ipc", page = host, "open store update page");
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // 与 open_external 同一套 `start ""` 引号规矩：`&` 不能被 cmd 当成命令分隔。
+        std::process::Command::new(crate::acp::launch::system_tool("cmd.exe"))
+            .args(["/C", "start", "", &target])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| {
+                CmdError::keyed_with(
+                    50706,
+                    "err.external.openStoreFailed",
+                    format!("打不开 Microsoft Store：{e}"),
+                    BTreeMap::from([("detail".to_string(), e.to_string())]),
+                )
+            })?;
+    }
+
+    #[cfg(not(windows))]
+    {
+        // 商店渠道只有 Windows 包才有；非 Windows 构建跑到这里说明渠道标错了。
+        return Err(CmdError::keyed(
+            50707,
+            "err.external.storeUnavailable",
+            "Microsoft Store 只在 Windows 上存在",
+        ));
+    }
+
+    Ok(())
+}
+
 /// 前端传来的 profile。字段与 `AgentProfile` 不同 —— 那是内部结构，
 /// 这里只接 UI 真正会填的那几项。
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
@@ -6576,5 +6651,30 @@ mod storage_guard_tests {
             storage_hint_reasons(&stats, now),
             vec!["age".to_string()]
         );
+    }
+}
+
+/// 构建渠道与商店入口（docs/distribution.md §13.4）。
+///
+/// 渠道是编译期定死的，所以这里能直接断言 —— 一旦有人把 `--features store` 忘在 CI 外，
+/// 这条测试在带 feature 的那次构建里就会红。
+#[cfg(test)]
+mod build_channel_tests {
+    use super::{channel, store_update_url};
+
+    #[test]
+    fn channel_follows_the_store_feature() {
+        #[cfg(feature = "store")]
+        assert_eq!(channel(), "store");
+        #[cfg(not(feature = "store"))]
+        assert_eq!(channel(), "direct");
+    }
+
+    #[test]
+    fn store_update_url_is_a_store_uri() {
+        let url = store_update_url();
+        assert!(url.starts_with("ms-windows-store://"), "{url}");
+        // 有产品 ID 走 pdp，没有就退回搜索页：两种都算合法，别出别的
+        assert!(url.contains("/pdp/?productid=") || url.contains("/search/?query="), "{url}");
     }
 }

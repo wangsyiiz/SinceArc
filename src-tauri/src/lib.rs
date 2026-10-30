@@ -158,7 +158,7 @@ fn reveal_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 }
 
 pub fn run() {
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // 单例启动（docs/desktop-ux.md §30）：**必须是第一个注册的插件**，否则它跑在其他插件之后，
         // 第二个实例可能在拿到锁之前就已经把窗口/数据库初始化了一遍。
         // 第二个实例只负责把已有窗口还原并提到前台，然后自己退出；它的命令行参数直接丢弃（E14 再说）。
@@ -170,10 +170,17 @@ pub fn run() {
                 let _ = window.show();
                 let _ = window.set_focus();
             }
-        }))
-        // 自动更新：更新包走 minisign 签名（与 Authenticode 无关），端点见 docs/distribution.md §9
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        // 更新装完后重启自己
+        }));
+
+    // 自动更新：更新包走 minisign 签名（与 Authenticode 无关），端点见 docs/distribution.md §9。
+    // 商店版（`--features store`，§13.4）**不注册**它：更新交给 Microsoft Store，
+    // 留着只会去打 latest.json 然后失败（日志里那三条 ERROR 就是这么来的）。
+    // 注意顺序：单例插件必须先注册（§30），所以 updater 在这里补，不放在链首。
+    #[cfg(not(feature = "store"))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
+    let app = builder
+        // 更新装完后重启自己（直装版用；商店版不会走到）
         .plugin(tauri_plugin_process::init())
         // 回复完成通知（docs/desktop-ux.md §31）；失败静默降级，不参与单例语义
         .plugin(tauri_plugin_notification::init())
@@ -190,6 +197,8 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             init_logging(&dir)?;
+            // 渠道落日志：装的是商店包还是直装版，出问题时靠这一行分辨（§13.4）。
+            tracing::info!(target: "sincearc::ipc", channel = commands::channel(), "build channel");
             let db = db::Db::open(&dir.join("sincearc.db"))?;
             tracing::info!(target: "sincearc::ipc", path = %dir.join("sincearc.db").display(), "db ready");
             app.manage(AppState::new(db));
@@ -249,6 +258,8 @@ pub fn run() {
             commands::settings_load,
             commands::settings_save,
             commands::open_external,
+            commands::build_channel,
+            commands::open_store_update,
             commands::sessions_list,
             commands::session_upsert,
             commands::session_delete,
