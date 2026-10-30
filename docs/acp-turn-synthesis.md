@@ -73,6 +73,42 @@ ACP 事件泵（每条事件）
 1. 合成轮在轨迹面板没有独立卡片：`session.turns` 只由发送流程 append；
 2. 合成轮的轨迹事件仍按「无活动轮次」丢弃：`state.turns`（Turns 归属）只在 `sessionPrompt` 里建立。
 
+### 6.1 界面没有「思考中」（2026-10-30 报，已定位、待修）
+
+**表现**：agent 从后台任务被唤醒后，正文能正常流出来，但**没有那一行「思考中」**，显得文字是突然冒出来的。
+
+**根因不在协议侧，在 UI 的活动行**。聊天区那一行「思考中」来自 `state.acts` 里 `status === "running"` 的活动行
+（`App.tsx` 的 `ThinkingRow` 渲染处），而活动行**只有一个创建点**：
+
+```
+src/hooks/usePrompt.ts   ← 用户点发送时创建：id = `act-stream-${acpSid}`，kind=thinking，status=running
+```
+
+合成轮不经过 `usePrompt`（它是 Rust 侧凭 `session/update` 合成的），所以：
+
+```
+合成 PromptStarted(origin=agent) → turnId 记上、chunk 过了闸（正文正常）
+                                ✗ acts 里没有那一行 → 没有「思考中」
+                                ✗ busy 也没置真     → 界面不认为在跑
+```
+
+**修法很轻，因为收尾已经对上了**：活动行 id 是约定死的 `act-stream-${acpSid}`，
+`promptResult` 的收尾逻辑正是按这个 id 找行（`useAcpEvents.ts` 的 promptResult 分支）。
+所以只缺「开一行」，收尾一行都不用改：
+
+```
+promptStarted(origin="agent")
+  ├─ 已有该 id 且 running → 不动（幂等，别重置 at，否则「已跑时长」每次事件归零）
+  └─ 没有 → 插入 act-stream-${acpSid}（playerId=MAIN_AGENT_ID, kind=thinking, status=running）
+  └─ busy = true
+promptResult → 现有逻辑按同一 id 收尾（ok / error / stopped）
+```
+
+判定抽成纯函数 `ensureRunningAct(acts, actId, at)` 并单测（已有 running 不重置时间戳、没有才插、id 不匹配不误伤），
+`useAcpEvents` 只负责在合成轮的 `promptStarted` 分支里调它。
+
+**状态**：截至本文写作时**尚未实现**（分支 `fix/agent-turn-thinking` 计划中）。修完后本节改为「已补」并写明提交。
+
 ## 7. 出问题时的最快止血
 
 按代价从小到大：
