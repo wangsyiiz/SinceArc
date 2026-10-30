@@ -64,26 +64,40 @@ jobs:
             Write-Host "非 tag 构建（${{ github.ref }}），只校验 package.json 与 tauri.conf.json 一致"
           }
 
-      - name: 读 CHANGELOG 段落（本次发布内容）
+      - name: 读 CHANGELOG 段落（中文 + 英文，见 docs/distribution.md §11）
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
           $v = "${{ steps.ver.outputs.version }}"
           New-Item -ItemType Directory -Force .ci | Out-Null
-          $body = @()
-          if (Test-Path CHANGELOG.md) {
-            $in = $false
-            foreach ($line in (Get-Content CHANGELOG.md -Encoding utf8)) {
-              if ($line -match '^##\s') {
-                $in = $line -match "^##\s+\[?v?$([regex]::Escape($v))\]?(\s|$)"
-                continue
+
+          # 从某个 CHANGELOG 文件里取 "## v<版本>" 段落（到下一个 "## " 为止）
+          function Get-ChangelogSection([string]$Path) {
+            $body = @()
+            if (Test-Path $Path) {
+              $in = $false
+              foreach ($line in (Get-Content $Path -Encoding utf8)) {
+                if ($line -match '^##\s') {
+                  $in = $line -match "^##\s+\[?v?$([regex]::Escape($v))\]?(\s|$)"
+                  continue
+                }
+                if ($in -and $line.Trim()) { $body += $line.TrimEnd() }
               }
-              if ($in -and $line.Trim()) { $body += $line.TrimEnd() }
             }
+            return $body
           }
-          if ($body.Count -eq 0) { $body = @('- 见提交历史') }
-          ($body -join "`n") | Set-Content .ci/changelog-section.md -Encoding utf8
-          Write-Host "CHANGELOG v$v 段落 $($body.Count) 行"
+
+          $zh = Get-ChangelogSection CHANGELOG.md
+          $en = Get-ChangelogSection CHANGELOG.en.md
+
+          # 双语拼成同一份 notes（latest.json 只有一个 notes 字段）：中文在前，缺哪语就不写那个小标题
+          $out = @()
+          if ($zh.Count -gt 0) { $out += @("### 中文", "") + $zh + @("") }
+          if ($en.Count -gt 0) { $out += @("### English", "") + $en + @("") }
+          if ($out.Count -eq 0) { $out = @("- 见提交历史") }
+
+          ($out -join "`n").TrimEnd() | Set-Content .ci/changelog-section.md -Encoding utf8
+          Write-Host "CHANGELOG v$v：中文 $($zh.Count) 行 / 英文 $($en.Count) 行"
 
       - uses: dtolnay/rust-toolchain@stable
 
