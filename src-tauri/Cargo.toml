@@ -1,6 +1,6 @@
 [package]
 name = "sincearc"
-version = "0.0.13"
+version = "0.0.14"
 description = "SinceArc — an ACP desktop client"
 edition = "2021"
 rust-version = "1.77.2"
@@ -37,6 +37,11 @@ opt-level = "s"
 strip = true
 
 [features]
+# 内嵌前端（等价于 tauri-cli 生产构建时加的 feature）。
+# 少了它，`generate_context!` 根本不读 frontendDist，编译出来的 exe 会去连 devUrl
+# —— 双击打开就是「连接 localhost 失败」（v0.0.13 的 MSIX 就栽在这，见 docs/distribution.md §13.6）。
+custom-protocol = ["tauri/custom-protocol"]
 # 商店渠道（docs/distribution.md §13.4）：打 MSIX 上传 Microsoft Store 的构建带这个 feature。
 # 效果：不注册内置 updater（更新交给 Store），前端「更新」入口改成跳商店页面。
-store = []
+# 必须连带 custom-protocol：商店包没有 devUrl 可连。
+store = ["custom-protocol"]

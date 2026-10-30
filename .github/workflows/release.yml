@@ -151,6 +151,11 @@ jobs:
           # 上一步 tauri build 出的是直装版，这里覆盖成商店版再打包 —— NSIS 已产好，不受影响。
           # 注意仓库根没有 Cargo.toml（它在 src-tauri/），所以必须用 --manifest-path：
           # 否则 cargo 在仓库根直接报 "could not find Cargo.toml"（v0.0.13 首跑就死在这）。
+          # store 连带 custom-protocol（§13.6），但内嵌前端还得 dist 在场 —— 少了它编出来的
+          # 包一开就是「连接 localhost 失败」，而 makeappx 不会报任何错。
+          if (-not (Test-Path "dist/index.html")) {
+            throw "dist 不存在：商店版会把 devUrl 打进包（先跑 npm run build）"
+          }
           $before = (Get-Item $exe).LastWriteTimeUtc
           cargo build --manifest-path src-tauri/Cargo.toml --release --features store --bin sincearc
           if ($LASTEXITCODE -ne 0) { throw "商店版编译失败（cargo build --features store）" }
