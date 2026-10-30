@@ -439,3 +439,26 @@ pub struct RepoListing {
 
 - GH 域仍**不认识会话、不认识本地路径**；`gh` 只读；不读 `~/.config/gh/hosts.yml`；
   adapter 之外不出现 `--json`、`nameWithOwner` 这类 CLI 细节。
+
+### 2.3 当前登录身份（viewer）
+
+标题栏要显示「是谁登录着 gh」，需要身份。2026-10-30 所有者定：**走 gh 命令不算违规** ——
+`gh api user` 是 gh CLI 的子命令，token 仍归 gh 自己管，我们不直接持有、不自己发 HTTP。
+
+```rust
+pub struct Viewer { pub login: String, pub name: Option<String>, pub avatar_url: Option<String> }
+
+#[async_trait]
+pub trait GhCli: Send + Sync {
+    // …既有五个方法不变
+    async fn viewer(&self) -> Result<Viewer, GhError>;
+}
+```
+
+- 实现：`gh api user`（超时 10s），解析 `login / name / avatar_url`；`401 / bad credentials` → `NotLoggedIn`。
+- 缓存：`VIEWER_TTL = 1h`（身份变化极少），落 domain 与其它缓存同构；`force` 可绕过。
+- 命令：`gh_viewer(force?) -> ViewerDto { state, login?, name?, avatar_url? }`，
+  `state ∈ ready | loggedOut | unavailable`。
+  **`unavailable`（没装）与 `loggedOut`（没登录）分开** —— 界面上都要说「未登录」，但排障时是两回事。
+  其余错误（超时、网络）原样返回 `CmdError`，界面不显示占位，避免把网络问题说成"没登录"。
+- 只取读身份，不缓存 token、不写 hosts.yml、不碰写操作。
