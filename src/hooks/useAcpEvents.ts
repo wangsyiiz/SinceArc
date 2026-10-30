@@ -42,7 +42,7 @@ import type { CommandDto } from "@/lib/ipc/types.gen/CommandDto";
 import type { UsageDto } from "@/lib/ipc/types.gen/UsageDto";
 import type { Message, SessionSummary } from "@/types";
 import { MAIN_AGENT_ID } from "./usePrompt";
-import { ensureRunningAct, streamActId } from "@/lib/turn-act";
+import { ensureRunningAct, shouldIgnoreAgentResult, streamActId } from "@/lib/turn-act";
 import type { PatchSession } from "./useSessionState";
 
 /**
@@ -997,6 +997,10 @@ export function useAcpEvents({
       }
 
       if (event.kind === "promptResult" || event.kind === "promptFailed") {
+        // 合成轮让位结果不能收掉真轮：真轮的 sendTrace 还在飞时整体忽略。
+        if (shouldIgnoreAgentResult(origin, Boolean(acpSid && sendTraces.current[acpSid]))) {
+          return;
+        }
         const failed = event.kind === "promptFailed";
         const stopReason = event.kind === "promptResult" ? stopReasonOf(event.result) : null;
         if (acpSid) finalizeAbsorbedCapture(acpSid);

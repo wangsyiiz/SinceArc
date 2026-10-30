@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Activity } from "../types.ts";
-import { ensureRunningAct, streamActId } from "./turn-act.ts";
+import { ensureRunningAct, shouldIgnoreAgentResult, streamActId } from "./turn-act.ts";
 
 const act = (over: Partial<Activity> = {}): Activity => ({
   id: streamActId("acp-1"),
@@ -49,4 +49,20 @@ test("别的 id 的 running 行不受影响（群聊多成员）", () => {
 
 test("streamActId 的口径与收尾处一致", () => {
   assert.equal(streamActId("abc"), "act-stream-abc");
+});
+
+test("agent 让位结果 + 真轮在飞：忽略", () => {
+  assert.equal(shouldIgnoreAgentResult("agent", true), true);
+});
+
+test("agent 让位结果 + 没有在飞真轮：不忽略", () => {
+  assert.equal(shouldIgnoreAgentResult("agent", false), false);
+});
+
+test("真实轮终态（origin=null）+ 有在飞真轮：不忽略", () => {
+  assert.equal(shouldIgnoreAgentResult(null, true), false);
+});
+
+test("空 origin + 有在飞真轮：不忽略", () => {
+  assert.equal(shouldIgnoreAgentResult("", true), false);
 });
