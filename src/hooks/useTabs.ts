@@ -1,12 +1,67 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionSummary, Tab } from "@/types";
-import { nextActiveTabId, pruneSessionTabs, sessionIdForActiveTab } from "@/lib/tabs-prune";
+import {
+  nextActiveTabId,
+  prunePinnedSessions,
+  pruneSessionTabs,
+  sessionIdForActiveTab,
+} from "@/lib/tabs-prune";
 import { i18nText } from "@/lib/i18n-text";
+
+const PINNED_KEY = "sincearc.tabs.pinned";
+
+function readPinnedSessions(): Set<string> {
+  try {
+    if (typeof localStorage === "undefined") return new Set();
+    const raw = localStorage.getItem(PINNED_KEY);
+    if (!raw) return new Set();
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((id): id is string => typeof id === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+function writePinnedSessions(pinned: ReadonlySet<string>) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(PINNED_KEY, JSON.stringify([...pinned]));
+  } catch {
+    // localStorage 不可用时只是不持久化，标签栏本身照常工作。
+  }
+}
+
+function sessionIdOf(tab: Tab): string | null {
+  return tab.kind === "session" && tab.sessionId ? tab.sessionId : null;
+}
+
+/** pinned 组在前，组内与组外都按标签的原始打开顺序稳定排列。 */
+function orderTabs(tabs: Tab[], pinned: ReadonlySet<string>, baseOrder: readonly string[]): Tab[] {
+  const rank = new Map(baseOrder.map((id, index) => [id, index]));
+  return [...tabs].sort((a, b) => {
+    const aPinned = pinned.has(sessionIdOf(a) ?? "") ? 0 : 1;
+    const bPinned = pinned.has(sessionIdOf(b) ?? "") ? 0 : 1;
+    if (aPinned !== bPinned) return aPinned - bPinned;
+    return (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER);
+  });
+}
 
 export function useTabs(sessions: SessionSummary[]) {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [lastSessionId, setLastSessionId] = useState("");
+  const [pinned, setPinned] = useState<Set<string>>(readPinnedSessions);
+
+  const pinnedRef = useRef(pinned);
+  pinnedRef.current = pinned;
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const baseOrderRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    writePinnedSessions(pinned);
+  }, [pinned]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
 
@@ -32,22 +87,6 @@ export function useTabs(sessions: SessionSummary[]) {
    */
   const autoOpenedRef = useRef(false);
 
-  // 启动时列表回来了就直接打开最近一个，别让人对着一屏空白点新建
-  useEffect(() => {
-    if (autoOpenedRef.current) return;
-    if (tabs.length > 0) {
-      autoOpenedRef.current = true;
-      return;
-    }
-    const first = sessions[0];
-    if (!first) return;
-    autoOpenedRef.current = true;
-    const tabId = `tab-${first.id}`;
-    setTabs([{ id: tabId, kind: "session", title: first.title, sessionId: first.id }]);
-    setActiveTabId(tabId);
-    setLastSessionId(first.id);
-  }, [sessions, tabs.length]);
-
   /**
    * 列表里没了 = 会话被删了，对应标签必须跟着关。
    *
@@ -59,9 +98,12 @@ export function useTabs(sessions: SessionSummary[]) {
   useEffect(() => {
     const alive = new Set(sessions.map((s) => s.id));
     const seen = seenIdsRef.current;
+    setPinned((prev) => prunePinnedSessions(prev, alive, seen));
     setTabs((prev) => {
       const kept = pruneSessionTabs(prev, alive, seen);
       if (kept === prev) return prev;
+      const keptIds = new Set(kept.map((tab) => tab.id));
+      baseOrderRef.current = baseOrderRef.current.filter((id) => keptIds.has(id));
       setActiveTabId((current) => nextActiveTabId(kept, current, prev));
       return kept;
     });
@@ -87,20 +129,52 @@ export function useTabs(sessions: SessionSummary[]) {
           : tab.kind === "settings"
             ? i18nText("app.tab.settings")
             : `#${tab.prNumber}`);
-    setTabs((prev) => (prev.some((t) => t.id === key) ? prev : [...prev, { ...tab, id: key, title }]));
+    if (!baseOrderRef.current.includes(key)) baseOrderRef.current.push(key);
+    setTabs((prev) => {
+      if (prev.some((t) => t.id === key)) return prev;
+      return orderTabs([...prev, { ...tab, id: key, title }], pinnedRef.current, baseOrderRef.current);
+    });
     setActiveTabId(key);
     if (tab.kind === "session" && tab.sessionId) setLastSessionId(tab.sessionId);
   }, []);
+
+  // 启动时列表回来了就先按持久化顺序重建 pinned，再打开最近一个。
+  // 自动行为仍然只做一次；用户手动关掉最后一个标签时不会再被强行打开。
+  useEffect(() => {
+    if (autoOpenedRef.current) return;
+    if (tabs.length > 0) {
+      autoOpenedRef.current = true;
+      return;
+    }
+    const first = sessions[0];
+    if (!first) return;
+    autoOpenedRef.current = true;
+    const byId = new Map(sessions.map((session) => [session.id, session]));
+    for (const id of pinnedRef.current) {
+      const summary = byId.get(id);
+      if (!summary) continue;
+      openTab({ kind: "session", sessionId: id, title: summary.title });
+    }
+    openTab({ kind: "session", sessionId: first.id, title: first.title });
+  }, [openTab, sessions, tabs.length]);
 
   /** 按会话 id 关标签：删除会话时用，不依赖调用方手里的 tabs 快照。 */
   const closeSessionTabs = useCallback((sessionId: string) => {
     setTabs((prev) => {
       const next = prev.filter((t) => !(t.kind === "session" && t.sessionId === sessionId));
       if (next.length === prev.length) return prev;
+      const keptIds = new Set(next.map((tab) => tab.id));
+      baseOrderRef.current = baseOrderRef.current.filter((id) => keptIds.has(id));
       setActiveTabId((current) => {
         if (current && next.some((t) => t.id === current)) return current;
         return next[0]?.id ?? null;
       });
+      return next;
+    });
+    setPinned((prev) => {
+      if (!prev.has(sessionId)) return prev;
+      const next = new Set(prev);
+      next.delete(sessionId);
       return next;
     });
   }, []);
@@ -109,6 +183,8 @@ export function useTabs(sessions: SessionSummary[]) {
     setTabs((prev) => {
       const idx = prev.findIndex((t) => t.id === id);
       const next = prev.filter((t) => t.id !== id);
+      if (next.length === prev.length) return prev;
+      baseOrderRef.current = baseOrderRef.current.filter((tabId) => tabId !== id);
       if (activeTabId === id) {
         const fallback = next[Math.min(idx, next.length - 1)];
         setActiveTabId(fallback?.id ?? null);
@@ -126,5 +202,41 @@ export function useTabs(sessions: SessionSummary[]) {
     [tabs],
   );
 
-  return { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab };
+  const pinTab = useCallback((id: string) => {
+    const tab = tabsRef.current.find((candidate) => candidate.id === id);
+    const sessionId = tab ? sessionIdOf(tab) : null;
+    if (!sessionId || pinnedRef.current.has(sessionId)) return;
+    const nextPinned = new Set(pinnedRef.current);
+    nextPinned.add(sessionId);
+    pinnedRef.current = nextPinned;
+    setPinned(nextPinned);
+    setTabs((prev) => orderTabs(prev, nextPinned, baseOrderRef.current));
+  }, []);
+
+  const unpinTab = useCallback((id: string) => {
+    const tab = tabsRef.current.find((candidate) => candidate.id === id);
+    const sessionId = tab ? sessionIdOf(tab) : null;
+    if (!sessionId || !pinnedRef.current.has(sessionId)) return;
+    const nextPinned = new Set(pinnedRef.current);
+    nextPinned.delete(sessionId);
+    pinnedRef.current = nextPinned;
+    setPinned(nextPinned);
+    setTabs((prev) => orderTabs(prev, nextPinned, baseOrderRef.current));
+  }, []);
+
+  return {
+    tabs,
+    activeTabId,
+    setActiveTabId,
+    activeTab,
+    lastSessionId,
+    setLastSessionId,
+    openTab,
+    closeTab,
+    closeSessionTabs,
+    selectTab,
+    pinned,
+    onPin: pinTab,
+    onUnpin: unpinTab,
+  };
 }

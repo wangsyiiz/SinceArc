@@ -20,6 +20,27 @@ export function pruneSessionTabs(
   return kept.length === tabs.length ? tabs : kept;
 }
 
+/**
+ * 会话真的被删掉时清掉它的 pin。
+ *
+ * 判定与 `pruneSessionTabs` 共用 `seen`：只有「列表里出现过、现在没了」才算删除；
+ * 从没见过 = 列表还没回流，pin 必须留着，否则刷新列表就会把刚 pin 的标签忘掉。
+ * 没有变化时返回原 Set，调用方可以据此跳过一次状态更新。
+ */
+export function prunePinnedSessions(
+  pinned: Set<string>,
+  alive: ReadonlySet<string>,
+  seen: ReadonlySet<string>,
+): Set<string> {
+  let next: Set<string> | null = null;
+  for (const id of pinned) {
+    if (alive.has(id) || !seen.has(id)) continue;
+    next ??= new Set(pinned);
+    next.delete(id);
+  }
+  return next ?? pinned;
+}
+
 /** 剪枝后如果当前标签没了，落到它右边那个（没有就左边那个）。 */
 export function nextActiveTabId(tabs: Tab[], activeId: string | null, before: Tab[]): string | null {
   if (!activeId) return null;
