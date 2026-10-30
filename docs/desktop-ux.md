@@ -2332,3 +2332,28 @@ ACP 侧的标题被完全丢掉：`session_info_update` 收到就丢，`session/
 - 逐行核对：原 `session` 块 290 个非空行，在 `SessionRoute.tsx` 里**一行不缺**（脚本比对，缺失 0），
   除缩进外无差异；`App.tsx` 里 `activeTab?.kind === "session"` 已归零。
 - 门禁：`tsc -b` 0 / `npm test` 462 pass / `check-i18n` 0-0-0。
+
+## 44. 更新说明（release notes）按 markdown 渲染
+
+**现象**：设置页「发现新版本」下面那块说明，把 `**加粗**`、反引号、`- ` 项目符号原样显示成纯文本 ——
+因为它是 `<pre>{notes}</pre>`（`components/UpdateSection.tsx`）。
+
+**事实**：这份说明本来就是 markdown。链路是
+`CHANGELOG.md` 的版本段落 → `release.yml` 写成 `.ci/changelog-section.md` →
+`latest.json` 的 `notes` 字段 → 更新器 `Update.body` → 前端。v0.0.10 的 notes 实测 404 字符，
+含 `**加粗**`、反引号、多条 `- ` 项目符号，且项目符号带缩进续行。
+
+### 44.1 口径
+
+- 用**已有的** `components/Markdown.tsx`（底层 `lib/markdown.ts` 的 `parseMarkdown`，与聊天同一条解析路径、
+  同一套 `.sc-prose` 排版）渲染，**不新增依赖、不引第二个 markdown 库**。
+- 链接沿用 `Markdown` 内部的 `openExternal`，在系统浏览器打开；不在应用内打开（桌面壳没有浏览器上下文）。
+- 容器改成 `max-h-64`（说明比纯文本占地方，`max-h-40` 只够看三行）、内部滚动，保留
+  `rounded-mark` / `border-line-1` / `bg-surface-2` / `p-3` / `text-caption` / `text-ink-2` 这套既有样式。
+- `notes` 为空照旧不渲染这一整块（不显示空盒子）。
+
+### 44.2 验收
+
+- 设置页检查更新后，说明里的加粗、反引号、项目符号、缩进续行都按 markdown 呈现；
+- 点说明里的链接：在系统浏览器打开，应用内不跳走；
+- 说明很长时可滚动，区块不撑破设置页。
