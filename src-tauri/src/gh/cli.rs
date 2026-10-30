@@ -10,7 +10,7 @@ use tokio::process::Command;
 
 use super::model::{
     CheckState, FileChange, GhCli, GhError, GhStatus, PrDetail, PrState, PrStateView, PullRequest,
-    RepoRef,
+    RepoListing, RepoRef, MAX_REPO_LIST_LIMIT,
 };
 use serde::Deserialize;
 
@@ -19,9 +19,12 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 const DETAIL_TIMEOUT: Duration = Duration::from_secs(10);
 const DIFF_TIMEOUT: Duration = Duration::from_secs(20);
+const REPO_LIST_TIMEOUT: Duration = Duration::from_secs(15);
 const LIST_LIMIT: &str = "30";
 const LIST_JSON_FIELDS: &str = "number,title,state,isDraft,mergeable,reviewDecision,author,updatedAt,headRefName,baseRefName,url,statusCheckRollup";
 const DETAIL_JSON_FIELDS: &str = "number,title,state,isDraft,mergeable,reviewDecision,author,updatedAt,createdAt,headRefName,baseRefName,url,statusCheckRollup,body,additions,deletions,changedFiles,files";
+const REPO_LIST_JSON_FIELDS: &str =
+    "nameWithOwner,isPrivate,defaultBranchRef,updatedAt,description";
 
 pub struct RealGh {
     roots: Vec<PathBuf>,
@@ -178,6 +181,47 @@ struct RawAuthor {
     login: String,
     name: Option<String>,
     is_bot: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawRepoListing {
+    name_with_owner: String,
+    is_private: bool,
+    default_branch_ref: Option<RawBranchRef>,
+    updated_at: Option<String>,
+    description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawBranchRef {
+    name: String,
+}
+
+impl RawRepoListing {
+    fn into_model(self, host: &str) -> Option<RepoListing> {
+        let (owner, name) = self.name_with_owner.split_once('/')?;
+        if owner.trim().is_empty() || name.trim().is_empty() {
+            return None;
+        }
+        Some(RepoListing {
+            repo: RepoRef {
+                host: Some(host.to_string()),
+                owner: owner.to_string(),
+                name: name.to_string(),
+            },
+            default_branch: self
+                .default_branch_ref
+                .map(|branch| branch.name.trim().to_string())
+                .filter(|branch| !branch.is_empty()),
+            is_private: self.is_private,
+            updated_at: self.updated_at.as_deref().and_then(parse_iso8601_epoch),
+            description: self
+                .description
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -385,6 +429,80 @@ fn choose_host(hosts: &[String]) -> Option<String> {
     }
 }
 
+/// `gh repo list` 不会在 JSON 里带 host；优先 `GH_HOST`，否则按 github.com。
+/// 只读环境变量，不碰 `~/.config/gh/hosts.yml`（docs/gh.md §2.2 的边界）。
+fn current_repo_host() -> String {
+    std::env::var("GH_HOST")
+        .ok()
+        .map(|host| host.trim().to_ascii_lowercase())
+        .filter(|host| !host.is_empty())
+        .unwrap_or_else(|| "github.com".to_string())
+}
+
+/// ISO8601（UTC `Z` 或 `±HH:MM`）→ epoch 秒。`gh` 给的是字符串，
+/// 但域模型只暴露数值时间；解析失败按缺失处理，不让整个列表失败。
+fn parse_iso8601_epoch(raw: &str) -> Option<i64> {
+    let raw = raw.trim();
+    let (date, time) = raw
+        .split_once('T')
+        .or_else(|| raw.split_once(' '))?;
+    let mut date_parts = date.split('-');
+    let year: i32 = date_parts.next()?.parse().ok()?;
+    let month: u32 = date_parts.next()?.parse().ok()?;
+    let day: u32 = date_parts.next()?.parse().ok()?;
+    if date_parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+
+    let (clock, offset_secs) = split_time_offset(time)?;
+    let mut time_parts = clock.split(':');
+    let hour: i64 = time_parts.next()?.parse().ok()?;
+    let minute: i64 = time_parts.next()?.parse().ok()?;
+    let second: i64 = time_parts
+        .next()?
+        .split('.')
+        .next()?
+        .parse()
+        .ok()?;
+    if time_parts.next().is_some() || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+
+    let days = days_from_civil(year, month, day);
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second - offset_secs)
+}
+
+fn split_time_offset(time: &str) -> Option<(&str, i64)> {
+    if let Some(clock) = time.strip_suffix('Z').or_else(|| time.strip_suffix('z')) {
+        return Some((clock, 0));
+    }
+    if let Some(index) = time.rfind(['+', '-']) {
+        let (clock, offset) = time.split_at(index);
+        let sign = if offset.starts_with('-') { -1 } else { 1 };
+        let (hours, minutes) = offset[1..].split_once(':')?;
+        let hours: i64 = hours.parse().ok()?;
+        let minutes: i64 = minutes.parse().ok()?;
+        if hours > 23 || minutes > 59 {
+            return None;
+        }
+        return Some((clock, sign * (hours * 3_600 + minutes * 60)));
+    }
+    Some((time, 0))
+}
+
+/// Howard Hinnant 的 civil-date 算法：1970-01-01 为第 0 天。
+fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+    let year = (if month <= 2 { year - 1 } else { year }) as i64;
+    let era = (if year >= 0 { year } else { year - 399 }) / 400;
+    let year_of_era = year - era * 400;
+    let month = month as i64;
+    let day = day as i64;
+    let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let day_of_era =
+        year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
 fn cwd_ok() -> bool {
     let Ok(current) = std::env::current_dir() else {
         return false;
@@ -517,6 +635,64 @@ impl GhCli for RealGh {
             host,
             cwd_ok: cwd_ok(),
         })
+    }
+
+    async fn list_repos(
+        &self,
+        owner: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<RepoListing>, GhError> {
+        let Some(path) = self.find() else {
+            return Err(GhError::NotInstalled);
+        };
+
+        let limit = limit.clamp(1, MAX_REPO_LIST_LIMIT).to_string();
+        let mut args = vec!["repo", "list"];
+        if let Some(owner) = owner.map(str::trim).filter(|owner| !owner.is_empty()) {
+            args.push(owner);
+        }
+        args.extend([
+            "--limit",
+            limit.as_str(),
+            "--json",
+            REPO_LIST_JSON_FIELDS,
+        ]);
+
+        let output = self.run(&path, &args, REPO_LIST_TIMEOUT).await?;
+        if !output.status.success() {
+            return Err(map_stderr(&output.stderr));
+        }
+
+        let raw: Vec<RawRepoListing> = match serde_json::from_str(&output.stdout) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(
+                    target: "sincearc::gh",
+                    error = %error,
+                    "could not parse gh repo list output"
+                );
+                return Err(GhError::ParseFailed {
+                    version: self.version_for_parse_error(&path).await,
+                });
+            }
+        };
+
+        let host = current_repo_host();
+        Ok(raw
+            .into_iter()
+            .filter_map(|row| {
+                let name_with_owner = row.name_with_owner.clone();
+                let listing = row.into_model(&host);
+                if listing.is_none() {
+                    tracing::warn!(
+                        target: "sincearc::gh",
+                        name_with_owner = %name_with_owner,
+                        "gh repo list row has no owner/name"
+                    );
+                }
+                listing
+            })
+            .collect())
     }
 
     async fn list_prs(&self, repo: &RepoRef, state: PrState) -> Result<Vec<PullRequest>, GhError> {
@@ -678,6 +854,28 @@ fn env_dir(name: &str) -> Option<PathBuf> {
         None
     } else {
         Some(PathBuf::from(value))
+    }
+}
+
+#[cfg(test)]
+mod iso_tests {
+    use super::parse_iso8601_epoch;
+
+    #[test]
+    fn parses_utc_fractional_and_offset_timestamps() {
+        assert_eq!(
+            parse_iso8601_epoch("2026-10-28T10:03:06Z"),
+            Some(1_793_181_786)
+        );
+        assert_eq!(
+            parse_iso8601_epoch("2026-10-28T10:03:06.789Z"),
+            Some(1_793_181_786)
+        );
+        assert_eq!(
+            parse_iso8601_epoch("2026-10-28T10:03:06+08:00"),
+            Some(1_793_152_986)
+        );
+        assert_eq!(parse_iso8601_epoch("not-a-time"), None);
     }
 }
 
@@ -1088,6 +1286,27 @@ mod tests {
         let status = gh.status().await.unwrap();
         assert!(!status.logged_in);
         assert_eq!(status.host, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn repo_list_parses_fixture_and_epoch_seconds() {
+        let _lock = lock_env();
+        set_fixture("repos.json");
+        let (_temp, gh) = stub_gh("repo-list", "ok");
+
+        let items = gh.list_repos(None, 100).await.unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].repo.owner, "wangsyiiz");
+        assert_eq!(items[0].repo.name, "SinceArc");
+        assert_eq!(items[0].repo.host, Some(current_repo_host()));
+        assert_eq!(items[0].default_branch.as_deref(), Some("main"));
+        assert!(!items[0].is_private);
+        assert_eq!(items[0].updated_at, Some(1_793_181_786));
+        assert_eq!(items[0].description.as_deref(), Some("ACP desktop client"));
+
+        assert_eq!(items[1].default_branch, None);
+        assert!(items[1].is_private);
+        assert_eq!(items[1].description, None);
     }
 
     #[test]

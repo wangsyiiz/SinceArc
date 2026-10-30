@@ -23,6 +23,7 @@ use crate::commands::{
 };
 
 mod migrations;
+pub mod repos;
 
 pub const SCHEMA: &str = include_str!("schema.sql");
 

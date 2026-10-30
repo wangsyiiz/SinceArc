@@ -13,6 +13,7 @@ if "%1"=="auth" if "%2"=="status" goto auth
 if "%1"=="pr" if "%2"=="list" if "%3"=="-R" goto pr_list
 if "%1"=="pr" if "%2"=="view" goto pr_view
 if "%1"=="pr" if "%2"=="diff" goto pr_diff
+if "%1"=="repo" if "%2"=="list" goto repo_list
 if "%1"=="crash" goto crash
 goto unsupported
 
@@ -66,6 +67,10 @@ type "%FAKE_GH_FIXTURE%"
 exit /b 0
 
 :pr_diff
+type "%FAKE_GH_FIXTURE%"
+exit /b 0
+
+:repo_list
 type "%FAKE_GH_FIXTURE%"
 exit /b 0
 

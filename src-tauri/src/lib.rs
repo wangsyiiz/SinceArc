@@ -7,6 +7,7 @@ pub mod lock;
 pub mod mcp;
 pub mod mention;
 pub mod message_kind;
+pub mod repos;
 pub mod state;
 pub mod trace;
 pub mod wire;
@@ -264,6 +265,12 @@ pub fn run() {
             gh::gh_pr_list,
             gh::gh_pr_detail,
             gh::gh_pr_diff,
+            gh::gh_repos_list,
+            repos::repos_list,
+            repos::repos_add_local,
+            repos::repos_add_remote,
+            repos::repos_pin,
+            repos::repos_remove_local,
         ])
         .build(tauri::generate_context!())
         .expect("error while building SinceArc");

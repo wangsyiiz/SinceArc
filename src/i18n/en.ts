@@ -468,6 +468,8 @@ export const en: Record<MessageKey, string> = {
   "err.gh.prNotFound": "Could not load this PR: {{detail}}",
   "err.gh.notGitRepo": "This folder is not a git repository: {{path}}",
   "err.gh.noRemote": "No usable origin remote: {{detail}}",
+  "err.repos.pathRequired": "Project path cannot be empty",
+  "err.repos.notFound": "Project not found or was removed: {{id}}",
   "err.gh.repoPathRequired": "Repository path is required: {{path}}",
   "err.member.loadAgentUserFailed": "Failed to read agent users: {{detail}}",
   "err.member.loadMembersFailed": "Failed to read group members: {{detail}}",

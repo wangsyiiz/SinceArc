@@ -375,3 +375,67 @@ A4/A5 取列表里第一条 merged 的 PR。这些差异是数据源的差异，
 `/mnt/c/source/sincearc-spikes/001-gh-json-path/README.md`（含 `measure.sh` 可复现）。
 关键数字：gh 进程启动 ~218 ms；列表 1022/1130/1095 ms；详情 1152/1032/1117 ms；diff 1823/1752/1767 ms；
 curl 直连 REST 1,013 ms（更快这一点不成立，网络是主导项）。
+
+## 2.2 仓库来源与合流（2026-10-30 定，补 2026-10-24 的口头结论）
+
+此前只写了「本地路径添加」一个方向，反方向（从 GH 选 → 找本地副本）只存在于讨论里，没有落成规范。
+本节补齐，并把契约扩一条。
+
+### 两个来源，一个主键
+
+```
+远端身份（GH 域）    repos        host · owner · name · default_branch · pinned_at · last_used_at
+本地副本（本地域）   local_repos  id · repo_id → repos · path(唯一) · host_kind · added_at · last_used_at
+会话（本地域）       sessions.cwd / worktrees   ← 不属于本节
+```
+
+**主键是远端身份，不是本地路径。** 一个远端可以有多份本地副本（换机器、fork、`~/source/x` 与
+`~/work/x` 并存）；以路径为主键会让同一个仓库变成两个"项目"，PR 列表重复出现。
+
+### 合流规则（两个方向都必须实现）
+
+| 方向 | 动作 |
+| --- | --- |
+| 本地添加 | `resolve_repo(path)`（读 `<path>/.git/config`，**不启进程**）→ 得 `host/owner/name` → `repos` 没有就补一条 → `local_repos` 加一行。解析不出远端就明确报「没有 remote」，不算「不是 git 仓库」 |
+| GH 选择 | `gh repo list` 拿到仓库列表 → 按 `host/owner/name` 查 `local_repos`：**命中** → 直接可用（多副本让用户选哪一个）；**未命中** → 只给两个显式动作：`clone`（显式，不偷偷建）或「只看不干」（看 PR 不需要本地副本，也不需要会话） |
+
+### 检测阶梯（不扫盘）
+
+```
+L0  local_repos 表          唯一权威，一次 SQL
+L1  候选池读 .git/config     候选来自 session_bindings.cwd / 最近目录；读文件不启进程；
+                            worktree 的 .git 是文件（gitdir: …）要跟一层；SSH 与 HTTPS 两种 URL 要归一
+L2  用户授权的「代码根目录」  只列一层，手动触发，默认关闭
+L3  粘贴路径 / 拖入目录       兜底
+```
+
+命中 L1 只**提示**，用户确认才写 `local_repos`。
+
+### 契约扩展：`list_repos`
+
+```rust
+#[async_trait]
+pub trait GhCli: Send + Sync {
+    // …既有四个方法不变
+    async fn list_repos(&self, owner: Option<&str>, limit: u32) -> Result<Vec<RepoListing>, GhError>;
+}
+
+pub struct RepoListing {
+    pub repo: RepoRef,                    // 复用既有 host/owner/name
+    pub default_branch: Option<String>,
+    pub is_private: bool,
+    pub updated_at: Option<i64>,
+    pub description: Option<String>,
+}
+```
+
+- 命令：`gh_repos_list(owner?, limit?, force?) -> RepoListDto { items, hasMore }`；
+  缓存落 domain（`GH_REPOS_TTL = 60s`），超时 15s（仓库列表通常 ~1s，留余量）。
+- **分页口径**：`--limit` 上限 100；`hasMore = items.len() == limit`。不做真分页（`gh repo list`
+  没有 offset），UI 必须把"最近 N 个"写出来，不许静默截断。
+- `owner` 省略 = 当前登录账号及其可访问组织；不跨账号搜索（那属于 `gh search repos`，另立项）。
+
+### 边界（不变）
+
+- GH 域仍**不认识会话、不认识本地路径**；`gh` 只读；不读 `~/.config/gh/hosts.yml`；
+  adapter 之外不出现 `--json`、`nameWithOwner` 这类 CLI 细节。

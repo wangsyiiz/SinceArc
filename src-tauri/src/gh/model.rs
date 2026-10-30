@@ -10,6 +10,21 @@ pub struct RepoRef {
     pub name: String,
 }
 
+/// `gh repo list` 的一行：远端身份 + 列表展示需要的元数据。
+/// CLI 的 JSON 字段名与 ISO 时间字符串在 adapter 里消化完才到这里。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoListing {
+    pub repo: RepoRef,
+    pub default_branch: Option<String>,
+    pub is_private: bool,
+    pub updated_at: Option<i64>,
+    pub description: Option<String>,
+}
+
+/// `gh repo list` 的单次上限。domain 总是按这个值拉满再切片，
+/// adapter 收到越界值同样夹到这里（两处都守，避免调用方绕过）。
+pub const MAX_REPO_LIST_LIMIT: u32 = 100;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Author {
     pub login: String,
@@ -135,6 +150,11 @@ impl GhError {
 #[async_trait]
 pub trait GhCli: Send + Sync {
     async fn status(&self) -> Result<GhStatus, GhError>;
+    async fn list_repos(
+        &self,
+        owner: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<RepoListing>, GhError>;
     async fn list_prs(&self, repo: &RepoRef, state: PrState) -> Result<Vec<PullRequest>, GhError>;
     async fn pr_detail(&self, repo: &RepoRef, number: u32) -> Result<PrDetail, GhError>;
     async fn pr_diff(&self, repo: &RepoRef, number: u32) -> Result<String, GhError>;
