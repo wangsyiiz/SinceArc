@@ -282,3 +282,25 @@ test("2000 字输入的解析耗时只防病态回归", () => {
   // 本机 0.76ms、CI 5.33ms 都远在 15ms 之下，而真出问题通常是几十上百毫秒。
   assert.ok(best <= 15, `2000 字解析耗时 ${best.toFixed(3)}ms（最小），超过 15ms 回归线`);
 });
+
+test("更新说明：缩进续行仍属同一个项目符号（v0.0.10 真实 notes 形状）", () => {
+  const src = [
+    "- **打开「添加项目」不再闪黑色终端窗口**。以前每打开一次会闪几下（要问 `gh` 三件事：版本、登录态、仓库列表），",
+    "  现在这些后台调用都不会再弹窗口。",
+    "- **不再误报「GitHub CLI 不可用」**。",
+    "",
+  ].join("\n");
+  const blocks = parseMarkdown(src);
+  assert.equal(blocks.length, 1);
+  const list = blocks[0];
+  assert.equal(list?.kind, "list");
+  if (list?.kind !== "list") return;
+  assert.equal(list.items.length, 2, "两条项目符号，缩进续行不另起一条");
+  const first = list.items[0] ?? [];
+  const para = first[0];
+  assert.equal(para?.kind, "paragraph");
+  if (para?.kind !== "paragraph") return;
+  const text = inlineText(para.children);
+  assert.match(text, /现在这些后台调用都不会再弹窗口/, "续行并入同一条");
+  assert.match(text, /仓库列表）/, "反引号内容仍在");
+});

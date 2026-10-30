@@ -5,6 +5,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Button } from "@/components/ui/Button";
+import { Markdown } from "@/components/Markdown";
 
 /**
  * 设置 → 更新。
@@ -149,9 +150,9 @@ export function UpdateSection() {
           </div>
 
           {phase.kind === "found" && phase.notes && (
-            <pre className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap rounded-mark border border-line-1 bg-surface-2 p-3 text-caption text-ink-2">
-              {phase.notes}
-            </pre>
+            <div className="mt-3 max-h-64 overflow-auto rounded-mark border border-line-1 bg-surface-2 p-3 text-caption text-ink-2">
+              <Markdown source={phase.notes} />
+            </div>
           )}
 
           {phase.kind === "downloading" && phase.total > 0 && (
