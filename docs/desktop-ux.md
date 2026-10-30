@@ -2303,9 +2303,10 @@ ACP 侧的标题被完全丢掉：`session_info_update` 收到就丢，`session/
 
 ### 43.2 口径
 
-- 路由字符串：`#/session/<uiSid>`、`#/repo/<repoId>`、`#/pr/<repoId>/<number>`、`#/settings`。
-  解析不到、残缺、多段 → 返回 `null`，调用方显示空态（`WorkspaceEmpty`），**不许抛异常**。
-- 纯函数两个方向都要单测（tab → 路由、路由 → tab 描述、容错输入）。
+- 路由路径：`/session/<uiSid>`、`/repo/<repoId>`、`/pr/<repoId>/<number>`、`/settings`（hash router，实际是 `#/…`）。
+- **只有 tab → 路径**这一侧是我们要写的纯函数（`pathOfTab`），它必须单测：四种 kind、缺字段（如 pr 没 number）
+  返回 `null`、未知 kind 返回 `null`。反向解析归 react-router（`useParams`），不另写一套。
+- 路径对不上任何 tab（手改 hash、历史遗留）→ 显示空态（`WorkspaceEmpty`），**不许抛异常、不许自动建标签**。
 - 迁移分两阶段，各自一次提交，**行为、样式、文案、事件一行都不许改**（纯搬运）：
   - **B1**：路由 + `RouteOutlet` 骨架 + `repo` / `settings` / `pr` 三块搬进 `src/routes/`（JSX 原样搬，
     props 由 App 组装），App 里删掉那三段内联分支与 PR 骨架块；
