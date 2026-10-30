@@ -408,6 +408,8 @@ export const en: Record<MessageKey, string> = {
   "ui.titleBar.minimize": "Minimize",
   "ui.titleBar.maximize": "Maximize",
   "ui.titleBar.close": "Close",
+  "titleBar.identity.notLoggedIn": "Not signed in",
+  "titleBar.identity.githubAccount": "GitHub account {{login}}",
   "ui.button.stop": "Stop",
   "ui.button.steer": "Steer",
   "ui.button.send": "Send",
