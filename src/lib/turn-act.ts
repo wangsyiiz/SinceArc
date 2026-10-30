@@ -34,3 +34,14 @@ export function ensureRunningAct(
 export function streamActId(acpSessionId: string): string {
   return `act-stream-${acpSessionId}`;
 }
+
+/**
+ * 合成轮让位时发出的 `promptResult(origin=agent)` 不是真轮的终态。
+ * 真轮仍在飞（有 sendTrace）时必须忽略它，否则会提前关掉真轮的思考行、清掉 busy。
+ */
+export function shouldIgnoreAgentResult(
+  origin: string | null,
+  hasTraceInFlight: boolean,
+): boolean {
+  return origin === "agent" && hasTraceInFlight;
+}

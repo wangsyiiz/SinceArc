@@ -119,6 +119,12 @@ pub const AGENT_TURN_IDLE_MS: u64 = 8_000;
 /// agent 自发起的一轮（历史正文被再渲染一遍、还多出一条轮次）。多等一会儿再放开。
 pub const LOAD_SETTLE_SUPPRESS_MS: u64 = 2_000;
 
+/// 客户端真实轮落终态之后的抑制窗口。
+///
+/// 终态与最后一批 update 可能错序：终态先到、尾巴后到，尾巴会被误判成 agent
+/// 自发起的下一轮，回答就记到了假轮上。终态后短暂只转发、不开轮。
+pub const CLIENT_END_SUPPRESS_MS: u64 = 1_500;
+
 static SYNTH_TURN_SEQ: AtomicU64 = AtomicU64::new(1);
 
 fn next_synth_turn_id() -> String {
@@ -129,8 +135,23 @@ fn next_synth_turn_id() -> String {
 /// 是否应该为这条 update 合成一轮的开始。
 ///
 /// 客户端有未决 prompt 时永远不合成；已有合成轮时也不重复开始。
-pub fn should_synthesize_start(client_pending: bool, has_synth: bool) -> bool {
-    !client_pending && !has_synth
+/// 只有内容类 update 能开轮：通知类 update 不是轮的开端（例如 `session/new` 后的首条通知）。
+pub fn should_synthesize_start(
+    client_pending: bool,
+    has_synth: bool,
+    kind: Option<&str>,
+) -> bool {
+    !client_pending
+        && !has_synth
+        && matches!(
+            kind,
+            Some(
+                "agent_message_chunk"
+                    | "agent_thought_chunk"
+                    | "tool_call"
+                    | "tool_call_update"
+            )
+        )
 }
 
 /// 三个 idle 守卫同时成立才允许合成终态。
@@ -225,7 +246,8 @@ pub struct AgentTurns {
 }
 
 impl AgentTurns {
-    /// 推进一条 `session/update`。返回 None 表示客户端轮正在飞，原样转发即可。
+    /// 推进一条 `session/update`。返回 None 表示客户端轮正在飞、处于抑制窗，
+    /// 或这条 update 不是轮的内容：原样转发即可，不合成。
     pub fn on_session_update(
         &self,
         acp_session_id: &str,
@@ -243,7 +265,20 @@ impl AgentTurns {
             return None;
         }
 
-        let started_turn = if should_synthesize_start(state.client_pending, state.synth.is_some()) {
+        let kind = update
+            .get("sessionUpdate")
+            .and_then(serde_json::Value::as_str);
+        let can_start = should_synthesize_start(
+            state.client_pending,
+            state.synth.is_some(),
+            kind,
+        );
+        if state.synth.is_none() && !can_start {
+            // 不是轮的内容：只转发，不建合成轮，也别给不存在的轮起定时器。
+            return None;
+        }
+
+        let started_turn = if can_start {
             state.generation = state.generation.saturating_add(1);
             let turn_id = next_synth_turn_id();
             state.synth = Some(SynthTurn {
@@ -285,17 +320,32 @@ impl AgentTurns {
         })
     }
 
-    /// 客户端真实轮终态到了：解除 busy 标记。
+    /// 客户端真实轮终态到了：解除 busy 标记，并开启终态后的抑制窗。
     pub fn client_end(&self, acp_session_id: &str) {
+        self.client_end_with_suppress(acp_session_id, CLIENT_END_SUPPRESS_MS);
+    }
+
+    /// `suppress_ms` 可调只为一件事：让窗口的生效与过期能被确定性地测到（0 = 立即放开）。
+    pub fn client_end_with_suppress(&self, acp_session_id: &str, suppress_ms: u64) {
+        self.client_end_at(acp_session_id, Instant::now(), suppress_ms);
+    }
+
+    fn client_end_at(&self, acp_session_id: &str, now: Instant, suppress_ms: u64) {
         let mut all = self.inner.lock().expect("agent turns poisoned");
-        let remove = if let Some(state) = all.get_mut(acp_session_id) {
-            state.client_pending = false;
-            // 真实轮已经落终态，它名下的未答授权不可能再生效。
-            state.pending_perms.clear();
-            state.synth.is_none() && state.pending_perms.is_empty()
+        // 用 entry 而不是 get_mut：终态可能比这条会话的第一条 update 更早落到我们手里
+        // （测试里就是这种顺序）。没有记录时也必须把窗口设上，否则抑制窗根本不存在。
+        let state = all.entry(acp_session_id.to_string()).or_default();
+        state.client_pending = false;
+        // 真实轮已经落终态，它名下的未答授权不可能再生效。
+        state.pending_perms.clear();
+        state.suppress_until = if suppress_ms == 0 {
+            None
         } else {
-            false
+            Some(now + Duration::from_millis(suppress_ms))
         };
+        // 窗口内不能删记录：删了就等于放开了合成。
+        let window_elapsed = state.suppress_until.map_or(true, |until| now >= until);
+        let remove = state.synth.is_none() && state.pending_perms.is_empty() && window_elapsed;
         if remove {
             all.remove(acp_session_id);
         }
@@ -966,6 +1016,7 @@ impl AppState {
 mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     use tokio::sync::Notify;
 
@@ -973,6 +1024,7 @@ mod tests {
         apply_tool_update, should_synthesize_end, should_synthesize_start, AgentTurns, Cancels,
         Captured, CommandDto, Commands, ContextMode, ContextReason, DelegateEntry, DelegateStatus,
         Delegates, PendingRequests, ReplayCapture, Routes, SessionRecord, TurnApprovals,
+        CLIENT_END_SUPPRESS_MS,
     };
 
     fn command(name: &str) -> CommandDto {
@@ -1005,10 +1057,133 @@ mod tests {
 
     #[test]
     fn synth_start_requires_no_client_prompt_and_no_existing_synth() {
-        assert!(should_synthesize_start(false, false));
-        assert!(!should_synthesize_start(false, true));
-        assert!(!should_synthesize_start(true, false));
-        assert!(!should_synthesize_start(true, true));
+        assert!(should_synthesize_start(
+            false,
+            false,
+            Some("agent_message_chunk")
+        ));
+        assert!(!should_synthesize_start(
+            false,
+            true,
+            Some("agent_message_chunk")
+        ));
+        assert!(!should_synthesize_start(
+            true,
+            false,
+            Some("agent_message_chunk")
+        ));
+        assert!(!should_synthesize_start(
+            true,
+            true,
+            Some("agent_message_chunk")
+        ));
+    }
+
+    #[test]
+    fn synth_start_whitelists_content_updates_only() {
+        for kind in [
+            "agent_message_chunk",
+            "agent_thought_chunk",
+            "tool_call",
+            "tool_call_update",
+        ] {
+            assert!(
+                should_synthesize_start(false, false, Some(kind)),
+                "内容类 update 必须能开轮：{kind}"
+            );
+        }
+        for kind in [
+            "session_info_update",
+            "available_commands_update",
+            "current_mode_update",
+            "usage_update",
+        ] {
+            assert!(
+                !should_synthesize_start(false, false, Some(kind)),
+                "通知类 update 不许开轮：{kind}"
+            );
+        }
+        assert!(!should_synthesize_start(false, false, None));
+    }
+
+    #[test]
+    fn only_content_session_updates_start_a_synth_turn() {
+        for kind in [
+            "agent_message_chunk",
+            "agent_thought_chunk",
+            "tool_call",
+            "tool_call_update",
+        ] {
+            let turns = AgentTurns::default();
+            let started = turns
+                .on_session_update("acp-1", &update(kind, None, None))
+                .and_then(|signal| signal.started_turn);
+            assert!(started.is_some(), "内容类 update 必须开轮：{kind}");
+        }
+        for kind in [
+            "session_info_update",
+            "available_commands_update",
+            "current_mode_update",
+            "usage_update",
+        ] {
+            let turns = AgentTurns::default();
+            let started = turns
+                .on_session_update("acp-1", &update(kind, None, None))
+                .and_then(|signal| signal.started_turn);
+            assert!(started.is_none(), "通知类 update 不许开轮：{kind}");
+        }
+        let turns = AgentTurns::default();
+        let started = turns
+            .on_session_update("acp-1", &serde_json::json!({}))
+            .and_then(|signal| signal.started_turn);
+        assert!(started.is_none(), "缺失 sessionUpdate 不许开轮");
+    }
+
+    #[test]
+    fn client_end_suppresses_a_chunk_500ms_later_inside_the_window() {
+        let turns = AgentTurns::default();
+        // 生产顺序：客户端开轮 → 终态。也验证「终态比首条 update 更早到」时不丢窗口。
+        turns.client_begin("acp-1");
+        let ended_at = Instant::now() - Duration::from_millis(500);
+        turns.client_end_at("acp-1", ended_at, CLIENT_END_SUPPRESS_MS);
+        let started = turns
+            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .and_then(|signal| signal.started_turn);
+        assert!(started.is_none(), "终态后 500ms 仍在抑制窗内");
+    }
+
+    #[test]
+    fn synth_can_start_again_after_the_client_end_window_expires() {
+        let turns = AgentTurns::default();
+        let ended_at = Instant::now()
+            - Duration::from_millis(CLIENT_END_SUPPRESS_MS)
+            - Duration::from_millis(1);
+        turns.client_end_at("acp-1", ended_at, CLIENT_END_SUPPRESS_MS);
+        let signal = turns
+            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .expect("窗口过期后应恢复合成");
+        assert!(signal.started_turn.is_some());
+    }
+
+    #[test]
+    fn client_begin_clears_the_client_end_window() {
+        let turns = AgentTurns::default();
+        turns.client_end_at(
+            "acp-1",
+            Instant::now() - Duration::from_millis(500),
+            CLIENT_END_SUPPRESS_MS,
+        );
+        turns.client_begin("acp-1");
+        {
+            let all = turns.inner.lock().expect("agent turns poisoned");
+            let state = all.get("acp-1").expect("窗口内记录必须保留");
+            assert!(state.suppress_until.is_none(), "client_begin 必须清窗");
+        }
+        turns.client_end_at("acp-1", Instant::now(), 0);
+        let signal = turns
+            .on_session_update("acp-1", &update("agent_message_chunk", None, None))
+            .expect("清窗后应能开轮");
+        assert!(signal.started_turn.is_some());
     }
 
     #[test]
