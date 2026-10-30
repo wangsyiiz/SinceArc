@@ -392,15 +392,19 @@ export function Sidebar({
   // （特判写法会撞 i18next 的 t() 重载：动态 key 的两参形式要求 options 带 defaultValue）。
   const localErrorText = localError ? errorTextOf(localError, t) : null;
 
-  const ghReason = !ghState
+  // 只有「真的用不了」才叫不可用：没装、没登录。cwdOk 判的是应用进程的工作目录是不是
+  // git 仓库（打包后是 exe 目录，永远不是），与「能不能列仓库 / 看 PR」无关，不再当成故障。
+  const ghBanner = !ghState
     ? null
     : !ghState.available
-      ? t("err.gh.notInstalled")
+      ? { title: t("sidebar.projects.ghMissing"), body: t("err.gh.notInstalled"), login: false }
       : !ghState.loggedIn
-        ? t("err.gh.notLoggedIn")
-        : !ghState.cwdOk
-          ? t("sidebar.projects.ghCwdUnavailable")
-          : null;
+        ? {
+            title: t("sidebar.projects.ghNotLoggedIn"),
+            body: t("sidebar.projects.ghLoginHint"),
+            login: true,
+          }
+        : null;
 
   return (
     <aside style={{ width }} className="sc-pane flex h-full shrink-0 flex-col overflow-hidden">
@@ -590,18 +594,25 @@ export function Sidebar({
                     </button>
                   </div>
 
-                  {ghReason && (
+                  {ghBanner && (
                     <div className="mx-1.5 mb-1.5 shrink-0 rounded-mark bg-surface-2/50 px-2 py-1.5">
-                      <p className="text-micro font-medium text-ink-2">
-                        {t("sidebar.projects.ghUnavailable")}
-                      </p>
-                      <p className="mt-0.5 text-micro leading-relaxed text-ink-3">{ghReason}</p>
+                      <p className="text-micro font-medium text-ink-2">{ghBanner.title}</p>
+                      <p className="mt-0.5 text-micro leading-relaxed text-ink-3">{ghBanner.body}</p>
                       {(ghState?.ghPath || ghState?.version || ghState?.host) && (
                         <p className="mt-0.5 break-all font-mono text-micro text-ink-3">
                           {[ghState?.ghPath, ghState?.version, ghState?.host]
                             .filter(Boolean)
                             .join(" · ")}
                         </p>
+                      )}
+                      {ghBanner.login && (
+                        <button
+                          type="button"
+                          onClick={() => void copyText("gh auth login")}
+                          className="mt-1 mr-2 rounded-mark text-micro text-accent-1 underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+                        >
+                          {t("sidebar.projects.copyLoginCommand")}
+                        </button>
                       )}
                       <button
                         type="button"
@@ -636,7 +647,7 @@ export function Sidebar({
                     {ghLoading && rows.length === 0 && (
                       <p className="px-1 py-1 text-micro text-ink-3">{t("ui.button.loading")}</p>
                     )}
-                    {!ghLoading && rows.length === 0 && !ghReason && !ghError && (
+                    {!ghLoading && rows.length === 0 && !ghBanner && !ghError && (
                       <p className="px-1 py-1 text-micro leading-relaxed text-ink-3">
                         {t("sidebar.projects.emptyGh")}
                       </p>

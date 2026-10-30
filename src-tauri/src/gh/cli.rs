@@ -14,6 +14,10 @@ use super::model::{
 };
 use serde::Deserialize;
 
+/// Windows：GUI 进程 spawn 控制台程序时，不给这个标志就会弹一个黑框（一闪而过）。
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -61,6 +65,9 @@ impl RealGh {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        // 不设这个标志，`gh --version` / `auth status` / `repo list` 每跑一次都会闪一个控制台窗口。
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
 
         let mut child = command.spawn().map_err(|e| GhError::CliFailed {
             stderr: e.to_string(),
