@@ -315,9 +315,12 @@ makeappx pack /d layout /p out/SinceArc_<version>_x64.msix        （Windows SDK
 | 变量 | 什么时候填 | 现在的默认值（测试身份） |
 | --- | --- | --- |
 | `MSIX_IDENTITY_NAME` | Partner Center 的「包名/Identity Name」 | `SinceArc.Dev` |
-| `MSIX_PUBLISHER` | Partner Center 的「Publisher（CN=…）」 | `CN=SinceArc Dev` |
+| `MSIX_PUBLISHER` | Partner Center 的「Publisher（CN=…）」 | `CN=SinceArc Dev, OID.2.25.311729368913984317654407730594956997722=1` |
 | `MSIX_PUBLISHER_DISPLAY_NAME` | 商店列表里显示的发布者名 | `SinceArc` |
 
+**Publisher 两种口径别混**：未签名测试包必须带 OID 后缀（MS 文档「Create an unsigned MSIX package」），
+少了它 `Add-AppxPackage -AllowUnsigned` 直接报 **0x80073D2C「发布者不在未签名命名空间」**（2026-10-30 实测踩到）；
+商店包由 Store 重签，Publisher 取 Partner Center 给的值且**不带** OID。
 身份一改，就是另一个包：旧包要先卸载，数据目录也跟着换（见 13.3）。
 
 ### 13.3 两个安装形态并存，数据不通
@@ -339,13 +342,26 @@ makeappx pack /d layout /p out/SinceArc_<version>_x64.msix        （Windows SDK
 
 ### 13.5 本地怎么装（测试包）
 
-未签名 MSIX 需要 Windows「开发者模式」：
+未签名的 MSIX 两件事都要满足，缺一个就报错：
+
+1. **Publisher 必须带 OID 后缀**（清单里已由 CI 默认值保证）；
+2. **PowerShell 要以管理员身份运行** —— 带可执行内容的未签名包必须给「所有用户」安装，
+   非管理员会失败（MS 文档「Create an unsigned MSIX package」明确写了这点）。
 
 ```powershell
+# 开始菜单搜 PowerShell → 右键「以管理员身份运行」
 # 设置 → 系统 → 开发者选项 → 开发人员模式 = 开
-Add-AppxPackage -AllowUnsigned .\SinceArc_0.0.12_x64.msix
+Add-AppxPackage -Path .\SinceArc_0.0.12_x64_unsigned.msix -AllowUnsigned
 Get-AppxPackage -Name 'SinceArc*' | Select Name, Version, InstallLocation   # 核验
 ```
+
+常见错：
+
+| 报错 | 原因 |
+| --- | --- |
+| `0x80073D2C` 发布者不在未签名命名空间 | Publisher 少了 OID 后缀 |
+| `0x80073D0A` / 部署被拒 | 没开开发者模式 |
+| 安装成功但启动即退 | 看 `%LOCALAPPDATA%\Packages\<PFN>\LocalCache\Roaming\com.sincearc.app\logs\sincearc.log` |
 
 替代方案（不用开发者模式）：自己签一次再装 —— 生成 `CN=SinceArc Dev` 的自签证书、导入
 「受信任的根证书颁发机构」、`signtool sign /fd SHA256 /f cert.pfx /p <pw> <msix>`。

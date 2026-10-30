@@ -134,9 +134,11 @@ jobs:
         shell: pwsh
         env:
           # 商店身份：Partner Center 里预留产品后，把 IdentityName / Publisher 填进仓库变量即可，
-          # 不用改代码（docs/distribution.md §13）。默认值是测试身份，只能配合开发者模式安装。
+          # 不用改代码（docs/distribution.md §13）。默认值是测试身份，只能配合开发者模式安装；
+          # 未签名包要求 Publisher 带 OID 后缀（MS 文档「Create an unsigned MSIX package」），
+          # 少了它 Add-AppxPackage -AllowUnsigned 直接报 0x80073D2C。商店包不带 OID。
           MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME || 'SinceArc.Dev' }}
-          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER || 'CN=SinceArc Dev' }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER || 'CN=SinceArc Dev, OID.2.25.311729368913984317654407730594956997722=1' }}
           MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME || 'SinceArc' }}
         run: |
           $v = "${{ steps.ver.outputs.version }}"
@@ -253,8 +255,8 @@ jobs:
             "| SinceArc_${v}_x64.msix | 微软商店包（MSIX，**未签名测试版**） |",
             "| SHA256SUMS.txt | 校验和 |",
             "",
-            "**MSIX 包是测试用**：未签名，需要 Windows「开发者模式」才能装 ——",
-            "`Add-AppxPackage -AllowUnsigned .\SinceArc_${v}_x64.msix`。",
+            "**MSIX 包是测试用**：未签名，需要 Windows「开发者模式」+ **管理员 PowerShell** ——",
+            "`Add-AppxPackage -Path .\SinceArc_${v}_x64.msix -AllowUnsigned`。",
             "它的数据落在 %LOCALAPPDATA%\Packages\<包族名>\LocalCache\Roaming\com.sincearc.app，",
             "与安装包/便携版互不相通（同一个应用的两个安装形态，见 docs/distribution.md §13）。",
             "",

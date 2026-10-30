@@ -2,12 +2,15 @@
 <!--
   MSIX 清单模板（docs/distribution.md §13）。
 
-  __TOKEN__ 由 .github/workflows/release.yml 在打包时替换：
-    __IDENTITY_NAME__         包身份名（Store 版必须与 Partner Center 里预留的名字一致）
-    __PUBLISHER__             发布者 DN，必须与签名证书同名（Store 认证会重签）
-    __PUBLISHER_DISPLAY_NAME__ 列表里显示的发布者名
-    __DISPLAY_NAME__          列表里显示的应用名
-    __VERSION__               四段版本号（x.y.z → x.y.z.0）
+  下面这几处的值由 CI 在打包时代入（release.yml 的「打 MSIX」步骤）：
+  包身份名 / 发布者 DN / 发布者显示名 / 应用名 / 四段版本号。
+  注意别在注释里写占位符字面量 —— 替换是纯字符串替换，注释里的也会被换掉。
+
+  Publisher 有两种口径，别混：
+    · 未签名测试包：必须以 OID 后缀结尾（MS 文档「Create an unsigned MSIX package」），
+      即 CN=… + ", OID.2.25.311729368913984317654407730594956997722=1"，
+      否则 Add-AppxPackage -AllowUnsigned 报 0x80073D2C「发布者不在未签名命名空间」；
+    · 商店包：提交时由 Store 认证重签，Publisher 必须等于 Partner Center 给出的值，且**不带** OID。
 
   为什么是 FullTrust + mediumIL：SinceArc 要起 gh / wsl / agent 这类外部进程，
   还要读写用户自选的项目目录 —— 必须在 AppContainer 之外跑，
