@@ -130,6 +130,49 @@ jobs:
       - name: 打便携包
         run: npm run package:win
 
+      - name: 打 MSIX（微软商店包，未签名）
+        shell: pwsh
+        env:
+          # 商店身份：Partner Center 里预留产品后，把 IdentityName / Publisher 填进仓库变量即可，
+          # 不用改代码（docs/distribution.md §13）。默认值是测试身份，只能配合开发者模式安装。
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME || 'SinceArc.Dev' }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER || 'CN=SinceArc Dev' }}
+          MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME || 'SinceArc' }}
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $exe = "src-tauri/target/release/sincearc.exe"
+          if (-not (Test-Path $exe)) { throw "缺少 $exe（tauri build 没产出）" }
+
+          $layout = "artifacts/msix/layout"
+          Remove-Item $layout -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force "$layout/Assets" | Out-Null
+          Copy-Item $exe "$layout/SinceArc.exe"
+          foreach ($f in "Square150x150Logo.png", "Square44x44Logo.png", "StoreLogo.png") {
+            Copy-Item "src-tauri/icons/$f" "$layout/Assets/$f"
+          }
+
+          # MSIX 版本必须四段：0.0.12 -> 0.0.12.0
+          $msixVer = "$v.0"
+          $manifest = Get-Content src-tauri/msix/AppxManifest.xml -Raw
+          $manifest = $manifest.Replace("__IDENTITY_NAME__", $env:MSIX_IDENTITY_NAME)
+          $manifest = $manifest.Replace("__PUBLISHER__", $env:MSIX_PUBLISHER)
+          $manifest = $manifest.Replace("__PUBLISHER_DISPLAY_NAME__", $env:MSIX_PUBLISHER_DISPLAY_NAME)
+          $manifest = $manifest.Replace("__DISPLAY_NAME__", "SinceArc")
+          $manifest = $manifest.Replace("__VERSION__", $msixVer)
+          Set-Content -Path "$layout/AppxManifest.xml" -Value $manifest -Encoding utf8
+
+          # makeappx 在 Windows SDK 里，runner 自带；版本目录按文件名倒序取最高
+          $makeappx = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\makeappx.exe" -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $makeappx) { throw "找不到 makeappx.exe：runner 上 Windows SDK 缺失" }
+
+          New-Item -ItemType Directory -Force out | Out-Null
+          $msix = "out/SinceArc_${v}_x64.msix"
+          & $makeappx.FullName pack /d $layout /p $msix /o
+          if ($LASTEXITCODE -ne 0) { throw "makeappx 打包失败（退出码 $LASTEXITCODE）" }
+          Write-Host "MSIX 已产出：$msix（身份 $env:MSIX_IDENTITY_NAME / $env:MSIX_PUBLISHER / $msixVer，未签名）"
+          Get-Item $msix | Format-List Name, Length
+
       - name: 收集产物
         shell: pwsh
         run: |
@@ -149,7 +192,7 @@ jobs:
           }
 
           # 未签名分发：给出校验和，至少让人能核对下载是否完整
-          Get-ChildItem out -File | Where-Object { $_.Extension -in '.zip', '.exe' } |
+          Get-ChildItem out -File | Where-Object { $_.Extension -in '.zip', '.exe', '.msix' } |
             ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } |
             Set-Content -Path out/SHA256SUMS.txt -Encoding utf8
 
@@ -207,7 +250,13 @@ jobs:
             "| SinceArc-$v-win-x64.zip | 便携版，解压即用 |",
             "| SinceArc-win-x64.zip | 同上，稳定文件名（releases/latest/download 可直接链） |",
             "| SinceArc_${v}_x64-setup.exe | NSIS 安装包 |",
+            "| SinceArc_${v}_x64.msix | 微软商店包（MSIX，**未签名测试版**） |",
             "| SHA256SUMS.txt | 校验和 |",
+            "",
+            "**MSIX 包是测试用**：未签名，需要 Windows「开发者模式」才能装 ——",
+            "`Add-AppxPackage -AllowUnsigned .\SinceArc_${v}_x64.msix`。",
+            "它的数据落在 %LOCALAPPDATA%\Packages\<包族名>\LocalCache\Roaming\com.sincearc.app，",
+            "与安装包/便携版互不相通（同一个应用的两个安装形态，见 docs/distribution.md §13）。",
             "",
             "**未签名**：首次运行 SmartScreen 提示「未知发布者」，选「更多信息 → 仍要运行」。",
             "需要 WebView2 运行时（Win11 与较新 Win10 自带）；数据在 %APPDATA%\com.sincearc.app。",

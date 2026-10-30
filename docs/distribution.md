@@ -284,3 +284,88 @@ cp new-32.png src-tauri/icons/32x32.png
 - 32px 帧的标记占磁贴应为 **0.63 × 0.77**（改前 0.50 × 0.63）；
 - 发版后 `SinceArc.exe` 的 RT_ICON 六档应与新 `icon.ico` 逐档相等（§10 的旧读数同样适用）；
   `setup.exe` 的 `installerIcon` 也会跟着变。
+
+## 13. MSIX 渠道（微软商店路线，2026-10-30 定）
+
+**选路**：走**商店托管 MSIX 包**（政策里的"包提交"），不走 10.2.9 的"直链 EXE/MSI"。
+理由是三条硬差别：签名责任（MSIX 由微软代签，直链要自购 CA 证书）、更新链路（Store 服务 vs
+应用内自更新，后者在国内撞 GitHub 不通）、数据落点（前者变了，后者不变）。逐条条款见
+`microsoft-store-publishing` 技能的 `references/store-policy-notes.md`。
+
+### 13.1 产物与打包
+
+`release.yml` 在出完 NSIS 之后多打一个包：
+
+```
+src-tauri/target/release/sincearc.exe  →  layout/SinceArc.exe
+src-tauri/icons/{Square150x150Logo,Square44x44Logo,StoreLogo}.png → layout/Assets/
+src-tauri/msix/AppxManifest.xml（替换身份/版本占位符）→ layout/AppxManifest.xml
+makeappx pack /d layout /p out/SinceArc_<version>_x64.msix        （Windows SDK 自带）
+```
+
+- **未签名**：本地/测试用；商店提交时由 Store 认证流程重签（所以这条路不需要买证书）。
+- **版本必须是四段**：`0.0.12` → `0.0.12.0`；升级时 MSIX 版本只能涨。
+- 打包工具是 Windows SDK 的 `makeappx.exe`（runner 自带），不引第三方 CLI：CI 上少一个安装源。
+
+### 13.2 身份从哪来（改身份不改代码）
+
+清单里的 `Identity Name` / `Publisher` 是**包身份**，在 Partner Center 预留产品后由那边给出。
+在仓库里配三个 Actions 变量即可，CI 会替换进清单：
+
+| 变量 | 什么时候填 | 现在的默认值（测试身份） |
+| --- | --- | --- |
+| `MSIX_IDENTITY_NAME` | Partner Center 的「包名/Identity Name」 | `SinceArc.Dev` |
+| `MSIX_PUBLISHER` | Partner Center 的「Publisher（CN=…）」 | `CN=SinceArc Dev` |
+| `MSIX_PUBLISHER_DISPLAY_NAME` | 商店列表里显示的发布者名 | `SinceArc` |
+
+身份一改，就是另一个包：旧包要先卸载，数据目录也跟着换（见 13.3）。
+
+### 13.3 两个安装形态并存，数据不通
+
+| | 便携版 / NSIS 安装包 | MSIX（商店版） |
+| --- | --- | --- |
+| 安装位置 | 用户选的目录 / NSIS 默认目录 | `C:\Program Files\WindowsApps\`（受保护，不可改） |
+| 数据 | `%APPDATA%\com.sincearc.app\` | `%LOCALAPPDATA%\Packages\<包族名>\LocalCache\Roaming\com.sincearc.app\` |
+| 更新来源 | `latest.json` + GitHub releases | Microsoft Store 服务 |
+| SmartScreen | 未签名会拦 | 无（商店签名） |
+
+同一台机器可以同时装两个形态，但**库、日志、草稿互不相通** —— 交付时必须讲清用户在哪一边。
+
+### 13.4 商店版必须关掉应用内更新（待批准，本版未改）
+
+两套更新机制不能同时跑：MSIX 由 Store 服务更新，内置 updater 再把 NSIS 包拉下来装进去只会打架。
+落地方式是构建期开关（`tauri.conf.json` 的 `plugins.updater` 在商店包里不配 endpoints，或加一个
+`app.storeBuild` 标记让前端不显示"检查更新"）。**这属于配置项改动，动手前先说明理由并经所有者批准。**
+
+### 13.5 本地怎么装（测试包）
+
+未签名 MSIX 需要 Windows「开发者模式」：
+
+```powershell
+# 设置 → 系统 → 开发者选项 → 开发人员模式 = 开
+Add-AppxPackage -AllowUnsigned .\SinceArc_0.0.12_x64.msix
+Get-AppxPackage -Name 'SinceArc*' | Select Name, Version, InstallLocation   # 核验
+```
+
+替代方案（不用开发者模式）：自己签一次再装 —— 生成 `CN=SinceArc Dev` 的自签证书、导入
+「受信任的根证书颁发机构」、`signtool sign /fd SHA256 /f cert.pfx /p <pw> <msix>`。
+测试阶段用开发者模式更省事，证书只在真正提交商店时才需要身份对齐。
+
+### 13.6 提交商店：需要什么凭证
+
+| 做法 | 需要的凭证 | 说明 |
+| --- | --- | --- |
+| **手工上传**（推荐先这样） | 无（只需 Partner Center 账号浏览器登录） | 从 Release 下 `.msix`，在 Partner Center 网页上传、填清单、送审 |
+| **Actions 自动上传** | ① Entra 应用注册的 `Tenant ID` / `Client ID` / `Client Secret`；② Partner Center 的 `Seller ID`；③ 产品的 `Store ID` | 三样进 GitHub Secrets；应用注册要在 Partner Center 授「Manager」角色。**不影响出包**，只影响"自动送审" |
+
+也就是说：**CI 出 MSIX 不需要任何凭证**；要凭证的只有"自动提交商店"这一步，而它可以先不做。
+另外自动上传用的是 Microsoft Store submission API（要 `StoreSubmission` 权限的 Entra 应用），
+每次提交都要带包身份与版本，跟我们走的"仓库变量 → 清单"是同一套值。
+
+### 13.7 认证风险（要提前备，不要等驳回）
+
+- **10.3 Product is Testable**：审核员装上 SinceArc 只会看到"连接 agent"的空壳，本机没有 ACP agent
+  就跑不出东西 → 可能判不可测。交付物：`Notes for certification` 写分步说明（装什么、点哪里、
+  看到什么）+ 一段录屏；必要时随包放一个可离线跑通的样例配置。
+- **10.4.2**：必须能快速启动并保持响应 —— 首启无 agent 时不得卡在白屏。
+- 年龄分级问卷、商店文案与截图、支持联系方式：提交前一次性备齐。

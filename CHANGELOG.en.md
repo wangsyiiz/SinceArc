@@ -4,6 +4,15 @@ User-facing notes for each release. `release.yml` takes the `## v<version>` sect
 alongside the Chinese one in `CHANGELOG.md` and ships both in the same update payload
 (docs/distribution.md §11). Earlier versions were Chinese-only and are not back-translated.
 
+## v0.0.12
+
+- **The unread count moved to the bottom-right of each session row** (just below the `⋯` menu). It used to sit after the title and squeezed the title once the count grew.
+- **While a session is running, the spinner is vertically centred in the row** instead of hanging off the title line.
+- **"Thinking" now shows on the first message of a new session.** It was sometimes closed early by a placeholder turn, so the text appeared out of nowhere.
+- **Stopping a reply no longer spawns a new question-and-answer turn.** Previously the agent's tail was treated as a fresh turn, so switching back looked like the session had talked to itself.
+- **An agent woken up in the background still shows up**, so the fix above does not swallow that case.
+- There is now a **Microsoft Store package (MSIX)**; it is an unsigned test build and installing it needs Windows Developer Mode.
+
 ## v0.0.11
 
 - **"Thinking" now appears on the very first message of a new session.** Previously the row was missing and the text seemed to come out of nowhere.
