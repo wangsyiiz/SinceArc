@@ -10,7 +10,7 @@ use tokio::process::Command;
 
 use super::model::{
     CheckState, FileChange, GhCli, GhError, GhStatus, PrDetail, PrState, PrStateView, PullRequest,
-    RepoListing, RepoRef, MAX_REPO_LIST_LIMIT,
+    RepoListing, RepoRef, Viewer, MAX_REPO_LIST_LIMIT,
 };
 use serde::Deserialize;
 
@@ -24,6 +24,7 @@ const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 const DETAIL_TIMEOUT: Duration = Duration::from_secs(10);
 const DIFF_TIMEOUT: Duration = Duration::from_secs(20);
 const REPO_LIST_TIMEOUT: Duration = Duration::from_secs(15);
+const VIEWER_TIMEOUT: Duration = Duration::from_secs(10);
 const LIST_LIMIT: &str = "30";
 const LIST_JSON_FIELDS: &str = "number,title,state,isDraft,mergeable,reviewDecision,author,updatedAt,headRefName,baseRefName,url,statusCheckRollup";
 const DETAIL_JSON_FIELDS: &str = "number,title,state,isDraft,mergeable,reviewDecision,author,updatedAt,createdAt,headRefName,baseRefName,url,statusCheckRollup,body,additions,deletions,changedFiles,files";
@@ -188,6 +189,13 @@ struct RawAuthor {
     login: String,
     name: Option<String>,
     is_bot: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawViewer {
+    login: String,
+    name: Option<String>,
+    avatar_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -641,6 +649,53 @@ impl GhCli for RealGh {
             gh_path,
             host,
             cwd_ok: cwd_ok(),
+        })
+    }
+
+    async fn viewer(&self) -> Result<Viewer, GhError> {
+        let Some(path) = self.find() else {
+            return Err(GhError::NotInstalled);
+        };
+
+        let output = self.run(&path, &["api", "user"], VIEWER_TIMEOUT).await?;
+        if !output.status.success() {
+            return Err(map_stderr(&output.stderr));
+        }
+
+        let raw: RawViewer = match serde_json::from_str(&output.stdout) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(
+                    target: "sincearc::gh",
+                    error = %error,
+                    "could not parse gh api user output"
+                );
+                return Err(GhError::ParseFailed {
+                    version: self.version_for_parse_error(&path).await,
+                });
+            }
+        };
+
+        let login = raw.login.trim().to_string();
+        if login.is_empty() {
+            tracing::warn!(
+                target: "sincearc::gh",
+                "gh api user returned an empty login"
+            );
+            return Err(GhError::ParseFailed {
+                version: self.version_for_parse_error(&path).await,
+            });
+        }
+
+        let clean = |value: Option<String>| {
+            value
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        };
+        Ok(Viewer {
+            login,
+            name: clean(raw.name),
+            avatar_url: clean(raw.avatar_url),
         })
     }
 
@@ -1293,6 +1348,40 @@ mod tests {
         let status = gh.status().await.unwrap();
         assert!(!status.logged_in);
         assert_eq!(status.host, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn viewer_parses_login_name_and_avatar() {
+        let _lock = lock_env();
+        let (_temp, gh) = stub_gh("viewer-ok", "ok");
+
+        let viewer = gh.viewer().await.unwrap();
+        assert_eq!(viewer.login, "wangsyiiz");
+        assert_eq!(viewer.name.as_deref(), Some("X"));
+        assert_eq!(
+            viewer.avatar_url.as_deref(),
+            Some("https://avatars.githubusercontent.com/u/1?v=4")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn viewer_401_maps_to_not_logged_in() {
+        let _lock = lock_env();
+        let (_temp, gh) = stub_gh("viewer-401", "bad-cred");
+
+        assert_eq!(gh.viewer().await.unwrap_err(), GhError::NotLoggedIn);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn viewer_empty_login_is_parse_failed() {
+        let _lock = lock_env();
+        let (_temp, gh) = stub_gh("viewer-empty-login", "empty-login");
+
+        let error = gh.viewer().await.unwrap_err();
+        assert!(matches!(
+            error,
+            GhError::ParseFailed { ref version } if version == "2.99.1"
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]

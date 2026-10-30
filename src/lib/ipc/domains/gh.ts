@@ -10,6 +10,7 @@ import type { GhStatusDto } from "../types.gen/GhStatusDto";
 import type { PrDetailDto } from "../types.gen/PrDetailDto";
 import type { PrListDto } from "../types.gen/PrListDto";
 import type { RepoRefDto } from "../types.gen/RepoRefDto";
+import type { ViewerDto } from "../types.gen/ViewerDto";
 import { invokeCmd } from "../client";
 
 /**
@@ -18,6 +19,11 @@ import { invokeCmd } from "../client";
  */
 export function ghStatus(force = false): Promise<GhStatusDto> {
   return invokeCmd<GhStatusDto>("gh_status", { force });
+}
+
+/** 当前 gh 登录身份；`force` 绕过 domain 的 1h 缓存。 */
+export function ghViewer(force = false): Promise<ViewerDto> {
+  return invokeCmd<ViewerDto>("gh_viewer", { force });
 }
 
 /** 从本地目录的 `.git/config` 解析 `{ host, owner, name }`；不调 gh、不联网。 */
