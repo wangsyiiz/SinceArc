@@ -1144,7 +1144,7 @@ export default function App() {
     onResume: reportResume,
   });
   const { sidebarW, setSidebarW, traceW, setTraceW, dragging, setDragging, layoutRef, mainMin, sidebarMax, traceMax } = usePaneLayout(traceOpen);
-  const { repoList, addRepo, activeRepo } = useRepos(activeTab);
+  const { repoList, addRepo, addFromGh, pin, activeRepo } = useRepos(activeTab);
 
   /**
    * gh 三态的权威存储在 App：按 repoId 记住 phase，切走再切回不重闪骨架。
@@ -1498,21 +1498,35 @@ export default function App() {
   // repo 标签与 pr 标签都要解析身份：PR 详情/ diff 需要 `host/owner/name`。
   const ghRepoId = activeTab?.repoId;
   const repoPhase = ghRepoId ? ghPhases[ghRepoId] : undefined;
+  const activeRepoIdentity = useMemo<RepoRefDto | undefined>(
+    () =>
+      activeRepo && !activeRepo.path
+        ? { host: activeRepo.host || null, owner: activeRepo.owner, name: activeRepo.name }
+        : undefined,
+    [activeRepo],
+  );
   const { redetect: redetectGhRepo } = useGhRepo({
     repoId: ghRepoId,
     repoPath: activeRepo?.path,
+    repoIdentity: activeRepoIdentity,
     enabled: activeTab?.kind === "repo" || activeTab?.kind === "pr",
     phase: repoPhase,
     onPhase: (repoId, phase) => setGhPhases((prev) => ({ ...prev, [repoId]: phase })),
     onPrs: (repoId, prs) => setPrsByRepo((prev) => ({ ...prev, [repoId]: prs })),
   });
 
-  /** 侧栏计数与仓库头用的是同一份 identity：从已就绪的 phase 里取，不额外请求。 */
+  /** 侧栏计数与仓库头用的是同一份 identity：已就绪的 phase 优先，browseOnly 直接用库里的远端身份。 */
   const identityByRepo = useMemo(() => {
     const map: Record<string, RepoRefDto | undefined> = {};
     for (const repo of repoList) {
       const phase = ghPhases[repo.id];
-      map[repo.id] = phase?.kind === "ready" ? phase.identity : undefined;
+      // browseOnly 没有路径可 resolve，但远端身份已经在库里：PR 由它直接驱动。
+      map[repo.id] =
+        phase?.kind === "ready"
+          ? phase.identity
+          : repo.path
+            ? undefined
+            : { host: repo.host || null, owner: repo.owner, name: repo.name };
     }
     return map;
   }, [ghPhases, repoList]);
@@ -1724,7 +1738,7 @@ export default function App() {
     permissions.dropProfile(id);
   }, [permissions.dropProfile, removeProfile]);
 
-  const newSession = useCallback((profileIdChoice?: string) => {
+  const newSession = useCallback((profileIdChoice?: string, cwdOverride?: string) => {
     const id = `s-${Date.now()}`;
     initSession(id);
     // 必须进列表：只在 tab 里存在的话，关掉标签就再也找不回来了
@@ -1734,7 +1748,7 @@ export default function App() {
       (profileIdChoice ? profiles.find((p) => p.id === profileIdChoice) : undefined) ??
       profiles.find((p) => p.id === activeSession?.profileId) ??
       activeProfile;
-    const summary: SessionSummary = { id, title: t("app.session.newTitle"), cwd: inheritProfile?.cwd ?? "", updatedAt: t("app.session.justNow"), updatedAtSec: Math.floor(Date.now() / 1000), group: "今天", playerIds: [], acpSessionId: null, profileId: inheritProfile?.id }; // i18n-ignore
+    const summary: SessionSummary = { id, title: t("app.session.newTitle"), cwd: cwdOverride ?? inheritProfile?.cwd ?? "", updatedAt: t("app.session.justNow"), updatedAtSec: Math.floor(Date.now() / 1000), group: "今天", playerIds: [], acpSessionId: null, profileId: inheritProfile?.id }; // i18n-ignore
     setSessions((prev) => [summary, ...prev]);
     sessionUpsert({ id, acpSessionId: null, profileId: inheritProfile?.id ?? null, title: summary.title, cwd: summary.cwd, createdAt: summary.updatedAtSec!, updatedAt: summary.updatedAtSec! }).catch((e) => console.warn("[db] upsert session failed", e));
     openTab({ kind: "session", title: t("app.session.newTitle"), sessionId: id });
@@ -2195,6 +2209,9 @@ export default function App() {
             openTab({ kind: "repo", title: repo?.name ?? t("app.tab.repo"), repoId });
           }}
           onAddRepo={addRepo}
+          onAddFromGh={addFromGh}
+          onPin={pin}
+          onNewSessionForRepo={(repo) => newSession(undefined, repo.path)}
         />
 
         <Splitter

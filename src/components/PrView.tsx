@@ -148,7 +148,11 @@ export function PrView({
         <span className="truncate">
           {identity.owner}/{identity.name}
         </span>
-        <span className="truncate">{t("pr.ghCwd", { path: repo.path })}</span>
+        <span className="truncate">
+          {repo.path
+            ? t("pr.ghCwd", { path: repo.path })
+            : `${identity.host ? `${identity.host}/` : ""}${identity.owner}/${identity.name}`}
+        </span>
         <span className="ml-auto shrink-0">{t("pr.cache")}</span>
       </footer>
     </div>

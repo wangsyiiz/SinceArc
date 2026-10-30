@@ -64,13 +64,15 @@ export function RepoBrowser({
         <FolderGit2 className="size-3.5 text-ink-2" />
         <span className="text-small font-medium text-ink-1">{localizeText(repo.name, t)}</span>
         <span className="truncate font-mono text-micro text-ink-3">
-          {identity ? `${identity.owner}/${identity.name}` : repo.path}
+          {identity ? `${identity.owner}/${identity.name}` : repo.path || `${repo.owner}/${repo.name}`}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-micro text-ink-3">
           {identity?.host && (
             <span className="rounded-mark bg-surface-3/45 px-1.5 py-0.5">{identity.host}</span>
           )}
-          <span className="max-w-60 truncate">{repo.path}</span>
+          <span className="max-w-60 truncate">
+            {repo.path || (identity ? `${identity.owner}/${identity.name}` : "")}
+          </span>
         </span>
       </header>
 
@@ -101,7 +103,9 @@ export function RepoBrowser({
                 <div className="rounded-control border border-dashed border-line-1/60 px-4 py-12 text-center text-caption leading-relaxed text-ink-3">
                   {t("repo.empty")}
                   <br />
-                  <span className="font-mono text-micro">{repo.path}</span>
+                  <span className="font-mono text-micro">
+                    {repo.path || (identity ? `${identity.owner}/${identity.name}` : "")}
+                  </span>
                 </div>
               ) : (
                 prs.map((pr) => (
