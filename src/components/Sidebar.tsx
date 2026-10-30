@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { ChevronDown, FolderGit2, MessageSquare, Plus, Settings2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { PrDto, RepoRefDto } from "@/lib/ipc";
@@ -7,6 +8,7 @@ import type { MessageKey } from "@/i18n/zh-CN";
 import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
 import { localizeText } from "@/lib/i18n-text";
+import { isBetaVersion, versionLabel } from "@/lib/version-label";
 import { SessionMoreMenu } from "./SessionMcpMenu";
 import { StatusDot } from "./ui/Badge";
 import { useHoverCard } from "./ui/HoverCard";
@@ -83,6 +85,25 @@ export function Sidebar({
   const { t } = useTranslation();
   const [adding, setAdding] = useState(false);
   const [path, setPath] = useState("");
+  /** 应用版本：Tauri 环境才有；网页预览（探针/测试）拿不到就不显示（§35）。 */
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void getVersion()
+      .then((v) => {
+        if (alive) setAppVersion(v);
+      })
+      .catch(() => {
+        if (alive) setAppVersion(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const version = versionLabel(appVersion);
+  const beta = isBetaVersion(appVersion);
 
   useEffect(() => {
     if (!focusAddSignal) return;
@@ -277,8 +298,21 @@ export function Sidebar({
           onClick={onOpenSettings}
           className="mt-0.5 flex w-full items-center gap-2 rounded-mark px-2 py-1.5 text-ui-tight text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink-2"
         >
-          <Settings2 className="size-3.5" />
+          <Settings2 className="size-3.5 shrink-0" />
           {t("sidebar.settings")}
+          {version && (
+            <span
+              className="ml-auto flex shrink-0 items-center gap-1.5"
+              aria-hidden="true"
+            >
+              <span className="text-micro tabular-nums text-ink-3">{version}</span>
+              {beta && (
+                <span className="rounded-full border border-line-1 px-1.5 text-micro uppercase text-ink-3">
+                  beta
+                </span>
+              )}
+            </span>
+          )}
         </button>
       </div>
     </aside>

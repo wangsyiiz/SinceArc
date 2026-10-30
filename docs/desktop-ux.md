@@ -2032,3 +2032,19 @@ agent 被唤醒这一轮**不是客户端发起的**，Agent Client Protocol 里
 
 为什么移到设置：它是全局偏好，放在每轮都要看一眼的输入行上，会让人误以为"只对当前会话生效"，
 也占了输入行本来就紧的横向空间。
+
+## 35. 侧栏设置行的版本号与 beta 角标（2026-10-30）
+
+设置按钮本身不动，只在同一行的右侧补两块极小的信息：`v0.0.8` 与 `beta` 角标。
+
+- **位置**：`ml-auto` 贴到行尾，整块 `aria-hidden="true"` —— 它是装饰信息，不该进按钮的无障碍名
+  （否则读屏会把设置按钮念成「设置 v0.0.8 beta」）。
+- **版本来源**：`getVersion()`（`@tauri-apps/api/app`）。拿不到时（网页预览、单元测试、探针页）
+  **整块不渲染**，不留空壳；不要在渲染期同步取版本。
+- **beta 判定**：主版本号 `0` 就挂角标，`1.0.0` 起自动消失。规则写进纯函数
+  `src/lib/version-label.ts`（`isBetaVersion` / `versionLabel`）并有单测，不散在 JSX 里。
+- **视觉**：版本 `text-micro tabular-nums text-ink-3`；角标 `rounded-full border border-line-1
+  px-1.5 text-micro uppercase text-ink-3`。全部用 token，无任意值；行内 `items-center` 对齐，
+  沿用 §34.1 的口径（不留手调偏移）。
+- **悬停**：内层显式写 `text-ink-3`，不跟按钮 `hover:text-ink-2` 一起变色 —— 版本号是辅助信息，
+  不该在悬停时抢注意力。
