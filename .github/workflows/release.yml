@@ -17,6 +17,15 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      # 本次发布要不要同时送微软商店审核（§13.8）。
+      # 默认 false：商店每次提交都要走认证（几小时到 1-2 天），不该成为每个 tag 的默认动作。
+      # 人工在「Run workflow」里勾，或由 tag-release 透传 —— 不做常驻仓库变量开关：
+      # 那种开关总有人忘了关，结果一次手滑就把内部版本推给全体用户。
+      submit_to_store:
+        description: "同时提交到 Microsoft Store 审核"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -130,27 +139,26 @@ jobs:
       - name: 打便携包
         run: npm run package:win
 
-      - name: 打 MSIX（微软商店包，未签名）
+      - name: 打 MSIX（送审包 + 本地测试包）
         shell: pwsh
         env:
-          # 商店身份：Partner Center 里预留产品后，把 IdentityName / Publisher 填进仓库变量即可，
-          # 不用改代码（docs/distribution.md §13）。默认值是测试身份，只能配合开发者模式安装；
-          # 未签名包要求 Publisher 带 OID 后缀（MS 文档「Create an unsigned MSIX package」），
-          # 少了它 Add-AppxPackage -AllowUnsigned 直接报 0x80073D2C。商店包不带 OID。
-          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME || 'SinceArc.Dev' }}
-          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER || 'CN=SinceArc Dev, OID.2.25.311729368913984317654407730594956997722=1' }}
-          MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME || 'SinceArc' }}
-          # 商店产品 ID：建完产品才有；留空时「更新」按钮退回商店搜索页（§13.4）
-          SINCEARC_STORE_PRODUCT_ID: ${{ vars.SINCEARC_STORE_PRODUCT_ID }}
+          # 三个身份变量来自仓库 Variables，值必须与 Partner Center 的 Package/Identity 页逐字一致：
+          #   Package/Identity/Name、Package/Identity/Publisher、Properties/PublisherDisplayName
+          # 商店包的 Publisher **不带 OID**；带了就是未签名命名空间，认证会按身份不匹配拒掉（§13.2）。
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+          MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
         run: |
           $v = "${{ steps.ver.outputs.version }}"
           $exe = "src-tauri/target/release/sincearc.exe"
           if (-not (Test-Path $exe)) { throw "缺少 $exe（tauri build 没产出）" }
+          foreach ($k in "MSIX_IDENTITY_NAME", "MSIX_PUBLISHER", "MSIX_PUBLISHER_DISPLAY_NAME") {
+            if (-not (Get-Item "env:$k").Value) { throw "仓库变量 $k 没设：商店包身份必须与 Partner Center 一致（docs/distribution.md §13.2）" }
+          }
 
           # 商店版必须带 feature store（§13.4）：不注册内置更新器，更新入口跳商店。
           # 上一步 tauri build 出的是直装版，这里覆盖成商店版再打包 —— NSIS 已产好，不受影响。
-          # 注意仓库根没有 Cargo.toml（它在 src-tauri/），所以必须用 --manifest-path：
-          # 否则 cargo 在仓库根直接报 "could not find Cargo.toml"（v0.0.13 首跑就死在这）。
+          # 注意仓库根没有 Cargo.toml（它在 src-tauri/），所以必须用 --manifest-path。
           # store 连带 custom-protocol（§13.6），但内嵌前端还得 dist 在场 —— 少了它编出来的
           # 包一开就是「连接 localhost 失败」，而 makeappx 不会报任何错。
           if (-not (Test-Path "dist/index.html")) {
@@ -164,23 +172,21 @@ jobs:
             throw "商店版 exe 没被重编（时间戳没变）：别把直装版打进商店包"
           }
 
-          $layout = "artifacts/msix/layout"
-          Remove-Item $layout -Recurse -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force "$layout/Assets" | Out-Null
-          Copy-Item $exe "$layout/SinceArc.exe"
-          foreach ($f in "Square150x150Logo.png", "Square44x44Logo.png", "StoreLogo.png") {
-            Copy-Item "src-tauri/icons/$f" "$layout/Assets/$f"
-          }
-
-          # MSIX 版本必须四段：0.0.12 -> 0.0.12.0
+          # 两个包，身份只差 OID 后缀（§13.5）：
+          #   SinceArc_<v>_x64.msix           送审用 —— 真实身份、无 OID
+          #   SinceArc_<v>_x64-unsigned.msix  本地测试 —— 同身份 + OID，开发者模式 -AllowUnsigned 才装得上
           $msixVer = "$v.0"
-          $manifest = Get-Content src-tauri/msix/AppxManifest.xml -Raw
-          $manifest = $manifest.Replace("__IDENTITY_NAME__", $env:MSIX_IDENTITY_NAME)
-          $manifest = $manifest.Replace("__PUBLISHER__", $env:MSIX_PUBLISHER)
-          $manifest = $manifest.Replace("__PUBLISHER_DISPLAY_NAME__", $env:MSIX_PUBLISHER_DISPLAY_NAME)
-          $manifest = $manifest.Replace("__DISPLAY_NAME__", "SinceArc")
-          $manifest = $manifest.Replace("__VERSION__", $msixVer)
-          Set-Content -Path "$layout/AppxManifest.xml" -Value $manifest -Encoding utf8
+          $template = Get-Content src-tauri/msix/AppxManifest.xml -Raw
+          function New-Manifest([string]$publisher) {
+            $m = $template
+            $m = $m.Replace("__IDENTITY_NAME__", $env:MSIX_IDENTITY_NAME)
+            $m = $m.Replace("__PUBLISHER__", $publisher)
+            $m = $m.Replace("__PUBLISHER_DISPLAY_NAME__", $env:MSIX_PUBLISHER_DISPLAY_NAME)
+            $m = $m.Replace("__DISPLAY_NAME__", "SinceArc")
+            $m = $m.Replace("__VERSION__", $msixVer)
+            # 注释解析时会被忽略，但校验工具做字符串级检查时会读到 OID 字样，送审包干脆不留注释
+            return [regex]::Replace($m, "(?s)<!--.*?-->", "").Trim()
+          }
 
           # makeappx 在 Windows SDK 里，runner 自带；版本目录按文件名倒序取最高
           $makeappx = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\makeappx.exe" -ErrorAction SilentlyContinue |
@@ -188,11 +194,24 @@ jobs:
           if (-not $makeappx) { throw "找不到 makeappx.exe：runner 上 Windows SDK 缺失" }
 
           New-Item -ItemType Directory -Force out | Out-Null
-          $msix = "out/SinceArc_${v}_x64.msix"
-          & $makeappx.FullName pack /d $layout /p $msix /o
-          if ($LASTEXITCODE -ne 0) { throw "makeappx 打包失败（退出码 $LASTEXITCODE）" }
-          Write-Host "MSIX 已产出：$msix（身份 $env:MSIX_IDENTITY_NAME / $env:MSIX_PUBLISHER / $msixVer，未签名）"
-          Get-Item $msix | Format-List Name, Length
+          $targets = @(
+            @{ Tag = "store";    Publisher = $env:MSIX_PUBLISHER; File = "out/SinceArc_${v}_x64.msix" },
+            @{ Tag = "unsigned"; Publisher = "$env:MSIX_PUBLISHER, OID.2.25.311729368913984317654407730594956997722=1"; File = "out/SinceArc_${v}_x64-unsigned.msix" }
+          )
+          foreach ($t in $targets) {
+            $layout = "artifacts/msix/$($t.Tag)"
+            Remove-Item $layout -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force "$layout/Assets" | Out-Null
+            Copy-Item $exe "$layout/SinceArc.exe"
+            foreach ($f in "Square150x150Logo.png", "Square44x44Logo.png", "StoreLogo.png") {
+              Copy-Item "src-tauri/icons/$f" "$layout/Assets/$f"
+            }
+            New-Manifest $t.Publisher | Set-Content -Path "$layout/AppxManifest.xml" -Encoding utf8
+            & $makeappx.FullName pack /d $layout /p $t.File /o
+            if ($LASTEXITCODE -ne 0) { throw "makeappx 打包失败（$($t.Tag)，退出码 $LASTEXITCODE）" }
+            $grew = (Get-Item $t.File).Length
+            Write-Host "已产出 $($t.File)（$grew B，身份 $env:MSIX_IDENTITY_NAME / $($t.Publisher) / $msixVer）"
+          }
 
       - name: 收集产物
         shell: pwsh
@@ -271,11 +290,14 @@ jobs:
             "| SinceArc-$v-win-x64.zip | 便携版，解压即用 |",
             "| SinceArc-win-x64.zip | 同上，稳定文件名（releases/latest/download 可直接链） |",
             "| SinceArc_${v}_x64-setup.exe | NSIS 安装包 |",
-            "| SinceArc_${v}_x64.msix | 微软商店包（MSIX，**未签名测试版**） |",
+            "| SinceArc_${v}_x64.msix | 微软商店（MSIX）**送审包**，用于提交审核，本地装不上 |",
+            "| SinceArc_${v}_x64-unsigned.msix | 同一份代码的**本地测试包**，开发者模式可装 |",
             "| SHA256SUMS.txt | 校验和 |",
             "",
-            "**MSIX 包是测试用**：未签名，需要 Windows「开发者模式」+ **管理员 PowerShell** ——",
-            "`Add-AppxPackage -Path .\SinceArc_${v}_x64.msix -AllowUnsigned`。",
+            "**两个 MSIX 只差一个 OID 后缀**：送审包的发布者必须等于 Partner Center 预留值，",
+            "没有 OID 就别想本地旁加载（会报 0x80073D2C，正常）；想在本地跑就用 `-unsigned` 那个，",
+            "管理员 PowerShell + 开发者模式 ——",
+            "`Add-AppxPackage -Path .\SinceArc_${v}_x64-unsigned.msix -AllowUnsigned`。",
             "它的数据与便携版/安装包**共用** %APPDATA%\com.sincearc.app（full trust 包不做重定向，",
             "两个形态别同时开：同一个库、同一份日志，见 docs/distribution.md §13.3）。",
             "",
@@ -295,3 +317,47 @@ jobs:
           } else {
             gh release create $tag $assets --title "SinceArc $v" --notes-file out/RELEASE_NOTES.md
           }
+
+      # 商店送审（§13.8）：逐次决定 —— 只有本次派发时勾了 submit_to_store 才跑。
+      # 每次提交都要认证（几小时到 1-2 天），所以这个开关按「这一次」算，不是常驻配置。
+      - name: 安装 Microsoft Store CLI
+        if: startsWith(github.ref, 'refs/tags/') && github.event.inputs.submit_to_store == 'true'
+        uses: microsoft/microsoft-store-apppublisher@v1.2
+
+      - name: 送审到 Microsoft Store
+        if: startsWith(github.ref, 'refs/tags/') && github.event.inputs.submit_to_store == 'true'
+        # 送审失败不该把「Release 已发出去」这件事拖红：两条链路互不依赖。
+        # 但必须留痕 —— 失败会以 warning 注解出现在 run 摘要（§13.8 里写了怎么查）。
+        continue-on-error: true
+        shell: pwsh
+        env:
+          TENANT: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
+          SELLER: ${{ secrets.PARTNER_CENTER_SELLER_ID }}
+          CLIENT: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
+          SECRET: ${{ secrets.PARTNER_CENTER_CLIENT_SECRET }}
+          PRODUCT_ID: ${{ vars.STORE_PRODUCT_ID }}
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $msix = "out/SinceArc_${v}_x64.msix"
+          if (-not (Test-Path $msix)) { throw "缺少送审包 $msix" }
+          if (-not $env:PRODUCT_ID) { throw "仓库变量 STORE_PRODUCT_ID 没设（9N… 开头）" }
+          foreach ($k in "TENANT", "SELLER", "CLIENT", "SECRET") {
+            if (-not (Get-Item "env:$k").Value) { throw "secret $k 没配：见 docs/distribution.md §13.8" }
+          }
+
+          msstore reconfigure --tenantId $env:TENANT --sellerId $env:SELLER --clientId $env:CLIENT --clientSecret $env:SECRET
+          if ($LASTEXITCODE -ne 0) { throw "msstore reconfigure 失败：检查 4 个 secret 与 Partner Center 的 Manager 角色" }
+
+          msstore apps list
+          if ($LASTEXITCODE -ne 0) { throw "msstore apps list 失败：凭据或角色不对（§13.8）" }
+
+          # 版本必须严格大于商店里已发布的版本，服务端会校验；被拒时原话会留在日志里。
+          # 命令形状按 MS 文档《Publishing app updates to Microsoft Store with GitHub Actions》：
+          #   第一个位置参数是 .msix 路径，-id 才是 Store 产品 ID（9N…）
+          $msixPath = (Resolve-Path $msix).Path
+          msstore publish $msixPath -id $env:PRODUCT_ID
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::msstore publish 失败（版本未递增 / 被拒 / 草稿冲突，见上面输出）"
+            exit 1
+          }
+          Write-Host "已提交商店审核：$msix"

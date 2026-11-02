@@ -13,6 +13,12 @@ name: tag-release
 
 on:
   workflow_dispatch:
+    inputs:
+      # 透传给 release.yml：本次发布要不要同时送微软商店（§13.8）。默认不送。
+      submit_to_store:
+        description: "同时提交到 Microsoft Store 审核"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -80,7 +86,8 @@ jobs:
           set -euo pipefail
           tag="${{ steps.tag.outputs.tag }}"
           # GITHUB_TOKEN 推的 tag 不触发 push 事件，这里显式开一次构建
-          gh workflow run release.yml --ref "$tag"
+          gh workflow run release.yml --ref "$tag" \
+            -f submit_to_store="${{ inputs.submit_to_store }}"
           sleep 8
           gh run list --workflow=release.yml --limit 3 \
             --json databaseId,status,headBranch,url \
