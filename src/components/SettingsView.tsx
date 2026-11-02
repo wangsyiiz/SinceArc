@@ -71,6 +71,7 @@ import { capsRows } from "@/lib/caps-format";
 import { localizeText, translateKey } from "@/lib/i18n-text";
 import { StatusDot } from "./ui/Badge";
 import { Button } from "./ui/Button";
+import { CwdBrowse } from "./CwdPicker";
 import { EmptyState } from "./ui/EmptyState";
 import { Hint } from "./ui/Hint";
 import { useHoverCard } from "./ui/HoverCard";
@@ -1126,6 +1127,11 @@ export function SettingsView({
               className="font-mono"
             />
           </Field>
+          <CwdBrowse
+            profile={profile}
+            value={profile.cwd ?? ""}
+            onPicked={(path) => patchDraft({ cwd: path })}
+          />
           <p className="mt-1.5 text-caption text-ink-3">
             {t("settings.connection.cwd.hint")}
           </p>

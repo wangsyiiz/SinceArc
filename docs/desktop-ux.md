@@ -2382,6 +2382,9 @@ ACP 侧的标题被完全丢掉：`session_info_update` 收到就丢，`session/
 **选择器形态按连接方式分（2026-11-02 追加）**：
 
 - 本地连接 → **系统目录选择器**（`pick_directory`，rfd）。选完只回填输入框，不自动提交。
+
+两个入口共用同一个组件（`CwdBrowse` + `RemoteDirPicker`）：**消息流状态栏**与**设置 → 连接 →
+工作目录**。两处的形态规则必须一致 —— 各写一份，早晚一边能选远端、一边不能。
 - WSL / SSH → 远端路径，系统选择器够不到，改在面板里展开**远端浏览**：`list_dirs` 每次导航
   跑一条 `bash -s` 脚本（WSL 走 `wsl.exe`，SSH 走 `ssh.exe` + 现有的 askpass 机制），
   返回 `{ path, parent, entries, truncated }`；支持进子目录、上一级、手输跳转（`~` 在远端展开）。
