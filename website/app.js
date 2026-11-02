@@ -38,13 +38,14 @@
 
   /* ---------------- 下载按钮：默认项直接下载，右侧下拉换包 ---------------- */
 
-  const VERSION = "0.0.1";
+  // 占位值：pages.yml 部署前会用最新 tag 覆盖它（见那个工作流的「注入版本号」步骤）
+  const VERSION = "0.0.0";
   const REL = "https://github.com/wangsyiiz/SinceArc/releases/latest/download/";
 
   // 只列真实存在的产物。没有构建的平台不放进菜单——给不存在的链接比给不出下载更糟。
   const ARTIFACTS = [
-    { id: "win-x64-zip", file: "SinceArc-win-x64.zip", size: "3.7 MB", kind: { en: "Portable zip", zh: "便携 zip" } },
-    { id: "win-x64-setup", file: "SinceArc_x64-setup.exe", size: "2.9 MB", kind: { en: "Installer (.exe)", zh: "安装包 (.exe)" } },
+    { id: "win-x64-zip", file: "SinceArc-win-x64.zip", kind: { en: "Portable zip", zh: "便携 zip" } },
+    { id: "win-x64-setup", file: "SinceArc_x64-setup.exe", kind: { en: "Installer (.exe)", zh: "安装包 (.exe)" } },
   ];
 
   const dlMain = document.getElementById("dlMain");
@@ -79,7 +80,7 @@
       <button class="dl-item" role="menuitemradio" type="button" data-id="${a.id}" aria-checked="${a.id === cur.id}">
         <span class="dl-item-body">
           <span class="dl-item-title">${pick(a.kind)}</span>
-          <span class="dl-item-note">${a.size} · ${a.file.split(".").pop()}</span>
+          <span class="dl-item-note">${a.file}</span>
         </span>
         ${checkIcon()}
       </button>`,
