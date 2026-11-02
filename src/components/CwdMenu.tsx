@@ -147,7 +147,7 @@ export function CwdButton({
                     }
                     if (e.key === "Escape") layer.setOpen(false);
                   }}
-                  className="w-full rounded-mark border border-line-1 bg-surface-1 px-2 py-1.5 font-mono text-caption text-ink-1 placeholder:text-ink-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+                  className="w-full rounded-mark border border-line-2 bg-surface-1 px-2 py-1.5 font-mono text-caption text-ink-1 placeholder:text-ink-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
                 />
                 <CwdBrowse profile={profile} value={draft} onPicked={setDraft} />
                 {recent.length > 0 && (
