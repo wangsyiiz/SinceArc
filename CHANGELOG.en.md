@@ -4,6 +4,10 @@ User-facing notes for each release. `release.yml` takes the `## v<version>` sect
 alongside the Chinese one in `CHANGELOG.md` and ships both in the same update payload
 (docs/distribution.md §11). Earlier versions were Chinese-only and are not back-translated.
 
+## v0.0.18
+
+- **Replies are credited to the right agent.** Every session used to label the agent with the *default* connection, so a Codex session showed `hermes · fedora` on its replies. The label now follows the session's own connection, retroactively for existing messages too.
+
 ## v0.0.17
 
 - **The session list now shows what is alive**: running sessions no longer carry a small dot — a **wave drifts along the bottom border** of the row, so you can find the busy one at a glance.
