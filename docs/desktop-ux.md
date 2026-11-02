@@ -2346,8 +2346,15 @@ ACP 侧的标题被完全丢掉：`session_info_update` 收到就丢，`session/
 2. **用户不在这个会话上**（正在看别的会话）。
 
 窗口在前台、且就停在某个会话上时，消息一进来就把 `last_read_at` 推上去（合并 400ms 再写库），
-否则切走再切回来，自己刚看过的内容会被算成未读。前端订阅 `getCurrentWindow().onFocusChanged`，
-**不拿 `document.hasFocus()` 顶替** —— webview 里后者在 Tauri 窗口切换时不可靠。
+否则切走再切回来，自己刚看过的内容会被算成未读。
+
+**前台判定两条腿**：Tauri 的 `getCurrentWindow().onFocusChanged` + DOM 的
+`window.focus/blur` 与 `document.visibilitychange`。只用前者不够 —— 它一旦抛错
+（权限、webview 差异），`windowFocused` 就永远停在初始的 `true`，未读会被当成「一直在看」而永不累计。
+
+**徽标要跟着库走**：未读数由后端按 `last_read_at` 算，前端只有重读一次会话列表才拿得到新值。
+事件流每来一次就设一个 1.5 秒尾抖动，安静下来后读一次库 —— 否则窗口在后台时进来的消息
+永远不出黄点（看着像"没计数"）。
 
 ### 42.5 未读跳转条的宽度
 

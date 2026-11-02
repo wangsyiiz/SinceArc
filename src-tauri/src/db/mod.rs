@@ -1675,7 +1675,6 @@ impl Db {
         let at = now_ms();
         let ts = now();
         for (i, m) in msgs.iter().enumerate() {
-            let seq = base + i as i64 + 1;
             let turn_id = turn_ids[i].as_deref();
             let has_delegate = m
                 .payload
@@ -1684,6 +1683,14 @@ impl Db {
             let kind = crate::message_kind::chat_kind_of(&m.role, &m.kind, has_delegate)
                 .map(crate::message_kind::MessageKind::as_str)
                 .unwrap_or(m.kind.as_str());
+            // 前缀续写（docs/acp-turn-synthesis.md §9）：断线（agent closed stdout）之后 agent 会把同一段回答
+            // 重放/续写一遍，前一条已落库的半截正文正是它的严格前缀 —— 更新那一条，
+            // 不再插一行。否则界面上同一条回答会出现两次（长的包含短的）。
+            let continuation = prefix_continuation(&tx, session_id, &m.role, kind, &m.payload)?;
+            let (atom_id, seq) = match &continuation {
+                Some((prev_id, prev_seq)) => (prev_id.clone(), *prev_seq),
+                None => (m.id.clone(), base + i as i64 + 1),
+            };
             let mergeable =
                 is_chat_stream_message(&m.role, kind, turn_id) && open_allowed(&tx, turn_id)?;
             let result: rusqlite::Result<()> = (|| {
@@ -1760,7 +1767,7 @@ impl Db {
                        END,
                        schema = excluded.schema",
                     params![
-                        m.id,
+                        atom_id,
                         session_id,
                         turn_id,
                         seq,
@@ -2507,6 +2514,59 @@ impl Db {
         )?;
         Ok(())
     }
+}
+
+/// 前缀续写判定（docs/acp-turn-synthesis.md §9）：上一条 chat 里的 agent 正文若是这次正文的**严格前缀**，
+/// 返回它的 `(id, seq)` —— 调用方据此更新那一条，而不是插一行新的。
+///
+/// 为什么需要：断线（agent closed stdout）时半截正文已按「迟到流收口」落库；
+/// 重连后 agent 把同一段回答重放/续写完，再落一次就是「同一条回答出现两次」。
+/// 实测那条会话里是 15,068 → 17,248 字，短的正好是长的前缀。
+fn prefix_continuation(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    role: &str,
+    kind: &str,
+    payload: &serde_json::Value,
+) -> rusqlite::Result<Option<(String, i64)>> {
+    /// 太短的前缀重合（「好的」「继续」）不算同一条。
+    const MIN_PREFIX_CHARS: usize = 12;
+    if role != "player" || kind != "text.agent" {
+        return Ok(None);
+    }
+    let Some(text) = payload.get("text").and_then(|v| v.as_str()) else {
+        return Ok(None);
+    };
+    let prev = tx
+        .query_row(
+            "SELECT id, seq, payload_json FROM atoms
+              WHERE session_id = ?1 AND channel = 'chat'
+                AND role = 'player' AND kind = 'text.agent'
+              ORDER BY seq DESC LIMIT 1",
+            params![session_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((id, seq, prev_json)) = prev else {
+        return Ok(None);
+    };
+    let prev_text = serde_json::from_str::<serde_json::Value>(&prev_json)
+        .ok()
+        .and_then(|v| v.get("text").and_then(|t| t.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    if prev_text.trim().chars().count() < MIN_PREFIX_CHARS {
+        return Ok(None);
+    }
+    if text.len() > prev_text.len() && text.starts_with(&prev_text) {
+        return Ok(Some((id, seq)));
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -4443,6 +4503,44 @@ mod tests {
         assert_eq!(prompt_atom_id, None);
         drop(conn);
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn append_merges_prefix_continuation_instead_of_duplicating() {
+        // docs/acp-turn-synthesis.md §9：断线时半截回答先落库，重连后同一段回答的完整版又到 —— 只应留一条。
+        let (db, _path) = db_with_session();
+        let partial = "修好了，并且在线上核对过。**根因**：常量写死";
+        let full = "修好了，并且在线上核对过。**根因**：常量写死，改成了 meta 单一来源。";
+        db.append_messages("s-1", &[chat_msg("a-1", "player", partial)])
+            .expect("append partial");
+        db.append_messages("s-1", &[chat_msg("a-2", "player", full)])
+            .expect("append full");
+
+        let conn = db.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM atoms
+                  WHERE session_id = 's-1' AND channel = 'chat' AND role = 'player'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "同一段回答不许落成两行");
+        let payload: String = conn
+            .query_row(
+                "SELECT payload_json FROM atoms
+                  WHERE session_id = 's-1' AND channel = 'chat' AND role = 'player'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let text = serde_json::from_str::<serde_json::Value>(&payload)
+            .unwrap()
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string();
+        assert_eq!(text, full, "留下的必须是完整的那份");
     }
 
     #[test]
