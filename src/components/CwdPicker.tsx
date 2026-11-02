@@ -113,7 +113,7 @@ export function RemoteDirPicker({
   }, [load, path]);
 
   return (
-    <div className="mt-2 rounded-mark border border-line-1 bg-bg-2/60 p-2">
+    <div className="mt-2 rounded-mark border border-line-1 bg-surface-2/60 p-2">
       <div className="mb-1.5 flex items-center gap-1.5">
         <Button
           variant="ghost"
@@ -130,7 +130,7 @@ export function RemoteDirPicker({
         {busy && <Loader2 className="size-3 shrink-0 animate-spin text-ink-3" aria-hidden="true" />}
       </div>
 
-      <div className="max-h-52 overflow-y-auto rounded-mark bg-bg-1/60">
+      <div className="max-h-52 overflow-y-auto rounded-mark bg-surface-1/60">
         {error && <p className="px-2 py-1.5 text-caption text-danger-1">{error}</p>}
         {!error && listing && listing.entries.length === 0 && !busy && (
           <p className="px-2 py-1.5 text-caption text-ink-3">{t("statusbar.cwd.noSubdirs")}</p>
@@ -141,7 +141,7 @@ export function RemoteDirPicker({
               key={entry.path}
               type="button"
               onClick={() => setPath(entry.path)}
-              className="flex w-full items-center gap-1.5 px-2 py-1 text-left font-mono text-caption text-ink-2 hover:bg-bg-2"
+              className="flex w-full items-center gap-1.5 px-2 py-1 text-left font-mono text-caption text-ink-2 hover:bg-surface-2"
               title={entry.path}
             >
               <FolderOpen className="size-3 shrink-0 text-ink-3" aria-hidden="true" />

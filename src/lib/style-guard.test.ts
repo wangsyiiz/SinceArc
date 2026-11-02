@@ -154,3 +154,41 @@ test("样式棘轮：违规只许减少，不许新增", () => {
 
   assert.deepEqual(errors, [], `\n${errors.join("\n")}`);
 });
+
+/**
+ * 颜色工具类必须引用 **主题里真实存在的 token**。
+ *
+ * 抓的是 2026-11-02 那个事故：工作目录浮框写成 `bg-bg-1` / `shadow-pop`，
+ * 主题里只有 `--color-surface-*`，Tailwind 遇到不认识的工具类**不报错、直接不生成**，
+ * 于是浮框变成透明背景、连投影也没有 —— 构建全绿、门禁全绿，点开才发现。
+ *
+ * 判据只盯「长得像调色板引用」的那一类（`surface-1` / `ink-3` / `bg-1` 这种），
+ * `text-center`、`bg-cover` 这些语义工具类不参与，避免噪音。
+ */
+test("颜色工具类只能引用主题里存在的 token", () => {
+  const css = readFileSync(join(SRC, "styles.css"), "utf8");
+  const tokens = new Set(
+    [...css.matchAll(/--color-([a-z0-9-]+):/g)].map((match) => match[1]),
+  );
+  // 这些前缀都是「调色板家族」：出现却不在 tokens 里，就是编的
+  const paletteLike = /^(bg|surface|ink|line|accent|danger|ok|warn|control|glass)(-\d+|-ink)?$/;
+  const utility = /\b(?:bg|text|border|ring|outline|fill|stroke|from|via|to|divide)-([a-z0-9-]+)/g;
+
+  const bad: string[] = [];
+  for (const file of walk(SRC)) {
+    if (!file.endsWith(".tsx")) continue;
+    const rel = relative(ROOT, file).replace(/\\/g, "/");
+    readFileSync(file, "utf8")
+      .split("\n")
+      .forEach((line, index) => {
+        for (const match of line.matchAll(utility)) {
+          const name = match[1];
+          if (!paletteLike.test(name)) continue;
+          if (tokens.has(name)) continue;
+          bad.push(`${rel}:${index + 1} ${match[0]}（主题里没有这个 token）`);
+        }
+      });
+  }
+
+  assert.deepEqual(bad, []);
+});

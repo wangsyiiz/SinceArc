@@ -116,7 +116,7 @@ export function CwdButton({
             style={layer.style}
             role="dialog"
             aria-label={t("statusbar.cwd.dialogAria")}
-            className="z-50 w-[min(460px,calc(100vw-24px))] rounded-card border border-line-1 bg-bg-1 p-3 shadow-pop"
+            className="sc-glass sc-z-popover w-[min(460px,calc(100vw-24px))] rounded-card p-3"
           >
             <div className="mb-2 flex items-center justify-between">
               <span className="text-caption font-medium text-ink-1">{t("statusbar.cwd.title")}</span>
@@ -128,7 +128,7 @@ export function CwdButton({
               )}
             </div>
 
-            <code className="mb-2 block break-all rounded-mark bg-bg-2 px-2 py-1.5 font-mono text-caption text-ink-2">
+            <code className="mb-2 block break-all rounded-mark bg-surface-2/60 px-2 py-1.5 font-mono text-caption text-ink-2">
               {cwd || t("statusbar.cwd.emptyValue")}
             </code>
 
@@ -159,7 +159,7 @@ export function CwdButton({
                           key={path}
                           type="button"
                           onClick={() => setDraft(path)}
-                          className="truncate rounded-mark px-1.5 py-1 text-left font-mono text-caption text-ink-2 hover:bg-bg-2"
+                          className="truncate rounded-mark px-1.5 py-1 text-left font-mono text-caption text-ink-2 hover:bg-surface-2"
                           title={path}
                         >
                           {path}
