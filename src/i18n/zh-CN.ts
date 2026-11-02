@@ -167,6 +167,7 @@ export const zhCN = {
   "app.messages.loadingOlder": "正在加载更早消息…",
   "app.messages.loadEarlier": "加载更早",
   "app.unread.jump": "跳到第一条未读（{{count}} 条）",
+    "app.unread.dismiss": "关闭未读提示",
   "app.composer.stoppingNotice": "正在停止…（已发送取消请求，等待 agent 收尾）",
   "app.composer.stopping": "正在停止…",
   "app.composer.placeholder": "输入消息，@ 群成员提问…",

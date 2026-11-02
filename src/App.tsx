@@ -1570,6 +1570,12 @@ export default function App() {
    * 目标可能已被滑动窗口裁掉：最多向上回填 5 页；仍找不到就退到底部并清计数。
    * 每页都检查「条数有没有增长」，没有进展立即收手，避免卡死或无限循环。
    */
+  /** 关掉「跳到未读」提示条（§42.2）：只是收起这条提示，不动已读位。 */
+  const dismissUnreadJump = useCallback(() => {
+    setUnreadJump(null);
+    unreadTargetRef.current = null;
+  }, []);
+
   const jumpToFirstUnread = useCallback(async () => {
     const target = unreadTargetRef.current;
     if (!target || target.sessionId !== lastSessionId) return;
@@ -2526,6 +2532,7 @@ export default function App() {
     composerRef,
     unreadJump,
     jumpToFirstUnread,
+    dismissUnreadJump,
     setPermOpen,
     noticesBySession,
     dismissUiNotice,

@@ -147,6 +147,8 @@ export interface Workspace {
   composerRef: RefObject<HTMLDivElement | null>;
   unreadJump: UnreadJump | null;
   jumpToFirstUnread: () => Promise<void>;
+  /** 收起「跳到未读」提示条（不改已读位） */
+  dismissUnreadJump: () => void;
   setPermOpen: Dispatch<SetStateAction<boolean>>;
   noticesBySession: Record<string, UiNotice[]>;
   dismissUiNotice: (sid: string, id: string) => void;

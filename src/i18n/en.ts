@@ -167,6 +167,7 @@ export const en: Record<MessageKey, string> = {
   "app.messages.loadingOlder": "Loading earlier messages…",
   "app.messages.loadEarlier": "Load earlier",
   "app.unread.jump": "Jump to first unread ({{count}})",
+    "app.unread.dismiss": "Dismiss unread notice",
   "app.composer.stoppingNotice": "Stopping… (cancel request sent, waiting for the agent to finish)",
   "app.composer.stopping": "Stopping…",
   "app.composer.placeholder": "Type a message, @ a group member to ask…",

@@ -1,5 +1,5 @@
 import { useParams } from "react-router";
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, X } from "lucide-react";
 import type { JSX } from "react";
 import { ActivityRail } from "@/components/ActivityRail";
 import { AgentCapabilities } from "@/components/AgentCapabilities";
@@ -70,6 +70,7 @@ export function SessionRoute(): JSX.Element {
     storageStats,
     composerRef,
     unreadJump,
+    dismissUnreadJump,
     jumpToFirstUnread,
     setPermOpen,
     noticesBySession,
@@ -298,16 +299,29 @@ export function SessionRoute(): JSX.Element {
           >
             <div className="mx-auto max-w-3xl">
               {unreadJump?.sessionId === lastSessionId && unreadJump.count > 0 && (
-                <button
-                  type="button"
-                  onClick={() => void jumpToFirstUnread()}
-                  className="sc-glass pointer-events-auto mx-auto mb-2 flex w-fit max-w-full items-center justify-center gap-2 rounded-card px-3 py-1.5 text-center text-caption text-danger-1 transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
-                >
-                  <ArrowUp className="size-3.5 shrink-0" />
-                  <span className="truncate">
-                    {t("app.unread.jump", { count: unreadJump.count })}
-                  </span>
-                </button>
+                // 外层是容器不是按钮：里面要有两个可点区域（跳转 / 关闭），
+                // 按钮套按钮是非法结构，读屏和键盘都会错乱。
+                <div className="sc-glass pointer-events-auto mx-auto mb-2 flex w-fit max-w-full items-center gap-1 rounded-card py-1 pr-1 pl-3 text-caption text-danger-1">
+                  <button
+                    type="button"
+                    onClick={() => void jumpToFirstUnread()}
+                    className="flex min-w-0 items-center gap-2 text-center transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+                  >
+                    <ArrowUp className="size-3.5 shrink-0" />
+                    <span className="truncate">
+                      {t("app.unread.jump", { count: unreadJump.count })}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={t("app.unread.dismiss")}
+                    title={t("app.unread.dismiss")}
+                    onClick={dismissUnreadJump}
+                    className="grid size-5 shrink-0 place-items-center rounded-mark text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+                  >
+                    <X className="size-3" aria-hidden="true" />
+                  </button>
+                </div>
               )}
               {state.pendingPerm && (
                 <button
