@@ -35,6 +35,7 @@ import { pushSystemNotice } from "@/lib/notices";
 import { resolvePermissionTurn } from "@/lib/permission-timeout";
 import { delegateCancelFailureKey, type DelegatePhase } from "@/lib/delegate-status";
 import { mergeMessages } from "@/lib/messages-merge";
+import { resolveAgentProfile } from "@/lib/agent-identity";
 import { buildPlayers } from "@/lib/players";
 import {
   REPLY_NOTIFY_COALESCE_MS,
@@ -355,13 +356,27 @@ export default function App() {
   const [members, setMembers] = useState<AgentUser[]>([]);
   /** 全局 Agent User：当前成员被移出后，历史作者仍能从这里解析回身份。 */
   const [knownUsers, setKnownUsers] = useState<AgentUser[]>([]);
+  const { sessions, setSessions, reload: reloadSessions } = useSessionList();
+  const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab, pinned, onPin, onUnpin } = useTabs(sessions);
+
   /**
    * 主 agent 自己的身份（只用于渲染它说过的话）。
    * 不进左栏：左栏列的是群成员，主 agent 不是成员 —— 但它的回复也该有名字，
    * 否则界面上会显示成光秃秃的「agent」。
+   *
+   * **名字必须跟着当前会话的连接走**（`resolveAgentProfile`）：以前取的是 `activeProfile`
+   * —— 那是「新建会话用哪条连接」，用户停在 hermes 时，codex 会话里的回复也全叫 hermes。
    */
+  const sessionProfileId = useMemo(
+    () => sessions.find((s) => s.id === lastSessionId)?.profileId ?? null,
+    [lastSessionId, sessions],
+  );
   const mainAgentPlayer = useMemo<Player>(() => {
-    const prof = activeProfile;
+    const prof = resolveAgentProfile({
+      sessionProfileId,
+      profiles,
+      fallback: activeProfile,
+    });
     return {
       id: MAIN_AGENT_ID,
       name: prof ? profileLabel(prof, t) : "agent",
@@ -370,10 +385,7 @@ export default function App() {
       profileId: prof?.id ?? "",
       busy: false,
     };
-  }, [activeProfile, t]);
-
-  const { sessions, setSessions, reload: reloadSessions } = useSessionList();
-  const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab, pinned, onPin, onUnpin } = useTabs(sessions);
+  }, [activeProfile, profiles, sessionProfileId, t]);
 
   const navigate = useNavigate();
   useEffect(() => {
