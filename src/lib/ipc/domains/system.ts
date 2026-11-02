@@ -1,3 +1,6 @@
+import type { AgentProfile } from "@/types";
+import type { DirListingDto } from "../types";
+import { toDto } from "./session";
 import { invokeCmd } from "../client";
 
 /**
@@ -39,4 +42,14 @@ export function openStoreUpdate(): Promise<void> {
  */
 export function pickDirectory(startDir?: string, title?: string): Promise<string | null> {
   return invokeCmd<string | null>("pick_directory", { startDir, title });
+}
+
+/**
+ * 列远端一层目录（WSL / SSH，docs/desktop-ux.md §45）。
+ *
+ * 每次导航一次 IPC：远端一次 `bash -s` 往返（wsl.exe 200–300ms，ssh 再加握手），
+ * 所以只能在「进目录 / 上一级 / 手输跳转」这些动作上触发，不能跟着输入逐字符查。
+ */
+export function listDirs(profile: AgentProfile, path?: string): Promise<DirListingDto> {
+  return invokeCmd<DirListingDto>("list_dirs", { profile: toDto(profile), path });
 }

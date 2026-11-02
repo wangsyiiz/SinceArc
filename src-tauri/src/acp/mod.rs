@@ -9,6 +9,7 @@
 pub mod discover;
 pub mod fs;
 pub mod launch;
+pub mod remote_fs;
 pub mod transport;
 
 use std::time::Duration;

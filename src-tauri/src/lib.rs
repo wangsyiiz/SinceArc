@@ -250,6 +250,7 @@ pub fn run() {
             commands::session_set_cwd,
             commands::session_recent_cwds,
             commands::pick_directory,
+            commands::list_dirs,
             commands::session_prompt,
             commands::session_steer,
             commands::session_cancel,

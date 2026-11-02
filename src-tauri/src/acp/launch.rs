@@ -284,7 +284,7 @@ impl AgentProfile {
 }
 
 /// SSH 的公共参数：连接目标、认证方式、`--` 与服务端命令前缀。
-fn ssh_common_args(
+pub(crate) fn ssh_common_args(
     spec: &SshSpec,
     env: &mut BTreeMap<String, String>,
     cleanup: &mut Option<PathBuf>,
