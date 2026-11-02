@@ -312,16 +312,22 @@ makeappx pack /d layout /p out/SinceArc_<version>_x64.msix        （Windows SDK
 清单里的 `Identity Name` / `Publisher` 是**包身份**，在 Partner Center 预留产品后由那边给出。
 在仓库里配三个 Actions 变量即可，CI 会替换进清单：
 
-| 变量 | 什么时候填 | 现在的默认值（测试身份） |
-| --- | --- | --- |
-| `MSIX_IDENTITY_NAME` | Partner Center 的「包名/Identity Name」 | `SinceArc.Dev` |
-| `MSIX_PUBLISHER` | Partner Center 的「Publisher（CN=…）」 | `CN=SinceArc Dev, OID.2.25.311729368913984317654407730594956997722=1` |
-| `MSIX_PUBLISHER_DISPLAY_NAME` | 商店列表里显示的发布者名 | `SinceArc` |
+| 变量 | 当前值（2026-11-02 起，产品已上线） |
+| --- | --- |
+| `MSIX_IDENTITY_NAME` | `JerryWang.SinceArc` |
+| `MSIX_PUBLISHER` | `CN=113E9660-D4D7-4CB2-AC6D-2EA30A4F9E78`（**无 OID**） |
+| `MSIX_PUBLISHER_DISPLAY_NAME` | `JerryWang` |
 
-**Publisher 两种口径别混**：未签名测试包必须带 OID 后缀（MS 文档「Create an unsigned MSIX package」），
-少了它 `Add-AppxPackage -AllowUnsigned` 直接报 **0x80073D2C「发布者不在未签名命名空间」**（2026-10-30 实测踩到）；
-商店包由 Store 重签，Publisher 取 Partner Center 给的值且**不带** OID。
-身份一改，就是另一个包：旧包要先卸载，数据目录也跟着换（见 13.3）。
+三个值必须与 Partner Center 的 `Package/Identity/Name`、`Package/Identity/Publisher`、
+`Package/Properties/PublisherDisplayName` 逐字一致 —— 差一个字符就是
+「包身份与预留身份不匹配」或「PublisherDisplayName 不匹配」，认证直接拒（两种都实测踩过）。
+
+**Publisher 两种口径别混**：芯里是同一个身份，只在打**本地测试包**时追加 OID 后缀
+（MS 文档「Create an unsigned MSIX package」），少了它 `Add-AppxPackage -AllowUnsigned`
+直接报 **0x80073D2C「发布者不在未签名命名空间」**（2026-10-30 实测）。CI 会一次出两个包，
+见 §13.5；送审包**绝不能**带 OID。
+
+身份一改，就是另一个应用：旧包要先卸载，桌面快捷方式与商店条目也是两套（数据目录不受影响，见 13.3）。
 
 ### 13.3 两个安装形态并存，数据不通
 
@@ -380,6 +386,18 @@ cargo tauri build --bundles nsis         # 直装版，不带该 feature
 用户想手动拉只能在商店「库 → 获取更新」。所以商店版能显示的只有「当前版本」，
 不显示"已是最新"，也不该出现下载进度条。
 
+### 13.5 一次构建出两个 MSIX：送审包 / 本地测试包
+
+同一次 CI 构建产出两个包，**只有 Publisher 差一个 OID 后缀**（清单其余部分逐字节相同）：
+
+| 文件名 | Publisher | 用途 |
+| --- | --- | --- |
+| `SinceArc_<v>_x64.msix` | Partner Center 预留值 | **送审**。无 OID；本地 `Add-AppxPackage` 会报 `0x80073D2C`，这是预期，不是你装错了 |
+| `SinceArc_<v>_x64-unsigned.msix` | 同上 + `, OID.2.25.311729368913984317654407730594956997722=1` | **本地测试**。管理员 PowerShell + 开发者模式可装 |
+
+为什么不能只出一个：商店包的 `Publisher` 必须与预留值**完全一致**（多一个 OID 就是另一个身份，
+认证按「身份不匹配」拒），而未签名包 `Publisher` 必须带 OID 才允许注册 —— 两个要求正好相反。
+
 ### 13.6 商店包必须内嵌前端（custom-protocol + dist）
 
 **2026-10-31 事故**：v0.0.13 的 MSIX 装上后双击即「连接 localhost 失败」。原因是打 MSIX 那步
@@ -409,14 +427,14 @@ cargo build --manifest-path src-tauri/Cargo.toml --release --features store --bi
 
 未签名的 MSIX 两件事都要满足，缺一个就报错：
 
-1. **Publisher 必须带 OID 后缀**（清单里已由 CI 默认值保证）；
+1. **Publisher 必须带 OID 后缀** —— 用 `_x64-unsigned.msix` 那个包，CI 已按仓库变量加好后缀；
 2. **PowerShell 要以管理员身份运行** —— 带可执行内容的未签名包必须给「所有用户」安装，
    非管理员会失败（MS 文档「Create an unsigned MSIX package」明确写了这点）。
 
 ```powershell
 # 开始菜单搜 PowerShell → 右键「以管理员身份运行」
 # 设置 → 系统 → 开发者选项 → 开发人员模式 = 开
-Add-AppxPackage -Path .\SinceArc_0.0.12_x64_unsigned.msix -AllowUnsigned
+Add-AppxPackage -Path .\SinceArc_<v>_x64-unsigned.msix -AllowUnsigned
 Get-AppxPackage -Name 'SinceArc*' | Select Name, Version, InstallLocation   # 核验
 ```
 
@@ -432,18 +450,42 @@ Get-AppxPackage -Name 'SinceArc*' | Select Name, Version, InstallLocation   # �
 「受信任的根证书颁发机构」、`signtool sign /fd SHA256 /f cert.pfx /p <pw> <msix>`。
 测试阶段用开发者模式更省事，证书只在真正提交商店时才需要身份对齐。
 
-### 13.6 提交商店：需要什么凭证
+### 13.8 送审到 Microsoft Store（逐次决定，默认不送）
 
-| 做法 | 需要的凭证 | 说明 |
+**每次提交都要重新认证**：包体一变就是一次新提交，认证通常几小时到 1–2 天。所以送审不是
+"发版流水线的默认动作"，而是**这一次发布时由人勾选**：
+
+```bash
+gh workflow run tag-release.yml -f submit_to_store=true     # 这次也送商店
+gh workflow run tag-release.yml                            # 只发 GitHub Release
+```
+
+- `tag-release` 把这个开关原样透传给 `release.yml`（`submit_to_store` 布尔输入，默认 `false`）。
+- **不做常驻仓库变量开关**：那种开关总有人忘了关，一次手滑就把内部版本推给全体用户。
+- 送审步骤 `continue-on-error: true` —— 商店那条线失败不该把「Release 已发出」拖红，
+  但会在 run 摘要留 warning 注解，别忽略。
+
+**需要的配置**
+
+| 名字 | 类型 | 从哪拿 |
 | --- | --- | --- |
-| **手工上传**（推荐先这样） | 无（只需 Partner Center 账号浏览器登录） | 从 Release 下 `.msix`，在 Partner Center 网页上传、填清单、送审 |
-| **Actions 自动上传** | ① Entra 应用注册的 `Tenant ID` / `Client ID` / `Client Secret`；② Partner Center 的 `Seller ID`；③ 产品的 `Store ID` | 三样进 GitHub Secrets；应用注册要在 Partner Center 授「Manager」角色。**不影响出包**，只影响"自动送审" |
+| `PARTNER_CENTER_TENANT_ID` | Secret | Entra → Identity → Overview |
+| `PARTNER_CENTER_CLIENT_ID` | Secret | Entra → App registrations |
+| `PARTNER_CENTER_CLIENT_SECRET` | Secret | 同上 → Certificates & secrets |
+| `PARTNER_CENTER_SELLER_ID` | Secret | Partner Center → Account settings → Identifiers |
+| `STORE_PRODUCT_ID` | Variable | 产品概览页，`9N…` 开头 |
 
-也就是说：**CI 出 MSIX 不需要任何凭证**；要凭证的只有"自动提交商店"这一步，而它可以先不做。
-另外自动上传用的是 Microsoft Store submission API（要 `StoreSubmission` 权限的 Entra 应用），
-每次提交都要带包身份与版本，跟我们走的"仓库变量 → 清单"是同一套值。
+外加一步容易漏的：Partner Center → Account settings → User management →
+**Microsoft Entra applications** 里把这个应用加进去并授 **Manager** 角色，否则 `msstore` 直接 401。
 
-### 13.7 认证风险（要提前备，不要等驳回）
+**边界**
+
+- 官方文档写明：GitHub Actions 上传**只支持免费产品**（付费产品后续支持）；
+- 产品必须**已发布上线**，首次提交只能走网页；
+- 版本必须严格递增（`0.0.15.0` > `0.0.14.0`），服务端会校验，被拒时日志里有原话；
+- `Client Secret` 有有效期（Entra 默认 24 个月），过期后这一步会失败 —— 这也是它不能拖红整个发版的原因之一。
+
+### 13.9 认证风险（要提前备，不要等驳回）
 
 - **10.3 Product is Testable**：审核员装上 SinceArc 只会看到"连接 agent"的空壳，本机没有 ACP agent
   就跑不出东西 → 可能判不可测。交付物：`Notes for certification` 写分步说明（装什么、点哪里、
