@@ -27,6 +27,8 @@
   --d1: #f85149;
   --ok: #3fb950;
   --warn: #d29922;
+  /* 黄底上的字：黄色够亮，压白字对比度不足（≈2.4:1），统一用深色字 */
+  --on-warn: #1b1f2b;
 
   /* 玻璃：n-3 70% / n-2 72%，模糊是辅料 */
   --glass-1: color-mix(in srgb, var(--s2) 70%, transparent);
@@ -287,6 +289,7 @@
   --color-danger-1: var(--d1);
   --color-ok-1: var(--ok);
   --color-warn-1: var(--warn);
+  --color-on-warn: var(--on-warn);
 
   --radius-card: 12px;
   /* 输入区卡片（§23）：参考 reactbits `.lh-window` 的 18px 半径 */
@@ -411,6 +414,24 @@ body {
 /* 控件：只给上缘内高光，底色由调用方的 Tailwind 类给（bg-surface-* / hover:*）
    —— 之前这里自己铺 background，unlayered 规则会压过所有 bg-* 工具类，
    按钮的 hover 因此静默失效。 */
+/* 会话执行中的波浪（§41.6）：以行底边为基线的一条正弦线，横向缓慢流动。
+   用 currentColor 让颜色跟随主题（组件里挂 text-accent-1），不写死色值。 */
+@keyframes sc-wave-drift {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.sc-session-wave svg {
+  animation: sc-wave-drift 2.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sc-session-wave svg {
+    animation: none;
+  }
+}
+
 .sc-control {
   box-shadow: var(--edge-hairline);
 }
