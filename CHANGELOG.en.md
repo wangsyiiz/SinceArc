@@ -4,6 +4,15 @@ User-facing notes for each release. `release.yml` takes the `## v<version>` sect
 alongside the Chinese one in `CHANGELOG.md` and ships both in the same update payload
 (docs/distribution.md §11). Earlier versions were Chinese-only and are not back-translated.
 
+## v0.0.17
+
+- **The session list now shows what is alive**: running sessions no longer carry a small dot — a **wave drifts along the bottom border** of the row, so you can find the busy one at a glance.
+- **Unread badges are yellow and vertically centred on the right edge**: red is reserved for actual errors, while unread only means "there is something new". The jump-to-unread bar also gained a ✕ to dismiss it (dismissing does not mark anything read).
+- **The ⋯ button on session rows became a context menu**: the icon used to flicker down the whole column as the pointer moved; now the menu only appears on right-click, and deleting a running session stays disabled with the reason shown.
+- **"New session" and its dropdown are separate controls** on the same row. The dropdown used to live inside the same shell, so a slightly off click on "New session" landed on it.
+- **The small-size icon frames were retuned**: the S inside now sits at 0.72 and the glow is back (it had been dropped for legibility at small sizes).
+- **"Add project" in the code view can use the system folder picker** — no more typing paths by hand; picking one adds it to the list directly.
+
 ## v0.0.16
 
 - **The "change workspace" popover is fixed.** It had a transparent background (the background class referenced a token that does not exist, so the browser silently dropped it) and the input had no visible border. It now uses the app's frosted surface, and the input has a 1px outline with a deeper background than the panel.
