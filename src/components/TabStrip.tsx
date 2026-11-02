@@ -49,6 +49,8 @@ interface TabItemProps {
   tab: Tab;
   active: boolean;
   pinned: boolean;
+  /** 可见标签的渲染宽度（由 fitTabs 按容器宽度算，§39.5）；菜单里的实例不用 */
+  width?: number;
   badgeOf?: (t: Tab) => string | null;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
@@ -70,7 +72,7 @@ export function TabStrip({
   const containerRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
   const overflowRef = useRef<HTMLDivElement>(null);
-  const [metrics, setMetrics] = useState({ width: 0, minW: 0, gap: 0 });
+  const [metrics, setMetrics] = useState({ width: 0, minW: 0, maxW: 0, gap: 0 });
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -81,12 +83,13 @@ export function TabStrip({
       const width = Math.max(0, container.getBoundingClientRect().width - overflowWidth);
       const styles = getComputedStyle(container);
       const minW = Number.parseFloat(styles.getPropertyValue("--tab-min-w")) || 0;
+      const maxW = Number.parseFloat(styles.getPropertyValue("--tab-max-w")) || minW;
       const tabEl = stripRef.current?.querySelector<HTMLElement>("[data-tab]");
       const gap = tabEl ? Number.parseFloat(getComputedStyle(tabEl).borderRightWidth) || 0 : 0;
       setMetrics((prev) =>
-        prev.width === width && prev.minW === minW && prev.gap === gap
+        prev.width === width && prev.minW === minW && prev.maxW === maxW && prev.gap === gap
           ? prev
-          : { width, minW, gap },
+          : { width, minW, maxW, gap },
       );
     };
 
@@ -110,17 +113,18 @@ export function TabStrip({
         .map((tab) => tab.id),
     [pinned, tabs],
   );
-  const { visible, overflow } = useMemo(
+  const { visible, overflow, tabWidth } = useMemo(
     () =>
       fitTabs({
         width: metrics.width,
         minW: metrics.minW,
+        maxW: metrics.maxW,
         gap: metrics.gap,
         tabs: tabIds,
         pinned: pinnedIds,
         activeId,
       }),
-    [activeId, metrics.gap, metrics.minW, metrics.width, pinnedIds, tabIds],
+    [activeId, metrics.gap, metrics.maxW, metrics.minW, metrics.width, pinnedIds, tabIds],
   );
 
   const byId = useMemo(() => new Map(tabs.map((tab) => [tab.id, tab])), [tabs]);
@@ -147,6 +151,7 @@ export function TabStrip({
             tab={tab}
             active={tab.id === activeId}
             pinned={!!tab.sessionId && pinned.has(tab.sessionId)}
+            width={tabWidth}
             badgeOf={badgeOf}
             onSelect={onSelect}
             onClose={onClose}
@@ -181,6 +186,7 @@ function TabItem({
   tab,
   active,
   pinned,
+  width,
   badgeOf,
   onSelect,
   onClose,
@@ -198,7 +204,7 @@ function TabItem({
     <div
       data-tab={inMenu ? undefined : ""}
       role={inMenu ? "none" : undefined}
-      style={inMenu ? undefined : ({ width: "var(--tab-min-w)" } as CSSProperties)}
+      style={inMenu ? undefined : ({ width: width || "var(--tab-min-w)" } as CSSProperties)}
       className={cn(
         "group flex h-full shrink-0 items-stretch border-r border-line-1/40 transition-colors",
         inMenu ? "w-full rounded-mark border-r-0" : "",
