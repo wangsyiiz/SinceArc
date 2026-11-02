@@ -452,6 +452,11 @@ Get-AppxPackage -Name 'SinceArc*' | Select Name, Version, InstallLocation   # �
 
 ### 13.8 送审到 Microsoft Store（逐次决定，默认不送）
 
+> **当前决定（2026-11-02）：走手工上传。** 自动化这条链路的代码已经就位并干跑验证过
+> （见下），但需要一套 Entra 身份（租户 + 应用 + 密钥）才跑得起来，所有者判断
+> "发版频率还不值这套一次性配置 + 一个两年过期的密钥"，所以 `submit_to_store` 一律 false，
+> 每次发版按 §13.10 的清单手工传。要开自动化时，照本节配 4 个 secret + 1 个变量即可，代码不用改。
+
 **每次提交都要重新认证**：包体一变就是一次新提交，认证通常几小时到 1–2 天。所以送审不是
 "发版流水线的默认动作"，而是**这一次发布时由人勾选**：
 
@@ -492,3 +497,21 @@ gh workflow run tag-release.yml                            # 只发 GitHub Relea
   看到什么）+ 一段录屏；必要时随包放一个可离线跑通的样例配置。
 - **10.4.2**：必须能快速启动并保持响应 —— 首启无 agent 时不得卡在白屏。
 - 年龄分级问卷、商店文案与截图、支持联系方式：提交前一次性备齐。
+
+### 13.10 手工送审清单（当前采用的方式）
+
+发一个商店版本，六步，五分钟：
+
+1. **版本号 +1**：`src-tauri/tauri.conf.json`、`package.json`、`src-tauri/Cargo.toml` 三处同步
+   （第四段固定 `0`，`0.0.15.0` 即可，`0.0.15.1` 会被拒）。然后用 tag-release 发版。
+2. **等构建绿**，从 GitHub Release 下载 **`SinceArc_<v>_x64.msix`** —— 注意是这一个，
+   **不是** `-unsigned` 那个（带 OID 的是本地测试包，商店必拒）。
+3. Partner Center → **Apps and games** → SinceArc → **新提交** → 上传该 `.msix`。
+4. **Submission options → Restricted capabilities**：填 `runFullTrust` 的理由，
+   用 §13.9 后面那段短版（三句：起外部 CLI、读写用户选定目录、不提权/服务/驱动）。
+5. **Notes for certification**：写清"本应用需要先安装一个 ACP agent 才能用"，
+   给可复现步骤 —— 这是 10.3 可测性唯一能被救的地方。
+6. 提交，等认证（几小时到 1–2 天），通过后自动发布。
+
+**别踩的三条**：版本没递增会被拒；包体上传后不能改（改了就是新提交、重新认证）；
+认证期的热修走直装渠道（zip / setup.exe），不要指望商店。
