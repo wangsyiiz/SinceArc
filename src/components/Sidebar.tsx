@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { CmdError, GhRepoListingDto, GhStatusDto, PrDto, RepoDto, RepoRefDto } from "@/lib/ipc";
-import { asCmdError, ghReposList, ghStatus } from "@/lib/ipc";
+import { asCmdError, ghReposList, ghStatus, pickDirectory } from "@/lib/ipc";
 import type { AgentProfile, GithubRepo, Player, SessionSummary } from "@/types";
 import type { MessageKey } from "@/i18n/zh-CN";
 import { cn } from "@/lib/utils";
@@ -264,8 +264,9 @@ export function Sidebar({
     [sessions],
   );
 
-  const submit = async () => {
-    const v = path.trim();
+  /** `explicit` 给系统选择器用：刚选到的目录还没进 state，不能靠 path 读。 */
+  const submit = async (explicit?: string) => {
+    const v = (explicit ?? path).trim();
     if (!v || addingLocal) return;
     setLocalError(null);
     setAddingLocal(true);
@@ -828,6 +829,28 @@ export function Sidebar({
                       placeholder={t("sidebar.projects.placeholder")}
                       className="sc-selectable min-w-0 flex-1 rounded-mark bg-surface-3/45 px-2 py-1 font-mono text-caption text-ink-1 placeholder:text-ink-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
                     />
+                    <button
+                      type="button"
+                      disabled={addingLocal}
+                      onClick={() => {
+                        // 系统目录选择器（§45 的同一个命令）：手输路径容易拼错、也不方便找深层目录，
+                        // 选完直接提交，少一次多余点击；输入框保留，粘一个已有路径仍然更快。
+                        void (async () => {
+                          try {
+                            const dir = await pickDirectory(path.trim() || undefined);
+                            if (!dir) return;
+                            setPath(dir);
+                            setLocalError(null);
+                            await submit(dir);
+                          } catch (error) {
+                            setLocalError(asCmdError(error));
+                          }
+                        })();
+                      }}
+                      className="rounded-mark px-2 py-1 text-caption text-ink-2 transition-colors hover:bg-surface-3 hover:text-ink-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1 disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      {t("sidebar.projects.browseDir")}
+                    </button>
                     <button
                       type="button"
                       disabled={addingLocal || !path.trim()}
