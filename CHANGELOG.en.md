@@ -4,6 +4,13 @@ User-facing notes for each release. `release.yml` takes the `## v<version>` sect
 alongside the Chinese one in `CHANGELOG.md` and ships both in the same update payload
 (docs/distribution.md §11). Earlier versions were Chinese-only and are not back-translated.
 
+## v0.0.19
+
+- **A dropped connection no longer duplicates a reply.** When a connection died mid-answer (`agent closed stdout`), the partial reply was saved; after reconnecting, the agent replayed the whole answer and it was saved a second time — the same reply appeared twice, the second copy slightly longer. The stored text is now matched by content: the replayed prefix is dropped and any tail is merged into the existing message. Records already corrupted are collapsed the next time the session is opened.
+- **Unread badges now count while the window is in the background.** They only worked when the window was focused, so a turn that finished in the background left no badge.
+- **The message column is no longer pinned at 768px.** It widens with the window, up to half the window width (full screen spread the text too far apart to read line by line); below 1536 it stays exactly as before.
+- **Wider startup window**: 1180 → 1280.
+
 ## v0.0.18
 
 - **Replies are credited to the right agent.** Every session used to label the agent with the *default* connection, so a Codex session showed `hermes · fedora` on its replies. The label now follows the session's own connection, retroactively for existing messages too.
