@@ -2309,6 +2309,18 @@ ACP 侧的标题被完全丢掉：`session_info_update` 收到就丢，`session/
 
 ## 42. 未读计数与跳转（2026-10-30 定）
 
+### 41.7 消息流里主 agent 的名字跟会话的连接走（2026-11-02 修）
+
+**现象**：codex 会话里的回复也顶着 `hermes · fedora` 的名字。
+
+**根因**：主 agent 的渲染身份（`mainAgentPlayer`）取的是 `activeProfile` ——
+那是「**新建会话时默认用哪条连接**」的全局偏好，跟已经存在的会话没有关系。
+用户把默认连接停在 hermes 时，所有会话的主 agent 都叫 hermes。
+
+**规则**：`resolveAgentProfile`（`src/lib/agent-identity.ts`）按
+「会话自己的 `profileId` → 全局默认连接 → 无」取；会话指向已删除的连接时也走兜底，
+不显示「未知」。`activeProfile` 只用来决定新会话的归属，不再参与任何"这是谁说的"判断。
+
 ### 42.1 决定（所有者口径）
 
 - **系统提示也计入未读**；**跨重启保留**。
