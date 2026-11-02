@@ -4,6 +4,15 @@ User-facing notes for each release. `release.yml` takes the `## v<version>` sect
 alongside the Chinese one in `CHANGELOG.md` and ships both in the same update payload
 (docs/distribution.md §11). Earlier versions were Chinese-only and are not back-translated.
 
+## v0.0.16
+
+- **The "change workspace" popover is fixed.** It had a transparent background (the background class referenced a token that does not exist, so the browser silently dropped it) and the input had no visible border. It now uses the app's frosted surface, and the input has a 1px outline with a deeper background than the panel.
+- **Unread counts only accumulate while you are not looking.** They now require either the window being in the background or you being in a different session — messages arriving while you watch a session are no longer counted, so switching away and back no longer shows a red badge.
+- **The jump-to-unread bar is no longer full width** — it hugs its text and sits centered, reading as a button instead of a divider.
+- **The reply sound no longer fires early.** It used to chime while the agent was still working (synthesized hand-over results, member turns, and agents that report "turn finished" before continuing all triggered it). A turn's end now has to stay quiet for 1.2s before the chime plays.
+- **Tab width has three stages**: 200px when there are few tabs, shrinking toward the available width as they multiply, and 120px minimum before the rest move into the overflow menu. It used to be a fixed 120px, so two tabs sat at that width with a large empty gap on the right.
+- **The GitHub avatar in the title bar no longer hugs the minimize button** — 16px of padding on both sides, matching the window buttons' own inset.
+
 ## v0.0.15
 
 - **Switch the working directory without starting a new session.** The folder at the left of the status bar above the message stream is now clickable: change it any time before your first message. Local connections open the system folder picker; WSL / SSH connections browse the remote filesystem right in the panel (drill into subfolders, go up a level, or type a path with `~`).
