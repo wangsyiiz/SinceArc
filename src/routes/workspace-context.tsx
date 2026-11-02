@@ -101,6 +101,10 @@ export interface Workspace {
   settings: ThreadSettings;
   t: TFunction;
   cwd: string;
+  /** 工作目录是否还能改：发出过用户消息就锁定（docs/desktop-ux.md §45） */
+  cwdLocked: boolean;
+  /** 换工作目录；null = 成功，字符串 = 已本地化的错误文案 */
+  changeCwd: (next: string) => Promise<string | null>;
   sessionProfile: AgentProfile | undefined;
   activeAcpSid: string | null;
   eventCount: number;
