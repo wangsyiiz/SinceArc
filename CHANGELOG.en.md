@@ -4,6 +4,14 @@ User-facing notes for each release. `release.yml` takes the `## v<version>` sect
 alongside the Chinese one in `CHANGELOG.md` and ships both in the same update payload
 (docs/distribution.md §11). Earlier versions were Chinese-only and are not back-translated.
 
+## v0.0.15
+
+- **Switch the working directory without starting a new session.** The folder at the left of the status bar above the message stream is now clickable: change it any time before your first message. Local connections open the system folder picker; WSL / SSH connections browse the remote filesystem right in the panel (drill into subfolders, go up a level, or type a path with `~`).
+- **It locks after the first message** — read-only, path still copyable. By then the agent has already worked in that directory; switching it would swap its memory out from under it.
+- Settings → Connections → Working directory uses the same browser, so you no longer have to type the path by hand when setting up a connection.
+- **New sessions no longer create an empty session on the agent side the moment you open them.** The session is created when you send the first message, so tabs you open and close — or connections you just peek at — leave no junk behind in the agent's storage.
+- One known consequence: because the session only exists after the first message, the mode picker in the status bar appears after that first message too.
+
 ## v0.0.14
 
 - **Fixed a hard blocker**: the Microsoft Store build (MSIX) failed on launch with "cannot connect to localhost". The UI assets were not embedded at package time, so it tried to reach the dev server. They are embedded now, and the pipeline fails outright if that step is ever skipped — no more "installs fine, won't start" packages.
