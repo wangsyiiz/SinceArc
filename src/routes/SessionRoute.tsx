@@ -301,7 +301,7 @@ export function SessionRoute(): JSX.Element {
                 <button
                   type="button"
                   onClick={() => void jumpToFirstUnread()}
-                  className="sc-glass pointer-events-auto mb-2 flex w-full items-center gap-2 rounded-card px-3 py-1.5 text-left text-caption text-danger-1 transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+                  className="sc-glass pointer-events-auto mx-auto mb-2 flex w-fit max-w-full items-center justify-center gap-2 rounded-card px-3 py-1.5 text-center text-caption text-danger-1 transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
                 >
                   <ArrowUp className="size-3.5 shrink-0" />
                   <span className="truncate">
