@@ -167,7 +167,7 @@ export function SessionRoute(): JSX.Element {
             className="h-full overflow-y-auto"
           >
             <div
-              className="sc-selectable mx-auto min-h-full w-full max-w-3xl px-4 pt-4"
+              className="sc-selectable sc-stream mx-auto min-h-full w-full px-4 pt-4"
               style={{ paddingBottom: composerH + 16 }}
             >
               {hasMore && (
@@ -297,7 +297,7 @@ export function SessionRoute(): JSX.Element {
             ref={composerRef}
             className="pointer-events-none absolute inset-x-0 bottom-0 px-3 pb-3"
           >
-            <div className="mx-auto max-w-3xl">
+            <div className="sc-stream mx-auto">
               {unreadJump?.sessionId === lastSessionId && unreadJump.count > 0 && (
                 // 外层是容器不是按钮：里面要有两个可点区域（跳转 / 关闭），
                 // 按钮套按钮是非法结构，读屏和键盘都会错乱。
