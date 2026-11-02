@@ -2,6 +2,8 @@
 <html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
+    <!-- 版本号唯一来源：pages.yml 部署前用最新 tag 覆盖（app.js 从这里读，不自己写死） -->
+    <meta name="sincearc-version" content="0.0.0" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SinceArc — an ACP client that keeps the process visible</title>
     <meta
@@ -175,6 +177,7 @@
       </p>
     </footer>
 
-    <script src="app.js"></script>
+    <!-- ?v= 是缓存键：版本一变 URL 就变，浏览器不会拿旧 app.js 覆盖掉页面上的版本号 -->
+    <script src="app.js?v=0.0.0"></script>
   </body>
 </html>

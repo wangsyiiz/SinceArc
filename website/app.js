@@ -38,8 +38,11 @@
 
   /* ---------------- 下载按钮：默认项直接下载，右侧下拉换包 ---------------- */
 
-  // 占位值：pages.yml 部署前会用最新 tag 覆盖它（见那个工作流的「注入版本号」步骤）
-  const VERSION = "0.0.0";
+  // 版本从页面上的 <meta name="sincearc-version"> 读，不从 JS 常量读：
+  // app.js 是同名文件、会被浏览器缓存（max-age=600），旧副本带着旧常量回来会把
+  // HTML 里已经正确的版本号又覆盖掉 —— 2026-11-02 的「先显示新版、再回落 0.0.1」就是这个。
+  const VERSION =
+    document.querySelector('meta[name="sincearc-version"]')?.getAttribute("content") || "0.0.0";
   const REL = "https://github.com/wangsyiiz/SinceArc/releases/latest/download/";
 
   // 只列真实存在的产物。没有构建的平台不放进菜单——给不存在的链接比给不出下载更糟。
