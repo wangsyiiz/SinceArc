@@ -26,6 +26,9 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 版本号取自最新 tag，浅克隆里没有 tag，所以必须取全量（仓库很小）
+          fetch-depth: 0
 
       - name: 尝试启用 Pages（已启用会返回 409，忽略）
         continue-on-error: true
@@ -35,6 +38,34 @@ jobs:
           gh api -X POST "repos/${{ github.repository }}/pages" \
             -f build_type=workflow -f source[branch]=main -f source[path]=/ || true
           gh api "repos/${{ github.repository }}/pages" 2>/dev/null || echo "Pages 未启用（可能是套餐限制）"
+
+      - name: 注入版本号（单一来源：最新 tag，退回 tauri.conf.json）
+        # 官网是纯静态站，不跑构建 —— 版本号只能在这一步写进文件。
+        # 之前它是手写的常量（app.js: const VERSION = "0.0.1"），所以永远停在 0.0.1。
+        run: |
+          set -euo pipefail
+          VERSION="$(git describe --tags --abbrev=0 | sed 's/^v//')"
+          if [ -z "${VERSION}" ]; then
+            VERSION="$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
+          fi
+          echo "官网显示版本：$VERSION"
+          python3 - "$VERSION" <<'PY'
+          import pathlib, re, sys
+          v = sys.argv[1]
+          edits = [
+              ("website/app.js", r'(const VERSION = ")[^"]*(")', lambda m: m.group(1) + v + m.group(2)),
+              ("website/index.html", r'(id="dlSub">Windows 10/11 · x64 · v)[^<]*(<)', lambda m: m.group(1) + v + m.group(2)),
+          ]
+          for path, pat, rep in edits:
+              p = pathlib.Path(path)
+              s = p.read_text(encoding="utf-8")
+              new, n = re.subn(pat, rep, s, count=1)
+              assert n == 1, f"{path}: 找不到版本占位"
+              p.write_text(new, encoding="utf-8")
+              print(f"{path}: {n} 处已注入")
+          PY
+          grep -n 'const VERSION' website/app.js
+          grep -n 'id="dlSub"' website/index.html
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

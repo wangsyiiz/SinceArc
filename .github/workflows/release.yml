@@ -29,6 +29,8 @@ on:
 
 permissions:
   contents: write
+  # 发布后要派发 pages.yml 刷新官网版本号
+  actions: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -361,3 +363,16 @@ jobs:
             exit 1
           }
           Write-Host "已提交商店审核：$msix"
+
+      # 官网版本号来自最新 tag（pages.yml 里注入）。Release 建完后必须再部署一次站点，
+      # 否则官网会停在上一版 —— tag 是在这之后才出现的，站点那次的 describe 还看不到它。
+      - name: 刷新官网版本号（重新部署 Pages）
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          gh workflow run pages.yml --ref main
+          if ($LASTEXITCODE -ne 0) { throw "触发 pages 失败：官网版本号会停在旧值" }
+          Write-Host "已触发 Pages 重新部署，官网应显示 v$v"
