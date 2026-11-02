@@ -6,6 +6,8 @@ export type { AgentUserTestOutcome } from "./AgentUserTestOutcome";
 export type { BindingRow } from "./BindingRow";
 export type { Candidate } from "./Candidate";
 export type { CheckState } from "./CheckState";
+export type { DirEntryDto } from "./DirEntryDto";
+export type { DirListingDto } from "./DirListingDto";
 export type { CommandDto } from "./CommandDto";
 export type { ConnectOutcome } from "./ConnectOutcome";
 export type { DelegateHandleDto } from "./DelegateHandleDto";

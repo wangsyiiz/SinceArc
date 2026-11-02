@@ -27,6 +27,8 @@ export type {
   McpKeyValueDto,
   McpServerDto,
   ModeChoice,
+  DirEntryDto,
+  DirListingDto,
   ModeOption,
   ProbeOutcome,
   ProfileDto,

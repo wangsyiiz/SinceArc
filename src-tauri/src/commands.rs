@@ -3852,6 +3852,61 @@ pub async fn pick_directory(
     Ok(picked.map(|path| path.to_string_lossy().into_owned()))
 }
 
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct DirEntryDto {
+    pub name: String,
+    pub path: String,
+}
+
+/// 远端一层目录的浏览结果（WSL / SSH，docs/desktop-ux.md §45）。
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct DirListingDto {
+    /// 远端 `pwd -P` 的解析结果，不是用户输入的原文
+    pub path: String,
+    /// 根目录没有父级
+    #[ts(optional = nullable)]
+    pub parent: Option<String>,
+    pub entries: Vec<DirEntryDto>,
+    /// 条目超过上限（300）被截断：弹窗要如实说明，不能装作全都在这儿
+    pub truncated: bool,
+}
+
+/// 列远端一层目录（WSL / SSH）。本地连接请走 `pick_directory`。
+#[tauri::command]
+pub async fn list_dirs(
+    profile: ProfileDto,
+    path: Option<String>,
+) -> Result<DirListingDto, CmdError> {
+    let parsed = to_profile(&profile)?;
+    let listing = acp::remote_fs::list_dir(&parsed, path.as_deref())
+        .await
+        .map_err(|detail| {
+            CmdError::keyed_with(
+                50330,
+                "err.dir.listFailed",
+                detail.clone(),
+                BTreeMap::from([("detail".to_string(), detail)]),
+            )
+        })?;
+    Ok(DirListingDto {
+        path: listing.path,
+        parent: listing.parent,
+        truncated: listing.truncated,
+        entries: listing
+            .entries
+            .into_iter()
+            .map(|entry| DirEntryDto {
+                name: entry.name,
+                path: entry.path,
+            })
+            .collect(),
+    })
+}
+
 /* ---------- delegate / wait（docs/orchestration.md） ---------- */
 
 const DELEGATE_TASK_MAX_BYTES: usize = 8 * 1024;
