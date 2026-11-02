@@ -34,10 +34,9 @@ import {
 } from "@/lib/repos-picker";
 import { isBetaVersion, versionLabel } from "@/lib/version-label";
 import { unreadBadgeText } from "@/lib/unread";
-import { SessionMoreMenu } from "./SessionMcpMenu";
+import { SessionContextMenu } from "./SessionContextMenu";
 import { AgentLogo } from "./AgentLogo";
 import { StatusDot } from "./ui/Badge";
-import { BrandLoader } from "./ui/BrandLoader";
 import { Dialog } from "./ui/Dialog";
 import { useHoverCard } from "./ui/HoverCard";
 
@@ -162,6 +161,8 @@ export function Sidebar({
   const [ghListings, setGhListings] = useState<GhRepoListingDto[]>([]);
   const [ghHasMore, setGhHasMore] = useState(false);
   const [ghLoading, setGhLoading] = useState(false);
+  /** 右键菜单：哪一行、点在哪儿（§41.6） */
+  const [ctx, setCtx] = useState<{ session: SessionSummary; x: number; y: number } | null>(null);
   const [ghError, setGhError] = useState<CmdError | null>(null);
   const [actionError, setActionError] = useState<CmdError | null>(null);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
@@ -463,10 +464,15 @@ export function Sidebar({
                         "group relative mb-0.5 rounded-mark transition-colors",
                         active ? "sc-row-active" : "hover:bg-surface-3",
                       )}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setCtx({ session: s, x: event.clientX, y: event.clientY });
+                      }}
                     >
                       <button
                         onClick={() => onSelect(s.id)}
-                        className="flex w-full flex-col gap-0.5 rounded-mark px-2.5 py-2 pr-12 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+                        className="flex w-full flex-col gap-0.5 rounded-mark px-2.5 py-2 pr-9 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
                       >
                         <span className="flex min-w-0 items-center gap-1.5">
                           <span
@@ -486,44 +492,61 @@ export function Sidebar({
                             </span>
                           </span>
                         )}
-                        {/* 执行中：垂直居中于整行（§41.1，2026-10-30 改）。放右边缘往里一档
-                            （right-8），与右上 ⋯ 按钮同列会撞；标题行不再内联它，
-                            单行/双行都以行中线为准。 */}
-                        {busy && (
-                          <span className="pointer-events-none absolute right-8 top-1/2 -translate-y-1/2">
-                            <BrandLoader
-                              variant="comet"
-                              size={14}
-                              label={t("sidebar.session.running")}
-                            />
-                          </span>
-                        )}
-                        {/* 未读徽标贴行右下角（§41.1，2026-10-30 改）：右边缘自上而下是 ⋯ / 未读数。
+                        {/* 未读：右边缘垂直居中、惯用的黄色（§41.6，2026-11-02 改）。
                             放在 button 内部是为了让读屏仍把它算作这一行的内容；定位锚点是外层 relative 行容器。 */}
                         {unread && (
                           <span
                             aria-label={t("sidebar.session.unreadBadge", {
                               count: s.unreadCount,
                             })}
-                            className="pointer-events-none absolute right-1 bottom-1.5 rounded-full bg-danger-1/15 px-1.5 py-px font-mono text-micro tabular-nums text-danger-1"
+                            className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-warn-1 px-1.5 py-px font-mono text-micro font-semibold tabular-nums text-on-warn"
                           >
                             {unread}
                           </span>
                         )}
                       </button>
-                      {/* hover 才出现：删除是低频破坏性操作，不该一直挂在那儿等误点 */}
-                      <div className="absolute right-1 top-1.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-                        <SessionMoreMenu
-                          busy={busy}
-                          onDelete={() => onDeleteSession(s)}
-                        />
-                      </div>
+                      {/* 执行中：以行底边框为基线的一层波浪（§41.6，2026-11-02 改）。
+                          原来用 BrandLoader 的彗星，挤在右边缘、和未读徽标抢位置；
+                          改成整行宽的一条线，扫列表时不用定位某个小圆点。 */}
+                      {busy && (
+                        <span
+                          role="status"
+                          aria-label={t("sidebar.session.running")}
+                          className="sc-session-wave pointer-events-none absolute inset-x-0 -bottom-px h-1.5 overflow-hidden text-accent-1"
+                        >
+                          <svg
+                            viewBox="0 0 48 4"
+                            preserveAspectRatio="none"
+                            className="h-full w-[200%]"
+                            aria-hidden="true"
+                          >
+                            <path
+                              d="M0 2 Q6 0.6 12 2 T24 2 T36 2 T48 2"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.5"
+                              strokeLinecap="round"
+                              vectorEffect="non-scaling-stroke"
+                            />
+                          </svg>
+                        </span>
+                      )}
                     </div>
                   );
                 })}
               </div>
             ))}
           </div>
+
+          {ctx && (
+            <SessionContextMenu
+              x={ctx.x}
+              y={ctx.y}
+              busy={isSessionBusy?.(ctx.session.id) ?? false}
+              onDelete={() => onDeleteSession(ctx.session)}
+              onClose={() => setCtx(null)}
+            />
+          )}
         </>
       ) : (
         <>
@@ -973,10 +996,13 @@ function NewSessionButton({
 
   return (
     <div ref={ref} className="relative">
-      <div className="sc-control flex w-full items-center rounded-control bg-surface-3/50 transition-colors hover:bg-surface-3/85">
+      {/* 主按钮与下拉是两个独立控件（§41.6，2026-11-02 改）：原先下拉是塞在同一块控制壳里的
+          小图标，壳一 hover 整块都亮，点「新建」时手一偏就落到下拉上。现在拆开、各留自己的边距，
+          但仍是一行：主按钮 flex-1，下拉定宽。 */}
+      <div className="flex items-stretch gap-1.5">
         <button
           onClick={onNew}
-          className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left text-small text-ink-1"
+          className="sc-control flex min-w-0 flex-1 items-center gap-2 rounded-control bg-surface-3/50 px-2.5 py-2 text-left text-small text-ink-1 transition-colors hover:bg-surface-3/85 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
         >
           <Plus className="size-3.5 shrink-0 text-ink-2" />
           {t("sidebar.newSession")}
@@ -991,7 +1017,10 @@ function NewSessionButton({
             aria-label={t("sidebar.newSession.chooseAgent")}
             aria-expanded={open}
             onClick={() => setOpen((v) => !v)}
-            className="mr-1 grid size-6 shrink-0 place-items-center rounded-mark text-ink-3 transition-colors hover:bg-surface-3/70 hover:text-ink-1"
+            className={cn(
+              "sc-control grid w-8 shrink-0 place-items-center rounded-control bg-surface-3/50 text-ink-3 transition-colors hover:bg-surface-3/85 hover:text-ink-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1",
+              open && "bg-surface-3/85 text-ink-1",
+            )}
           >
             <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
           </button>
