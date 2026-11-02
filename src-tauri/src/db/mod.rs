@@ -1311,6 +1311,44 @@ impl Db {
         tx.commit()
     }
 
+    /// 会话是否已经有用户发言（docs/desktop-ux.md §45：有发言就锁定工作目录）。
+    pub fn session_has_user_turn(&self, session_id: &str) -> rusqlite::Result<bool> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let exists: i64 = conn.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM atoms
+                WHERE session_id = ?1 AND channel = 'chat' AND role = 'user')",
+            params![session_id],
+            |r| r.get(0),
+        )?;
+        Ok(exists != 0)
+    }
+
+    /// 改写会话的工作目录。**不**负责重建 ACP 会话 —— 那是 commands::session_set_cwd 的事。
+    pub fn set_session_cwd(&self, session_id: &str, cwd: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db poisoned");
+        conn.execute(
+            "UPDATE sessions SET cwd = ?1, updated_at = ?2 WHERE id = ?3",
+            // sessions.updated_at 是秒（见 now() 的注释），用 now_ms() 会把 display_time 算成 NULL
+            params![cwd, now(), session_id],
+        )?;
+        Ok(())
+    }
+
+    /// 同一连接下其他会话用过的工作目录（去重、新的在前）。给「更换工作区」浮层用。
+    pub fn recent_cwds(&self, profile_id: &str, limit: i64) -> rusqlite::Result<Vec<String>> {
+        let conn = self.conn.lock().expect("db poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT cwd FROM sessions
+              WHERE profile_id = ?1 AND cwd <> ''
+              GROUP BY cwd
+              ORDER BY MAX(updated_at) DESC
+              LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![profile_id, limit], |r| r.get::<_, String>(0))?;
+        rows.collect()
+    }
+
     pub fn live_handle(&self, session_id: &str) -> rusqlite::Result<Option<ResumeHandle>> {
         let conn = self.conn.lock().expect("db poisoned");
         conn.query_row(
@@ -3780,6 +3818,72 @@ mod tests {
         db.upsert_session(&session("s-empty", None)).expect("empty");
         db.mark_read("s-empty").expect("mark empty read");
         assert_eq!(last_read_at(&db, "s-empty"), 0, "没有 chat 原子推到 0");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn cwd_locks_after_first_user_message() {
+        let (db, path) = db_with_session();
+
+        assert!(
+            !db.session_has_user_turn("s-1").expect("check"),
+            "新会话没有发言，目录应该能改"
+        );
+
+        db.append_messages("s-1", &[chat_msg("p1", "player", "agent 先说话")])
+            .expect("append player");
+        assert!(
+            !db.session_has_user_turn("s-1").expect("check"),
+            "只有 agent 输出不算「发出第一条消息」"
+        );
+
+        db.append_messages("s-1", &[chat_msg("u1", "user", "我来第一句")])
+            .expect("append user");
+        assert!(
+            db.session_has_user_turn("s-1").expect("check"),
+            "用户发言后必须锁定"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn set_session_cwd_only_touches_the_column() {
+        let (db, path) = db_with_session();
+
+        db.set_session_cwd("s-1", "/mnt/c/other").expect("set cwd");
+        let row = db.list_sessions(None).expect("list")[0].clone();
+        assert_eq!(row.cwd, "/mnt/c/other");
+        assert_eq!(
+            row.profile_id.as_deref(),
+            Some("p1"),
+            "改目录不许顺手改绑连接"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn recent_cwds_dedupes_and_skips_empty() {
+        let (db, path) = db_with_session();
+
+        let mut second = session("s-2", None);
+        second.cwd = "/mnt/c/two".into();
+        second.updated_at = now() + 10;
+        db.upsert_session(&second).expect("insert s-2");
+
+        let mut third = session("s-3", None);
+        third.cwd = "/mnt/c/two".into(); // 与 s-2 相同，必须去重
+        third.updated_at = now() + 20;
+        db.upsert_session(&third).expect("insert s-3");
+
+        let mut empty = session("s-4", None);
+        empty.cwd = String::new(); // 没配目录的会话不进候选
+        db.upsert_session(&empty).expect("insert s-4");
+
+        let recent = db.recent_cwds("p1", 8).expect("recent");
+        assert_eq!(recent, vec!["/mnt/c/two".to_string(), "/mnt/c/source/sincearc".to_string()]);
 
         std::fs::remove_file(&path).ok();
     }

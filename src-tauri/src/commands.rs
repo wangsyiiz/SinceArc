@@ -3691,23 +3691,26 @@ pub async fn session_new(
     Ok(SessionInfo { session_id, modes })
 }
 
-#[tauri::command]
-pub async fn session_rebind(
-    state: State<'_, AppState>,
-    ui_session_id: String,
-    profile_id: String,
-    cwd: String,
+/// 会话已绑定工作目录的重建（`session/new` → 记录 `replaced` 绑定）。
+///
+/// 抽出来是为了让「首条消息前更换工作目录」（`session_set_cwd`，docs/desktop-ux.md §45）
+/// 和显式 `session_rebind` 走同一条路径 —— 两条路各写一遍必然漂。
+async fn rebind_acp_session(
+    state: &AppState,
+    ui_session_id: &str,
+    profile_id: &str,
+    cwd: &str,
 ) -> Result<SessionInfo, CmdError> {
-    let handle = state.get(&profile_id).await.ok_or_else(|| {
+    let handle = state.get(profile_id).await.ok_or_else(|| {
         CmdError::keyed_with(
             50300,
             "err.session.profileNotConnectedRebuild",
             format!("profile 未连接，不能重建会话：{profile_id}"),
-            BTreeMap::from([("profileId".to_string(), profile_id.clone())]),
+            BTreeMap::from([("profileId".to_string(), profile_id.to_string())]),
         )
     })?;
 
-    let mcp_servers = mcp::session_mcp_servers(state.inner(), &ui_session_id).await?;
+    let mcp_servers = mcp::session_mcp_servers(state, ui_session_id).await?;
     let result = handle
         .proc
         .request(
@@ -3738,9 +3741,9 @@ pub async fn session_rebind(
     state
         .db
         .bind_acp_session_with_agent(
-            &ui_session_id,
+            ui_session_id,
             &session_id,
-            &cwd,
+            cwd,
             "replaced",
             Some(&handle.outcome.agent_name),
         )
@@ -3762,15 +3765,116 @@ pub async fn session_rebind(
         .insert_session(
             session_id.clone(),
             SessionRecord {
-                profile_id: profile_id.clone(),
-                cwd,
-                ui_session_id: Some(ui_session_id),
+                profile_id: profile_id.to_string(),
+                cwd: cwd.to_string(),
+                ui_session_id: Some(ui_session_id.to_string()),
                 author_id: None,
             },
         )
         .await;
 
-    Ok(SessionInfo { session_id, modes })
+    Ok(SessionInfo { session_id, modes })}
+
+#[tauri::command]
+pub async fn session_rebind(
+    state: State<'_, AppState>,
+    ui_session_id: String,
+    profile_id: String,
+    cwd: String,
+) -> Result<SessionInfo, CmdError> {
+    rebind_acp_session(state.inner(), &ui_session_id, &profile_id, &cwd).await
+}
+
+/// 会话还没发出第一条用户消息时更换工作目录（docs/desktop-ux.md §45）。
+///
+/// `Some(SessionInfo)` = 已重建 ACP 会话（调用方要接管新 sessionId）；
+/// `None` = 只改了本地记录（连接不在线 / 还没绑定 ACP 会话），下次连接按新目录建会话。
+#[tauri::command]
+pub async fn session_set_cwd(
+    state: State<'_, AppState>,
+    ui_session_id: String,
+    cwd: String,
+) -> Result<Option<SessionInfo>, CmdError> {
+    let cwd = cwd.trim().to_string();
+    if cwd.is_empty() || cwd.chars().any(char::is_control) {
+        return Err(CmdError::keyed_with(
+            50320,
+            "err.session.cwdInvalid",
+            "工作目录不能为空，也不能含控制字符".to_string(),
+            BTreeMap::from([("cwd".to_string(), cwd)]),
+        ));
+    }
+
+    let locked = state
+        .db
+        .session_has_user_turn(&ui_session_id)
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.session.cwdCheckFailed",
+                format!("读取会话消息失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
+    if locked {
+        return Err(CmdError::keyed_with(
+            50321,
+            "err.session.cwdLocked",
+            "这个会话已经发出过消息，工作目录已锁定；要换目录请新建会话".to_string(),
+            BTreeMap::from([("sessionId".to_string(), ui_session_id.clone())]),
+        ));
+    }
+
+    // 外层 None = 这个会话不存在；内层 None = 还没绑定连接配置（草稿会话）
+    let found = state.db.session_profile_id(&ui_session_id).map_err(|e| {
+        CmdError::keyed_with(
+            50000,
+            "err.session.cwdCheckFailed",
+            format!("读取会话失败：{e}"),
+            BTreeMap::from([("detail".to_string(), e.to_string())]),
+        )
+    });
+    let profile_id = match found? {
+        Some(profile_id) => profile_id,
+        None => {
+            return Err(CmdError::keyed_with(
+                50404,
+                "err.session.notFound",
+                format!("会话不存在：{ui_session_id}"),
+                BTreeMap::from([("sessionId".to_string(), ui_session_id.clone())]),
+            ))
+        }
+    };
+
+    state
+        .db
+        .set_session_cwd(&ui_session_id, &cwd)
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.session.cwdSaveFailed",
+                format!("保存工作目录失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?;
+
+    let Some(profile_id) = profile_id else {
+        return Ok(None);
+    };
+    let bound = state.db.live_handle(&ui_session_id).ok().flatten().is_some();
+    if !bound || state.get(&profile_id).await.is_none() {
+        return Ok(None);
+    }
+
+    rebind_acp_session(state.inner(), &ui_session_id, &profile_id, &cwd)
+        .await
+        .map(Some)
+}
+
+/// 「更换工作区」浮层里的候选目录：同一连接下别的会话用过的（§45）。
+#[tauri::command]
+pub fn session_recent_cwds(state: State<'_, AppState>, profile_id: String) -> Vec<String> {
+    state.db.recent_cwds(&profile_id, 8).unwrap_or_default()
 }
 
 /* ---------- delegate / wait（docs/orchestration.md） ---------- */

@@ -1,11 +1,12 @@
 import { useState, type ReactNode } from "react";
-import { ChevronDown, Waypoints } from "lucide-react";
+import { Waypoints } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AgentProfile, SessionResumeState } from "@/types";
 import { cn } from "@/lib/utils";
 import { profileLabel } from "@/lib/format";
 import { localizeText } from "@/lib/i18n-text";
 import { ModeSelect } from "@/components/ModeSelect";
+import { CwdButton } from "@/components/CwdMenu";
 import { DiagnosticsPanel } from "@/components/DiagnosticsPanel";
 import { RunningCount } from "@/components/RunningCount";
 import { SessionElapsed } from "@/components/SessionElapsed";
@@ -49,6 +50,10 @@ interface StatusBarProps {
   running?: { name: string; title: string; startedAt: number }[];
   /** 与活动行右侧「轨迹」同一个入口 */
   onOpenTrace?: () => void;
+  /** 工作目录是否还能改：发出过用户消息就锁定（docs/desktop-ux.md §45） */
+  cwdEditable?: boolean;
+  /** 换工作目录；返回 null = 成功，返回字符串 = 已本地化的错误文案 */
+  onChangeCwd?: (next: string) => Promise<string | null>;
 }
 
 export function StatusBar({
@@ -69,6 +74,8 @@ export function StatusBar({
   connecting = false,
   running = [],
   onOpenTrace,
+  cwdEditable = false,
+  onChangeCwd,
 }: StatusBarProps) {
   const { t } = useTranslation();
   return (
@@ -96,14 +103,7 @@ export function StatusBar({
         lastEvent={lastEvent}
       />
 
-      <Button
-        variant="ghost"
-        size="sm"
-        className="h-auto min-w-0 justify-start gap-1.5 rounded-mark px-1.5 py-1 font-mono text-caption font-normal"
-      >
-        <span className="truncate">{cwd}</span>
-        <ChevronDown className="size-3 shrink-0 text-ink-3" />
-      </Button>
+      <CwdButton cwd={cwd} profile={profile} editable={cwdEditable} onChange={onChangeCwd} />
 
       <div className="ml-auto flex items-center gap-0.5">
         {modes && onChooseMode && (

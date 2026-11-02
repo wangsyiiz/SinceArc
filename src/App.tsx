@@ -27,6 +27,7 @@ import { normalizeCodeThemeId } from "@/lib/highlight/themes";
 import { copyText } from "@/lib/clipboard";
 import { pathOfTab } from "@/lib/route";
 import { profileLabel } from "@/lib/format";
+import { isCwdLocked } from "@/lib/cwd-lock";
 import { i18nText, localizeText, translateKey } from "@/lib/i18n-text";
 import { errorTextOf } from "@/lib/errors";
 import { pushSystemNotice } from "@/lib/notices";
@@ -101,6 +102,7 @@ import {
   sessionMemberRemove,
   sessionMembers,
   sessionRebind,
+  sessionSetCwd,
   messagesAppend,
   sessionSteer,
   sessionUpsert,
@@ -1334,6 +1336,33 @@ export default function App() {
       .finally(() => setResumeBusy(false));
   }, [cwd, diag, lastSessionId, onSession, patchSession, reportResume, sessionProfile?.id, t]);
 
+  /**
+   * 工作目录是否还能改：这个会话还没发出过用户消息（docs/desktop-ux.md §45）。
+   * 只认 role==="user" —— 系统提示、agent 输出都不算「发出第一条消息」。
+   */
+  const cwdLocked = useMemo(() => isCwdLocked(state.msgs), [state.msgs]);
+
+  /** 换工作目录：后端校验+落库（必要时重建 ACP 会话），成功返回 null，失败返回本地化文案。 */
+  const changeSessionCwd = useCallback(
+    async (next: string): Promise<string | null> => {
+      const sid = lastSessionId;
+      const pid = sessionProfile?.id;
+      if (!sid) return t("statusbar.cwd.noSession");
+      try {
+        const info = await sessionSetCwd(sid, next);
+        if (pid && info) onSession(pid, info.sessionId, null, sid);
+        await reloadSessions();
+        diag(`CWD ui=${sid} → ${next}${info ? ` acp=${info.sessionId}` : " (defer to next connect)"}`);
+        return null;
+      } catch (e) {
+        const err = asCmdError(e);
+        diag(`CWD-ERR ui=${sid} ${err.code} ${err.msg}`);
+        return localizeText(err.msg, t);
+      }
+    },
+    [diag, lastSessionId, onSession, reloadSessions, sessionProfile?.id, t],
+  );
+
   const activeModeView = modesBySid[lastSessionId] ?? null;
   const activeDefaultModeLabel = sessionProfile?.defaultMode
     ? ((modesByProfile[sessionProfile.id]?.available ?? activeModeView?.available ?? []).find(
@@ -2392,6 +2421,8 @@ export default function App() {
     settings,
     t,
     cwd,
+    cwdLocked,
+    changeCwd: changeSessionCwd,
     sessionProfile,
     activeAcpSid,
     eventCount,

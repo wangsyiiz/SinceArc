@@ -32,6 +32,24 @@ export function sessionRebind(
   return invokeCmd<SessionInfo>("session_rebind", { uiSessionId, profileId, cwd });
 }
 
+/**
+ * 会话还没发出第一条消息时更换工作目录（docs/desktop-ux.md §45）。
+ *
+ * 返回 null = 只改了本地记录（连接不在线，下次连接按新目录建会话）；
+ * 返回 SessionInfo = 已重建 ACP 会话，调用方要接管新的 acpSessionId。
+ */
+export function sessionSetCwd(
+  uiSessionId: string,
+  cwd: string,
+): Promise<SessionInfo | null> {
+  return invokeCmd<SessionInfo | null>("session_set_cwd", { uiSessionId, cwd });
+}
+
+/** 「更换工作区」的候选：同一连接下别的会话用过的工作目录（后端去重、新的在前）。 */
+export function sessionRecentCwds(profileId: string): Promise<string[]> {
+  return invokeCmd<string[]>("session_recent_cwds", { profileId });
+}
+
 /** 发一轮消息。立即返回：内容从事件流回来，不在这里等生成完。 */
 /** 把某个已存会话 load 进已连接的进程（向群成员发消息前必须先做） */
 

@@ -95,6 +95,8 @@ export function SessionRoute(): JSX.Element {
     <>
       <StatusBar
         cwd={cwd}
+        cwdEditable={!ws.cwdLocked}
+        onChangeCwd={ws.changeCwd}
         profile={sessionProfile}
         sessionId={activeAcpSid ?? undefined}
         eventCount={eventCount}
