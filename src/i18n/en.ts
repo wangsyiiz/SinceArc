@@ -34,6 +34,7 @@ export const en: Record<MessageKey, string> = {
   "sidebar.projects.panelTitle": "Add project",
   "sidebar.projects.fromGh": "From GitHub",
   "sidebar.projects.localDir": "Local directory",
+    "sidebar.projects.browseDir": "Browse…",
   "sidebar.projects.refresh": "Refresh GitHub repositories",
   "sidebar.projects.state.hasLocal": "Has local copy",
   "sidebar.projects.state.browseOnly": "Browse only",

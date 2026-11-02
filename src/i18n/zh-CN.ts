@@ -34,6 +34,7 @@ export const zhCN = {
   "sidebar.projects.panelTitle": "添加项目",
   "sidebar.projects.fromGh": "从 GitHub",
   "sidebar.projects.localDir": "本地目录",
+    "sidebar.projects.browseDir": "浏览…",
   "sidebar.projects.refresh": "刷新 GitHub 仓库列表",
   "sidebar.projects.state.hasLocal": "已有副本",
   "sidebar.projects.state.browseOnly": "仅浏览",
