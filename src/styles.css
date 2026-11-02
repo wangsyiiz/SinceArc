@@ -44,6 +44,9 @@
   --tab-min-w: 120px;
   /* 标签栏上限宽度：标签少时按这个显示，多了再往 min 收（§39.5） */
   --tab-max-w: 200px;
+  /* 消息流宽度（§46）：跟随窗口，但有上下界。原来两处都写死 max-w-3xl = 768px，
+     窗口最大化也一点不宽，宽屏上左右各空一大片；纯 100% 又会让长文一行过长。 */
+  --stream-max-w: clamp(768px, 64vw, 1080px);
 
   /* 分段控件：暗色档 轨道 n-3 / 滑块 n-4；
      浅色档反过来 —— 轨道是淡黑水洗、滑块纯白（同 sincecloud 的
@@ -430,6 +433,11 @@ body {
   .sc-session-wave svg {
     animation: none;
   }
+}
+
+/* 消息流（消息列表 + 输入区）共用的宽度：两侧必须同一个值，否则输入框和正文错位。 */
+.sc-stream {
+  max-width: var(--stream-max-w);
 }
 
 .sc-control {
