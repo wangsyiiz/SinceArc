@@ -3224,86 +3224,19 @@ async fn attach_session(
         ResumeDecision::Fresh => {}
     }
 
-    let mcp_servers =
-        match mcp::target_mcp_servers(state, profile_id, ui_session_id.as_deref()).await {
-            Ok(servers) => servers,
-            Err(error) => {
-                tracing::warn!(
-                    target: "sincearc::ipc", error = %error.msg,
-                    "MCP 清单解析失败，拒绝新建会话"
-                );
-                return (
-                    None,
-                    None,
-                    ResumeOutcome::Unavailable {
-                        acp_session_id: String::new(),
-                        reason: error.msg,
-                    },
-                    None,
-                );
-            }
-        };
-
-    let created = handle
-        .proc
-        .request(
-            "session/new",
-            serde_json::json!({ "cwd": cwd, "mcpServers": mcp_servers }),
-            Duration::from_secs(120),
-        )
-        .await;
-
-    match created {
-        Ok(v) => {
-            // ACP 规定 session/new 必须回 sessionId；没回就是协议不符。
-            // 这里不能 `?`（本函数已改成返回四元组、不是 Result），也不能假装成功：
-            // 显式走 Unavailable，让界面把原因写出来、由用户决定重试。
-            let Some(sid) = v["sessionId"].as_str().map(str::to_string) else {
-                tracing::warn!(target: "sincearc::ipc", "session/new 没有返回 sessionId");
-                return (
-                    None,
-                    None,
-                    ResumeOutcome::Unavailable {
-                        acp_session_id: String::new(),
-                        reason: "agent 返回的 session/new 没有 sessionId（协议不符）".to_string(),
-                    },
-                    None,
-                );
-            };
-            let modes = acp::modes_from_response(&v);
-            if let Some(m) = &modes {
-                state.set_modes(sid.clone(), m.clone()).await;
-            }
-            tracing::info!(target: "sincearc::ipc", session = %sid, "session created");
-            state
-                .insert_session(
-                    sid.clone(),
-                    SessionRecord {
-                        profile_id: profile_id.to_string(),
-                        cwd: cwd.to_string(),
-                        ui_session_id: ui_session_id.clone(),
-                        author_id: None,
-                    },
-                )
-                .await;
-            if let Some(ui_sid) = ui_session_id.as_deref() {
-                if let Err(e) = state.db.bind_acp_session_with_agent(
-                    ui_sid,
-                    &sid,
-                    cwd,
-                    "created",
-                    Some(&handle.outcome.agent_name),
-                ) {
-                    tracing::warn!(target: "sincearc::ipc", error = %e, "记录新会话绑定失败");
-                }
-            }
-            (Some(sid), modes, ResumeOutcome::Fresh, None)
-        }
-        Err(e) => {
-            tracing::warn!(target: "sincearc::ipc", error = %e, "session/new failed");
-            (None, None, ResumeOutcome::Fresh, None)
-        }
-    }
+    // Fresh：**故意不建会话**。
+    //
+    // 以前这里立刻 `session/new`，于是「打开一个还没发消息的会话」也会在 agent 侧留下一条
+    // 空会话：点开又关掉的标签、换个工作目录、连一次看一眼 —— 全成了对方的垃圾数据。
+    // 现在把创建推迟到第一条消息（前端 usePrompt 的 `create` 分支会调 session_new）。
+    // 代价：首条消息多一个往返；好处：换工作目录零重建、agent 侧没有空会话。
+    // 见 docs/desktop-ux.md §45、docs/ipc-contract.md「会话归属」。
+    tracing::info!(
+        target: "sincearc::ipc", profile = %profile_id,
+        ui_session = ?ui_session_id,
+        "connected; session/new deferred until the first prompt"
+    );
+    (None, None, ResumeOutcome::Fresh, None)
 }
 
 /// 统一恢复入口：能力检查、session/load、失败归类、等价性提示都在这里。
@@ -3875,6 +3808,48 @@ pub async fn session_set_cwd(
 #[tauri::command]
 pub fn session_recent_cwds(state: State<'_, AppState>, profile_id: String) -> Vec<String> {
     state.db.recent_cwds(&profile_id, 8).unwrap_or_default()
+}
+
+/// 打开系统目录选择器（docs/desktop-ux.md §45）。
+///
+/// 只服务**本地**连接：WSL/SSH 的工作目录是远端路径，系统选择器选不到，
+/// 那两种形态走各自的远端浏览弹窗。标题由前端传（已经本地化过），Rust 侧不写文案。
+#[tauri::command]
+pub async fn pick_directory(
+    start_dir: Option<String>,
+    title: Option<String>,
+) -> Result<Option<String>, CmdError> {
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        // 对话框是阻塞调用，不能直接在 async 线程上开。
+        let mut dialog = rfd::FileDialog::new();
+        if let Some(title) = title.filter(|t| !t.trim().is_empty()) {
+            dialog = dialog.set_title(title);
+        }
+        if let Some(dir) = start_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+        {
+            let path = std::path::Path::new(dir);
+            // 传进来的可能是远端路径、`~` 或不存在的目录：不是本地目录就不设起点，
+            // 让对话框用系统默认位置，别报错打断用户。
+            if path.is_dir() {
+                dialog = dialog.set_directory(path);
+            }
+        }
+        dialog.pick_folder()
+    })
+    .await
+    .map_err(|e| {
+        CmdError::keyed_with(
+            50000,
+            "err.dialog.openFailed",
+            format!("打开目录选择器失败：{e}"),
+            BTreeMap::from([("detail".to_string(), e.to_string())]),
+        )
+    })?;
+
+    Ok(picked.map(|path| path.to_string_lossy().into_owned()))
 }
 
 /* ---------- delegate / wait（docs/orchestration.md） ---------- */

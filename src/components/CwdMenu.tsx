@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
-import { Check, ChevronDown, Copy, FolderOpen, Lock } from "lucide-react";
+import { Check, ChevronDown, Copy, FolderOpen, FolderSearch, Lock } from "lucide-react";
 import type { AgentProfile } from "@/types";
 import { errorTextOf } from "@/lib/errors";
-import { asCmdError, sessionRecentCwds } from "@/lib/ipc";
+import { asCmdError, pickDirectory, sessionRecentCwds } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/Button";
 import { useAnchoredLayer } from "./ui/Menu";
@@ -34,6 +34,8 @@ export function CwdButton({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  /** 只有本地连接能开系统目录选择器；WSL/SSH 是远端路径 */
+  const isLocal = profile?.launch === "local";
 
   useEffect(() => {
     setDraft(cwd);
@@ -76,6 +78,20 @@ export function CwdButton({
       return;
     }
     layer.setOpen(false);
+  };
+
+  /**
+   * 系统目录选择器。只对本地连接给入口 —— WSL/SSH 的工作目录是远端路径，
+   * 系统选择器只能选 Windows 本机磁盘（远端走各自的浏览弹窗，尚未实现）。
+   */
+  const browse = async () => {
+    try {
+      const picked = await pickDirectory(draft.trim() || undefined, t("statusbar.cwd.browseTitle"));
+      // 只回填、不提交：让他看清选中的是哪一级目录，再点「更换」。
+      if (picked) setDraft(picked);
+    } catch (e) {
+      setError(errorTextOf(asCmdError(e), t));
+    }
   };
 
   const copy = async () => {
@@ -148,6 +164,14 @@ export function CwdButton({
                   }}
                   className="w-full rounded-mark border border-line-1 bg-surface-1 px-2 py-1.5 font-mono text-caption text-ink-1 placeholder:text-ink-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
                 />
+                {isLocal && (
+                  <div className="mt-2">
+                    <Button variant="ghost" size="sm" onClick={() => void browse()}>
+                      <FolderSearch className="size-3" aria-hidden="true" />
+                      {t("statusbar.cwd.browse")}
+                    </Button>
+                  </div>
+                )}
                 {recent.length > 0 && (
                   <div className="mt-2">
                     <div className="mb-1 text-micro text-ink-3">{t("statusbar.cwd.recent")}</div>

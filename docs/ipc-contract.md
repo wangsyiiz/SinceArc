@@ -195,6 +195,8 @@ domain service：规范化 → 校验 → 缓存（TTL）→ 分页游标 → �
   （`useAcpEvents` 直接落界面）。事件形状不变，前端无需区分「是否合并过」。
 - **M4 实现完成**：`session_bindings`（历史）+ `sessions.acp_state`；绑定入口只有
   `session/new`（created）、验证成功的 `session/load`（loaded）、显式 `session_rebind`（replaced）。
+  **创建时机**：`agent_connect` 只负责起进程 + 握手 + （有历史时）`session/load`，**不再在建不上历史时
+  立刻 `session/new`** —— 见 §11。空会话要等到第一条 prompt 才建。
   同 id 重复绑定幂等；换 id 归档旧绑定；`mark_acp_invalid` 只标状态、保留凭证，
   且只在 agent **明确拒绝**时触发（超时/断连不算凭证失效）。
 - M5–M6 未开始。
@@ -209,3 +211,20 @@ domain service：规范化 → 校验 → 缓存（TTL）→ 分页游标 → �
 6. **M6**：GH 域按 §8 从零建（不走 acp 的旧路子）。
 
 每一步都必须「行为不变 + 有测试」；M3 与 M4 会动到关键链路，单独排期。
+
+## 11. 会话创建时机：第一条消息才建（2026-11-02）
+
+以前 `attach_session` 在没有可恢复历史的 `Fresh` 分支里立刻 `session/new`。后果是
+「打开一个还没发消息的会话」「点开又关掉的标签」「换工作目录连一次」都会在 **agent 侧**留下一条
+空会话 —— 那是对方的存储里我们造的垃圾，而且清不掉。
+
+现在：
+
+- `Fresh` 分支**只报告**（`ResumeOutcome::Fresh`、`session_id = None`），不建会话；
+- 前端 `usePrompt` 的 `plan === "create"` 分支在**第一条消息**时调 `session_new`，
+  同时完成 `sessions` 行与 `created` 绑定；
+- `ResumeOutcome::Fresh` + 空 `sessionId` 不再被前端当成连接失败（只有 `resumed` 却拿不到
+  会话 id 才算坏）。
+
+代价与已知影响：会话级 `modes` 来自 `session/new` 的返回，所以**首条消息之前**状态栏不显示
+模式选择器；MCP 注入清单同样在那一刻才算数（名单本身早已按会话/连接解析好，不丢）。
