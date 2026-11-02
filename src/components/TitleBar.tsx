@@ -50,7 +50,10 @@ export function TitleBar({ profile, cwd }: TitleBarProps) {
         </span>
       </div>
 
-      <div className="flex h-9 shrink-0 items-center pr-1">
+      {/* §37：头像左右都要留白，且与窗口按钮自身的左右内缩一致。
+          窗口按钮是 46px 宽、图标 12px 居中 ⇒ 内缩约 17px；这里取 16px（px-4），
+          原来只有 pr-1（4px），头像几乎贴在最小化按钮上。 */}
+      <div className="flex h-9 shrink-0 items-center px-4">
         <GhIdentity />
       </div>
 
