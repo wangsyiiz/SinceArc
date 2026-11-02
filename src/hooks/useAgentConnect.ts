@@ -80,9 +80,10 @@ export function useAgentConnect({
       caps: out.caps,
       capsAt: Math.floor(Date.now() / 1000),
     });
-    if (!out.sessionId && out.resume.kind !== "unavailable") {
-      // 握上手但没会话：后端认为连上了，实际没法发消息，必须当失败处理。
-      // Unavailable 是显式结果，由调用方展示「续不上」，不能混成通用连接失败。
+    if (!out.sessionId && out.resume.kind !== "unavailable" && out.resume.kind !== "fresh") {
+      // 握上手、说要恢复、却没拿到会话 id：这是真的坏了，必须当失败处理。
+      // Unavailable 是显式结果，由调用方展示「续不上」；Fresh 是「还没建」——
+      // 后端已经把 session/new 推迟到第一条消息（docs/ipc-contract.md），空会话不算失败。
       throw new Error(i18nText("settings.connection.noSession"));
     }
     if (out.sessionId) {

@@ -30,3 +30,13 @@ export function buildChannel(): Promise<string> {
 export function openStoreUpdate(): Promise<void> {
   return invokeCmd<void>("open_store_update");
 }
+
+/**
+ * 打开系统目录选择器（docs/desktop-ux.md §45）。只对**本地**连接有意义：
+ * WSL/SSH 的工作目录是远端路径，系统选择器选不到。
+ *
+ * `title` 由调用方传入（已本地化）；用户取消返回 null。
+ */
+export function pickDirectory(startDir?: string, title?: string): Promise<string | null> {
+  return invokeCmd<string | null>("pick_directory", { startDir, title });
+}
