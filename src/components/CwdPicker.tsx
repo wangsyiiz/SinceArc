@@ -166,7 +166,7 @@ export function RemoteDirPicker({
               setJump("");
             }
           }}
-          className="min-w-0 flex-1 rounded-mark border border-line-2 bg-surface-1 px-2 py-1 font-mono text-caption text-ink-1 placeholder:text-ink-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
+          className="min-w-0 flex-1 rounded-mark border border-line-2 bg-surface-0 px-2 py-1 font-mono text-caption text-ink-1 placeholder:text-ink-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-1"
         />
         <Button
           variant="primary"

@@ -28,6 +28,7 @@ import { copyText } from "@/lib/clipboard";
 import { pathOfTab } from "@/lib/route";
 import { profileLabel } from "@/lib/format";
 import { isCwdLocked } from "@/lib/cwd-lock";
+import { REPLY_CHIME_QUIET_MS, chimeStillValid } from "@/lib/reply-chime";
 import { i18nText, localizeText, translateKey } from "@/lib/i18n-text";
 import { errorTextOf } from "@/lib/errors";
 import { pushSystemNotice } from "@/lib/notices";
@@ -877,15 +878,23 @@ export default function App() {
   const replyNotifyRef = useRef({
     lastSoundAt: 0,
     lastSoundEventAt: 0,
+    soundTimer: null as number | null,
     toastTimer: null as number | null,
     toastLastAt: 0,
     toastSessions: new Set<string>(),
     toastText: "",
   });
+  /** 每个界面会话最近一次 agent 活动事件的时刻（§31.3 安静窗口的判据） */
+  const sessionActivityRef = useRef(new Map<string, number>());
+  /** 窗口是否在前台：未读累计规则与提醒策略都看它（§42.4） */
+  const [windowFocused, setWindowFocused] = useState(true);
   useEffect(() => {
     return () => {
       if (replyNotifyRef.current.toastTimer !== null) {
         window.clearTimeout(replyNotifyRef.current.toastTimer);
+      }
+      if (replyNotifyRef.current.soundTimer !== null) {
+        window.clearTimeout(replyNotifyRef.current.soundTimer);
       }
     };
   }, []);
@@ -918,16 +927,27 @@ export default function App() {
       });
 
       if (plan.sound) {
-        const at = Date.now();
         const pending = replyNotifyRef.current;
-        if (
-          finishedAt >= pending.lastSoundEventAt &&
-          at - pending.lastSoundAt >= REPLY_NOTIFY_COALESCE_MS
-        ) {
+        if (pending.soundTimer !== null) window.clearTimeout(pending.soundTimer);
+        pending.soundTimer = window.setTimeout(() => {
+          pending.soundTimer = null;
+          // 到点再核一次：这段时间里这个会话有没有更新的 agent 活动？
+          // 有就说明刚才那个终态是提前到达的，真正的回应还没来（§31.3）。
+          if (!chimeStillValid(finishedAt, sessionActivityRef.current.get(args.uiSid))) {
+            diagRef.current(`REPLY-CHIME-SUPPRESS ui=${args.uiSid} activity-after-result`);
+            return;
+          }
+          const at = Date.now();
+          if (
+            finishedAt < pending.lastSoundEventAt ||
+            at - pending.lastSoundAt < REPLY_NOTIFY_COALESCE_MS
+          ) {
+            return;
+          }
           pending.lastSoundEventAt = finishedAt;
-          replyNotifyRef.current.lastSoundAt = at;
+          pending.lastSoundAt = at;
           playReplySound((text) => diagRef.current(text));
-        }
+        }, REPLY_CHIME_QUIET_MS);
       }
 
       if (!plan.toast) return;
@@ -957,6 +977,50 @@ export default function App() {
     [],
   );
 
+  /** 前台状态：未读累计规则（§42.4）与提醒策略都依赖它，只订阅一次。 */
+  useEffect(() => {
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const win = getCurrentWindow();
+        const focused = await win.isFocused();
+        if (alive) setWindowFocused(focused);
+        unlisten = await win.onFocusChanged(({ payload }) => {
+          if (alive) setWindowFocused(payload);
+        });
+      } catch (error) {
+        diagRef.current(`FOCUS-LISTEN-FAIL ${describeError(error)}`);
+      }
+    })();
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, []);
+
+  /**
+   * 正在看的会话保持已读（§42.4）。
+   *
+   * 未读只在两种情况下累计：窗口不在前台，或者用户不在这个会话上。所以窗口在前台、
+   * 且停在这个会话时，消息一进来就把 `last_read_at` 推上去 —— 否则切走再切回来，
+   * 自己刚看过的内容会被算成未读。延迟 400ms 合并连续的流式分片，避免每条一次写库。
+   */
+  useEffect(() => {
+    if (!windowFocused || !lastSessionId || state.msgs.length === 0) return;
+    const sid = lastSessionId;
+    const timer = window.setTimeout(() => {
+      void sessionMarkRead(sid).catch((e) => clog("UNREAD-KEEP-ERR", String(e)));
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === sid && s.unreadCount !== 0 ? { ...s, unreadCount: 0 } : s,
+        ),
+      );
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [windowFocused, lastSessionId, state.msgs.length, setSessions]);
+
   const {
     eventCount,
     lastEvent,
@@ -985,12 +1049,14 @@ export default function App() {
     onDisconnect: clearUiNotices,
     onTurnFinished,
     // §29.4 主判据：未作答的授权请求遇到该会话的新活动 = 已被 agent 丢掉
-    onSessionActivity: (uiSid, acpSid) =>
+    onSessionActivity: (uiSid, acpSid) => {
+      sessionActivityRef.current.set(uiSid, Date.now());
       permissions.expireByActivity(
         uiSid,
         acpSid,
         i18nText("permission.expiredReason.agentTimeout"),
-      ),
+      );
+    },
   });
 
   useEffect(() => {
