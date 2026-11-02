@@ -989,8 +989,22 @@ export default function App() {
     [],
   );
 
-  /** 前台状态：未读累计规则（§42.4）与提醒策略都依赖它，只订阅一次。 */
+  /**
+   * 前台状态：未读累计规则（§42.4）与提醒策略都依赖它，只订阅一次。
+   *
+   * **两条腿**：Tauri 的窗口事件 + DOM 的 focus/blur/visibilitychange。
+   * 只用 Tauri 那条是不够的 —— 它一旦抛错（权限、webview 差异），`windowFocused` 就永远停在
+   * 初始的 true，未读会被当成「一直在看」而永不清零/永不累计。DOM 事件在 webview 里一定到，
+   * 拿它兜底最便宜。
+   */
   useEffect(() => {
+    const onFocus = () => setWindowFocused(true);
+    const onBlur = () => setWindowFocused(false);
+    const onVisibility = () => setWindowFocused(!document.hidden);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onVisibility);
+
     let alive = true;
     let unlisten: (() => void) | undefined;
     void (async () => {
@@ -1008,6 +1022,9 @@ export default function App() {
     })();
     return () => {
       alive = false;
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", onVisibility);
       unlisten?.();
     };
   }, []);
@@ -1070,6 +1087,21 @@ export default function App() {
       );
     },
   });
+
+  /**
+   * 未读徽标要跟着库走（§42.4）。未读数由后端按 `last_read_at` 算，前端只有重新读一次会话
+   * 列表才拿得到新值 —— 以前只在「打开会话 / 改目录 / 首条消息」时刷新，于是窗口在后台时
+   * 进来的消息永远不出红点（看着像"没计数"）。
+   * 事件流一直在这条链路上跑，用它做触发；1.5 秒的尾抖动把一串流式分片压成一次读库。
+   */
+  useEffect(() => {
+    if (eventCount === 0) return;
+    const timer = window.setTimeout(() => {
+      void reloadSessions().catch(() => null);
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [eventCount, reloadSessions]);
+
 
   useEffect(() => {
     permissionDiagRef.current = diag;

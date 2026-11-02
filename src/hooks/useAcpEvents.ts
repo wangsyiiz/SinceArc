@@ -33,6 +33,7 @@ import {
   shouldSettleLate,
 } from "@/lib/late-window";
 import { pushSystemNotice } from "@/lib/notices";
+import { replayVerdict } from "@/lib/messages-merge";
 import { i18nText } from "@/lib/i18n-text";
 import { asNoticeSeverity, type NoticeInput } from "@/lib/notice-inbox";
 import { isAbsorbedSend, type SendTrace } from "@/lib/send-ack";
@@ -339,6 +340,13 @@ export function useAcpEvents({
   }, []);
   const clearAllInFlight = useCallback(() => setInFlightTable({}), []);
   const acpToTurn = useRef<Record<string, string>>({});
+  /**
+   * UI 会话 -> 最近一条已落库的 agent 正文（docs/acp-turn-synthesis.md §9 的重放判据）。
+   *
+   * 只记我们自己写过的正文：断线时半截回答由「迟到流收口」写进去，之后重连重放
+   * 会再写一条 —— 有这份底就能在写之前认出「这段已经存在了」，不再写第二遍。
+   */
+  const lastAgentText = useRef<Record<string, string>>({});
   const sendTraces = useRef<Record<string, ActiveSendTrace>>({});
   const flushDiag = useRef(0);
 
@@ -442,6 +450,16 @@ export function useAcpEvents({
         delete streams.current[streamKey];
         if (!full) continue;
 
+        // 纯重放（docs/acp-turn-synthesis.md §9 的 C）：断线后 agent 把已经写进库的那段再说一遍 —— 不再落第二条。
+        if (replayVerdict(lastAgentText.current[st.uiSid], full) === "drop") {
+          clog("DROP-REPLAY-TEXT", `ui=${st.uiSid} id=${st.msgId} len=${full.length}`);
+          patchSession(st.uiSid, (s) => ({
+            ...s,
+            msgs: s.msgs.filter((m) => m.id !== st.msgId),
+          }));
+          continue;
+        }
+
         patchSession(st.uiSid, (s) => ({
           ...s,
           msgs: s.msgs.map((m) =>
@@ -466,9 +484,10 @@ export function useAcpEvents({
             },
           },
         ])
-          .then(() =>
-            clog("LATE-DB", `ui=${st.uiSid} id=${st.msgId} len=${full.length} reason=${reason}`),
-          )
+          .then(() => {
+            lastAgentText.current[st.uiSid] = full;
+            clog("LATE-DB", `ui=${st.uiSid} id=${st.msgId} len=${full.length} reason=${reason}`);
+          })
           .catch((e) => {
             console.warn("[db] append late reply failed", e);
             clog("DB-ERR", `late ui=${st.uiSid} id=${st.msgId} ${String(e)}`);
@@ -1172,6 +1191,15 @@ export function useAcpEvents({
         void (async () => {
           for (const [, st] of streamsForTurn) {
             if (!st.text) continue;
+            // 纯重放不落第二条（docs/acp-turn-synthesis.md §9）：库里已经有同一段正文，重连重放又收了一遍。
+            if (replayVerdict(lastAgentText.current[st.uiSid], st.text) === "drop") {
+              clog("DROP-REPLAY-TEXT", `ui=${st.uiSid} id=${st.msgId} len=${st.text.length}`);
+              patchSession(st.uiSid, (s) => ({
+                ...s,
+                msgs: s.msgs.filter((m) => m.id !== st.msgId),
+              }));
+              continue;
+            }
             try {
               await messagesAppend(st.uiSid, [
                 {
@@ -1191,6 +1219,7 @@ export function useAcpEvents({
                   },
                 },
               ]);
+              lastAgentText.current[st.uiSid] = st.text;
               clog("DB-OK", `ui=${st.uiSid} id=${st.msgId} len=${st.text.length}`);
             } catch (e) {
               console.warn("[db] append reply failed", e);
