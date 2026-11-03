@@ -7,14 +7,20 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use super::model::{
-    DiffPage, GhCli, GhError, GhStatus, PrDetail, PrState, PullRequest, RepoListing, RepoRef,
-    Viewer, MAX_REPO_LIST_LIMIT,
+    ActionResult, Capability, DiffPage, GhActionParams, GhCli, GhError, GhStatus, Issue,
+    IssueState, PrDetail, PrState, PullRequest, Release, RepoCounts, RepoListing, RepoMeta,
+    RepoRef, RepoSummary, TreeEntry, Viewer, Workflow, WorkflowRun, MAX_REPO_LIST_LIMIT,
 };
 
 const STATUS_TTL: Duration = Duration::from_secs(30);
 const LIST_TTL: Duration = Duration::from_secs(30);
 const DETAIL_TTL: Duration = Duration::from_secs(5 * 60);
 const DIFF_TTL: Duration = Duration::from_secs(5 * 60);
+/// dashboard 的概要元数据；计数单独 30s（docs/gh.md §10.3，按任务口径）。
+const REPO_META_TTL: Duration = Duration::from_secs(5 * 60);
+const REPO_COUNTS_TTL: Duration = Duration::from_secs(30);
+const WORKFLOW_LIST_TTL: Duration = Duration::from_secs(5 * 60);
+const TREE_TTL: Duration = Duration::from_secs(30);
 /// 仓库列表 60s；key 只含 owner（不含 limit），缓存永远存最大那份。
 pub const GH_REPOS_TTL: Duration = Duration::from_secs(60);
 pub const VIEWER_TTL: Duration = Duration::from_secs(3600);
@@ -25,6 +31,11 @@ pub const DEFAULT_REPO_LIST_LIMIT: u32 = 30;
 
 type ListCacheKey = (String, String, String, PrState);
 type PrCacheKey = (String, String, String, u32);
+type RepoKey = (String, String, String);
+type IssueCacheKey = (RepoKey, IssueState, u32);
+type ReleaseCacheKey = (RepoKey, u32);
+type RunCacheKey = (RepoKey, u32);
+type TreeCacheKey = (RepoKey, Option<String>, Option<String>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiffPageError {
@@ -46,6 +57,13 @@ pub struct GhService {
     diff_cache: Mutex<HashMap<PrCacheKey, (Instant, String)>>,
     repo_cache: Mutex<HashMap<String, (Instant, Vec<RepoListing>)>>,
     viewer_cache: Mutex<Option<(Instant, Viewer)>>,
+    meta_cache: Mutex<HashMap<RepoKey, (Instant, RepoMeta)>>,
+    counts_cache: Mutex<HashMap<RepoKey, (Instant, RepoCounts)>>,
+    issue_cache: Mutex<HashMap<IssueCacheKey, (Instant, Vec<Issue>)>>,
+    release_cache: Mutex<HashMap<ReleaseCacheKey, (Instant, Vec<Release>)>>,
+    run_cache: Mutex<HashMap<RunCacheKey, (Instant, Vec<WorkflowRun>)>>,
+    workflow_cache: Mutex<HashMap<RepoKey, (Instant, Vec<Workflow>)>>,
+    tree_cache: Mutex<HashMap<TreeCacheKey, (Instant, Vec<TreeEntry>)>>,
 }
 
 impl GhService {
@@ -58,6 +76,13 @@ impl GhService {
             diff_cache: Mutex::new(HashMap::new()),
             repo_cache: Mutex::new(HashMap::new()),
             viewer_cache: Mutex::new(None),
+            meta_cache: Mutex::new(HashMap::new()),
+            counts_cache: Mutex::new(HashMap::new()),
+            issue_cache: Mutex::new(HashMap::new()),
+            release_cache: Mutex::new(HashMap::new()),
+            run_cache: Mutex::new(HashMap::new()),
+            workflow_cache: Mutex::new(HashMap::new()),
+            tree_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -253,6 +278,231 @@ impl GhService {
             }
         }
     }
+
+    pub async fn repo_meta(&self, repo: &RepoRef, force: bool) -> Result<RepoMeta, GhError> {
+        let key = repo_key(repo);
+
+        let mut cache = self.meta_cache.lock().await;
+        if !force {
+            if let Some((at, meta)) = cache.get(&key) {
+                if at.elapsed() < REPO_META_TTL {
+                    return Ok(meta.clone());
+                }
+            }
+        }
+
+        match self.cli.repo_meta(repo).await {
+            Ok(meta) => {
+                cache.insert(key, (Instant::now(), meta.clone()));
+                Ok(meta)
+            }
+            Err(error) => {
+                cache.remove(&key);
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn repo_counts(&self, repo: &RepoRef, force: bool) -> Result<RepoCounts, GhError> {
+        let key = repo_key(repo);
+
+        let mut cache = self.counts_cache.lock().await;
+        if !force {
+            if let Some((at, counts)) = cache.get(&key) {
+                if at.elapsed() < REPO_COUNTS_TTL {
+                    return Ok(*counts);
+                }
+            }
+        }
+
+        match self.cli.repo_counts(repo).await {
+            Ok(counts) => {
+                cache.insert(key, (Instant::now(), counts));
+                Ok(counts)
+            }
+            Err(error) => {
+                cache.remove(&key);
+                Err(error)
+            }
+        }
+    }
+
+    /// 两块并发拿，各自独立降级；首屏 ≈ 最慢那个（§10.3）。
+    pub async fn repo_summary(&self, repo: &RepoRef, force: bool) -> RepoSummary {
+        let (meta, counts) =
+            tokio::join!(self.repo_meta(repo, force), self.repo_counts(repo, force));
+        RepoSummary { meta, counts }
+    }
+
+    pub async fn list_issues(
+        &self,
+        repo: &RepoRef,
+        state: IssueState,
+        limit: u32,
+        force: bool,
+    ) -> Result<Vec<Issue>, GhError> {
+        let key = (repo_key(repo), state, limit);
+
+        let mut cache = self.issue_cache.lock().await;
+        if !force {
+            if let Some((at, items)) = cache.get(&key) {
+                if at.elapsed() < LIST_TTL {
+                    return Ok(items.clone());
+                }
+            }
+        }
+
+        match self.cli.list_issues(repo, state, limit).await {
+            Ok(items) => {
+                cache.insert(key, (Instant::now(), items.clone()));
+                Ok(items)
+            }
+            Err(error) => {
+                cache.remove(&key);
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn list_releases(
+        &self,
+        repo: &RepoRef,
+        limit: u32,
+        force: bool,
+    ) -> Result<Vec<Release>, GhError> {
+        let key = (repo_key(repo), limit);
+
+        let mut cache = self.release_cache.lock().await;
+        if !force {
+            if let Some((at, items)) = cache.get(&key) {
+                if at.elapsed() < LIST_TTL {
+                    return Ok(items.clone());
+                }
+            }
+        }
+
+        match self.cli.list_releases(repo, limit).await {
+            Ok(items) => {
+                cache.insert(key, (Instant::now(), items.clone()));
+                Ok(items)
+            }
+            Err(error) => {
+                cache.remove(&key);
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn list_runs(
+        &self,
+        repo: &RepoRef,
+        limit: u32,
+        force: bool,
+    ) -> Result<Vec<WorkflowRun>, GhError> {
+        let key = (repo_key(repo), limit);
+
+        let mut cache = self.run_cache.lock().await;
+        if !force {
+            if let Some((at, items)) = cache.get(&key) {
+                if at.elapsed() < LIST_TTL {
+                    return Ok(items.clone());
+                }
+            }
+        }
+
+        match self.cli.list_runs(repo, limit).await {
+            Ok(items) => {
+                cache.insert(key, (Instant::now(), items.clone()));
+                Ok(items)
+            }
+            Err(error) => {
+                cache.remove(&key);
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn list_workflows(
+        &self,
+        repo: &RepoRef,
+        force: bool,
+    ) -> Result<Vec<Workflow>, GhError> {
+        let key = repo_key(repo);
+
+        let mut cache = self.workflow_cache.lock().await;
+        if !force {
+            if let Some((at, items)) = cache.get(&key) {
+                if at.elapsed() < WORKFLOW_LIST_TTL {
+                    return Ok(items.clone());
+                }
+            }
+        }
+
+        match self.cli.list_workflows(repo).await {
+            Ok(items) => {
+                cache.insert(key, (Instant::now(), items.clone()));
+                Ok(items)
+            }
+            Err(error) => {
+                cache.remove(&key);
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn repo_tree(
+        &self,
+        repo: &RepoRef,
+        path: Option<&str>,
+        git_ref: Option<&str>,
+        force: bool,
+    ) -> Result<Vec<TreeEntry>, GhError> {
+        let path = path
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(str::to_string);
+        let git_ref = git_ref
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let key = (repo_key(repo), path.clone(), git_ref.clone());
+
+        let mut cache = self.tree_cache.lock().await;
+        if !force {
+            if let Some((at, items)) = cache.get(&key) {
+                if at.elapsed() < TREE_TTL {
+                    return Ok(items.clone());
+                }
+            }
+        }
+
+        match self
+            .cli
+            .repo_tree(repo, path.as_deref(), git_ref.as_deref())
+            .await
+        {
+            Ok(items) => {
+                cache.insert(key, (Instant::now(), items.clone()));
+                Ok(items)
+            }
+            Err(error) => {
+                cache.remove(&key);
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn capabilities(&self, repo: &RepoRef) -> Result<Vec<Capability>, GhError> {
+        self.cli.capabilities(repo).await
+    }
+
+    pub async fn action(
+        &self,
+        repo: &RepoRef,
+        params: &GhActionParams,
+    ) -> Result<ActionResult, GhError> {
+        self.cli.action(repo, params).await
+    }
 }
 
 fn slice_repo_page(items: &[RepoListing], limit: u32) -> RepoListPage {
@@ -269,6 +519,14 @@ fn pr_cache_key(repo: &RepoRef, number: u32) -> PrCacheKey {
         repo.owner.clone(),
         repo.name.clone(),
         number,
+    )
+}
+
+fn repo_key(repo: &RepoRef) -> RepoKey {
+    (
+        repo.host.clone().unwrap_or_default(),
+        repo.owner.clone(),
+        repo.name.clone(),
     )
 }
 
@@ -324,12 +582,21 @@ mod tests {
         list_calls: AtomicUsize,
         detail_calls: AtomicUsize,
         diff_calls: AtomicUsize,
+        meta_calls: AtomicUsize,
+        counts_calls: AtomicUsize,
+        issue_calls: AtomicUsize,
+        release_calls: AtomicUsize,
+        run_calls: AtomicUsize,
+        workflow_calls: AtomicUsize,
+        tree_calls: AtomicUsize,
         status_results: Mutex<VecDeque<Result<GhStatus, GhError>>>,
         viewer_results: Mutex<VecDeque<Result<Viewer, GhError>>>,
         repo_results: Mutex<VecDeque<Result<Vec<RepoListing>, GhError>>>,
         list_results: Mutex<VecDeque<Result<Vec<PullRequest>, GhError>>>,
         detail_results: Mutex<VecDeque<Result<PrDetail, GhError>>>,
         diff_results: Mutex<VecDeque<Result<String, GhError>>>,
+        meta_results: Mutex<VecDeque<Result<RepoMeta, GhError>>>,
+        counts_results: Mutex<VecDeque<Result<RepoCounts, GhError>>>,
     }
 
     impl FakeGh {
@@ -341,12 +608,21 @@ mod tests {
                 list_calls: AtomicUsize::new(0),
                 detail_calls: AtomicUsize::new(0),
                 diff_calls: AtomicUsize::new(0),
+                meta_calls: AtomicUsize::new(0),
+                counts_calls: AtomicUsize::new(0),
+                issue_calls: AtomicUsize::new(0),
+                release_calls: AtomicUsize::new(0),
+                run_calls: AtomicUsize::new(0),
+                workflow_calls: AtomicUsize::new(0),
+                tree_calls: AtomicUsize::new(0),
                 status_results: Mutex::new(results.into()),
                 viewer_results: Mutex::new(VecDeque::new()),
                 repo_results: Mutex::new(VecDeque::new()),
                 list_results: Mutex::new(VecDeque::new()),
                 detail_results: Mutex::new(VecDeque::new()),
                 diff_results: Mutex::new(VecDeque::new()),
+                meta_results: Mutex::new(VecDeque::new()),
+                counts_results: Mutex::new(VecDeque::new()),
             })
         }
 
@@ -358,12 +634,21 @@ mod tests {
                 list_calls: AtomicUsize::new(0),
                 detail_calls: AtomicUsize::new(0),
                 diff_calls: AtomicUsize::new(0),
+                meta_calls: AtomicUsize::new(0),
+                counts_calls: AtomicUsize::new(0),
+                issue_calls: AtomicUsize::new(0),
+                release_calls: AtomicUsize::new(0),
+                run_calls: AtomicUsize::new(0),
+                workflow_calls: AtomicUsize::new(0),
+                tree_calls: AtomicUsize::new(0),
                 status_results: Mutex::new(VecDeque::new()),
                 viewer_results: Mutex::new(VecDeque::new()),
                 repo_results: Mutex::new(VecDeque::new()),
                 list_results: Mutex::new(results.into()),
                 detail_results: Mutex::new(VecDeque::new()),
                 diff_results: Mutex::new(VecDeque::new()),
+                meta_results: Mutex::new(VecDeque::new()),
+                counts_results: Mutex::new(VecDeque::new()),
             })
         }
 
@@ -391,6 +676,16 @@ mod tests {
             fake
         }
 
+        fn with_summary(
+            meta: Vec<Result<RepoMeta, GhError>>,
+            counts: Vec<Result<RepoCounts, GhError>>,
+        ) -> Arc<Self> {
+            let fake = Self::new(Vec::new());
+            *fake.meta_results.lock().unwrap() = meta.into();
+            *fake.counts_results.lock().unwrap() = counts.into();
+            fake
+        }
+
         fn status_calls(&self) -> usize {
             self.status_calls.load(Ordering::SeqCst)
         }
@@ -413,6 +708,18 @@ mod tests {
 
         fn diff_calls(&self) -> usize {
             self.diff_calls.load(Ordering::SeqCst)
+        }
+
+        fn meta_calls(&self) -> usize {
+            self.meta_calls.load(Ordering::SeqCst)
+        }
+
+        fn counts_calls(&self) -> usize {
+            self.counts_calls.load(Ordering::SeqCst)
+        }
+
+        fn workflow_calls(&self) -> usize {
+            self.workflow_calls.load(Ordering::SeqCst)
         }
     }
 
@@ -484,6 +791,84 @@ mod tests {
             } else {
                 results.front().cloned().unwrap()
             }
+        }
+
+        async fn repo_meta(&self, _repo: &RepoRef) -> Result<RepoMeta, GhError> {
+            self.meta_calls.fetch_add(1, Ordering::SeqCst);
+            let mut results = self.meta_results.lock().unwrap();
+            if results.len() > 1 {
+                results.pop_front().unwrap()
+            } else {
+                results.front().cloned().unwrap()
+            }
+        }
+
+        async fn repo_counts(&self, _repo: &RepoRef) -> Result<RepoCounts, GhError> {
+            self.counts_calls.fetch_add(1, Ordering::SeqCst);
+            let mut results = self.counts_results.lock().unwrap();
+            if results.len() > 1 {
+                results.pop_front().unwrap()
+            } else {
+                results.front().cloned().unwrap()
+            }
+        }
+
+        async fn list_issues(
+            &self,
+            _repo: &RepoRef,
+            _state: IssueState,
+            _limit: u32,
+        ) -> Result<Vec<Issue>, GhError> {
+            self.issue_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+
+        async fn list_releases(
+            &self,
+            _repo: &RepoRef,
+            _limit: u32,
+        ) -> Result<Vec<Release>, GhError> {
+            self.release_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+
+        async fn list_runs(
+            &self,
+            _repo: &RepoRef,
+            _limit: u32,
+        ) -> Result<Vec<WorkflowRun>, GhError> {
+            self.run_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+
+        async fn list_workflows(&self, _repo: &RepoRef) -> Result<Vec<Workflow>, GhError> {
+            self.workflow_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+
+        async fn repo_tree(
+            &self,
+            _repo: &RepoRef,
+            _path: Option<&str>,
+            _git_ref: Option<&str>,
+        ) -> Result<Vec<TreeEntry>, GhError> {
+            self.tree_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+
+        async fn capabilities(&self, _repo: &RepoRef) -> Result<Vec<Capability>, GhError> {
+            Ok(Vec::new())
+        }
+
+        async fn action(
+            &self,
+            _repo: &RepoRef,
+            params: &GhActionParams,
+        ) -> Result<ActionResult, GhError> {
+            Err(GhError::ActionDenied {
+                action: params.action(),
+                reason: crate::gh::model::DenyReason::Readonly,
+            })
         }
     }
 
@@ -589,7 +974,7 @@ mod tests {
                 name: format!("repo-{index}"),
             },
             default_branch: Some("main".to_string()),
-            is_private: index % 2 == 0,
+            is_private: (index & 1) == 0,
             updated_at: Some(1_790_000_000 + i64::from(index)),
             description: None,
         }
@@ -868,11 +1253,12 @@ mod tests {
 
         let second = service.list_repos_page(None, 5, false).await.unwrap();
         assert_eq!(second.items, items);
-        assert!(
-            second.has_more,
-            "切片前长度 == limit 时按契约仍算 has_more"
+        assert!(second.has_more, "切片前长度 == limit 时按契约仍算 has_more");
+        assert_eq!(
+            fake.repo_calls(),
+            1,
+            "缓存 key 不含 limit，第二次不应再调 gh"
         );
-        assert_eq!(fake.repo_calls(), 1, "缓存 key 不含 limit，第二次不应再调 gh");
 
         let third = service.list_repos_page(None, 6, false).await.unwrap();
         assert_eq!(third.items, items);
@@ -926,5 +1312,110 @@ mod tests {
             expected
         );
         assert_eq!(fake.repo_calls(), 2);
+    }
+
+    fn sample_meta(name: &str) -> RepoMeta {
+        RepoMeta {
+            name_with_owner: format!("acme/{name}"),
+            description: Some("demo".to_string()),
+            visibility: "PUBLIC".to_string(),
+            default_branch: "main".to_string(),
+            topics: vec!["rust".to_string()],
+            pushed_at: "2026-11-03T00:00:00Z".to_string(),
+            stargazers: 10,
+            forks: 2,
+            is_archived: false,
+            has_issues: true,
+            latest_release: None,
+        }
+    }
+
+    fn sample_counts(open_prs: u32, open_issues: u32) -> RepoCounts {
+        RepoCounts {
+            open_prs: Some(open_prs),
+            open_issues: Some(open_issues),
+        }
+    }
+
+    #[tokio::test]
+    async fn summary_degrades_meta_and_counts_independently() {
+        let fake = FakeGh::with_summary(vec![Ok(sample_meta("repo"))], vec![Err(GhError::Timeout)]);
+        let service = GhService::new(fake);
+
+        let summary = service.repo_summary(&repo(), false).await;
+        assert_eq!(summary.meta.as_ref().unwrap().name_with_owner, "acme/repo");
+        assert_eq!(summary.counts.as_ref().unwrap_err(), &GhError::Timeout);
+    }
+
+    #[tokio::test]
+    async fn summary_keeps_counts_when_meta_fails() {
+        let fake = FakeGh::with_summary(
+            vec![Err(GhError::RepoUnavailable)],
+            vec![Ok(sample_counts(1, 2))],
+        );
+        let service = GhService::new(fake);
+
+        let summary = service.repo_summary(&repo(), false).await;
+        assert_eq!(
+            summary.meta.as_ref().unwrap_err(),
+            &GhError::RepoUnavailable
+        );
+        assert_eq!(summary.counts.as_ref().unwrap().open_prs, Some(1));
+    }
+
+    #[tokio::test]
+    async fn meta_and_counts_cache_hit_and_expire_independently() {
+        let fake = FakeGh::with_summary(
+            vec![Ok(sample_meta("repo")), Ok(sample_meta("repo"))],
+            vec![Ok(sample_counts(1, 2)), Ok(sample_counts(3, 4))],
+        );
+        let service = GhService::new(fake.clone());
+
+        let first = service.repo_summary(&repo(), false).await;
+        assert_eq!(first.counts.unwrap().open_prs, Some(1));
+        assert_eq!(fake.meta_calls(), 1);
+        assert_eq!(fake.counts_calls(), 1);
+
+        // TTL 内再取一次：两块都不应重新调 gh。
+        let second = service.repo_summary(&repo(), false).await;
+        assert_eq!(second.counts.unwrap().open_prs, Some(1));
+        assert_eq!(fake.meta_calls(), 1);
+        assert_eq!(fake.counts_calls(), 1);
+
+        // 人为把 counts 缓存拨到 31s 前：counts 过期、meta 仍命中（5min）。
+        {
+            let mut cache = service.counts_cache.lock().await;
+            for (at, _) in cache.values_mut() {
+                *at = Instant::now() - Duration::from_secs(31);
+            }
+        }
+        let third = service.repo_summary(&repo(), false).await;
+        assert_eq!(third.counts.unwrap().open_prs, Some(3));
+        assert_eq!(fake.meta_calls(), 1);
+        assert_eq!(fake.counts_calls(), 2);
+
+        // 再把 meta 拨到 5min 前：meta 也过期。
+        {
+            let mut cache = service.meta_cache.lock().await;
+            for (at, _) in cache.values_mut() {
+                *at = Instant::now() - Duration::from_secs(301);
+            }
+        }
+        let fourth = service.repo_summary(&repo(), false).await;
+        assert!(fourth.meta.is_ok());
+        assert_eq!(fake.meta_calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn workflows_cache_hits_and_force_bypasses() {
+        let fake = FakeGh::new(Vec::new());
+        let service = GhService::new(fake.clone());
+
+        service.list_workflows(&repo(), false).await.unwrap();
+        service.list_workflows(&repo(), false).await.unwrap();
+        assert_eq!(fake.workflow_calls(), 1);
+
+        service.list_workflows(&repo(), true).await.unwrap();
+        assert_eq!(fake.workflow_calls(), 2);
     }
 }

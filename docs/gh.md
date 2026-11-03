@@ -508,7 +508,7 @@ pub trait GhCli: Send + Sync {
 
 | 命令 | gh 调用 | 实测 | TTL | 超时 |
 | --- | --- | --- | --- | --- |
-| `gh_repo_summary` | `gh repo view --json …` **并发** `gh api graphql -f query=…` | 1.25s / 0.96s | 60s | 10s / 15s |
+| `gh_repo_summary` | `gh repo view --json …` **并发** `gh api graphql -f query=…` | 1.25s / 0.96s | meta 5min / counts 30s | 10s / 15s |
 | `gh_issue_list` | `gh issue list --state <s> --limit N --json …` | 0.82s | 30s | 10s |
 | `gh_release_list` | `gh release list --limit N --json …` | 1.52s | 30s | 15s |
 | `gh_runs_list` | `gh run list --limit N --json …` | ~1s（未单独计时） | 30s | 15s |

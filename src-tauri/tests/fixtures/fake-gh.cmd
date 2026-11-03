@@ -7,6 +7,7 @@ rem 结果整段条件被执行成无条件语句 —— 实测表现是 auth st
 rem 标签结构没有这个解析陷阱，代价只是多几行。
 setlocal
 
+if not "%FAKE_GH_ARGV_LOG%"=="" echo %*>>"%FAKE_GH_ARGV_LOG%"
 if "%FAKE_GH_MODE%"=="slow" goto slow
 if "%1"=="--version" goto version
 if "%1"=="auth" if "%2"=="status" goto auth
@@ -14,7 +15,14 @@ if "%1"=="pr" if "%2"=="list" if "%3"=="-R" goto pr_list
 if "%1"=="pr" if "%2"=="view" goto pr_view
 if "%1"=="pr" if "%2"=="diff" goto pr_diff
 if "%1"=="repo" if "%2"=="list" goto repo_list
+if "%1"=="repo" if "%2"=="view" goto repo_view
+if "%1"=="repo" if "%2"=="read-dir" goto repo_read_dir
 if "%1"=="api" if "%2"=="user" goto api_user
+if "%1"=="api" if "%2"=="graphql" goto api_graphql
+if "%1"=="issue" if "%2"=="list" goto issue_list
+if "%1"=="release" if "%2"=="list" goto release_list
+if "%1"=="run" if "%2"=="list" goto run_list
+if "%1"=="workflow" if "%2"=="list" goto workflow_list
 if "%1"=="crash" goto crash
 goto unsupported
 
@@ -75,6 +83,41 @@ exit /b 0
 type "%FAKE_GH_FIXTURE%"
 exit /b 0
 
+:repo_view
+if "%FAKE_GH_MODE%"=="repo-missing" goto repo_missing
+type "%FAKE_GH_FIXTURE%"
+exit /b 0
+
+:repo_read_dir
+type "%FAKE_GH_FIXTURE%"
+exit /b 0
+
+:issue_list
+if "%FAKE_GH_MODE%"=="repo-missing" goto repo_missing
+type "%FAKE_GH_FIXTURE%"
+exit /b 0
+
+:release_list
+type "%FAKE_GH_FIXTURE%"
+exit /b 0
+
+:run_list
+type "%FAKE_GH_FIXTURE%"
+exit /b 0
+
+:workflow_list
+type "%FAKE_GH_FIXTURE%"
+exit /b 0
+
+:api_graphql
+if "%FAKE_GH_MODE%"=="bad-cred" goto bad_cred
+if "%FAKE_GH_MODE%"=="rate-limit" goto rate_limit
+if "%FAKE_GH_MODE%"=="counts-missing-data" goto counts_missing_data
+if "%FAKE_GH_MODE%"=="graphql-fixture" type "%FAKE_GH_FIXTURE%"
+if "%FAKE_GH_MODE%"=="graphql-fixture" exit /b 0
+echo {"data":{"repository":{"pullRequests":{"totalCount":3},"issues":{"totalCount":7}}}}
+exit /b 0
+
 :api_user
 if "%FAKE_GH_MODE%"=="bad-cred" goto bad_cred
 if "%FAKE_GH_MODE%"=="empty-login" goto empty_login
@@ -100,6 +143,10 @@ exit /b 1
 :rate_limit
 >&2 echo HTTP 403: API rate limit exceeded for 1.2.3.4. (resets in 42 minutes)
 exit /b 1
+
+:counts_missing_data
+echo {"errors":[{"message":"boom"}]}
+exit /b 0
 
 :crash
 >&2 echo fake gh crashed
