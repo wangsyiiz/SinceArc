@@ -1,6 +1,7 @@
 //! gh domain：状态/列表/详情/diff 的 TTL 缓存、列表排序与 diff 切片；错误不进入缓存。
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -8,8 +9,9 @@ use tokio::sync::Mutex;
 
 use super::model::{
     ActionResult, Capability, DiffPage, GhActionParams, GhCli, GhError, GhStatus, Issue,
-    IssueState, PrDetail, PrState, PullRequest, Release, RepoCounts, RepoListing, RepoMeta,
-    RepoRef, RepoSummary, TreeEntry, Viewer, Workflow, WorkflowRun, MAX_REPO_LIST_LIMIT,
+    IssueState, MyPrs, MyPrsState, PrDetail, PrState, PullRequest, Release, RepoCounts,
+    RepoListing, RepoMeta, RepoRef, RepoSummary, TreeEntry, Viewer, Workflow, WorkflowRun,
+    MAX_REPO_LIST_LIMIT,
 };
 
 const STATUS_TTL: Duration = Duration::from_secs(30);
@@ -24,6 +26,13 @@ const TREE_TTL: Duration = Duration::from_secs(30);
 /// 仓库列表 60s；key 只含 owner（不含 limit），缓存永远存最大那份。
 pub const GH_REPOS_TTL: Duration = Duration::from_secs(60);
 pub const VIEWER_TTL: Duration = Duration::from_secs(3600);
+
+/// 我的 open PR：一次 `gh search prs` 拉满 100 条；满额即 `has_more`（§13.1）。
+pub const MY_PRS_LIMIT: u32 = 100;
+/// 首屏读缓存；后台 watch 按 `next_poll_interval()` 自己刷新。
+const MY_PRS_TTL: Duration = Duration::from_secs(300);
+const MY_PRS_BASE_INTERVAL_SECS: u64 = 300;
+const MY_PRS_MAX_INTERVAL_SECS: u64 = 1800;
 
 pub const DEFAULT_PAGE_SIZE: u32 = 200;
 pub const MAX_PAGE_SIZE: u32 = 200;
@@ -64,6 +73,9 @@ pub struct GhService {
     run_cache: Mutex<HashMap<RunCacheKey, (Instant, Vec<WorkflowRun>)>>,
     workflow_cache: Mutex<HashMap<RepoKey, (Instant, Vec<Workflow>)>>,
     tree_cache: Mutex<HashMap<TreeCacheKey, (Instant, Vec<TreeEntry>)>>,
+    my_prs_cache: Mutex<Option<(Instant, MyPrs)>>,
+    /// 0 = 300s；每次限流 +1 档（×2），成功复位。
+    my_prs_backoff: AtomicU32,
 }
 
 impl GhService {
@@ -83,6 +95,8 @@ impl GhService {
             run_cache: Mutex::new(HashMap::new()),
             workflow_cache: Mutex::new(HashMap::new()),
             tree_cache: Mutex::new(HashMap::new()),
+            my_prs_cache: Mutex::new(None),
+            my_prs_backoff: AtomicU32::new(0),
         }
     }
 
@@ -128,6 +142,101 @@ impl GhService {
                 Err(error)
             }
         }
+    }
+
+    /// 我的 open PR：缓存 + 状态机（docs/gh.md §13.2）。
+    ///
+    /// - 未 force 且缓存未过期：直接返回，不打 gh。
+    /// - 没装 / 没登录：`Unavailable` + 空列表，不当作命令错误。
+    /// - 限流：保留上一份 ready 数据（`stale=true`），并让下次轮询退避翻倍。
+    /// - 其它错误：有上一份 ready 数据就返回旧数据（`stale=true` + error），否则 `Failed`。
+    pub async fn my_prs(&self, force: bool) -> MyPrs {
+        let mut cache = self.my_prs_cache.lock().await;
+        if !force {
+            if let Some((at, value)) = cache.as_ref() {
+                if at.elapsed() < MY_PRS_TTL {
+                    return value.clone();
+                }
+            }
+        }
+
+        let previous = cache.as_ref().map(|(_, value)| value.clone());
+        match self.cli.search_my_open_prs(MY_PRS_LIMIT).await {
+            Ok(mut items) => {
+                items.sort_by_key(|pr| std::cmp::Reverse(pr.updated_at));
+                let value = MyPrs {
+                    state: MyPrsState::Ready,
+                    has_more: items.len() as u32 == MY_PRS_LIMIT,
+                    items,
+                    stale: false,
+                    updated_at: Some(now_epoch_secs()),
+                    error: None,
+                };
+                self.my_prs_backoff.store(0, Ordering::SeqCst);
+                *cache = Some((Instant::now(), value.clone()));
+                value
+            }
+            Err(GhError::NotInstalled) | Err(GhError::NotLoggedIn) => {
+                let value = MyPrs {
+                    state: MyPrsState::Unavailable,
+                    items: Vec::new(),
+                    has_more: false,
+                    stale: false,
+                    updated_at: None,
+                    error: None,
+                };
+                *cache = Some((Instant::now(), value.clone()));
+                value
+            }
+            Err(error @ GhError::RateLimited { .. }) => {
+                self.bump_my_prs_backoff();
+                self.stale_or_failed(previous, error, &mut cache)
+            }
+            Err(error) => self.stale_or_failed(previous, error, &mut cache),
+        }
+    }
+
+    /// watch 的下一轮间隔：300s 起，限流一次 ×2，上限 1800s；成功一次复位（§13.2）。
+    pub fn next_poll_interval(&self) -> Duration {
+        let level = self.my_prs_backoff.load(Ordering::SeqCst).min(3);
+        let secs = MY_PRS_BASE_INTERVAL_SECS
+            .saturating_mul(1u64 << level)
+            .min(MY_PRS_MAX_INTERVAL_SECS);
+        Duration::from_secs(secs)
+    }
+
+    fn bump_my_prs_backoff(&self) {
+        let next = self
+            .my_prs_backoff
+            .load(Ordering::SeqCst)
+            .saturating_add(1)
+            .min(3);
+        self.my_prs_backoff.store(next, Ordering::SeqCst);
+    }
+
+    fn stale_or_failed(
+        &self,
+        previous: Option<MyPrs>,
+        error: GhError,
+        cache: &mut Option<(Instant, MyPrs)>,
+    ) -> MyPrs {
+        if let Some(mut value) = previous.filter(|value| value.state == MyPrsState::Ready) {
+            value.stale = true;
+            value.error = Some(error);
+            *cache = Some((Instant::now(), value.clone()));
+            return value;
+        }
+
+        let value = MyPrs {
+            state: MyPrsState::Failed,
+            items: Vec::new(),
+            has_more: false,
+            stale: false,
+            updated_at: None,
+            error: Some(error),
+        };
+        *cache = Some((Instant::now(), value.clone()));
+        value
     }
 
     pub async fn list_prs(
@@ -513,6 +622,13 @@ fn slice_repo_page(items: &[RepoListing], limit: u32) -> RepoListPage {
     }
 }
 
+fn now_epoch_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 fn pr_cache_key(repo: &RepoRef, number: u32) -> PrCacheKey {
     (
         repo.host.clone().unwrap_or_default(),
@@ -573,7 +689,7 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
-    use crate::gh::model::{Author, CheckState, PrStateView};
+    use crate::gh::model::{Author, CheckState, MyPullRequest, PrStateView};
 
     struct FakeGh {
         status_calls: AtomicUsize,
@@ -589,6 +705,7 @@ mod tests {
         run_calls: AtomicUsize,
         workflow_calls: AtomicUsize,
         tree_calls: AtomicUsize,
+        my_prs_calls: AtomicUsize,
         status_results: Mutex<VecDeque<Result<GhStatus, GhError>>>,
         viewer_results: Mutex<VecDeque<Result<Viewer, GhError>>>,
         repo_results: Mutex<VecDeque<Result<Vec<RepoListing>, GhError>>>,
@@ -597,6 +714,7 @@ mod tests {
         diff_results: Mutex<VecDeque<Result<String, GhError>>>,
         meta_results: Mutex<VecDeque<Result<RepoMeta, GhError>>>,
         counts_results: Mutex<VecDeque<Result<RepoCounts, GhError>>>,
+        my_prs_results: Mutex<VecDeque<Result<Vec<MyPullRequest>, GhError>>>,
     }
 
     impl FakeGh {
@@ -615,6 +733,7 @@ mod tests {
                 run_calls: AtomicUsize::new(0),
                 workflow_calls: AtomicUsize::new(0),
                 tree_calls: AtomicUsize::new(0),
+                my_prs_calls: AtomicUsize::new(0),
                 status_results: Mutex::new(results.into()),
                 viewer_results: Mutex::new(VecDeque::new()),
                 repo_results: Mutex::new(VecDeque::new()),
@@ -623,6 +742,7 @@ mod tests {
                 diff_results: Mutex::new(VecDeque::new()),
                 meta_results: Mutex::new(VecDeque::new()),
                 counts_results: Mutex::new(VecDeque::new()),
+                my_prs_results: Mutex::new(VecDeque::new()),
             })
         }
 
@@ -641,6 +761,7 @@ mod tests {
                 run_calls: AtomicUsize::new(0),
                 workflow_calls: AtomicUsize::new(0),
                 tree_calls: AtomicUsize::new(0),
+                my_prs_calls: AtomicUsize::new(0),
                 status_results: Mutex::new(VecDeque::new()),
                 viewer_results: Mutex::new(VecDeque::new()),
                 repo_results: Mutex::new(VecDeque::new()),
@@ -649,7 +770,14 @@ mod tests {
                 diff_results: Mutex::new(VecDeque::new()),
                 meta_results: Mutex::new(VecDeque::new()),
                 counts_results: Mutex::new(VecDeque::new()),
+                my_prs_results: Mutex::new(VecDeque::new()),
             })
+        }
+
+        fn with_my_prs(results: Vec<Result<Vec<MyPullRequest>, GhError>>) -> Arc<Self> {
+            let fake = Self::new(Vec::new());
+            *fake.my_prs_results.lock().unwrap() = results.into();
+            fake
         }
 
         fn with_details(results: Vec<Result<PrDetail, GhError>>) -> Arc<Self> {
@@ -721,6 +849,10 @@ mod tests {
         fn workflow_calls(&self) -> usize {
             self.workflow_calls.load(Ordering::SeqCst)
         }
+
+        fn my_prs_calls(&self) -> usize {
+            self.my_prs_calls.load(Ordering::SeqCst)
+        }
     }
 
     #[async_trait]
@@ -738,6 +870,16 @@ mod tests {
         async fn viewer(&self) -> Result<Viewer, GhError> {
             self.viewer_calls.fetch_add(1, Ordering::SeqCst);
             let mut results = self.viewer_results.lock().unwrap();
+            if results.len() > 1 {
+                results.pop_front().unwrap()
+            } else {
+                results.front().cloned().unwrap()
+            }
+        }
+
+        async fn search_my_open_prs(&self, _limit: u32) -> Result<Vec<MyPullRequest>, GhError> {
+            self.my_prs_calls.fetch_add(1, Ordering::SeqCst);
+            let mut results = self.my_prs_results.lock().unwrap();
             if results.len() > 1 {
                 results.pop_front().unwrap()
             } else {
@@ -1417,5 +1559,122 @@ mod tests {
 
         service.list_workflows(&repo(), true).await.unwrap();
         assert_eq!(fake.workflow_calls(), 2);
+    }
+
+    fn sample_my_pr(number: u32, updated_at: i64) -> MyPullRequest {
+        MyPullRequest {
+            number,
+            title: format!("PR {number}"),
+            url: format!("https://github.com/acme/repo/pull/{number}"),
+            updated_at,
+            is_draft: false,
+            repo: "acme/repo".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn my_prs_cache_hits_within_ttl_and_force_bypasses() {
+        let fake = FakeGh::with_my_prs(vec![
+            Ok(vec![sample_my_pr(1, 10)]),
+            Ok(vec![sample_my_pr(2, 20)]),
+        ]);
+        let service = GhService::new(fake.clone());
+
+        let first = service.my_prs(false).await;
+        assert_eq!(first.state, MyPrsState::Ready);
+        assert_eq!(first.items[0].number, 1);
+        let cached = service.my_prs(false).await;
+        assert_eq!(cached.items[0].number, 1);
+        assert_eq!(fake.my_prs_calls(), 1, "TTL 内不应再次调用 gh");
+
+        let forced = service.my_prs(true).await;
+        assert_eq!(forced.items[0].number, 2);
+        assert_eq!(fake.my_prs_calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn my_prs_unavailable_is_not_an_error() {
+        let fake = FakeGh::with_my_prs(vec![Err(GhError::NotLoggedIn)]);
+        let service = GhService::new(fake.clone());
+
+        let value = service.my_prs(false).await;
+        assert_eq!(value.state, MyPrsState::Unavailable);
+        assert!(value.items.is_empty());
+        assert!(value.error.is_none());
+        assert!(!value.has_more);
+        assert!(!value.stale);
+
+        let cached = service.my_prs(false).await;
+        assert_eq!(cached.state, MyPrsState::Unavailable);
+        assert_eq!(fake.my_prs_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn my_prs_rate_limit_doubles_backoff_and_success_resets() {
+        let fake = FakeGh::with_my_prs(vec![
+            Ok(vec![sample_my_pr(1, 10)]),
+            Err(GhError::RateLimited {
+                reset: "42 minutes".to_string(),
+            }),
+            Err(GhError::RateLimited {
+                reset: "42 minutes".to_string(),
+            }),
+            Err(GhError::RateLimited {
+                reset: "42 minutes".to_string(),
+            }),
+            Ok(vec![sample_my_pr(2, 20)]),
+        ]);
+        let service = GhService::new(fake.clone());
+
+        assert_eq!(service.next_poll_interval(), Duration::from_secs(300));
+        service.my_prs(true).await;
+
+        let limited = service.my_prs(true).await;
+        assert!(limited.stale);
+        assert_eq!(limited.items[0].number, 1, "限流必须保留上一份数据");
+        assert!(matches!(limited.error, Some(GhError::RateLimited { .. })));
+        assert_eq!(service.next_poll_interval(), Duration::from_secs(600));
+
+        // 再连续限流两次：1200 → 1800（封顶）。
+        service.my_prs(true).await;
+        assert_eq!(service.next_poll_interval(), Duration::from_secs(1200));
+        service.my_prs(true).await;
+        assert_eq!(service.next_poll_interval(), Duration::from_secs(1800));
+
+        // 成功一次立即复位。
+        let ready = service.my_prs(true).await;
+        assert_eq!(ready.state, MyPrsState::Ready);
+        assert!(!ready.stale);
+        assert_eq!(service.next_poll_interval(), Duration::from_secs(300));
+    }
+
+    #[tokio::test]
+    async fn my_prs_other_error_keeps_previous_data_when_stale() {
+        let first = vec![sample_my_pr(1, 10)];
+        let fake = FakeGh::with_my_prs(vec![Ok(first.clone()), Err(GhError::Timeout)]);
+        let service = GhService::new(fake.clone());
+
+        let ready = service.my_prs(true).await;
+        let updated_at = ready.updated_at;
+        assert_eq!(ready.state, MyPrsState::Ready);
+
+        let stale = service.my_prs(true).await;
+        assert_eq!(stale.state, MyPrsState::Ready);
+        assert_eq!(stale.items, first);
+        assert!(stale.stale);
+        assert_eq!(stale.updated_at, updated_at);
+        assert_eq!(stale.error, Some(GhError::Timeout));
+    }
+
+    #[tokio::test]
+    async fn my_prs_has_more_when_limit_is_full() {
+        let items: Vec<MyPullRequest> = (0..100).map(|i| sample_my_pr(i, i as i64)).collect();
+        let fake = FakeGh::with_my_prs(vec![Ok(items)]);
+        let service = GhService::new(fake);
+
+        let value = service.my_prs(false).await;
+        assert!(value.has_more);
+        assert_eq!(value.items.len(), 100);
+        assert_eq!(value.items[0].number, 99, "按 updated_at 倒序");
     }
 }

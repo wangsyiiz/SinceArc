@@ -93,6 +93,36 @@ pub struct Viewer {
     pub avatar_url: Option<String>,
 }
 
+/// 当前 gh 登录身份提交的 open PR（docs/gh.md §13）。
+/// `repo` 是 `nameWithOwner`；`updated_at` 是 epoch 秒。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MyPullRequest {
+    pub number: u32,
+    pub title: String,
+    pub url: String,
+    pub updated_at: i64,
+    pub is_draft: bool,
+    pub repo: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MyPrsState {
+    Ready,
+    Unavailable,
+    Failed,
+}
+
+/// `my_prs` 的状态机结果：缓存里保存的就是这一份，watch 与命令读同一份。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MyPrs {
+    pub state: MyPrsState,
+    pub items: Vec<MyPullRequest>,
+    pub has_more: bool,
+    pub stale: bool,
+    pub updated_at: Option<i64>,
+    pub error: Option<GhError>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileChange {
     pub path: String,
@@ -438,6 +468,7 @@ impl GhError {
 pub trait GhCli: Send + Sync {
     async fn status(&self) -> Result<GhStatus, GhError>;
     async fn viewer(&self) -> Result<Viewer, GhError>;
+    async fn search_my_open_prs(&self, limit: u32) -> Result<Vec<MyPullRequest>, GhError>;
     async fn list_repos(
         &self,
         owner: Option<&str>,

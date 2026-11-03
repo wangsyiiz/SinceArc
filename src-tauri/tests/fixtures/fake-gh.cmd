@@ -14,6 +14,7 @@ if "%1"=="auth" if "%2"=="status" goto auth
 if "%1"=="pr" if "%2"=="list" if "%3"=="-R" goto pr_list
 if "%1"=="pr" if "%2"=="view" goto pr_view
 if "%1"=="pr" if "%2"=="diff" goto pr_diff
+if "%1"=="search" if "%2"=="prs" goto search_prs
 if "%1"=="repo" if "%2"=="list" goto repo_list
 if "%1"=="repo" if "%2"=="view" goto repo_view
 if "%1"=="repo" if "%2"=="read-dir" goto repo_read_dir
@@ -76,6 +77,12 @@ type "%FAKE_GH_FIXTURE%"
 exit /b 0
 
 :pr_diff
+type "%FAKE_GH_FIXTURE%"
+exit /b 0
+
+:search_prs
+if "%FAKE_GH_MODE%"=="rate-limit" goto rate_limit
+if "%FAKE_GH_MODE%"=="bad-cred" goto bad_cred
 type "%FAKE_GH_FIXTURE%"
 exit /b 0
 

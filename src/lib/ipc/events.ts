@@ -5,7 +5,9 @@
 
 import { invokeCmd, isTauri, type CmdError } from "./client";
 import type { AcpEvent, WireEvent } from "./types";
+import type { MyPrsDto } from "./types.gen/MyPrsDto";
 import { clog } from "@/lib/log";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 
 const WIRE_VERSION = 1;
 
@@ -55,4 +57,16 @@ export function onAgentEvent(
 ): Promise<void> {
   handlers.set(profileId, handler);
   return ensureSubscribed();
+}
+
+/**
+ * 我的 open PR 推送（`gh:open-prs`）。payload 与 `gh_my_prs` 返回同一个 DTO；
+ * 浏览器直开没有事件系统，返回一个空 unlisten，调用方不用额外判断环境。
+ */
+export async function onOpenPrs(
+  cb: (dto: MyPrsDto) => void,
+): Promise<UnlistenFn> {
+  if (!isTauri()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<MyPrsDto>("gh:open-prs", (event) => cb(event.payload));
 }

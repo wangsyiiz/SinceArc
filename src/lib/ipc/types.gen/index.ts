@@ -26,6 +26,8 @@ export type { GhRepoListDto } from "./GhRepoListDto";
 export type { GhRepoListingDto } from "./GhRepoListingDto";
 export type { IssueDto } from "./IssueDto";
 export type { IssueListDto } from "./IssueListDto";
+export type { MyPrDto } from "./MyPrDto";
+export type { MyPrsDto } from "./MyPrsDto";
 export type { IssueStateView } from "./IssueStateView";
 export type { LatestReleaseDto } from "./LatestReleaseDto";
 export type { LocalRepoDto } from "./LocalRepoDto";

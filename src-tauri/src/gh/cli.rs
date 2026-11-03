@@ -10,9 +10,9 @@ use tokio::process::Command;
 
 use super::model::{
     ActionResult, Capability, CheckState, DenyReason, FileChange, GhAction, GhActionParams, GhCli,
-    GhError, GhStatus, Issue, IssueState, IssueStateView, LatestRelease, PrDetail, PrState,
-    PrStateView, PullRequest, Release, RepoCounts, RepoListing, RepoMeta, RepoRef, TreeEntry,
-    TreeEntryKind, Viewer, Workflow, WorkflowRun, MAX_REPO_LIST_LIMIT,
+    GhError, GhStatus, Issue, IssueState, IssueStateView, LatestRelease, MyPullRequest, PrDetail,
+    PrState, PrStateView, PullRequest, Release, RepoCounts, RepoListing, RepoMeta, RepoRef,
+    TreeEntry, TreeEntryKind, Viewer, Workflow, WorkflowRun, MAX_REPO_LIST_LIMIT,
 };
 use serde::Deserialize;
 
@@ -34,6 +34,8 @@ const RELEASE_LIST_TIMEOUT: Duration = Duration::from_secs(15);
 const RUN_LIST_TIMEOUT: Duration = Duration::from_secs(15);
 const WORKFLOW_LIST_TIMEOUT: Duration = Duration::from_secs(10);
 const TREE_TIMEOUT: Duration = Duration::from_secs(10);
+/// `gh search prs` 跨全部可访问仓库；实测 1.84s，留足余量（docs/gh.md §13）。
+const MY_PR_SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
 const LIST_LIMIT: &str = "30";
 const LIST_JSON_FIELDS: &str = "number,title,state,isDraft,mergeable,reviewDecision,author,updatedAt,headRefName,baseRefName,url,statusCheckRollup";
 const DETAIL_JSON_FIELDS: &str = "number,title,state,isDraft,mergeable,reviewDecision,author,updatedAt,createdAt,headRefName,baseRefName,url,statusCheckRollup,body,additions,deletions,changedFiles,files";
@@ -46,6 +48,7 @@ const RUN_JSON_FIELDS: &str =
     "databaseId,displayTitle,workflowName,status,conclusion,headBranch,event,createdAt,url";
 const WORKFLOW_JSON_FIELDS: &str = "name,path,state,id";
 const TREE_JSON_FIELDS: &str = "name,path,size,gitType";
+const MY_PR_JSON_FIELDS: &str = "number,title,repository,url,updatedAt,isDraft";
 const MAX_ACTION_BODY_BYTES: usize = 64 * 1024;
 
 pub struct RealGh {
@@ -213,6 +216,23 @@ struct RawViewer {
     login: String,
     name: Option<String>,
     avatar_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawMyPr {
+    number: u32,
+    title: String,
+    repository: RawMyPrRepo,
+    url: String,
+    updated_at: String,
+    is_draft: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawMyPrRepo {
+    name_with_owner: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1121,6 +1141,62 @@ impl GhCli for RealGh {
             name: clean(raw.name),
             avatar_url: clean(raw.avatar_url),
         })
+    }
+
+    async fn search_my_open_prs(&self, limit: u32) -> Result<Vec<MyPullRequest>, GhError> {
+        let Some(path) = self.find() else {
+            return Err(GhError::NotInstalled);
+        };
+
+        let limit = limit.max(1).to_string();
+        let output = self
+            .run(
+                &path,
+                &[
+                    "search",
+                    "prs",
+                    "--author",
+                    "@me",
+                    "--state",
+                    "open",
+                    "--limit",
+                    limit.as_str(),
+                    "--json",
+                    MY_PR_JSON_FIELDS,
+                ],
+                MY_PR_SEARCH_TIMEOUT,
+            )
+            .await?;
+
+        if !output.status.success() {
+            return Err(map_stderr(&output.stderr));
+        }
+
+        let raw: Vec<RawMyPr> = match serde_json::from_str(&output.stdout) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(
+                    target: "sincearc::gh",
+                    error = %error,
+                    "could not parse gh search prs output"
+                );
+                return Err(GhError::ParseFailed {
+                    version: self.version_for_parse_error(&path).await,
+                });
+            }
+        };
+
+        Ok(raw
+            .into_iter()
+            .map(|row| MyPullRequest {
+                number: row.number,
+                title: row.title,
+                url: row.url,
+                updated_at: parse_iso8601_epoch(&row.updated_at).unwrap_or(0),
+                is_draft: row.is_draft,
+                repo: row.repository.name_with_owner,
+            })
+            .collect())
     }
 
     async fn list_repos(
@@ -2496,5 +2572,34 @@ mod tests {
 
         let log = argv_log(&temp);
         assert!(log.contains("repo read-dir src -R github.com/wangsyiiz/SinceArc --ref main --json name,path,size,gitType"), "argv = {log}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn my_open_prs_argv_and_mapping() {
+        let _lock = lock_env();
+        set_mode("ok");
+        let temp = TestDir::new("my-prs-argv");
+        let fixture = write_fixture(
+            &temp,
+            "my-prs.json",
+            r#"[{"number":14914,"title":"fix: thing","repository":{"name":"cli","nameWithOwner":"cli/cli"},"url":"https://github.com/cli/cli/pull/14914","updatedAt":"2026-11-03T10:40:39Z","isDraft":false},{"number":7,"title":"draft: wip","repository":{"name":"web","nameWithOwner":"acme/web"},"url":"https://github.com/acme/web/pull/7","updatedAt":"2026-11-02T08:00:00Z","isDraft":true}]"#,
+        );
+        set_fixture_path(&fixture);
+        set_argv_log(&temp.join("argv.log"));
+        let (_temp, gh) = stub_gh("my-prs-gh", "ok");
+
+        let items = gh.search_my_open_prs(100).await.unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].number, 14914);
+        assert_eq!(items[0].repo, "cli/cli");
+        assert_eq!(items[0].updated_at, 1_793_702_439);
+        assert!(!items[0].is_draft);
+        assert!(items[1].is_draft);
+
+        let log = argv_log(&temp);
+        assert!(
+            log.contains("search prs --author @me --state open --limit 100 --json number,title,repository,url,updatedAt,isDraft"),
+            "argv = {log}"
+        );
     }
 }

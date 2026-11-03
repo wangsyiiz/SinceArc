@@ -208,9 +208,12 @@ pub fn run() {
             let db = db::Db::open(&dir.join("sincearc.db"))?;
             tracing::info!(target: "sincearc::ipc", path = %dir.join("sincearc.db").display(), "db ready");
             app.manage(AppState::new(db));
-            app.manage(gh::GhState::new(std::sync::Arc::new(
-                gh::cli::RealGh::new(),
-            )));
+            let gh_cli: std::sync::Arc<dyn gh::model::GhCli> =
+                std::sync::Arc::new(gh::cli::RealGh::new());
+            // 只建一份 service：命令层与后台轮询共用同一个缓存与限流退避状态。
+            let gh_service = std::sync::Arc::new(gh::service::GhService::new(gh_cli));
+            app.manage(gh::GhState(gh_service.clone()));
+            gh::watch::spawn(app.handle().clone(), gh_service);
 
             // 兜底（§27.1）：到点无条件显示，不管前端加载成什么样。
             let handle = app.handle().clone();
@@ -284,6 +287,7 @@ pub fn run() {
             commands::agent_list_connected,
             gh::gh_status,
             gh::gh_viewer,
+            gh::gh_my_prs,
             gh::gh_repo_resolve,
             gh::gh_pr_list,
             gh::gh_pr_detail,

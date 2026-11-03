@@ -35,6 +35,8 @@ export type {
   McpCatalogEntryDto,
   McpKeyValueDto,
   McpServerDto,
+  MyPrDto,
+  MyPrsDto,
   ModeChoice,
   DirEntryDto,
   DirListingDto,
