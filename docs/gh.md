@@ -659,3 +659,56 @@ pub enum GhActionParams {
 
 `gh auth status` 实测：Windows keyring = `gist, read:org, repo`；WSL = `gist, read:org, repo, workflow`。
 **Actions 那一批在 app 里现在必然 403**，要开写先 `gh auth refresh -s workflow`（改的是用户凭据，须所有者执行）。
+
+## 13. 我的 open PR：后台轮询 + 事件推送（2026-11-03 定）
+
+标题栏头像要回答「我有几件事挂着」，所以面板的内容是**我提的、还没结束的 PR**，不是「项目里的 PR」。
+
+### 13.1 口径（为什么不是项目里的 PR）
+
+| 候选 | 调用 | 代价 | 判定 |
+| --- | --- | --- | --- |
+| **我提的 open PR**（本版采用） | `gh search prs --author @me --state open` | 1 次，实测 1.84s | 与「avatar = 我是谁」的语义一致；跨所有可访问仓库 |
+| 我添加的项目里的 open PR | 每个 repo 一次 `gh pr list` | N 次（N=项目数），随项目数线性增长 | 不做。要做得先定义「项目」的边界，且与身份无关 |
+| 等我 review 的 PR | `gh search prs --review-requested @me` | 1 次 | 以后可加一档，不混进这一版 |
+
+**计数口径**：`count = items.len()`，`limit = 100`；`items.len() == 100` ⇒ `hasMore = true`，角标显示 `99+`
+（面板头显示 `100+`）。不为了一个角标多打一次 count 接口。
+
+实测形状（`gh search prs --json number,title,repository,url,updatedAt,isDraft`）：
+
+```json
+{"isDraft":false,"number":14914,"repository":{"name":"cli","nameWithOwner":"cli/cli"},
+ "title":"…","updatedAt":"2026-11-03T10:40:39Z","url":"https://github.com/cli/cli/pull/14914"}
+```
+
+### 13.2 轮询与推送
+
+- **位置**：`src-tauri/src/gh/watch.rs`（新文件）持 `AppHandle` + `Arc<GhCli>`；**adapter 不认识 tauri**（§1.1 那条线不破）。
+- **节奏**：间隔 **300s**；启动后首次延迟 **8s**（等窗口起来、gh 探测有结果）；上一轮没结束就跳过本轮，不叠加。
+- **传输**：结果落 `GhService` 缓存，并 `app.emit("gh:open-prs", MyPrsDto)`。前端**不轮询**：首屏调 `gh_my_prs()`
+  读缓存（不阻塞），收到事件就更新。
+- **手动**：`gh_my_prs(force: true)` 立刻跑一次并重置计时（面板底部「刷新」用）。
+- **失败策略**（显式，不静默）：
+  - `NotInstalled` / `NotLoggedIn` → 本轮跳过、**角标不显示**；不反复刷日志（同一原因只记一次）。
+  - `RateLimited`（50712）→ 下次间隔翻倍（300s → 600 → 1200，上限 1800s），成功一次立即复位。
+  - 其它错误 → **保留上次数据**，`stale = true`，面板底部一行「上次更新 hh:mm · 更新失败」。
+- **不做**：不在后台写任何东西（§11 的写动作仍然全 readonly）；不落库（缓存只在内存）；不引定时器库（`tokio::time::interval` 已在依赖里）。
+
+### 13.3 契约
+
+```rust
+async fn search_my_open_prs(&self, limit: u32) -> Result<Vec<MyPullRequest>, GhError>;   // adapter
+pub async fn my_prs(&self, force: bool) -> Result<MyPrs, GhError>;                      // domain（带缓存）
+```
+
+```ts
+interface MyPrDto { number: number; title: string; url: string; updatedAt: string;
+                    isDraft: boolean; repo: string }        // repo = nameWithOwner
+interface MyPrsDto { state: "ready" | "unavailable" | "failed";
+                     items: MyPrDto[]; count: number; hasMore: boolean;
+                     stale: boolean; updatedAt?: string; error?: CmdError }
+```
+
+- `state=unavailable`（没装 / 没登录）时 `items=[]`、角标不渲染，**不报错**。
+- 命令：`gh_my_prs(force) -> MyPrsDto`；事件：`gh:open-prs`，payload 同 DTO。

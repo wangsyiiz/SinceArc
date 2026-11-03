@@ -2128,6 +2128,47 @@ agent 被唤醒这一轮**不是客户端发起的**，Agent Client Protocol 里
 - 进程内单例缓存（模块级 promise），切标签/重挂载不重复请求；Rust 侧另有 1h TTL；
 - 取不到就用「未登录」/ 空，不重试轰炸（失败后本次会话不再自动重取，只能靠重启）。
 
+## 48. 标题栏头像：角标 + hover 面板（2026-11-03 定，修订 §37）
+
+头像从「只显示 login 的装饰」变成**有信息量的入口**：一个角标说「有几件事挂着」，hover 展开一份列表。
+
+### 48.1 形态
+
+```
+                                              ┌──────────────────────────────┐
+[品牌] SinceArc  ● hermes · 本机 · ~/source   ①①  ← 角标（右上角，14px 圆） │ 我的 open PR · 3             │
+                                             (av) [—][□][×]  │ #142 修 …            cli/cli   2h  │
+                                             ② hover 展开     │ #141 加 …            acme/web  1d  │
+                                                              │ 在 GitHub 打开  ·  刷新       │
+                                                              └──────────────────────────────┘
+```
+
+- **角标**：绝对定位在头像右上（`-top-0.5 -right-0.5`），直径 14px、`rounded-full`、`bg-accent-1`、
+  文字 `text-accent-ink` + `font-mono` + 10px。**不撑高标题栏**（`h-11` 不变），也不改头像的 18px。
+- **角标数字**：`0` 或 `unavailable` **不渲染**（不是显示 0）；`1..=99` 显示原数；`hasMore` 显示 `99+`。
+- **面板**：复用 `ui/HoverCard`（`open 220ms / close 140ms`，宽度 340px 是原语常量，**不改它**），
+  内容宽度自适应，`max-h` 由原语给（视口外自动翻边）。
+- **可发现性**：hover 打开，键盘 `focus` 打开、`Esc` 关闭（HoverCard 已有）；头像本身仍是 `<button>`。
+
+### 48.2 面板内容
+
+| 区 | 内容 |
+| --- | --- |
+| 头 | `我的 open PR · N`（`text-micro` 全大写风格 + 计数用 `font-mono`）；`unavailable` 时这一行换成「gh 未登录」 |
+| 列表 | 最多 **8** 条：`#编号`（`font-mono text-micro text-ink-3`）+ 标题（单行 `truncate`）+ 第二行 `repo` 与相对时间；`isDraft` 用 `text-ink-3` 标「草稿」 |
+| 空 | 「没有 open 的 PR」（`text-caption text-ink-3`，不留白板） |
+| 尾 | 左侧「在 GitHub 打开」（走既有 `open_external`，链到 `https://github.com/pulls`）；右侧「刷新」（`gh_my_prs(force)`） |
+| 过期 | `stale` 时尾部多一行 `上次更新 hh:mm · 更新失败`（`text-micro text-ink-3`）；错误正文进 `Tooltip`，不铺在面板里 |
+
+- 列表超过 8 条时**只显示前 8 条**，靠尾部链接去 GitHub 看全部（面板不是列表页）。
+- 点击头像 = 在系统浏览器打开 `https://github.com/pulls`（**修订 §37 的「点击暂不做动作」**）。
+
+### 48.3 数据与刷新
+
+- 前端**不轮询**：首屏 `gh_my_prs()` 读后端缓存，之后靠 `gh:open-prs` 事件更新（`docs/gh.md §13.2`）。
+- 面板展开时不额外请求（避免 hover 触发 gh 进程）；要最新就点「刷新」。
+- `unavailable`（没装/没登录）时头像位置仍显示「未登录」小字（§37 不变），**不显示角标、不显示面板**。
+
 ### 边界
 
 - 头像来自 `avatars.githubusercontent.com`（实测 200 / 0.59s，与 `github.com` 主站的 TLS 问题无关）；
