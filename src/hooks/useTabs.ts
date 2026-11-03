@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionSummary, Tab } from "@/types";
+import type { RepoView } from "@/types";
 import {
   nextActiveTabId,
   prunePinnedSessions,
@@ -131,11 +132,29 @@ export function useTabs(sessions: SessionSummary[]) {
             : `#${tab.prNumber}`);
     if (!baseOrderRef.current.includes(key)) baseOrderRef.current.push(key);
     setTabs((prev) => {
-      if (prev.some((t) => t.id === key)) return prev;
+      const existing = prev.find((t) => t.id === key);
+      if (existing) {
+        // 同一个仓库只有一个标签；侧栏重开时把视图切回 dashboard。
+        if (tab.kind !== "repo" || tab.view === undefined || existing.view === tab.view) {
+          return prev;
+        }
+        return prev.map((t) => (t.id === key ? { ...t, view: tab.view } : t));
+      }
       return orderTabs([...prev, { ...tab, id: key, title }], pinnedRef.current, baseOrderRef.current);
     });
     setActiveTabId(key);
     if (tab.kind === "session" && tab.sessionId) setLastSessionId(tab.sessionId);
+  }, []);
+
+  /** dashboard 卡片切子页：只改同一个仓库标签的 view，不新开标签、不产生历史条目。 */
+  const updateRepoView = useCallback((repoId: string, view: RepoView) => {
+    setTabs((prev) =>
+      prev.map((tab) =>
+        tab.kind === "repo" && tab.repoId === repoId && tab.view !== view
+          ? { ...tab, view }
+          : tab,
+      ),
+    );
   }, []);
 
   // 启动时列表回来了就先按持久化顺序重建 pinned，再打开最近一个。
@@ -235,6 +254,7 @@ export function useTabs(sessions: SessionSummary[]) {
     closeTab,
     closeSessionTabs,
     selectTab,
+    updateRepoView,
     pinned,
     onPin: pinTab,
     onUnpin: unpinTab,

@@ -246,6 +246,16 @@ export interface PermissionRequest {
 /* ---------- 右侧工作区标签 ---------- */
 export type TabKind = "session" | "repo" | "pr" | "settings";
 
+/** 仓库标签内的子视图；缺省 = dashboard（docs/gh.md §10.1）。 */
+export type RepoView =
+  | "dashboard"
+  | "pulls"
+  | "issues"
+  | "actions"
+  | "releases"
+  | "code"
+  | "settings";
+
 export interface Tab {
   id: string;
   kind: TabKind;
@@ -254,6 +264,8 @@ export interface Tab {
   sessionId?: string;
   repoId?: string;
   prNumber?: number;
+  /** 仅 kind = "repo" 时有意义；缺省按 dashboard 投影。 */
+  view?: RepoView;
 }
 
 /** 每个会话一份独立状态：切走标签不销毁 session，也不丢消息 */

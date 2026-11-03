@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Route, Routes, useNavigate } from "react-router";
+import { Route, Routes, useNavigate, useParams } from "react-router";
 import { X } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 import {
@@ -14,7 +14,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DelegateDialog } from "@/components/DelegateDialog";
 import { MemberDetailPanel } from "@/components/MemberDetailPanel";
 import { PrRoute } from "@/routes/PrRoute";
-import { RepoRoute } from "@/routes/RepoRoute";
+import { RepoRoute, type RepoRouteProps } from "@/routes/RepoRoute";
 import { SessionRoute } from "@/routes/SessionRoute";
 import { SettingsRoute } from "@/routes/SettingsRoute";
 import { WorkspaceProvider, type Workspace } from "@/routes/workspace-context";
@@ -230,6 +230,15 @@ interface SendInGroupOptions {
   fromQueue?: boolean;
 }
 
+/**
+ * 路由参数 → RepoRoute：`/repo/:id` 与 `/repo/:id/:view` 共用同一套元素，
+ * `view` 认不出时由 `repoViewOf` 落回 dashboard。
+ */
+function RepoRoutePage(props: Omit<RepoRouteProps, "view">) {
+  const { view } = useParams();
+  return <RepoRoute {...props} view={view} />;
+}
+
 export default function App() {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<ThreadSettings>(DEFAULT_THREAD_SETTINGS);
@@ -357,7 +366,7 @@ export default function App() {
   /** 全局 Agent User：当前成员被移出后，历史作者仍能从这里解析回身份。 */
   const [knownUsers, setKnownUsers] = useState<AgentUser[]>([]);
   const { sessions, setSessions, reload: reloadSessions } = useSessionList();
-  const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab, pinned, onPin, onUnpin } = useTabs(sessions);
+  const { tabs, activeTabId, setActiveTabId, activeTab, lastSessionId, setLastSessionId, openTab, closeTab, closeSessionTabs, selectTab, updateRepoView, pinned, onPin, onUnpin } = useTabs(sessions);
 
   /**
    * 主 agent 自己的身份（只用于渲染它说过的话）。
@@ -2650,7 +2659,12 @@ export default function App() {
           isSessionBusy={(id) => !!sessionState[id]?.busy}
           onOpenRepo={(repoId) => {
             const repo = repoList.find((r) => r.id === repoId);
-            openTab({ kind: "repo", title: repo?.name ?? t("app.tab.repo"), repoId });
+            openTab({
+              kind: "repo",
+              title: repo?.name ?? t("app.tab.repo"),
+              repoId,
+              view: "dashboard",
+            });
           }}
           onAddRepo={addRepo}
           onAddFromGh={addFromGh}
@@ -2724,9 +2738,37 @@ export default function App() {
                 path="/repo/:repoId"
                 element={
                   activeRepo ? (
-                    <RepoRoute
+                    <RepoRoutePage
                       repo={activeRepo}
                       phase={ghPhases[activeRepo.id] ?? { kind: "checking" }}
+                      onSelectView={(view) => updateRepoView(activeRepo.id, view)}
+                      onRedetect={redetectGhRepo}
+                      onCopy={(text) => void copyText(text)}
+                      onChooseRepo={() => {
+                        setMode("code");
+                        setAddRepoSignal((signal) => signal + 1);
+                      }}
+                      onOpenPr={(pr) =>
+                        openTab({
+                          kind: "pr",
+                          title: `#${pr.number} ${pr.title}`,
+                          subtitle: `${identityByRepo[activeRepo.id]?.owner ?? activeRepo.name}/${identityByRepo[activeRepo.id]?.name ?? ""} · ${pr.head} → ${pr.base}`,
+                          repoId: activeRepo.id,
+                          prNumber: pr.number,
+                        })
+                      }
+                    />
+                  ) : null
+                }
+              />
+              <Route
+                path="/repo/:repoId/:view"
+                element={
+                  activeRepo ? (
+                    <RepoRoutePage
+                      repo={activeRepo}
+                      phase={ghPhases[activeRepo.id] ?? { kind: "checking" }}
+                      onSelectView={(view) => updateRepoView(activeRepo.id, view)}
                       onRedetect={redetectGhRepo}
                       onCopy={(text) => void copyText(text)}
                       onChooseRepo={() => {
