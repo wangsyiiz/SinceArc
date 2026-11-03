@@ -4,6 +4,13 @@ User-facing notes for each release. `release.yml` takes the `## v<version>` sect
 alongside the Chinese one in `CHANGELOG.md` and ships both in the same update payload
 (docs/distribution.md §11). Earlier versions were Chinese-only and are not back-translated.
 
+## v0.0.20
+
+- **The code view is now a project overview.** Opening a project no longer drops you straight into the PR list — you first see the repository as a whole: how many PRs are open, how many issues, how many workflows exist, whether the last CI run passed, the newest release, and when it was last pushed. Below that is a row of entry points (PRs / Issues / Actions / Releases / Code / Settings), then a recent-activity stream mixing CI runs, PRs and releases in time order.
+- **Every entry point has its own address**, so a subpage survives a restart.
+- **The title-bar avatar now carries information**: a small badge shows how many PRs of yours are still open (hidden when logged out or when there are none). Hover it for a list — up to eight items with repository and update time — and click to open your PRs on GitHub. It refreshes in the background every five minutes, and the panel has its own refresh button.
+- **Write actions are still greyed out in this version.** Comment, merge and re-run buttons are visible but inert (the tooltip says why). The interface and disabled states are in place now so that enabling them later does not mean rebuilding the UI.
+
 ## v0.0.19
 
 - **A dropped connection no longer duplicates a reply.** When a connection died mid-answer (`agent closed stdout`), the partial reply was saved; after reconnecting, the agent replayed the whole answer and it was saved a second time — the same reply appeared twice, the second copy slightly longer. The stored text is now matched by content: the replayed prefix is dropped and any tail is merged into the existing message. Records already corrupted are collapsed the next time the session is opened.
