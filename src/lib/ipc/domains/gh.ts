@@ -11,6 +11,7 @@ import type { GhActionParamsDto } from "../types.gen/GhActionParamsDto";
 import type { GhRepoListDto } from "../types.gen/GhRepoListDto";
 import type { GhStatusDto } from "../types.gen/GhStatusDto";
 import type { IssueListDto } from "../types.gen/IssueListDto";
+import type { MyPrsDto } from "../types.gen/MyPrsDto";
 import type { PrDetailDto } from "../types.gen/PrDetailDto";
 import type { PrListDto } from "../types.gen/PrListDto";
 import type { ReleaseListDto } from "../types.gen/ReleaseListDto";
@@ -33,6 +34,14 @@ export function ghStatus(force = false): Promise<GhStatusDto> {
 /** 当前 gh 登录身份；`force` 绕过 domain 的 1h 缓存。 */
 export function ghViewer(force = false): Promise<ViewerDto> {
   return invokeCmd<ViewerDto>("gh_viewer", { force });
+}
+
+/**
+ * 我的 open PR（docs/gh.md §13）。首屏不 force，读后端缓存；
+ * 面板「刷新」传 `true` 立刻跑一次并复位后台轮询的退避计时。
+ */
+export function ghMyPrs(force = false): Promise<MyPrsDto> {
+  return invokeCmd<MyPrsDto>("gh_my_prs", { force });
 }
 
 /** 从本地目录的 `.git/config` 解析 `{ host, owner, name }`；不调 gh、不联网。 */

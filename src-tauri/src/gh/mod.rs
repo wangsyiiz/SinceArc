@@ -4,6 +4,7 @@ pub mod cli;
 pub mod model;
 pub mod repo;
 pub mod service;
+pub mod watch;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -16,17 +17,17 @@ use crate::commands::CmdError;
 use self::model::{
     ActionResult, Author, Capability, CheckState, DenyReason, DiffPage, FileChange, GhAction,
     GhActionParams, GhCli, GhError, GhStatus, Issue, IssueState, IssueStateView, LatestRelease,
-    MergeMethod, PrDetail, PrState, PrStateView, PullRequest, Release, RepoCounts, RepoListing,
-    RepoMeta, RepoRef, RepoSummary, ReviewVerdict, TreeEntry, TreeEntryKind, Viewer, Workflow,
-    WorkflowRun,
+    MergeMethod, MyPrs, MyPrsState, MyPullRequest, PrDetail, PrState, PrStateView, PullRequest,
+    Release, RepoCounts, RepoListing, RepoMeta, RepoRef, RepoSummary, ReviewVerdict, TreeEntry,
+    TreeEntryKind, Viewer, Workflow, WorkflowRun,
 };
 use self::service::{DiffPageError, GhService, DEFAULT_REPO_LIST_LIMIT, MAX_PAGE_SIZE};
 
-pub struct GhState(pub GhService);
+pub struct GhState(pub Arc<GhService>);
 
 impl GhState {
     pub fn new(cli: Arc<dyn GhCli>) -> Self {
-        Self(GhService::new(cli))
+        Self(Arc::new(GhService::new(cli)))
     }
 }
 
@@ -63,6 +64,78 @@ pub struct ViewerDto {
     pub login: Option<String>,
     pub name: Option<String>,
     pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct MyPrDto {
+    #[ts(type = "number")]
+    pub number: u32,
+    pub title: String,
+    pub url: String,
+    pub updated_at: String,
+    pub is_draft: bool,
+    pub repo: String,
+}
+
+impl From<MyPullRequest> for MyPrDto {
+    fn from(pr: MyPullRequest) -> Self {
+        Self {
+            number: pr.number,
+            title: pr.title,
+            url: pr.url,
+            updated_at: epoch_to_iso8601(pr.updated_at),
+            is_draft: pr.is_draft,
+            repo: pr.repo,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/ipc/types.gen/")]
+pub struct MyPrsDto {
+    pub state: String,
+    pub items: Vec<MyPrDto>,
+    #[ts(type = "number")]
+    pub count: u32,
+    pub has_more: bool,
+    pub stale: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub updated_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<GhErrorDto>,
+}
+
+impl From<MyPrs> for MyPrsDto {
+    fn from(value: MyPrs) -> Self {
+        let MyPrs {
+            state,
+            items,
+            has_more,
+            stale,
+            updated_at,
+            error,
+        } = value;
+        let count = items.len() as u32;
+        Self {
+            state: match state {
+                MyPrsState::Ready => "ready",
+                MyPrsState::Unavailable => "unavailable",
+                MyPrsState::Failed => "failed",
+            }
+            .to_string(),
+            items: items.into_iter().map(MyPrDto::from).collect(),
+            count,
+            has_more,
+            stale,
+            updated_at: updated_at.map(epoch_to_iso8601),
+            error: error.map(error_dto),
+        }
+    }
 }
 
 impl From<RepoRef> for RepoRefDto {
@@ -717,6 +790,33 @@ fn error_dto(error: GhError) -> GhErrorDto {
     }
 }
 
+/// epoch 秒 → `YYYY-MM-DDTHH:MM:SSZ`。不引时间库；只做 UTC 的整数换算。
+fn epoch_to_iso8601(seconds: i64) -> String {
+    let days = seconds.div_euclid(86_400);
+    let secs = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = secs / 3_600;
+    let minute = (secs % 3_600) / 60;
+    let second = secs % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// Howard Hinnant 的 days → civil date 算法（以 1970-01-01 为 0）。
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    let year = year + i64::from(month <= 2);
+    (year, month as u32, day as u32)
+}
+
 fn action_params_from_dto(params: GhActionParamsDto) -> Result<GhActionParams, CmdError> {
     Ok(match params {
         GhActionParamsDto::PrComment { number, body } => GhActionParams::PrComment { number, body },
@@ -1028,6 +1128,25 @@ pub async fn gh_viewer(
             Err(to_cmd_error(error))
         }
     }
+}
+
+/// 我的 open PR（docs/gh.md §13）：状态机把「没装 / 没登录」也表达成正常 DTO，
+/// 所以这条命令只在真正的内部错误时才会走到 Err。
+#[tauri::command]
+pub async fn gh_my_prs(
+    state: State<'_, GhState>,
+    force: Option<bool>,
+) -> Result<MyPrsDto, CmdError> {
+    let value = state.0.my_prs(force.unwrap_or(false)).await;
+    if let (MyPrsState::Failed, Some(error)) = (value.state, value.error.as_ref()) {
+        tracing::warn!(
+            target: "sincearc::gh",
+            code = error.code(),
+            error = ?error,
+            "gh my prs failed"
+        );
+    }
+    Ok(MyPrsDto::from(value))
 }
 
 /// 「从 GitHub 添加」的仓库列表。`limit` 缺省 30，上限 100；
@@ -1587,5 +1706,30 @@ mod tests {
         assert_eq!(counts.state, "ready");
         assert_eq!(counts.open_prs, Some(1));
         assert_eq!(counts.open_issues, Some(2));
+    }
+
+    #[test]
+    fn my_prs_dto_maps_epoch_to_iso_and_keeps_count() {
+        let value = MyPrs {
+            state: MyPrsState::Ready,
+            items: vec![MyPullRequest {
+                number: 14914,
+                title: "fix".to_string(),
+                url: "https://github.com/cli/cli/pull/14914".to_string(),
+                updated_at: 1_793_702_439,
+                is_draft: false,
+                repo: "cli/cli".to_string(),
+            }],
+            has_more: false,
+            stale: false,
+            updated_at: Some(1_793_702_439),
+            error: None,
+        };
+        let dto = MyPrsDto::from(value);
+        assert_eq!(dto.state, "ready");
+        assert_eq!(dto.count, 1);
+        assert_eq!(dto.items[0].updated_at, "2026-11-03T10:40:39Z");
+        assert_eq!(dto.updated_at.as_deref(), Some("2026-11-03T10:40:39Z"));
+        assert!(dto.error.is_none());
     }
 }
