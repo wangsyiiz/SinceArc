@@ -9,8 +9,10 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use super::model::{
-    CheckState, FileChange, GhCli, GhError, GhStatus, PrDetail, PrState, PrStateView, PullRequest,
-    RepoListing, RepoRef, Viewer, MAX_REPO_LIST_LIMIT,
+    ActionResult, Capability, CheckState, DenyReason, FileChange, GhAction, GhActionParams, GhCli,
+    GhError, GhStatus, Issue, IssueState, IssueStateView, LatestRelease, PrDetail, PrState,
+    PrStateView, PullRequest, Release, RepoCounts, RepoListing, RepoMeta, RepoRef, TreeEntry,
+    TreeEntryKind, Viewer, Workflow, WorkflowRun, MAX_REPO_LIST_LIMIT,
 };
 use serde::Deserialize;
 
@@ -25,11 +27,26 @@ const DETAIL_TIMEOUT: Duration = Duration::from_secs(10);
 const DIFF_TIMEOUT: Duration = Duration::from_secs(20);
 const REPO_LIST_TIMEOUT: Duration = Duration::from_secs(15);
 const VIEWER_TIMEOUT: Duration = Duration::from_secs(10);
+const REPO_META_TIMEOUT: Duration = Duration::from_secs(10);
+const REPO_COUNTS_TIMEOUT: Duration = Duration::from_secs(15);
+const ISSUE_LIST_TIMEOUT: Duration = Duration::from_secs(10);
+const RELEASE_LIST_TIMEOUT: Duration = Duration::from_secs(15);
+const RUN_LIST_TIMEOUT: Duration = Duration::from_secs(15);
+const WORKFLOW_LIST_TIMEOUT: Duration = Duration::from_secs(10);
+const TREE_TIMEOUT: Duration = Duration::from_secs(10);
 const LIST_LIMIT: &str = "30";
 const LIST_JSON_FIELDS: &str = "number,title,state,isDraft,mergeable,reviewDecision,author,updatedAt,headRefName,baseRefName,url,statusCheckRollup";
 const DETAIL_JSON_FIELDS: &str = "number,title,state,isDraft,mergeable,reviewDecision,author,updatedAt,createdAt,headRefName,baseRefName,url,statusCheckRollup,body,additions,deletions,changedFiles,files";
 const REPO_LIST_JSON_FIELDS: &str =
     "nameWithOwner,isPrivate,defaultBranchRef,updatedAt,description";
+const REPO_META_JSON_FIELDS: &str = "nameWithOwner,description,visibility,defaultBranchRef,pushedAt,stargazerCount,forkCount,isArchived,hasIssuesEnabled,repositoryTopics,latestRelease";
+const ISSUE_JSON_FIELDS: &str = "number,title,state,author,labels,updatedAt,url";
+const RELEASE_JSON_FIELDS: &str = "tagName,name,publishedAt,isLatest,isDraft,isPrerelease";
+const RUN_JSON_FIELDS: &str =
+    "databaseId,displayTitle,workflowName,status,conclusion,headBranch,event,createdAt,url";
+const WORKFLOW_JSON_FIELDS: &str = "name,path,state,id";
+const TREE_JSON_FIELDS: &str = "name,path,size,gitType";
+const MAX_ACTION_BODY_BYTES: usize = 64 * 1024;
 
 pub struct RealGh {
     roots: Vec<PathBuf>,
@@ -338,6 +355,298 @@ impl RawDetail {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawRepoMeta {
+    name_with_owner: String,
+    description: Option<String>,
+    visibility: String,
+    default_branch_ref: Option<RawBranchRef>,
+    pushed_at: Option<String>,
+    stargazer_count: u64,
+    fork_count: u64,
+    is_archived: bool,
+    has_issues_enabled: bool,
+    repository_topics: Option<Vec<RawRepoTopic>>,
+    latest_release: Option<RawLatestRelease>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRepoTopic {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    topic: Option<RawTopicName>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTopicName {
+    name: String,
+}
+
+impl RawRepoTopic {
+    fn into_name(self) -> Option<String> {
+        self.name
+            .or_else(|| self.topic.map(|topic| topic.name))
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawLatestRelease {
+    tag_name: String,
+    name: Option<String>,
+    published_at: Option<String>,
+}
+
+impl RawRepoMeta {
+    fn into_model(self) -> RepoMeta {
+        let topics = self
+            .repository_topics
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(RawRepoTopic::into_name)
+            .collect();
+        let latest_release = self.latest_release.map(|release| LatestRelease {
+            tag_name: release.tag_name.trim().to_string(),
+            name: release
+                .name
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| release.tag_name.trim().to_string()),
+            published_at: clean_optional(release.published_at),
+        });
+
+        RepoMeta {
+            name_with_owner: self.name_with_owner.trim().to_string(),
+            description: clean_optional(self.description),
+            visibility: self.visibility.trim().to_string(),
+            default_branch: self
+                .default_branch_ref
+                .map(|branch| branch.name.trim().to_string())
+                .filter(|branch| !branch.is_empty())
+                .unwrap_or_default(),
+            topics,
+            pushed_at: self.pushed_at.unwrap_or_default(),
+            stargazers: self.stargazer_count,
+            forks: self.fork_count,
+            is_archived: self.is_archived,
+            has_issues: self.has_issues_enabled,
+            latest_release,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RawGraphqlEnvelope {
+    data: Option<RawGraphqlData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawGraphqlData {
+    repository: Option<RawGraphqlRepoCounts>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawGraphqlRepoCounts {
+    pull_requests: Option<RawTotalCount>,
+    issues: Option<RawTotalCount>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawTotalCount {
+    total_count: u32,
+}
+
+fn parse_graphql_counts(stdout: &str) -> Result<RepoCounts, ()> {
+    let envelope: RawGraphqlEnvelope = serde_json::from_str(stdout).map_err(|_| ())?;
+    let data = envelope.data.ok_or(())?;
+    let repository = data.repository.ok_or(())?;
+    Ok(RepoCounts {
+        open_prs: repository.pull_requests.map(|count| count.total_count),
+        open_issues: repository.issues.map(|count| count.total_count),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawIssue {
+    number: u32,
+    title: String,
+    state: String,
+    author: RawAuthor,
+    labels: Option<Vec<RawLabel>>,
+    updated_at: String,
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawLabel {
+    name: String,
+}
+
+impl RawIssue {
+    fn into_model(self) -> Issue {
+        Issue {
+            number: self.number,
+            title: self.title,
+            state: if self.state.eq_ignore_ascii_case("CLOSED") {
+                IssueStateView::Closed
+            } else {
+                IssueStateView::Open
+            },
+            author: super::model::Author {
+                login: self.author.login,
+                name: clean_optional(self.author.name),
+                is_bot: self.author.is_bot,
+            },
+            labels: self
+                .labels
+                .unwrap_or_default()
+                .into_iter()
+                .map(|label| label.name)
+                .filter(|name| !name.trim().is_empty())
+                .collect(),
+            updated_at: self.updated_at,
+            url: self.url,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawRelease {
+    tag_name: String,
+    name: String,
+    published_at: Option<String>,
+    #[serde(default)]
+    is_latest: bool,
+    #[serde(default)]
+    is_draft: bool,
+    #[serde(default)]
+    is_prerelease: bool,
+}
+
+impl RawRelease {
+    fn into_model(self) -> Release {
+        Release {
+            tag_name: self.tag_name,
+            name: self.name,
+            published_at: clean_optional(self.published_at),
+            is_latest: self.is_latest,
+            is_draft: self.is_draft,
+            is_prerelease: self.is_prerelease,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawRun {
+    database_id: u64,
+    display_title: String,
+    workflow_name: Option<String>,
+    status: String,
+    conclusion: Option<String>,
+    head_branch: Option<String>,
+    event: String,
+    created_at: String,
+    url: String,
+}
+
+impl RawRun {
+    fn into_model(self) -> WorkflowRun {
+        WorkflowRun {
+            id: self.database_id,
+            workflow_name: clean_optional(self.workflow_name),
+            title: self.display_title,
+            status: self.status,
+            conclusion: clean_optional(self.conclusion),
+            branch: clean_optional(self.head_branch),
+            event: self.event,
+            created_at: self.created_at,
+            url: self.url,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RawWorkflow {
+    id: u64,
+    name: String,
+    path: String,
+    state: String,
+}
+
+impl RawWorkflow {
+    fn into_model(self) -> Workflow {
+        Workflow {
+            id: self.id,
+            name: self.name,
+            path: self.path,
+            state: self.state,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawTreeEntry {
+    name: String,
+    path: String,
+    size: Option<u64>,
+    git_type: String,
+}
+
+impl RawTreeEntry {
+    fn into_model(self) -> TreeEntry {
+        let kind = if self.git_type.eq_ignore_ascii_case("tree")
+            || self.git_type.eq_ignore_ascii_case("dir")
+        {
+            TreeEntryKind::Dir
+        } else {
+            TreeEntryKind::File
+        };
+        TreeEntry {
+            name: self.name,
+            path: self.path,
+            kind,
+            size: if kind == TreeEntryKind::Dir {
+                None
+            } else {
+                self.size
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawTreeResponse {
+    Entries { entries: Vec<RawTreeEntry> },
+    List(Vec<RawTreeEntry>),
+}
+
+impl RawTreeResponse {
+    fn into_models(self) -> Vec<TreeEntry> {
+        match self {
+            Self::Entries { entries } | Self::List(entries) => {
+                entries.into_iter().map(RawTreeEntry::into_model).collect()
+            }
+        }
+    }
+}
+
+fn clean_optional(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn normalize_mergeable(value: Option<&str>) -> Option<String> {
     let value = value?.trim();
     if value.is_empty() || value.eq_ignore_ascii_case("UNKNOWN") {
@@ -458,9 +767,7 @@ fn current_repo_host() -> String {
 /// 但域模型只暴露数值时间；解析失败按缺失处理，不让整个列表失败。
 fn parse_iso8601_epoch(raw: &str) -> Option<i64> {
     let raw = raw.trim();
-    let (date, time) = raw
-        .split_once('T')
-        .or_else(|| raw.split_once(' '))?;
+    let (date, time) = raw.split_once('T').or_else(|| raw.split_once(' '))?;
     let mut date_parts = date.split('-');
     let year: i32 = date_parts.next()?.parse().ok()?;
     let month: u32 = date_parts.next()?.parse().ok()?;
@@ -473,12 +780,7 @@ fn parse_iso8601_epoch(raw: &str) -> Option<i64> {
     let mut time_parts = clock.split(':');
     let hour: i64 = time_parts.next()?.parse().ok()?;
     let minute: i64 = time_parts.next()?.parse().ok()?;
-    let second: i64 = time_parts
-        .next()?
-        .split('.')
-        .next()?
-        .parse()
-        .ok()?;
+    let second: i64 = time_parts.next()?.split('.').next()?.parse().ok()?;
     if time_parts.next().is_some() || hour > 23 || minute > 59 || second > 60 {
         return None;
     }
@@ -513,8 +815,7 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
     let month = month as i64;
     let day = day as i64;
     let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
-    let day_of_era =
-        year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     era * 146_097 + day_of_era - 719_468
 }
 
@@ -541,6 +842,129 @@ fn state_arg(state: PrState) -> &'static str {
         PrState::Merged => "merged",
         PrState::All => "all",
     }
+}
+
+fn issue_state_arg(state: IssueState) -> &'static str {
+    match state {
+        IssueState::Open => "open",
+        IssueState::Closed => "closed",
+        IssueState::All => "all",
+    }
+}
+
+fn graphql_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn counts_query(repo: &RepoRef) -> String {
+    format!(
+        "query {{ repository(owner: \"{}\", name: \"{}\") {{ pullRequests(states: OPEN) {{ totalCount }} issues(states: OPEN) {{ totalCount }} }} }}",
+        graphql_escape(repo.owner.trim()),
+        graphql_escape(repo.name.trim())
+    )
+}
+
+fn bad_action_params(action: GhAction, field: &str, detail: impl Into<String>) -> GhError {
+    GhError::BadActionParams {
+        action,
+        field: field.to_string(),
+        detail: detail.into(),
+    }
+}
+
+fn validate_body(action: GhAction, body: &str) -> Result<(), GhError> {
+    if body.trim().is_empty() {
+        return Err(bad_action_params(action, "body", "评论正文不能为空"));
+    }
+    if body.len() > MAX_ACTION_BODY_BYTES {
+        return Err(bad_action_params(
+            action,
+            "body",
+            format!("评论正文不能超过 {MAX_ACTION_BODY_BYTES} 字节"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_number(action: GhAction, number: u32) -> Result<(), GhError> {
+    if number == 0 {
+        return Err(bad_action_params(action, "number", "编号必须大于 0"));
+    }
+    Ok(())
+}
+
+/// §11.4 的顺序：仓库/动作合法性 → 参数校验（50721）→ 未开放（50720）。
+/// 首版不执行任何写动作，所以校验通过后一律返回 Readonly。
+fn validate_action_params(repo: &RepoRef, params: &GhActionParams) -> Result<(), GhError> {
+    let action = params.action();
+    if repo.owner.trim().is_empty() || repo.name.trim().is_empty() {
+        return Err(bad_action_params(action, "repo", "仓库不能为空"));
+    }
+
+    match params {
+        GhActionParams::PrComment { number, body }
+        | GhActionParams::IssueComment { number, body } => {
+            validate_number(action, *number)?;
+            validate_body(action, body)?;
+        }
+        GhActionParams::PrReview {
+            number,
+            verdict: _,
+            body,
+        } => {
+            validate_number(action, *number)?;
+            if let Some(body) = body {
+                validate_body(action, body)?;
+            }
+        }
+        GhActionParams::PrMerge {
+            number,
+            method: _,
+            match_head_commit,
+            delete_branch: _,
+        } => {
+            validate_number(action, *number)?;
+            if match_head_commit.trim().is_empty() {
+                return Err(bad_action_params(
+                    action,
+                    "match_head_commit",
+                    "合并必须带上要匹配的 head commit",
+                ));
+            }
+        }
+        GhActionParams::PrClose { number } | GhActionParams::PrReopen { number } => {
+            validate_number(action, *number)?;
+        }
+        GhActionParams::IssueClose { number } => {
+            validate_number(action, *number)?;
+        }
+        GhActionParams::WorkflowDispatch {
+            workflow,
+            git_ref,
+            inputs: _,
+        } => {
+            if workflow.trim().is_empty() {
+                return Err(bad_action_params(action, "workflow", "workflow 不能为空"));
+            }
+            if git_ref.trim().is_empty() {
+                return Err(bad_action_params(
+                    action,
+                    "git_ref",
+                    "workflow_dispatch 必须指定 ref",
+                ));
+            }
+        }
+        GhActionParams::RunRerun {
+            run_id,
+            failed_only: _,
+        } => {
+            if *run_id == 0 {
+                return Err(bad_action_params(action, "run_id", "run_id 必须大于 0"));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn reset_fragment(stderr: &str) -> String {
@@ -713,12 +1137,7 @@ impl GhCli for RealGh {
         if let Some(owner) = owner.map(str::trim).filter(|owner| !owner.is_empty()) {
             args.push(owner);
         }
-        args.extend([
-            "--limit",
-            limit.as_str(),
-            "--json",
-            REPO_LIST_JSON_FIELDS,
-        ]);
+        args.extend(["--limit", limit.as_str(), "--json", REPO_LIST_JSON_FIELDS]);
 
         let output = self.run(&path, &args, REPO_LIST_TIMEOUT).await?;
         if !output.status.success() {
@@ -868,6 +1287,331 @@ impl GhCli for RealGh {
 
         Ok(output.stdout)
     }
+
+    async fn repo_meta(&self, repo: &RepoRef) -> Result<RepoMeta, GhError> {
+        let Some(path) = self.find() else {
+            return Err(GhError::NotInstalled);
+        };
+
+        let repository = repository_arg(repo);
+        let output = self
+            .run(
+                &path,
+                &["repo", "view", &repository, "--json", REPO_META_JSON_FIELDS],
+                REPO_META_TIMEOUT,
+            )
+            .await?;
+
+        if !output.status.success() {
+            return Err(map_stderr(&output.stderr));
+        }
+
+        let raw: RawRepoMeta = match serde_json::from_str(&output.stdout) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(
+                    target: "sincearc::gh",
+                    error = %error,
+                    "could not parse gh repo view output"
+                );
+                return Err(GhError::ParseFailed {
+                    version: self.version_for_parse_error(&path).await,
+                });
+            }
+        };
+
+        Ok(raw.into_model())
+    }
+
+    async fn repo_counts(&self, repo: &RepoRef) -> Result<RepoCounts, GhError> {
+        let Some(path) = self.find() else {
+            return Err(GhError::NotInstalled);
+        };
+
+        // `gh api` 默认打 github.com；跨 host（GitHub Enterprise）必须显式 --hostname，
+        // 否则计数会拿错主机（表现为 50713 或者干脆 404）。其余命令用 `-R host/owner/repo` 自带主机。
+        let query = format!("query={}", counts_query(repo));
+        let host = repo
+            .host
+            .as_deref()
+            .map(str::trim)
+            .filter(|host| !host.is_empty() && !host.eq_ignore_ascii_case("github.com"));
+        let mut args = vec!["api", "graphql", "-f", query.as_str()];
+        if let Some(host) = host {
+            args.extend(["--hostname", host]);
+        }
+        let output = self.run(&path, &args, REPO_COUNTS_TIMEOUT).await?;
+
+        if !output.status.success() {
+            return Err(map_stderr(&output.stderr));
+        }
+
+        match parse_graphql_counts(&output.stdout) {
+            Ok(counts) => Ok(counts),
+            Err(_) => {
+                tracing::warn!(
+                    target: "sincearc::gh",
+                    stdout = %output.stdout,
+                    "could not parse gh api graphql counts output"
+                );
+                Err(GhError::ParseFailed {
+                    version: self.version_for_parse_error(&path).await,
+                })
+            }
+        }
+    }
+
+    async fn list_issues(
+        &self,
+        repo: &RepoRef,
+        state: IssueState,
+        limit: u32,
+    ) -> Result<Vec<Issue>, GhError> {
+        let Some(path) = self.find() else {
+            return Err(GhError::NotInstalled);
+        };
+
+        let repository = repository_arg(repo);
+        let limit = limit.to_string();
+        let output = self
+            .run(
+                &path,
+                &[
+                    "issue",
+                    "list",
+                    "-R",
+                    &repository,
+                    "--state",
+                    issue_state_arg(state),
+                    "--limit",
+                    &limit,
+                    "--json",
+                    ISSUE_JSON_FIELDS,
+                ],
+                ISSUE_LIST_TIMEOUT,
+            )
+            .await?;
+
+        if !output.status.success() {
+            return Err(map_stderr(&output.stderr));
+        }
+
+        let raw: Vec<RawIssue> = match serde_json::from_str(&output.stdout) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(
+                    target: "sincearc::gh",
+                    error = %error,
+                    "could not parse gh issue list output"
+                );
+                return Err(GhError::ParseFailed {
+                    version: self.version_for_parse_error(&path).await,
+                });
+            }
+        };
+
+        Ok(raw.into_iter().map(RawIssue::into_model).collect())
+    }
+
+    async fn list_releases(&self, repo: &RepoRef, limit: u32) -> Result<Vec<Release>, GhError> {
+        let Some(path) = self.find() else {
+            return Err(GhError::NotInstalled);
+        };
+
+        let repository = repository_arg(repo);
+        let limit = limit.to_string();
+        let output = self
+            .run(
+                &path,
+                &[
+                    "release",
+                    "list",
+                    "-R",
+                    &repository,
+                    "--limit",
+                    &limit,
+                    "--json",
+                    RELEASE_JSON_FIELDS,
+                ],
+                RELEASE_LIST_TIMEOUT,
+            )
+            .await?;
+
+        if !output.status.success() {
+            return Err(map_stderr(&output.stderr));
+        }
+
+        let raw: Vec<RawRelease> = match serde_json::from_str(&output.stdout) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(
+                    target: "sincearc::gh",
+                    error = %error,
+                    "could not parse gh release list output"
+                );
+                return Err(GhError::ParseFailed {
+                    version: self.version_for_parse_error(&path).await,
+                });
+            }
+        };
+
+        Ok(raw.into_iter().map(RawRelease::into_model).collect())
+    }
+
+    async fn list_runs(&self, repo: &RepoRef, limit: u32) -> Result<Vec<WorkflowRun>, GhError> {
+        let Some(path) = self.find() else {
+            return Err(GhError::NotInstalled);
+        };
+
+        let repository = repository_arg(repo);
+        let limit = limit.to_string();
+        let output = self
+            .run(
+                &path,
+                &[
+                    "run",
+                    "list",
+                    "-R",
+                    &repository,
+                    "--limit",
+                    &limit,
+                    "--json",
+                    RUN_JSON_FIELDS,
+                ],
+                RUN_LIST_TIMEOUT,
+            )
+            .await?;
+
+        if !output.status.success() {
+            return Err(map_stderr(&output.stderr));
+        }
+
+        let raw: Vec<RawRun> = match serde_json::from_str(&output.stdout) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(
+                    target: "sincearc::gh",
+                    error = %error,
+                    "could not parse gh run list output"
+                );
+                return Err(GhError::ParseFailed {
+                    version: self.version_for_parse_error(&path).await,
+                });
+            }
+        };
+
+        Ok(raw.into_iter().map(RawRun::into_model).collect())
+    }
+
+    async fn list_workflows(&self, repo: &RepoRef) -> Result<Vec<Workflow>, GhError> {
+        let Some(path) = self.find() else {
+            return Err(GhError::NotInstalled);
+        };
+
+        let repository = repository_arg(repo);
+        let output = self
+            .run(
+                &path,
+                &[
+                    "workflow",
+                    "list",
+                    "-R",
+                    &repository,
+                    "--json",
+                    WORKFLOW_JSON_FIELDS,
+                ],
+                WORKFLOW_LIST_TIMEOUT,
+            )
+            .await?;
+
+        if !output.status.success() {
+            return Err(map_stderr(&output.stderr));
+        }
+
+        let raw: Vec<RawWorkflow> = match serde_json::from_str(&output.stdout) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(
+                    target: "sincearc::gh",
+                    error = %error,
+                    "could not parse gh workflow list output"
+                );
+                return Err(GhError::ParseFailed {
+                    version: self.version_for_parse_error(&path).await,
+                });
+            }
+        };
+
+        Ok(raw.into_iter().map(RawWorkflow::into_model).collect())
+    }
+
+    async fn repo_tree(
+        &self,
+        repo: &RepoRef,
+        path: Option<&str>,
+        git_ref: Option<&str>,
+    ) -> Result<Vec<TreeEntry>, GhError> {
+        let Some(exe) = self.find() else {
+            return Err(GhError::NotInstalled);
+        };
+
+        let repository = repository_arg(repo);
+        let mut args = vec!["repo", "read-dir"];
+        if let Some(path) = path.map(str::trim).filter(|path| !path.is_empty()) {
+            args.push(path);
+        }
+        args.extend(["-R", repository.as_str()]);
+        if let Some(git_ref) = git_ref.map(str::trim).filter(|value| !value.is_empty()) {
+            args.extend(["--ref", git_ref]);
+        }
+        args.extend(["--json", TREE_JSON_FIELDS]);
+
+        let output = self.run(&exe, &args, TREE_TIMEOUT).await?;
+        if !output.status.success() {
+            return Err(map_stderr(&output.stderr));
+        }
+
+        let raw: RawTreeResponse = match serde_json::from_str(&output.stdout) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(
+                    target: "sincearc::gh",
+                    error = %error,
+                    "could not parse gh repo read-dir output"
+                );
+                return Err(GhError::ParseFailed {
+                    version: self.version_for_parse_error(&exe).await,
+                });
+            }
+        };
+
+        Ok(raw.into_models())
+    }
+
+    async fn capabilities(&self, _repo: &RepoRef) -> Result<Vec<Capability>, GhError> {
+        // 首版不查 scope（§11.3）：所有写动作一律只读。
+        Ok(GhAction::ALL
+            .into_iter()
+            .map(|action| Capability {
+                action,
+                allowed: false,
+                reason: Some(DenyReason::Readonly),
+            })
+            .collect())
+    }
+
+    async fn action(
+        &self,
+        repo: &RepoRef,
+        params: &GhActionParams,
+    ) -> Result<ActionResult, GhError> {
+        // 校验在前、拒绝在后（§11.4）；首版不启动任何写进程。
+        validate_action_params(repo, params)?;
+        Err(GhError::ActionDenied {
+            action: params.action(),
+            reason: DenyReason::Readonly,
+        })
+    }
 }
 
 impl RealGh {
@@ -938,6 +1682,99 @@ mod iso_tests {
             Some(1_793_152_986)
         );
         assert_eq!(parse_iso8601_epoch("not-a-time"), None);
+    }
+}
+
+#[cfg(test)]
+mod dashboard_tests {
+    use super::*;
+
+    fn sample_repo() -> RepoRef {
+        RepoRef {
+            host: Some("github.com".to_string()),
+            owner: "acme".to_string(),
+            name: "repo".to_string(),
+        }
+    }
+
+    #[test]
+    fn counts_are_used_as_is_without_subtracting_prs() {
+        let raw = r#"{"data":{"repository":{"pullRequests":{"totalCount":53},"issues":{"totalCount":1045}}}}"#;
+        let counts = parse_graphql_counts(raw).unwrap();
+        assert_eq!(counts.open_prs, Some(53));
+        assert_eq!(counts.open_issues, Some(1045));
+    }
+
+    #[test]
+    fn counts_missing_data_is_an_error() {
+        assert!(parse_graphql_counts(r#"{"errors":[{"message":"boom"}]}"#).is_err());
+        assert!(parse_graphql_counts(r#"{"data":null}"#).is_err());
+        assert!(parse_graphql_counts(r#"{"data":{"repository":null}}"#).is_err());
+    }
+
+    #[tokio::test]
+    async fn action_rejects_bad_params_before_readonly() {
+        let gh = RealGh::new();
+        let repo = sample_repo();
+
+        let bad_body = gh
+            .action(
+                &repo,
+                &GhActionParams::PrComment {
+                    number: 1,
+                    body: "   ".to_string(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(bad_body.code(), 50721);
+
+        let bad_number = gh
+            .action(&repo, &GhActionParams::PrClose { number: 0 })
+            .await
+            .unwrap_err();
+        assert_eq!(bad_number.code(), 50721);
+
+        let missing_head = gh
+            .action(
+                &repo,
+                &GhActionParams::PrMerge {
+                    number: 1,
+                    method: crate::gh::model::MergeMethod::Squash,
+                    match_head_commit: " ".to_string(),
+                    delete_branch: false,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(missing_head.code(), 50721);
+    }
+
+    #[tokio::test]
+    async fn action_with_valid_params_is_readonly_50720() {
+        let gh = RealGh::new();
+        let error = gh
+            .action(&sample_repo(), &GhActionParams::PrClose { number: 1 })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), 50720);
+        assert!(matches!(
+            error,
+            GhError::ActionDenied {
+                reason: DenyReason::Readonly,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn capabilities_are_all_readonly() {
+        let gh = RealGh::new();
+        let capabilities = gh.capabilities(&sample_repo()).await.unwrap();
+        assert_eq!(capabilities.len(), GhAction::ALL.len());
+        assert!(capabilities.iter().all(|capability| {
+            !capability.allowed && matches!(capability.reason.as_ref(), Some(DenyReason::Readonly))
+        }));
     }
 }
 
@@ -1448,5 +2285,216 @@ mod tests {
         assert_eq!(std::env::current_dir().unwrap(), original);
 
         assert!(!result);
+    }
+
+    fn write_fixture(dir: &TestDir, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    fn set_argv_log(path: &Path) {
+        std::env::set_var("FAKE_GH_ARGV_LOG", path);
+    }
+
+    fn argv_log(dir: &TestDir) -> String {
+        // Windows 的 `echo %*` 会把带空格的参数用双引号包起来，嵌套引号还会再被包一层
+        // （`-f "query=query { … owner: ""acme"" … }"`）。断言关心的是参数内容而不是 cmd 的转义
+        // 形式，所以先抹掉引号再比；不带空格的参数不受影响。
+        std::fs::read_to_string(dir.join("argv.log"))
+            .unwrap()
+            .replace('"', "")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn repo_meta_argv_and_mapping() {
+        let _lock = lock_env();
+        set_mode("ok");
+        let temp = TestDir::new("repo-meta-argv");
+        let fixture = write_fixture(
+            &temp,
+            "repo-meta.json",
+            r#"{"nameWithOwner":"acme/repo","description":"demo","visibility":"PUBLIC","defaultBranchRef":{"name":"main"},"pushedAt":"2026-11-03T00:00:00Z","stargazerCount":10,"forkCount":2,"isArchived":false,"hasIssuesEnabled":true,"repositoryTopics":[{"name":"rust"},{"topic":{"name":"tauri"}}],"latestRelease":{"tagName":"v1","name":"One","publishedAt":"2026-11-01T00:00:00Z"}}"#,
+        );
+        set_fixture_path(&fixture);
+        set_argv_log(&temp.join("argv.log"));
+        let (_temp, gh) = stub_gh("repo-meta-gh", "ok");
+
+        let meta = gh.repo_meta(&sample_repo()).await.unwrap();
+        assert_eq!(meta.name_with_owner, "acme/repo");
+        assert_eq!(meta.description.as_deref(), Some("demo"));
+        assert_eq!(meta.default_branch, "main");
+        assert_eq!(meta.topics, vec!["rust", "tauri"]);
+        assert_eq!(meta.stargazers, 10);
+        assert_eq!(meta.forks, 2);
+        assert!(meta.has_issues);
+        assert_eq!(
+            meta.latest_release.as_ref().map(|r| r.tag_name.as_str()),
+            Some("v1")
+        );
+
+        let log = argv_log(&temp);
+        assert!(log.contains("repo view github.com/wangsyiiz/SinceArc --json nameWithOwner,description,visibility,defaultBranchRef,pushedAt,stargazerCount,forkCount,isArchived,hasIssuesEnabled,repositoryTopics,latestRelease"), "argv = {log}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn repo_counts_argv_and_parse() {
+        let _lock = lock_env();
+        set_mode("ok");
+        let temp = TestDir::new("repo-counts-argv");
+        set_argv_log(&temp.join("argv.log"));
+        let (_temp, gh) = stub_gh("repo-counts-gh", "ok");
+
+        let counts = gh.repo_counts(&sample_repo()).await.unwrap();
+        assert_eq!(counts.open_prs, Some(3));
+        assert_eq!(counts.open_issues, Some(7));
+
+        let log = argv_log(&temp);
+        assert!(log.contains("api graphql -f query="), "argv = {log}");
+        assert!(
+            log.contains("pullRequests(states: OPEN) { totalCount }"),
+            "argv = {log}"
+        );
+        assert!(
+            log.contains("issues(states: OPEN) { totalCount }"),
+            "argv = {log}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn repo_counts_uses_hostname_only_for_enterprise_hosts() {
+        let _lock = lock_env();
+        set_mode("ok");
+
+        // github.com：不该传 --hostname（gh 的默认值就是它，显式传只是噪音）。
+        let temp = TestDir::new("repo-counts-hostname-com");
+        set_argv_log(&temp.join("argv.log"));
+        let (_temp, gh) = stub_gh("repo-counts-hostname-com-gh", "ok");
+        gh.repo_counts(&sample_repo()).await.unwrap();
+        let log = argv_log(&temp);
+        assert!(!log.contains("--hostname"), "argv = {log}");
+
+        // 企业主机：`gh api` 默认打 github.com，必须显式 --hostname，否则查错站。
+        let temp = TestDir::new("repo-counts-hostname-ghe");
+        set_argv_log(&temp.join("argv.log"));
+        let (_temp, gh) = stub_gh("repo-counts-hostname-ghe-gh", "ok");
+        let enterprise = RepoRef {
+            host: Some("ghe.example.com".to_string()),
+            owner: "acme".to_string(),
+            name: "repo".to_string(),
+        };
+        gh.repo_counts(&enterprise).await.unwrap();
+        let log = argv_log(&temp);
+        assert!(
+            log.contains("--hostname ghe.example.com"),
+            "argv = {log}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn repo_counts_missing_data_maps_to_parse_failed() {
+        let _lock = lock_env();
+        let (_temp, gh) = stub_gh("counts-missing-data", "counts-missing-data");
+
+        let error = gh.repo_counts(&sample_repo()).await.unwrap_err();
+        assert!(matches!(
+            error,
+            GhError::ParseFailed { ref version } if version == "2.99.1"
+        ));
+        assert_eq!(error.code(), 50715);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn issue_release_run_workflow_and_tree_argv() {
+        let _lock = lock_env();
+        set_mode("ok");
+        let temp = TestDir::new("dashboard-argv");
+        set_argv_log(&temp.join("argv.log"));
+
+        let issue_fixture = write_fixture(
+            &temp,
+            "issues.json",
+            r#"[{"number":4,"title":"bug","state":"OPEN","author":{"login":"u","name":null,"is_bot":false},"labels":[{"name":"bug"}],"updatedAt":"2026-11-03T00:00:00Z","url":"https://example/4"}]"#,
+        );
+        set_fixture_path(&issue_fixture);
+        let (_temp, gh) = stub_gh("issues-gh", "ok");
+        let issues = gh
+            .list_issues(&sample_repo(), IssueState::Open, 5)
+            .await
+            .unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].labels, vec!["bug"]);
+
+        let release_fixture = write_fixture(
+            &temp,
+            "releases.json",
+            r#"[{"tagName":"v1","name":"One","publishedAt":"2026-11-01T00:00:00Z","isLatest":true,"isDraft":false,"isPrerelease":false}]"#,
+        );
+        set_fixture_path(&release_fixture);
+        let releases = gh.list_releases(&sample_repo(), 5).await.unwrap();
+        assert_eq!(releases[0].tag_name, "v1");
+
+        let run_fixture = write_fixture(
+            &temp,
+            "runs.json",
+            r#"[{"databaseId":99,"displayTitle":"build","workflowName":"ci","status":"completed","conclusion":"success","headBranch":"main","event":"push","createdAt":"2026-11-03T00:00:00Z","url":"https://example/run/99"}]"#,
+        );
+        set_fixture_path(&run_fixture);
+        let runs = gh.list_runs(&sample_repo(), 5).await.unwrap();
+        assert_eq!(runs[0].id, 99);
+        assert_eq!(runs[0].conclusion.as_deref(), Some("success"));
+
+        let workflow_fixture = write_fixture(
+            &temp,
+            "workflows.json",
+            r#"[{"id":7,"name":"ci","path":".github/workflows/ci.yml","state":"active"}]"#,
+        );
+        set_fixture_path(&workflow_fixture);
+        let workflows = gh.list_workflows(&sample_repo()).await.unwrap();
+        assert_eq!(workflows[0].id, 7);
+
+        let tree_fixture = write_fixture(
+            &temp,
+            "tree.json",
+            r#"{"entries":[{"name":"src","path":"src","size":0,"gitType":"tree"},{"name":"README.md","path":"README.md","size":12,"gitType":"blob"}]}"#,
+        );
+        set_fixture_path(&tree_fixture);
+        let tree = gh.repo_tree(&sample_repo(), None, None).await.unwrap();
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree[0].kind, TreeEntryKind::Dir);
+        assert_eq!(tree[1].kind, TreeEntryKind::File);
+
+        let log = argv_log(&temp);
+        assert!(log.contains("issue list -R github.com/wangsyiiz/SinceArc --state open --limit 5 --json number,title,state,author,labels,updatedAt,url"), "argv = {log}");
+        assert!(log.contains("release list -R github.com/wangsyiiz/SinceArc --limit 5 --json tagName,name,publishedAt,isLatest,isDraft,isPrerelease"), "argv = {log}");
+        assert!(log.contains("run list -R github.com/wangsyiiz/SinceArc --limit 5 --json databaseId,displayTitle,workflowName,status,conclusion,headBranch,event,createdAt,url"), "argv = {log}");
+        assert!(
+            log.contains("workflow list -R github.com/wangsyiiz/SinceArc --json name,path,state,id"),
+            "argv = {log}"
+        );
+        assert!(
+            log.contains("repo read-dir -R github.com/wangsyiiz/SinceArc --json name,path,size,gitType"),
+            "argv = {log}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tree_with_path_and_ref_keeps_path_positional_and_repo_after_dash_r() {
+        let _lock = lock_env();
+        set_mode("ok");
+        let temp = TestDir::new("tree-path-argv");
+        let fixture = write_fixture(&temp, "tree.json", r#"{"entries":[]}"#);
+        set_fixture_path(&fixture);
+        set_argv_log(&temp.join("argv.log"));
+        let (_temp, gh) = stub_gh("tree-path-gh", "ok");
+
+        assert!(gh
+            .repo_tree(&sample_repo(), Some("src"), Some("main"))
+            .await
+            .unwrap()
+            .is_empty());
+
+        let log = argv_log(&temp);
+        assert!(log.contains("repo read-dir src -R github.com/wangsyiiz/SinceArc --ref main --json name,path,size,gitType"), "argv = {log}");
     }
 }

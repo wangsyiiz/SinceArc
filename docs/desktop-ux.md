@@ -2518,3 +2518,57 @@ ACP 侧的标题被完全丢掉：`session_info_update` 收到就丢，`session/
 - 下限 768 是为了不让小窗退回窄栏：1024 窗口下 50vw 只有 512。
 - **两个容器必须用同一个值**：输入框和正文左右边缘错位是最刺眼的那类不齐，改一处必须同时改另一处。
 - 用 `vw` 而不是容器百分比：`.sc-stream` 的父级带 `px-3/px-4`，按百分比算会把内边距也算进去。
+
+## 47. 代码视图：项目 dashboard（2026-11-03 定）
+
+**问题**：打开项目直接就是 PR 列表（`components/RepoBrowser.tsx`，ready 之后整页只有 PR）。
+仓库级的其它事实（描述、默认分支、release、CI、文件树）一概没有，而 PR 只是仓库的一个切面。
+
+### 47.1 版面
+
+```
+┌ header（h-11，沿用现状）──────────────────────────────┐
+│ ⌗ 项目名  owner/name          [PUBLIC] [main]  host  路径 │
+├ ────────────────────────────────────────────────────┤
+│ 概要条：Open PR · Open Issues · Workflows · 最近 run      │
+│        · 最新 release · 最后 push                        │
+│ description（一行截断）  topics: a b c +3                │
+├ ────────────────────────────────────────────────────┤
+│ 入口网格：3 列 × 2 行                                    │
+│  [Pull requests] [Issues]    [Actions]                  │
+│  [Releases]      [Code]      [Settings]                 │
+├ ────────────────────────────────────────────────────┤
+│ 最近活动：最多 10 行（run / PR / release 混排）            │
+└─────────────────────────────────────────────────────┘
+```
+
+- **宽度**：dashboard 用 `sc-stream`（与消息流同一把尺，§46）；子页的列表仍用 `max-w-3xl`。
+  理由：dashboard 是「概览」，一行能扫完；列表是「逐条读」，窄栏更好扫。
+- **网格**：窗口 ≥1280 → 3 列；1080–1279 → 2 列（最小窗口 1080 宽，不必再往下设计）。
+- 三段之间用 `gap-5`；节标题沿用代码视图现有的 `text-micro tracking-wide text-ink-3` 全大写风格。
+
+### 47.2 组件与状态
+
+| 元素 | 规格 |
+| --- | --- |
+| 读数卡 | `rounded-card border border-line-1/60 bg-surface-1/40 px-3 py-2.5`；数值 `font-mono text-title text-ink-1`，标签 `text-micro uppercase tracking-wide text-ink-3` |
+| 入口卡 | 同上底色 + `hover:bg-surface-2/50 hover:border-line-1`；标题 `text-small font-medium`；副文案 `text-micro text-ink-3`；右下角读数 |
+| 活动行 | `py-2`，行高与 PR 行一致；类型徽标 `rounded-mark px-1 font-mono text-micro`；标题单行 `truncate`；右侧相对时间 |
+| 状态色 | 只用既有令牌：成功 `ok-1`、进行中 `warn-1`、失败 `danger-1`、未知 `ink-3`。**不新增颜色** |
+| 加载 | 概要条与网格用 2 行 pulse 骨架（同 `RepoBrowser` 现在的 `Skeleton`），**不显示 0** |
+| 空 | 计数为 0 显示 `0`（真的没有）；取不到显示 `—` 并带 tooltip 错误（§10.4） |
+| 失败 | 单块失败只影响该块（§10.5）；整页仅 `gh_status` / `resolve` 失败时走既有三态面板 |
+
+- **写按钮**（本轮）：渲染但 `aria-disabled="true"`、`opacity-50`，**不禁用 hover**（要靠 tooltip 说明原因）；
+  文案「当前只读」放在 tooltip 里，不占版面。不隐藏 —— 可发现性优先于整洁。
+- **交互**：入口卡与活动行都是 `<button>`，可 Tab 聚焦、Enter/Space 进入；
+  聚焦环 `focus-visible:outline-2 focus-visible:outline-accent-1`（与全仓一致）。
+- 卡片进入的是**同一个 tab** 的子路由（`docs/gh.md §10.1`），不开新 tab、不产生历史条目。
+
+### 47.3 约束
+
+- 不引 UI 库、不加 `--color-*` / `--radius-*` 之外的散值；`style-guard.test.ts` 会红。
+- 所有文案走 `repo.dash.*` 键，zh/en 同步，`node scripts/check-i18n.mjs` 必须 0-0-0。
+- 归并「最近活动」是纯函数（`lib/activity-feed.ts`），`node --test` 覆盖：排序稳定、同时间戳的次序、
+  超过 10 条截断、空输入返回空数组。
+- 不改 `App.tsx` 的分派结构：新页面挂在既有 `/repo/:repoId` 路由下（§43 的 Outlet）。
