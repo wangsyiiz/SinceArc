@@ -1,8 +1,11 @@
-# GH 可视化：只读，gh CLI 客户端
+# GH 可视化：gh 命令范围内的仓库管理（当前只读）
 
-> 决策（2026-10-27，所有者）：**只做 A —— 明确是 GH CLI 客户端**，shell out 到 `gh`，
-> 不调 GitHub REST/GraphQL API、不在客户端持有 token。写操作（评论 / 建 PR / 合并）不做。
+> 决策（2026-10-27，所有者）：**只做 A —— 明确是 GH CLI 客户端**，shell out 到 `gh`，不在客户端持有 token。
 > 依据：只读 spike `001-gh-json-path`（读数列在末尾）。
+>
+> **合规判据修订（2026-11-03，所有者）**：判据是「走的是不是 gh 的命令」——**凡经 `gh` 子命令即合规，
+> `gh api` 也算**（它是 gh 的子命令，token 仍归 gh 自己管）。不合规的只有「自己发 HTTP」：不引 HTTP 客户端、
+> 不自建 OAuth 设备流、不直连 `api.github.com`。写操作当前**不开放**，接口按 §11 预留。
 
 ## 1. 三层
 
@@ -211,6 +214,8 @@ gh_repo_resolve(path: string) -> { host: string, owner: string, name: string }
 | `50715` | JSON 解析失败 | 「gh 返回了看不懂的数据」+ 版本号（多为版本过旧） |
 | `50716` | PR 不存在 | 「这个 PR 拿不到：编号不存在或已删除」+ 编号 |
 | `50717` | 仓库身份解析失败（§2.1） | 两条 key，按判定结果二选一：`err.gh.notGitRepo`「这个目录还不是 git 仓库」／`err.gh.noRemote`「没找到可用的 origin 远端（或远端地址认不出 GitHub 仓库）」 |
+| `50720` | 动作未授权 / 当前只读（§11） | 「这个动作还没有开放」+ 动作名与原因（`readonly` / `missingScope` / `archived` / `noPermission`）；码在人话里不出现 |
+| `50721` | 动作参数不合法（§11.4） | 按字段报：「评论正文不能为空」「合并方式必须显式指定 squash / merge / rebase」 |
 
 实测信号（spike）：
 
@@ -365,10 +370,14 @@ A4/A5 取列表里第一条 merged 的 PR。这些差异是数据源的差异，
 
 ## 8. 不做
 
-- 不做 GitHub API 直连（不用 REST/GraphQL，不实现 OAuth 设备流）—— 所有者 2026-10-27 定。
-- 不做写操作（评论 / 建 PR / 合并 / 审阅）。
+- **不自己发 HTTP**：不直连 `api.github.com`、不实现 OAuth 设备流、不引 HTTP 客户端、不碰 token。
+  2026-11-03 口径修订：**只要经 gh 子命令就合规，`gh api` 是 gh 的子命令，也算**——越过 gh 自己发请求才是越界。
+- **本轮不开放写操作**（评论 / 建 PR / 合并 / 审阅 / 重跑）：写动作按 §11 的 capability 表逐条放开；
+  契约、错误码、UI 禁用态现在全部落位，实现一律返回 `50720`。
 - 不读 `~/.config/gh/hosts.yml` 复用 token（那是越界读别人的凭据文件）。
-- 不做 issue 列表（本批只 PR；issue 单独立项）。
+- 不做 Discussions / Projects：Discussions 需要仓库开启（本仓库当前关闭），Projects 需要 `project` scope
+  （Windows keyring 那套没授）。等真有需求再开，不为「看起来全」先占位。
+- ~~不做 issue 列表~~ —— **作废（2026-11-03）**：dashboard 起 issue 是只读入口，见 §10。
 
 ## 9. spike 读数出处
 
@@ -462,3 +471,191 @@ pub trait GhCli: Send + Sync {
   **`unavailable`（没装）与 `loggedOut`（没登录）分开** —— 界面上都要说「未登录」，但排障时是两回事。
   其余错误（超时、网络）原样返回 `CmdError`，界面不显示占位，避免把网络问题说成"没登录"。
 - 只取读身份，不缓存 token、不写 hosts.yml、不碰写操作。
+
+## 10. 项目 dashboard（2026-11-03 定）
+
+打开项目不再直接进 PR 列表：先到一个**仓库 dashboard**，PR 变成六个入口之一。当前只读；
+写入口以禁用态呈现（§11），不隐藏、不假装成功。
+
+### 10.1 子路由（真子路由，不是内部状态）
+
+| 路径 | 子页 | 首屏数据 |
+| --- | --- | --- |
+| `/repo/:repoId` | dashboard | 概要 + 最近活动 |
+| `/repo/:repoId/pulls` | PR 列表（原 §6 的 PR 段落搬来） | `gh_pr_list` |
+| `/repo/:repoId/issues` | Issues | `gh_issue_list` |
+| `/repo/:repoId/actions` | Actions：workflows + 最近 runs | `gh_workflows_list` / `gh_runs_list` |
+| `/repo/:repoId/releases` | Releases | `gh_release_list` |
+| `/repo/:repoId/code` | 文件树（远程只读） | `gh_repo_tree` |
+| `/repo/:repoId/settings` | 只读设置：可见性、合并策略、ruleset | `gh_repo_summary` |
+
+- Tab 模型加可选 `view: RepoView`（`dashboard | pulls | issues | actions | releases | code | settings`），
+  `pathOfTab` 据此投影；缺省 = dashboard。
+- 侧栏点项目 → `/repo/:id`；dashboard 的卡片 → **同一个 tab 内切 `view`**，不新开 tab、不产生历史条目（沿用 §43 的投影口径）。
+- 反向：深链 `/repo/:id/actions` 启动时按 `view` 落到子页；`view` 认不出 → 落 dashboard（不报错、不建 tab）。
+
+### 10.2 版面三段
+
+1. **概要条**：Open PR · Open Issues · workflows 数 · 最近一次 run 的状态 · 最新 release · 最后 push。
+   下方一行仓库 description 与 topics（过多按 6 个截断，余量用 `+N`）。
+2. **入口网格**：六张卡（Pull requests / Issues / Actions / Releases / Code / Settings），每张 = 标题 + 一句副文案 + 一个关键读数。
+3. **最近活动**：最多 10 条跨资源条目（run / PR / release），时间倒序；同时间戳按 `run > pr > release` 排，
+   保证顺序稳定（纯函数 `mergeActivity`，`node --test` 覆盖）。
+
+版面与尺寸口径见 `docs/desktop-ux.md §47`。
+
+### 10.3 数据源、TTL 与超时（实测 2026-11-03，Windows gh 2.103.3）
+
+| 命令 | gh 调用 | 实测 | TTL | 超时 |
+| --- | --- | --- | --- | --- |
+| `gh_repo_summary` | `gh repo view --json …` **并发** `gh api graphql -f query=…` | 1.25s / 0.96s | 60s | 10s / 15s |
+| `gh_issue_list` | `gh issue list --state <s> --limit N --json …` | 0.82s | 30s | 10s |
+| `gh_release_list` | `gh release list --limit N --json …` | 1.52s | 30s | 15s |
+| `gh_runs_list` | `gh run list --limit N --json …` | ~1s（未单独计时） | 30s | 15s |
+| `gh_workflows_list` | `gh workflow list --json name,path,state,id` | ~1s | 5min | 10s |
+| `gh_repo_tree` | `gh repo read-dir [<path>] -R <repo> --json name,path,size,gitType` | 1.25s | 30s | 10s |
+
+- `gh_repo_summary` 内部是**两个并发 gh 进程**（`tokio::join!`），所以首屏 ≈ 最慢那个（1.3s），不是 2.2s。
+- 「最近活动」不在后端聚合成一条命令：前端并发调 `gh_runs_list(10)` / `gh_pr_list(all, 5)` / `gh_release_list(3)`
+  再归并 —— 三份数据同时是三个子页的首屏，缓存天然复用；也守住 §1「按资源+动作命名，不为单个界面造专用命令」。
+- `gh repo read-dir` 是 preview 子命令；**位置参数是路径，仓库用 `-R`**（写成 `gh repo read-dir owner/name`
+  会报 `could not find "owner/name" in owner/name`，实测踩过）。根目录返回 `{entries:[…]}`。
+  preview 被撤时降级：Code 子页改为「打开本地目录」（已有能力），不做文件内容渲染。
+
+### 10.4 计数口径（实测证据，别再用 REST）
+
+- `gh api graphql` 一次查回 `pullRequests(states:OPEN){totalCount}` 与 `issues(states:OPEN){totalCount}`。
+- **GraphQL 的 `issues` 不含 PR**：`cli/cli` 实测 `issues.totalCount = 1045`，
+  与 `search/issues?q=repo:cli/cli+type:issue+state:open` 的 `1045` 完全相等；
+  而 REST `repos/cli/cli` 的 `open_issues_count = 1098 = 1045 + 53 个 open PR`。
+- 所以两个数字各取各的 `totalCount`，**不做减法**；也不引 REST（REST 那个字段会把 PR 混进 issue）。
+- 计数取不到 → 该数字显示 `—` 并带错误说明，不显示 `0`（0 是「真的没有」，`—` 是「没拿到」）。
+
+### 10.5 三态与降级（每块独立）
+
+- dashboard 的每一块（概要条各数字、入口卡片的读数、最近活动）**各自有状态**：`loading / ready / empty / failed`。
+- 概要的元数据成功、计数失败 → 元数据照常显示，两个数字位显示 `—`，错误只出现在那一块的 tooltip 里；
+  不允许「一块失败整页白屏」。
+- `gh_status` 不可用 / 未登录 → 沿用 §6 的三步指引，dashboard 整页走 `unavailable`，入口卡片不渲染。
+- `gh_repo_resolve` 失败（50717）→ 沿用 §6 的两种人话，逻辑不变。
+
+### 10.6 契约扩展（只读部分）
+
+```rust
+#[async_trait]
+pub trait GhCli: Send + Sync {
+    // …既有六个方法不变（status / list_prs / pr_detail / pr_diff / list_repos / viewer）
+    async fn repo_summary(&self, repo: &RepoRef) -> Result<RepoSummary, GhError>;
+    async fn list_issues(&self, repo: &RepoRef, state: IssueState, limit: u32) -> Result<Vec<Issue>, GhError>;
+    async fn list_releases(&self, repo: &RepoRef, limit: u32) -> Result<Vec<Release>, GhError>;
+    async fn list_runs(&self, repo: &RepoRef, limit: u32) -> Result<Vec<WorkflowRun>, GhError>;
+    async fn list_workflows(&self, repo: &RepoRef) -> Result<Vec<Workflow>, GhError>;
+    async fn repo_tree(&self, repo: &RepoRef, path: Option<&str>, git_ref: Option<&str>)
+        -> Result<Vec<TreeEntry>, GhError>;
+}
+```
+
+```ts
+interface GhCounts { openPrs?: number; openIssues?: number }   // 缺省 = 这一块没取到
+interface GhRepoSummary {
+  repo: { nameWithOwner: string; description?: string; visibility: string; defaultBranch: string;
+          topics: string[]; pushedAt: string; stargazers: number; forks: number; isArchived: boolean;
+          hasIssues: boolean; latestRelease?: { tagName: string; name: string; publishedAt: string } };
+  counts: { state: "ready" | "failed"; error?: CmdError; openPrs?: number; openIssues?: number };
+  workflows: { state: "ready" | "failed"; count?: number };
+}
+interface GhIssue { number: number; title: string; state: "open"|"closed"; author: GhAuthor;
+                    labels: string[]; updatedAt: string; url: string }
+interface GhRelease { tagName: string; name: string; publishedAt?: string; isLatest: boolean;
+                      isDraft: boolean; isPrerelease: boolean }
+interface GhWorkflowRun { id: number; workflowName?: string; title: string; status: string;
+                          conclusion?: string; branch?: string; event: string; createdAt: string; url: string }
+interface GhWorkflow { id: number; name: string; path: string; state: string }
+interface GhTreeEntry { name: string; path: string; kind: "file" | "dir"; size?: number }
+```
+
+- 可空口径沿用 §4 的三条实测约束：`conclusion` 在运行中为 null；`publishedAt` 草稿为空；`size` 目录为 0/缺省。
+- `checks` 的汇总口径已在 §4 定死，dashboard 不另算。
+
+## 11. 写接口预留（W2：契约先落，实现一律 50720）
+
+### 11.1 判据
+
+- 写动作**优先 gh porcelain**（`gh pr comment` / `gh pr review` / `gh pr merge` / `gh issue comment` / …），
+  因为这些子命令自带参数校验与人话错误。
+- porcelain 覆盖不到的动作（例如「解决评审线程」）才用 `gh api graphql` mutation，且必须在动作条目里写明
+  用的是哪条 mutation、缺哪个 scope —— 不许临场决定。
+
+### 11.2 首版动作集合
+
+`pr_comment` · `pr_review` · `pr_merge` · `pr_close` · `pr_reopen` · `issue_comment` · `issue_close` ·
+`workflow_dispatch` · `run_rerun`
+
+### 11.3 capability：UI 现在就要能画出「不可用」
+
+```rust
+pub enum DenyReason { Readonly, MissingScope { scope: String }, Archived, NoPermission }
+
+pub struct Capability { pub action: GhAction, pub allowed: bool, pub reason: Option<DenyReason> }
+```
+
+- 命令 `gh_capabilities(repo) -> { actions: CapabilityDto[] }`：**首版每条 `allowed=false, reason=readonly`**。
+- reason 的产生顺序（找到即停）：策略只读 → 仓库 archived → gh 缺 scope（`gh auth status` 的 scope 列表）→ 无权限。
+- capability 只影响「按钮能不能点」，**不替代服务端校验**：`gh_action` 里还要再判一次。
+
+### 11.4 `gh_action`：参数校验在前，未开放在后
+
+```rust
+pub enum GhActionParams {
+    PrComment { number: u32, body: String },
+    PrReview { number: u32, verdict: ReviewVerdict, body: Option<String> },
+    PrMerge { number: u32, method: MergeMethod, match_head_commit: String, delete_branch: bool },
+    PrClose { number: u32 }, PrReopen { number: u32 },
+    IssueComment { number: u32, body: String }, IssueClose { number: u32 },
+    WorkflowDispatch { workflow: String, git_ref: String, inputs: BTreeMap<String, String> },
+    RunRerun { run_id: u64, failed_only: bool },
+}
+```
+
+- **顺序固定**：① 动作与仓库合法性（repo 必填）→ ② 参数校验（`50721`）→ ③ capability 判定（`50720`）→ ④ 执行。
+  先校验后拒，是为了让前端在写开放之前就能把参数校验的用例跑通、且报错不会含混。
+- 校验规则（每条都是硬判据）：`body` 去空白后非空且 ≤ 64 KiB；`number > 0`；
+  **`pr_merge` 必须显式 `method`，且 `match_head_commit` 必填**（防止 TOCTOU：合并的不是你看到的那个 sha）；
+  `workflow_dispatch` 的 `git_ref` 必须先在仓库里存在；`run_rerun` 的 `run_id > 0`。
+- 拒绝一律显式：返回 `50720` + `action` + `reason`，**不许静默成功、不许假装排队**。
+
+### 11.5 argv 纪律（写动作真正容易翻车的地方）
+
+- **无 TTY**：`cli.rs` 的 `run` 只 pipe stdout/stderr，stdin 继承、窗口被 `CREATE_NO_WINDOW` 隐藏。
+  所以每个写命令都必须把决定写在 argv 里：不能依赖选择菜单、不能依赖 `--yes` 之外的确认交互。
+- 正文走 `--body-file <临时文件>`：不进 argv（Windows 命令行上限 32K），也不走 `-F -`（stdin 没 pipe）。
+  临时文件落应用缓存目录，退出即删；不落库。
+- `--admin` 在码级禁止（不是只在 UI 隐藏）：写 `pr_merge` 时不给 `--admin` 这条分支留入口。
+- **写动作不自动重试**：评论类动作重试 = 重复评论。超时直接报错，由用户决定是否重发。
+- 审计：每次动作 `tracing::info!` 一行（`action` / `repo` / `target` / `ok` / `duration_ms` / `method`），不落库。
+
+### 11.6 UI 禁用态
+
+- 写按钮在只读期**渲染但 disabled**（`aria-disabled="true"`），hover 走 Tooltip 说明原因的人话，例如
+  「当前版本只读：这个动作还没有开放」。不隐藏（可发现性），也不做成「点了才报错」。
+- 写开放后只翻 capability 的 `allowed`，UI 结构与契约不动。
+
+## 12. gh 能力面盘点（2026-11-03 实测，Windows gh 2.103.3）
+
+`gh --help` 与各组的 `--help` 实测：**29 个命令组 / 182 个子命令**，按动词粗分约 **98 个带副作用**、84 个只读。
+下列是 SinceArc 需要的口径，不必每次重新调查：
+
+| 资源 | 写（可用） | 需要的 scope | 本机 Windows keyring |
+| --- | --- | --- | --- |
+| PR | create / comment / review / merge / close / reopen / edit / ready / lock / unlock / revert / update-branch | `repo` | ✅ 有 |
+| Issue | create / comment / close / reopen / edit / pin / unpin / lock / unlock / transfer / delete / develop | `repo` | ✅ 有 |
+| Release | create / edit / upload / delete / delete-asset | `repo` | ✅ 有 |
+| Label | create / edit / delete / clone | `repo` | ✅ 有 |
+| Repo | create / fork / edit / rename / archive / unarchive / sync / delete | `repo`（delete 要 `delete_repo`） | ⚠️ 无 `delete_repo` |
+| Actions | run rerun / cancel / delete、workflow run / enable / disable、cache delete、secret set、variable set | **`workflow`** | ❌ **没有** |
+| Discussion | create / comment / edit（preview） | `repo` | ✅ 有（但仓库当前关着 Discussions） |
+| Project | 15 个（item / field / link / archive） | **`project`** | ❌ 没有 |
+| Gist | create / edit / rename / delete | `gist` | ✅ 有 |
+
+`gh auth status` 实测：Windows keyring = `gist, read:org, repo`；WSL = `gist, read:org, repo, workflow`。
+**Actions 那一批在 app 里现在必然 403**，要开写先 `gh auth refresh -s workflow`（改的是用户凭据，须所有者执行）。
