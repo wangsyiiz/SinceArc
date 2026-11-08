@@ -692,6 +692,7 @@ export const zhCN = {
   "err.mode.switchFailed": "切换模式失败：{{modeId}}（该连接可能不支持这个模式）",
   "err.mode.unsupported": "这个连接不支持模式 {{modeId}}",
   "markdown.link.tooltip": "单击复制 · Ctrl+点击打开浏览器",
+  "markdown.link.openTooltip": "在浏览器打开 · {{href}}",
   "markdown.link.openFailed": "打不开",
   "markdown.code.copy": "复制代码",
   "markdown.code.copied": "代码已复制",

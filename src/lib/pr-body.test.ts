@@ -1,38 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { splitBodyLinks } from "./pr-body.ts";
+import { stripHtmlComments } from "./pr-body.ts";
 
-test("普通文本原样保留，不拆段", () => {
-  assert.deepEqual(splitBodyLinks("hello world"), [{ kind: "text", text: "hello world" }]);
+test("单行 HTML 注释剥掉", () => {
+  assert.equal(stripHtmlComments("a<!-- x -->b"), "ab");
 });
 
-test("http / https / mailto 成为链接，周围文本保留", () => {
-  assert.deepEqual(splitBodyLinks("see https://example.com/a and mailto:a@b.c now"), [
-    { kind: "text", text: "see " },
-    { kind: "link", text: "https://example.com/a", href: "https://example.com/a" },
-    { kind: "text", text: " and " },
-    { kind: "link", text: "mailto:a@b.c", href: "mailto:a@b.c" },
-    { kind: "text", text: " now" },
-  ]);
+test("跨行 HTML 注释整段剥掉", () => {
+  assert.equal(stripHtmlComments("a<!-- x\ny -->b"), "ab");
 });
 
-test("句末标点留在文本里，不进 href", () => {
-  assert.deepEqual(splitBodyLinks("go to https://example.com/x."), [
-    { kind: "text", text: "go to " },
-    { kind: "link", text: "https://example.com/x", href: "https://example.com/x" },
-    { kind: "text", text: "." },
-  ]);
+test("多个 HTML 注释全部剥掉", () => {
+  assert.equal(stripHtmlComments("a<!-- x -->b<!-- y -->c"), "abc");
 });
 
-test("白名单之外的 scheme 不变成链接", () => {
-  assert.deepEqual(splitBodyLinks("javascript:alert(1) ftp://x/y"), [
-    { kind: "text", text: "javascript:alert(1) ftp://x/y" },
-  ]);
+test("未闭合的注释残尾从 <!-- 吃到结尾", () => {
+  assert.equal(stripHtmlComments("a<!-- x"), "a");
 });
 
-test("原文里的尖括号 <script> 只是文本", () => {
-  assert.deepEqual(splitBodyLinks("<script>alert(1)</script>"), [
-    { kind: "text", text: "<script>alert(1)</script>" },
-  ]);
+test("<! 但不是注释时保持原样", () => {
+  assert.equal(stripHtmlComments("a <! do"), "a <! do");
+});
+
+test("剥注释不顺手清洗空白与换行", () => {
+  assert.equal(stripHtmlComments("  a\n\n\tb  "), "  a\n\n\tb  ");
 });

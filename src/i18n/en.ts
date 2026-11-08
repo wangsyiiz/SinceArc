@@ -692,6 +692,7 @@ export const en: Record<MessageKey, string> = {
   "err.mode.switchFailed": "Failed to switch mode: {{modeId}} (this connection may not support this mode)",
   "err.mode.unsupported": "This connection does not support mode {{modeId}}",
   "markdown.link.tooltip": "Click to copy · Ctrl+click to open in browser",
+  "markdown.link.openTooltip": "Open in browser · {{href}}",
   "markdown.link.openFailed": "Could not open",
   "markdown.code.copy": "Copy code",
   "markdown.code.copied": "Code copied",
