@@ -520,7 +520,6 @@ export const en: Record<MessageKey, string> = {
   "titleBar.identity.notLoggedIn": "Not signed in",
   "titleBar.identity.githubAccount": "GitHub account {{login}}",
   "titleBar.myPrs.heading": "My open PRs · {{total}}",
-  "titleBar.myPrs.unavailable": "gh not signed in",
   "titleBar.myPrs.empty": "No open PRs",
   "titleBar.myPrs.draft": "Draft",
   "titleBar.myPrs.openOnGithub": "Open on GitHub",

@@ -520,7 +520,6 @@ export const zhCN = {
   "titleBar.identity.notLoggedIn": "未登录",
   "titleBar.identity.githubAccount": "GitHub 账号 {{login}}",
   "titleBar.myPrs.heading": "我的 open PR · {{total}}",
-  "titleBar.myPrs.unavailable": "gh 未登录",
   "titleBar.myPrs.empty": "没有 open 的 PR",
   "titleBar.myPrs.draft": "草稿",
   "titleBar.myPrs.openOnGithub": "在 GitHub 打开",
