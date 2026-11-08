@@ -31,7 +31,7 @@ src-tauri/src/gh/
 - 不在客户端存任何 token；登录态完全归 `gh` 自己管。
 - 所有 gh 调用必须有超时：列表 10s、详情 10s、diff 20s。
 - 调用走 async，不阻塞 UI 线程。
-- 不碰 `dangerouslySetInnerHTML`（PR 正文只渲染纯文本 + 链接白名单，与 markdown 那条约束一致）。
+- 不碰 `dangerouslySetInnerHTML`（PR 正文走 `components/Markdown` 的 React 映射，见 §6.1，与 markdown 那条约束一致）。
 
 ## 1.1 分层与解耦（硬要求）
 
@@ -250,7 +250,7 @@ interface GhFile {
 }
 interface GhPrDetail {
   pr: GhPullRequest;              // 复用列表那套字段，不另立一套
-  body: string;                   // 原始 markdown 文本，前端只渲染纯文本 + 链接白名单（§1）
+  body: string;                   // 原始 markdown 文本，前端按 §6.1 渲染（不加载远端图片）
   createdAt: string;              // ISO8601
   additions: number; deletions: number; changedFiles: number;
   files: GhFile[];
@@ -334,6 +334,18 @@ E9 原卡里「单页 ≤ 200 行」据此改成「客户端对 patch 切片，�
 - 已安装未登录 → 只显示第 2 步；登录后点「重新检测」。
 - 三态齐备：加载中（骨架）/ 不可用（安装指引）/ 空（这个仓库没有 PR）。
 - 安装指引是纯文本 + 可复制的命令；**点按钮不替用户执行安装**（不静默跑 winget）。
+
+### 6.1 PR 详情页正文渲染（2026-11-08 定）
+
+- PR 正文走与聊天区同一个渲染器（`components/Markdown`，底层 `lib/markdown.ts` 的 `parseMarkdown`），
+  **不新写解析器**、不新增依赖；渲染全程不碰 `dangerouslySetInnerHTML`。
+- PR 模板里的 HTML 注释（`<!-- ... -->`）在渲染前剥掉（GitHub 上它不显示，我们也不显示原始注释）；
+  未闭合的 `<!--`（截断后的残尾）从该处一直剥到结尾。剥完再按 4000 字截断，避免注释白占配额。
+- 超长正文保留现有 4000 字截断 +「展开全部 / 收起」。
+- 图片按既有口径降级成「`[图片] alt — href`」纯文本，**不加载远端资源**；要看图请走 gh 链接。
+- 链接行为：聊天区单击复制地址；PR 正文通过 `Markdown` 的 `onOpenLink` 回调，单击直接在浏览器打开
+  （Ctrl/Cmd + 点击也走同一个回调）。
+- 代码块沿用既有高亮（Prism，按语言映射，未标注语言按纯文本）。
 
 ## 7. 验收与冒烟映射
 

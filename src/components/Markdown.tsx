@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
@@ -9,6 +9,9 @@ import { openExternal } from "@/lib/ipc";
 import { highlightCode } from "@/lib/highlight/highlight";
 import { copyText } from "@/lib/clipboard";
 import { Tooltip } from "./ui/Tooltip";
+
+/** 传了回调就交给调用方打开；不传时保持聊天区原有的「单击复制」行为。 */
+const OpenLinkContext = createContext<((href: string) => void) | undefined>(undefined);
 
 function useFlash(): {
   state: "idle" | "copied" | "failed";
@@ -121,6 +124,7 @@ function InlineCode({ text }: { text: string }) {
 
 function LinkButton({ href, children }: { href: string; children: ReactNode }) {
   const { t } = useTranslation();
+  const onOpenLink = useContext(OpenLinkContext);
   const [hint, setHint] = useState<"copied" | "failed" | null>(null);
   const timerRef = useRef<number | null>(null);
 
@@ -146,6 +150,10 @@ function LinkButton({ href, children }: { href: string; children: ReactNode }) {
 
   // 成功不提示（fire-and-forget，我们并不知道浏览器真开了）；只有命令报错才说「打不开」。
   const openLink = async () => {
+    if (onOpenLink) {
+      onOpenLink(href);
+      return;
+    }
     try {
       await openExternal(href);
     } catch {
@@ -154,13 +162,19 @@ function LinkButton({ href, children }: { href: string; children: ReactNode }) {
   };
 
   return (
-    <Tooltip label={t("markdown.link.tooltip")}>
+    <Tooltip
+      label={
+        onOpenLink
+          ? t("markdown.link.openTooltip", { href })
+          : t("markdown.link.tooltip")
+      }
+    >
       <button
         type="button"
         role="link"
         onClick={(event) => {
           event.preventDefault();
-          if (event.ctrlKey || event.metaKey) void openLink();
+          if (onOpenLink || event.ctrlKey || event.metaKey) void openLink();
           else void copyLink();
         }}
         onAuxClick={(event) => {
@@ -374,12 +388,19 @@ function renderBlocks(blocks: Block[], t: TFunction, caret = false): ReactNode[]
 export function Markdown({
   source,
   caret = false,
+  onOpenLink,
 }: {
   source: string;
   caret?: boolean;
+  onOpenLink?: (href: string) => void;
 }): ReactElement | null {
   const { t } = useTranslation();
   const blocks = useMemo(() => parseMarkdown(source), [source]);
   if (blocks.length === 0) return caret ? <div className="sc-prose min-w-0"><p><CaretMark /></p></div> : null;
-  return <div className="sc-prose min-w-0">{renderBlocks(blocks, t, caret)}</div>;
+  const content = <div className="sc-prose min-w-0">{renderBlocks(blocks, t, caret)}</div>;
+  return onOpenLink ? (
+    <OpenLinkContext.Provider value={onOpenLink}>{content}</OpenLinkContext.Provider>
+  ) : (
+    content
+  );
 }

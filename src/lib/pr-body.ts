@@ -1,29 +1,11 @@
 /**
- * PR 正文的纯文本切分：只把 http/https/mailto 认成链接（与 `src/lib/markdown.ts`
- * 的白名单一致），其余一律原样当文本 —— 不渲染 markdown、不碰 HTML。
+ * PR 正文预处理：剥掉模板里的 HTML 注释。只做这一件事 —— 不裁空白、不折叠空行、
+ * 不改缩进，换行与缩进都是作者写的。
  */
 
-export type BodySegment =
-  | { kind: "text"; text: string }
-  | { kind: "link"; text: string; href: string };
+/** 已闭合的注释跨行也要吃掉；未闭合的 `<!--` 从该处一直吃到结尾。 */
+const HTML_COMMENT = /<!--[\s\S]*?(?:-->|$)/g;
 
-const LINK = /(mailto:[^\s<>()]+|https?:\/\/[^\s<>()]+)/gi;
-/** 句末标点常常紧贴 URL，切下来时留给文本，链接本身不带。 */
-const TRAILING = /[.,;:!?]+$/;
-
-export function splitBodyLinks(text: string): BodySegment[] {
-  const segments: BodySegment[] = [];
-  let cursor = 0;
-  for (const match of text.matchAll(LINK)) {
-    const index = match.index ?? 0;
-    if (index > cursor) segments.push({ kind: "text", text: text.slice(cursor, index) });
-    const raw = match[0];
-    const trailing = raw.match(TRAILING)?.[0] ?? "";
-    const href = trailing ? raw.slice(0, -trailing.length) : raw;
-    segments.push({ kind: "link", text: href, href });
-    if (trailing) segments.push({ kind: "text", text: trailing });
-    cursor = index + raw.length;
-  }
-  if (cursor < text.length) segments.push({ kind: "text", text: text.slice(cursor) });
-  return segments;
+export function stripHtmlComments(text: string): string {
+  return text.replace(HTML_COMMENT, "");
 }

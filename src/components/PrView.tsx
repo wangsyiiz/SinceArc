@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
   ArrowUpRight,
   CheckCircle2,
@@ -17,10 +17,11 @@ import type { GithubRepo } from "@/types";
 import { cn } from "@/lib/utils";
 import { errorTextOf } from "@/lib/errors";
 import { formatDateTime } from "@/lib/datetime";
-import { splitBodyLinks } from "@/lib/pr-body";
+import { stripHtmlComments } from "@/lib/pr-body";
 import { PR_STATE_LABEL } from "@/lib/pr-state";
 import type { DiffPhase } from "@/lib/gh-repo-flow";
 import { Button } from "./ui/Button";
+import { Markdown } from "./Markdown";
 
 const BODY_LIMIT = 4000;
 
@@ -211,7 +212,7 @@ function DetailSkeleton() {
   );
 }
 
-/** 纯文本正文：不渲染 markdown、不用 innerHTML；只有白名单链接可点。 */
+/** PR 正文：与聊天区共用 markdown 渲染器；HTML 注释先剥掉，再按 4000 字截断。 */
 function Body({
   body,
   onOpenExternal,
@@ -221,30 +222,20 @@ function Body({
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
-  const truncated = body.length > BODY_LIMIT;
-  const shown = truncated && !expanded ? body.slice(0, BODY_LIMIT) : body;
-  const segments = useMemo(() => splitBodyLinks(shown), [shown]);
 
   if (!body.trim()) return null;
 
+  const cleaned = stripHtmlComments(body);
+  const truncated = cleaned.length > BODY_LIMIT;
+  const shown = truncated && !expanded ? cleaned.slice(0, BODY_LIMIT) : cleaned;
+
   return (
     <section>
-      <p className="whitespace-pre-wrap text-small leading-relaxed text-ink-2">
-        {segments.map((segment, index) =>
-          segment.kind === "link" ? (
-            <button
-              key={index}
-              type="button"
-              onClick={() => onOpenExternal(segment.href)}
-              className="text-accent-1 underline decoration-accent-1/40 underline-offset-2 transition-colors hover:decoration-accent-1"
-            >
-              {segment.text}
-            </button>
-          ) : (
-            <span key={index}>{segment.text}</span>
-          ),
-        )}
-      </p>
+      {/* 字号与颜色取旧纯文本分支的两档（text-small / text-ink-2）；行高交给 .sc-prose，
+          那是渲染器自己的节奏，别在这里覆盖成 leading-relaxed。 */}
+      <div className="text-small text-ink-2">
+        <Markdown source={shown} onOpenLink={onOpenExternal} />
+      </div>
       {truncated && (
         <button
           type="button"

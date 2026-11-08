@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { badgeLabel, clockTime, topItems } from "./my-prs-display.ts";
+import { badgeLabel, clockTime, prMenuRows, topItems } from "./my-prs-display.ts";
 
 test("badgeLabel：0 / 非正数不渲染", () => {
   assert.equal(badgeLabel(0, false), null);
@@ -30,4 +30,34 @@ test("clockTime：输出本地 hh:mm，坏值原样返回", () => {
   assert.equal(clockTime(local.toISOString()), "09:05");
   assert.equal(clockTime("not-a-date"), "not-a-date");
   assert.equal(clockTime(undefined), "");
+});
+
+test("prMenuRows：标题 / 编号 / 仓库 / 草稿前缀 / 上限", () => {
+  const items = [
+    {
+      number: 142,
+      title: "修 …",
+      url: "https://github.com/cli/cli/pull/142",
+      updatedAt: "2026-11-03T09:05:00Z",
+      isDraft: false,
+      repo: "cli/cli",
+    },
+    {
+      number: 141,
+      title: "加 …",
+      url: "https://github.com/acme/web/pull/141",
+      updatedAt: "2026-11-02T09:05:00Z",
+      isDraft: true,
+      repo: "acme/web",
+    },
+  ];
+
+  const rows = prMenuRows(items, { draftLabel: "草稿", locale: "zh-CN", limit: 8 });
+  assert.equal(rows[0]?.id, `cli/cli#${142}`);
+  assert.equal(rows[0]?.label, "修 …");
+  assert.equal(rows[0]?.hint, `#${142}`);
+  assert.ok(rows[0]?.description.startsWith("cli/cli · "));
+  assert.equal(rows[1]?.url, items[1].url);
+  assert.ok(rows[1]?.description.startsWith("草稿 · acme/web · "));
+  assert.equal(prMenuRows(items, { draftLabel: "草稿", locale: "zh-CN", limit: 1 }).length, 1);
 });

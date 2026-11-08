@@ -33,6 +33,8 @@ interface Deps {
   /** 已有的 profile → ACP 会话映射，用来判断「还用不用连」 */
   sessionsByProfile: Record<string, string>;
   onUpdateProfile: (p: AgentProfile) => void;
+  /** 把某个连接标成已断开；显式断开与进程退出共用同一份字段形状（见 lib/profile-state） */
+  onProfileDisconnected: (profileId: string) => void;
   onAgentEvent: (profileId: string, event: AcpEvent, topic: string) => void;
   onSession: (
     profileId: string,
@@ -52,16 +54,31 @@ export function useAgentConnect({
   profiles,
   sessionsByProfile,
   onUpdateProfile,
+  onProfileDisconnected,
   onAgentEvent,
   onSession,
 }: Deps) {
   /** 同一 profile 在飞的连接；后到的调用复用它，不重新发命令 */
   const inflight = useRef(new Map<string, Promise<EnsureResult>>());
   // 回调与快照用 ref 兜住：ensureConnected 会在事件回调里被调，不能依赖渲染闭包
-  const stateRef = useRef({ profiles, sessionsByProfile, onUpdateProfile, onAgentEvent, onSession });
+  const stateRef = useRef({
+    profiles,
+    sessionsByProfile,
+    onUpdateProfile,
+    onProfileDisconnected,
+    onAgentEvent,
+    onSession,
+  });
   useEffect(() => {
-    stateRef.current = { profiles, sessionsByProfile, onUpdateProfile, onAgentEvent, onSession };
-  }, [profiles, sessionsByProfile, onUpdateProfile, onAgentEvent, onSession]);
+    stateRef.current = {
+      profiles,
+      sessionsByProfile,
+      onUpdateProfile,
+      onProfileDisconnected,
+      onAgentEvent,
+      onSession,
+    };
+  }, [profiles, sessionsByProfile, onUpdateProfile, onProfileDisconnected, onAgentEvent, onSession]);
 
   /** 显式连接（设置页按钮）。失败抛 CmdError，由调用方决定怎么显示。 */
   const connect = useCallback(async (p: AgentProfile, uiSid?: string): Promise<ConnectResult> => {
@@ -102,11 +119,8 @@ export function useAgentConnect({
    */
   const disconnect = useCallback(async (profileId: string): Promise<void> => {
     await disconnectAgent(profileId);
-    const s = stateRef.current;
-    const profile = s.profiles.find((p) => p.id === profileId);
-    if (profile) {
-      s.onUpdateProfile({ ...profile, connected: false, agentName: null, protocolVersion: null });
-    }
+    // 断开形状只有一处（lib/profile-state）：进程自己退出走的是同一条，别在这儿另写一份
+    stateRef.current.onProfileDisconnected(profileId);
   }, []);
 
   const ensureConnected = useCallback(

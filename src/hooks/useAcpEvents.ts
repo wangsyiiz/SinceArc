@@ -260,8 +260,12 @@ export function useAcpEvents({
   onTraceChanged?: (uiSessionId: string | null) => void;
   /** 收到 ACP live notice；只进内存收件箱，不落库 */
   onNotice?: (uiSid: string, notice: NoticeInput) => void;
-  /** 连接退出：调用方清空内存态的 notice 等 */
-  onDisconnect?: () => void;
+  /**
+   * 连接退出（进程没了）：调用方清空内存态的 notice、并把该连接标成已断开。
+   * 必须带 `profileId` —— 不带的话调用方只能"清干净"，改不了那一行的连接状态，
+   * 状态点就会停在「已连接」直到用户手动断开（2026-11-08 实测）。
+   */
+  onDisconnect?: (profileId: string) => void;
   /**
    * 该会话出现了「agent 还在干活」的活动事件（正文/思考/工具调用）。
    * 授权请求的惰性过期主判据靠它：等待授权期间 agent 完全阻塞，一旦又出活动就是那条授权已失效。
@@ -608,7 +612,7 @@ export function useAcpEvents({
         clearAllInFlight();
         clearAbsorbedCaptures();
         sendTraces.current = {};
-        onDisconnect?.();
+        onDisconnect?.(profileId);
         onPermissionsExpired?.({
           profileId,
           reason: i18nText("permission.expiredReason.disconnected"),

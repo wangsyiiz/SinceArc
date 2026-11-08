@@ -29,7 +29,10 @@ export interface MenuItem {
 export interface MenuProps {
   trigger: ReactNode;
   items: MenuItem[];
-  section?: string;
+  /** 菜单顶部的身份/上下文行，渲染在 section 之前；不参与按钮语义。 */
+  header?: ReactNode;
+  /** 允许带内联样式（例如计数用 font-mono），文案仍由调用点给。 */
+  section?: ReactNode;
   description?: string;
   align?: "start" | "end";
   compact?: boolean;
@@ -38,8 +41,9 @@ export interface MenuProps {
    * - `control`（默认）独立的次按钮，自带底与描边；
    * - `ghost` 行内触发器（状态栏的模式选择、会话条目上的 ⋯）：**无底无边**，
    *   只靠 hover 面与字色变化 —— 暗色下多一圈 1px 框就是规范禁止的那种「用边框分界」。
+   * - `bare` 无底无边、尺寸由内容决定的图标触发器，例如标题栏头像。
    */
-  triggerVariant?: "control" | "ghost";
+  triggerVariant?: "control" | "ghost" | "bare";
   /**
    * 菜单项字号：默认 `ui-tight`（11.5，与存量菜单一致）。
    * 单行短语的图标菜单（如会话条目上的 ⋯）用 `caption`（11）。
@@ -179,6 +183,7 @@ export function useAnchoredLayer(opts: {
 export function Menu({
   trigger,
   items,
+  header,
   section,
   description,
   align = "start",
@@ -253,17 +258,22 @@ export function Menu({
           toggle();
         }}
         className={cn(
-          "inline-flex items-center justify-center gap-2 rounded-control transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-1 disabled:cursor-not-allowed disabled:opacity-45",
-          triggerVariant === "ghost"
-            ? cn(
-                "text-ink-2 hover:bg-surface-3 hover:text-ink-1",
-                compact ? "h-7 px-2 text-caption" : "h-8 px-2.5 text-ui-tight",
-                open && "bg-surface-3 text-ink-1",
-              )
+          "inline-flex items-center justify-center gap-2 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-1",
+          triggerVariant === "bare"
+            ? "cursor-pointer disabled:opacity-45"
             : cn(
-                "sc-control border border-control bg-surface-2 text-ink-1 hover:bg-surface-3",
-                compact ? "h-7 px-2 text-small" : "h-8 px-3 text-ui",
-                open && "bg-surface-3",
+                "rounded-control disabled:cursor-not-allowed disabled:opacity-45",
+                triggerVariant === "ghost"
+                  ? cn(
+                      "text-ink-2 hover:bg-surface-3 hover:text-ink-1",
+                      compact ? "h-7 px-2 text-caption" : "h-8 px-2.5 text-ui-tight",
+                      open && "bg-surface-3 text-ink-1",
+                    )
+                  : cn(
+                      "sc-control border border-control bg-surface-2 text-ink-1 hover:bg-surface-3",
+                      compact ? "h-7 px-2 text-small" : "h-8 px-3 text-ui",
+                      open && "bg-surface-3",
+                    ),
               ),
           className,
         )}
@@ -289,6 +299,7 @@ export function Menu({
             compact ? "w-64" : "w-80",
           )}
         >
+          {header && <div className="px-2 py-1.5">{header}</div>}
           {section && (
             <div className="px-2 py-1.5 text-caption font-medium text-ink-2">{section}</div>
           )}
