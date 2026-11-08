@@ -62,11 +62,18 @@ fn init_logging(app_dir: &std::path::Path) -> std::io::Result<()> {
     let log_dir = app_dir.join("logs");
     std::fs::create_dir_all(&log_dir)?;
     let path = log_dir.join("sincearc.log");
-    if std::fs::metadata(&path).map(|m| m.len() > LOG_MAX_BYTES).unwrap_or(false) {
+    if std::fs::metadata(&path)
+        .map(|m| m.len() > LOG_MAX_BYTES)
+        .unwrap_or(false)
+    {
         let _ = std::fs::rename(&path, log_dir.join("sincearc.log.1"));
     }
-    let file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
     let sink = std::sync::Arc::new(std::sync::Mutex::new(file));
+    let panic_sink = sink.clone();
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -76,12 +83,127 @@ fn init_logging(app_dir: &std::path::Path) -> std::io::Result<()> {
         .with_writer(move || SinkWriter { file: sink.clone() })
         .init();
 
+    install_panic_hook(panic_sink);
+
     tracing::info!(
         target: "sincearc::ipc",
         path = %path.display(),
         "日志已挂到文件（同时写 stderr）"
     );
     Ok(())
+}
+
+/// 安装 panic hook：保留默认 hook，panic 时把同一行同时写进日志文件与 stderr，
+/// 最后仍交给默认 hook 处理（stderr 输出与 `RUST_BACKTRACE` 行为保持不变）。
+fn install_panic_hook(file: std::sync::Arc<std::sync::Mutex<std::fs::File>>) {
+    use std::io::Write as _;
+
+    let original = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread_name = std::thread::current().name().unwrap_or_default().to_owned();
+        let location = info.location();
+        let location = location.map(|loc| (loc.file(), loc.line()));
+        let payload = panic_payload_text(info.payload());
+        let mut line = format_panic_line(&thread_name, location, payload);
+        let capture_backtrace = match std::env::var_os("RUST_BACKTRACE") {
+            Some(value) => value.as_os_str() != std::ffi::OsStr::new("0"),
+            None => false,
+        };
+        if capture_backtrace {
+            line.push('\n');
+            line.push_str(&std::backtrace::Backtrace::force_capture().to_string());
+        }
+
+        {
+            let mut file = match file.lock() {
+                Ok(file) => file,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let _ = file.write_all(line.as_bytes());
+            let _ = file.write_all(b"\n");
+            let _ = file.flush();
+        }
+        let _ = std::io::stderr().write_all(line.as_bytes());
+        let _ = std::io::stderr().write_all(b"\n");
+
+        original(info);
+    }));
+}
+
+fn panic_payload_text(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        text
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.as_str()
+    } else {
+        "<non-string payload>"
+    }
+}
+
+fn format_panic_line(thread: &str, location: Option<(&str, u32)>, payload: &str) -> String {
+    let thread = if thread.is_empty() {
+        "<unnamed>"
+    } else {
+        thread
+    };
+    let at = match location {
+        Some((file, line)) => format!("{file}:{line}"),
+        None => "<unknown>".to_string(),
+    };
+    format!(
+        "{} PANIC thread={} at {} — {}",
+        rfc3339_utc_now(),
+        thread,
+        at,
+        payload
+    )
+}
+
+/// RFC3339 UTC 时间（毫秒精度，`Z` 结尾）。
+///
+/// 不用本地时间：`sincearc.log` 里 tracing 那些行本来就是 UTC（`…Z`），panic 行跟着用 UTC 才能直接按
+/// 时间排序、和上下文对齐；本地时间还得读时区，代价是一套平台 FFI（`GetTimeZoneInformation` /
+/// `localtime_r`），而这条路径最不该出错的地方恰恰是「panic 时别再因为取时间崩一次」。
+fn rfc3339_utc_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let (secs, millis) = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(elapsed) => (elapsed.as_secs() as i64, elapsed.subsec_millis()),
+        Err(_) => (0, 0),
+    };
+    let (year, month, day, hour, minute, second) = utc_parts(secs);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
+}
+
+fn utc_parts(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
+    let days = secs.div_euclid(86_400);
+    let secs_of_day = secs.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = (secs_of_day / 3_600) as u32;
+    let minute = ((secs_of_day % 3_600) / 60) as u32;
+    let second = (secs_of_day % 60) as u32;
+    (year, month, day, hour, minute, second)
+}
+
+/// Howard Hinnant 的 `civil_from_days`：Unix 天数 → 公历年月日（不引 chrono 的最小实现）。
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let day_of_era = (z - era * 146_097) as u64;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era as i64 + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_part = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_part + 2) / 5 + 1) as u32;
+    let month = if month_part < 10 {
+        month_part + 3
+    } else {
+        month_part - 9
+    };
+    let month = month as u32;
+    let year = if month <= 2 { year + 1 } else { year };
+    (year, month, day)
 }
 
 /// 退出兜底：所有还活着的 agent 并发回收，总预算 3 秒。
@@ -316,4 +438,51 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_panic_line, panic_payload_text};
+
+    #[test]
+    fn panic_line_includes_thread_location_and_payload() {
+        let line = format_panic_line("main", Some(("src/main.rs", 12)), "boom");
+        assert!(line.contains("thread=main"), "{line}");
+        assert!(line.contains("at src/main.rs:12"), "{line}");
+        assert!(line.contains("— boom"), "{line}");
+    }
+
+    #[test]
+    fn panic_line_carries_utc_timestamp() {
+        let line = format_panic_line("main", Some(("src/main.rs", 1)), "boom");
+        assert!(line.contains("Z PANIC thread="), "{line}");
+    }
+
+    #[test]
+    fn panic_line_without_location_uses_unknown() {
+        let line = format_panic_line("worker", None, "no location");
+        assert!(line.contains("at <unknown>"), "{line}");
+        assert!(line.contains("— no location"), "{line}");
+    }
+
+    #[test]
+    fn panic_line_without_thread_name_uses_unnamed() {
+        let line = format_panic_line("", Some(("src/main.rs", 7)), "anon");
+        assert!(line.contains("thread=<unnamed>"), "{line}");
+    }
+
+    #[test]
+    fn panic_payload_text_handles_str_string_and_other() {
+        let text = "static";
+        let payload: &(dyn std::any::Any + Send) = &text;
+        assert_eq!(panic_payload_text(payload), "static");
+
+        let text = String::from("owned");
+        let payload: &(dyn std::any::Any + Send) = &text;
+        assert_eq!(panic_payload_text(payload), "owned");
+
+        let number = 42u32;
+        let payload: &(dyn std::any::Any + Send) = &number;
+        assert_eq!(panic_payload_text(payload), "<non-string payload>");
+    }
 }
