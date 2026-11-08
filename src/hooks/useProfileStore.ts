@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { newId } from "@/lib/ids";
 import { fromDto, profilesLoad, profilesSave } from "@/lib/ipc";
 import { LEGACY_DEFAULT_PROFILE_NAME, profileLabel } from "@/lib/format";
+import { disconnectedProfile } from "@/lib/profile-state";
 import { i18n } from "@/i18n/instance";
 import type { AgentProfile } from "@/types";
 
@@ -84,5 +85,12 @@ export function useProfileStore() {
   const updateProfile = (next: AgentProfile) =>
     setProfiles((list) => list.map((p) => (p.id === next.id ? next : p)));
 
-  return { profiles, setProfiles, profilesLoaded, activeProfile, activeProfileId, setActiveProfileId, addProfile, updateProfile, removeProfile };
+  /**
+   * 把某个连接标成「已断开」。用函数式更新而不是先 find 再 update：
+   * `conn.exited` 回调是长生命周期的，闭包里那份 profiles 早就过期了。
+   */
+  const markDisconnected = (id: string) =>
+    setProfiles((list) => list.map((p) => (p.id === id ? disconnectedProfile(p) : p)));
+
+  return { profiles, setProfiles, profilesLoaded, activeProfile, activeProfileId, setActiveProfileId, addProfile, updateProfile, markDisconnected, removeProfile };
 }

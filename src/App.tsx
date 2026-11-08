@@ -359,7 +359,8 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [settings, settingsLoaded, t]);
 
-  const { profiles, activeProfile, addProfile, updateProfile, removeProfile } = useProfileStore();
+  const { profiles, activeProfile, addProfile, updateProfile, markDisconnected, removeProfile } =
+    useProfileStore();
   const discovery = useDiscovery(profiles);
   /** 当前群的成员（docs/group-chat.md §1） */
   const [members, setMembers] = useState<AgentUser[]>([]);
@@ -1084,7 +1085,11 @@ export default function App() {
     onPermissionsExpired,
     onTraceChanged: () => setTraceTick((t) => t + 1),
     onNotice: pushUiNotice,
-    onDisconnect: clearUiNotices,
+    // 进程退出：清内存态 notice + 把该连接标成已断开（两条断开路径共用 lib/profile-state 一处形状）
+    onDisconnect: (profileId) => {
+      clearUiNotices();
+      markDisconnected(profileId);
+    },
     onTurnFinished,
     // §29.4 主判据：未作答的授权请求遇到该会话的新活动 = 已被 agent 丢掉
     onSessionActivity: (uiSid, acpSid) => {
@@ -1351,6 +1356,7 @@ export default function App() {
     profiles,
     sessionsByProfile,
     onUpdateProfile: updateProfile,
+    onProfileDisconnected: markDisconnected,
     onAgentEvent,
     onSession,
   });
