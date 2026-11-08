@@ -4,6 +4,12 @@ User-facing notes for each release. `release.yml` takes the `## v<version>` sect
 alongside the Chinese one in `CHANGELOG.md` and ships both in the same update payload
 (docs/distribution.md §11). Earlier versions were Chinese-only and are not back-translated.
 
+## v0.0.21
+
+- **The title-bar avatar is now a menu you click open.** Hovering used to open a panel that collapsed the moment the pointer moved, so nothing in the list could be clicked. Click now expands it: your name on top, your open PRs below (up to eight), and it closes on Esc or a click outside.
+- **PR bodies are laid out as markdown.** Headings, lists, task items, code blocks and tables are no longer flattened into one run of text; links still open in the system browser and remote images are not loaded.
+- **The connection dot goes back to "not connected" when the agent process exits.** Previously the title bar kept claiming it was connected after the process died, and only clicking in revealed the reconnect. Both paths — you disconnect, or the process exits — now grey the dot out.
+- **Crashes leave a record.** A panic used to leave nothing in the log file (that text only reached the console, and a double-clicked app has none). It now appends a line such as `PANIC thread=… at file:line — reason` to `sincearc.log`, reachable from Settings. Paste that line when reporting a problem.
 ## v0.0.20
 
 - **The code view is now a project overview.** Opening a project no longer drops you straight into the PR list — you first see the repository as a whole: how many PRs are open, how many issues, how many workflows exist, whether the last CI run passed, the newest release, and when it was last pushed. Below that is a row of entry points (PRs / Issues / Actions / Releases / Code / Settings), then a recent-activity stream mixing CI runs, PRs and releases in time order.
