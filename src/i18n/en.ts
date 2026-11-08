@@ -674,6 +674,8 @@ export const en: Record<MessageKey, string> = {
   "err.session.forkMissingSessionId": "session/fork did not return a sessionId; actual response: {{result}}",
   "err.session.profileDisconnected": "The session's profile is disconnected: {{profileId}}",
   "err.session.notFoundNotConnected": "Unknown session (not owned by any connected agent): {{sessionId}}",
+  "err.session.resumeUnsupported": "This agent does not support resuming sessions, so this one cannot reconnect: {{agent}}",
+  "err.session.resumeUnavailable": "Could not resume the session: {{reason}}",
   "err.trace.writeReplayTraceFailed": "Failed to write the replay trace: {{detail}}",
   "err.trace.queryReplayTurnFailed": "Failed to query the replay turn: {{detail}}",
   "err.trace.recordReplayTurnFailed": "Failed to record the replay turn: {{detail}}",

@@ -75,3 +75,40 @@ useSessionView(uiSid) -> { profileId, acpSessionId, cwd, connected }
 - 不变量：同一 `uiSid` 在发送、停止、模式、状态栏拿到的 `acpSessionId` 必须相同 —— 由单一解析口保证，
   测试对它做一次双向断言（有绑定 / 无绑定两种）。
 - 真机验收补两条：① 连开两条新会话互不串台（记 41 / 问 41）；② 在 A 会话切模式，B 会话的模式与状态栏不变。
+
+## 5. 凭证在库里 ≠ 会话在进程里活着（2026-11-08 定）
+
+L1（`acpSessionId`）有两个**互不蕴含**的事实，必须在同一条链路上分别回答：
+
+| 事实 | 谁回答 | 判据 |
+| --- | --- | --- |
+| 凭证有效 | agent | 只有 `session/load` 成功才算「agent 那边还记得这条会话」 |
+| 会话活着 | 我们（`state.sessions`，**进程内**表） | 本进程 `session/new` 或 `session/load` 成功过才有这条记录 |
+
+进程重启、断线重连之后，`state.sessions` 是空的，而 `sessions.acp_session_id` 仍是一条有效凭证 ——
+两者不一致是**常态**，不是异常。此时直接 `session/prompt` 只会拿到我们自己的 `50300 未知会话`，
+而 agent 侧那条会话好得很（真机：hermes 会话列表里一直在，`session/load` 能接回来）。
+
+规则：
+
+1. **投递前必须保证 L1 活着**，唯一入口是后端 `ensure_live_session`（`session_prompt` 与 `session_steer` 共用）：
+   内存/handle 表里有 → 直接用；没有 → 拿库里的凭证跑一次 `session/load`，走的仍是连接恢复那套
+   `load_resume_handle`（绑定、`modes` 快照、agent 名、`acp_state=invalid` 的口径与「打开会话」完全一致，不另写一份）。
+2. **失败态不许一律报「未知会话」**，按原因分开：
+   - 库里没有这条凭证 / 凭证属于别的界面会话 → `err.session.notFound`（这才是真未知）
+   - agent 没报 `loadSession` → `err.session.resumeUnsupported`
+   - `session/load` 被明确拒绝 → `err.session.resumeUnavailable`（并按 `architecture.md` §2 标 `acp_state=invalid`）
+   - 超时 / 断管 → 同样报 `err.session.resumeUnavailable`（`reason` 里带传输错误原文），
+     但**不标** `invalid`：失效只能由 agent 明确拒绝触发（`load_resume_handle` 已经这么分）
+3. **前端不判断「能不能发」**：它只持有凭证 id，活不活只有后端知道（硬规则 ②）。`usePrompt` 继续用
+   `acpSessionOf(uiSid)` 当投递目标，不再自行预检。
+4. **成本写在这里**：一次 load 会把历史重放一遍（实测 `local-87956a…` 约 1.9 万条事件）。重放期由
+   `agent_turns.load_begin` 抑制合成轮，正文按「不在飞且不在迟到窗口」丢弃（`DROP-REPLAY`）。
+   于是「重启后第一次发消息」是慢的那一次，界面靠 `busy` 表达，不额外加提示。
+
+验收（真机，两进程）：
+
+- 关掉应用再开 → 打开一条旧会话直接发消息：`sincearc.log` 依次出现 `session auto-loaded before prompt`、
+  `prompt sent`，没有 `50300`；
+- hermes 侧会话列表里**不多出一条空会话**（走的是 load，不是 new）；
+- 把 agent 侧的会话删掉再发：报 `err.session.resumeUnavailable`，界面写明原因，不是「未知会话」。
