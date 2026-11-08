@@ -828,6 +828,51 @@ fn resume_decision(
     }
 }
 
+/// 投递前的活性前置判定（纯逻辑，不做 IO）。
+/// 返回 Err 时就是用给界面的失败原因；Ok 表示「可以拿这条凭证去 session/load」。
+///
+/// 凭证在库里不等于会话在进程里活着（docs/data-plane.md §5）：这里只判断
+/// 「这条凭证是否真的属于这个界面会话」，真正的活性由随后的 session/load 回答。
+fn live_resume_precheck(
+    ui_session_id: Option<&str>,
+    profile_id: Option<&str>,
+    credential: Option<&db::ResumeHandle>,
+    acp_session_id: &str,
+    load_session: bool,
+) -> Result<(), CmdError> {
+    let not_found = || {
+        CmdError::keyed_with(
+            50300,
+            "err.session.notFound",
+            format!("未知会话：{acp_session_id}"),
+            BTreeMap::from([("sessionId".to_string(), acp_session_id.to_string())]),
+        )
+    };
+
+    // 没有界面会话就问不出凭证；没有归属就不知道去哪个连接上恢复。
+    if ui_session_id.is_none() || profile_id.is_none() {
+        return Err(not_found());
+    }
+    let Some(credential) = credential else {
+        return Err(not_found());
+    };
+    // 凭证属于别的会话才是真「未知会话」，不能拿它去 load 另一个 id。
+    if credential.acp_session_id != acp_session_id {
+        return Err(not_found());
+    }
+    if !load_session {
+        // 存储的 agent_name 来自握手时写入的绑定，用它告诉用户是哪个 agent 接不了。
+        let agent = credential.agent_name.clone().unwrap_or_default();
+        return Err(CmdError::keyed_with(
+            50300,
+            "err.session.resumeUnsupported",
+            format!("这个 agent 不支持恢复会话，接不上这条：{agent}"),
+            BTreeMap::from([("agent".to_string(), agent)]),
+        ));
+    }
+    Ok(())
+}
+
 fn resumed_note(expected_agent: Option<&str>, current_agent: &str) -> String {
     match expected_agent {
         Some(prev) if !prev.is_empty() && prev != current_agent => format!(
@@ -3345,6 +3390,133 @@ async fn load_resume_handle(
     )
 }
 
+/// 投递前保证这条 ACP 会话在当前进程里活着。
+/// 内存里有 → 直接用；没有 → 拿库里的凭证跑一次 session/load（与「打开会话」同一套）。
+///
+/// 进程重启后 `state.sessions` 是空的，但 `sessions.acp_session_id` 仍可能是有效凭证；
+/// 直接拿内存表判「未知会话」会把一条 agent 侧好好的会话误报成不存在（docs/data-plane.md §5）。
+async fn ensure_live_session(
+    state: &AppState,
+    acp_session_id: &str,
+    ui_session_id: Option<&str>,
+) -> Result<SessionRecord, CmdError> {
+    // 快路径：已经在进程内表里就什么都不做，不引入额外的 IO 与日志。
+    if let Some(record) = state.session(acp_session_id).await {
+        return Ok(record);
+    }
+
+    let ui = ui_session_id.ok_or_else(|| {
+        CmdError::keyed_with(
+            50300,
+            "err.session.notFound",
+            format!("未知会话：{acp_session_id}"),
+            BTreeMap::from([("sessionId".to_string(), acp_session_id.to_string())]),
+        )
+    })?;
+
+    let profile_id = state
+        .db
+        .session_profile_id(ui)
+        .map_err(|e| {
+            CmdError::keyed_with(
+                50000,
+                "err.session.loadSessionsFailed",
+                format!("读取会话列表失败：{e}"),
+                BTreeMap::from([("detail".to_string(), e.to_string())]),
+            )
+        })?
+        .flatten();
+
+    let credential = state.db.live_handle(ui).map_err(|e| {
+        CmdError::keyed_with(
+            50000,
+            "err.session.loadSessionsFailed",
+            format!("读取恢复句柄失败：{e}"),
+            BTreeMap::from([("detail".to_string(), e.to_string())]),
+        )
+    })?;
+
+    // profile 为空时 precheck 会先报 notFound；这里不能拿空 id 去查连接。
+    let handle = match profile_id.as_deref() {
+        Some(pid) => Some(state.get(pid).await.ok_or_else(|| {
+            CmdError::keyed_with(
+                50300,
+                "err.session.profileDisconnected",
+                format!("会话所属的 profile 已断开：{pid}"),
+                BTreeMap::from([("profileId".to_string(), pid.to_string())]),
+            )
+        })?),
+        None => None,
+    };
+
+    live_resume_precheck(
+        Some(ui),
+        profile_id.as_deref(),
+        credential.as_ref(),
+        acp_session_id,
+        handle
+            .as_ref()
+            .is_some_and(|handle| handle.outcome.load_session),
+    )?;
+
+    // precheck 已经确认过这三项，这里只是把 Option 收窄，不另造失败原因。
+    let pid = profile_id.expect("precheck 已确认 profile 存在");
+    let handle = handle.expect("precheck 已确认连接存在");
+    let credential = credential.expect("precheck 已确认凭证存在");
+
+    let mcp_servers = mcp::target_mcp_servers(state, &pid, Some(ui)).await?;
+    let req = ResumeRequest {
+        profile_id: &pid,
+        acp_session_id,
+        cwd: &credential.cwd,
+        ui_session_id: Some(ui),
+        expected_agent_name: credential.agent_name.as_deref(),
+        // 失败时的 mark_acp_invalid 由 load_resume_handle 统一处理，这里不重复标记。
+        bind_ui_handle: true,
+        mcp_servers: &mcp_servers,
+    };
+    match load_resume_handle(state, &handle, &req).await {
+        (ResumeOutcome::Resumed { .. }, _) => {}
+        (ResumeOutcome::Unavailable { reason, .. }, _) => {
+            return Err(CmdError::keyed_with(
+                50300,
+                "err.session.resumeUnavailable",
+                format!("会话续不上：{reason}"),
+                BTreeMap::from([("reason".to_string(), reason)]),
+            ));
+        }
+        // 调用方要的是「拿这条凭证接回会话」，Fresh 意味着凭证根本没被用上。
+        (ResumeOutcome::Fresh, _) => {
+            const DETAIL: &str = "session/load 返回 Fresh";
+            return Err(CmdError::keyed_with(
+                50000,
+                "err.session.loadFailed",
+                DETAIL,
+                BTreeMap::from([("detail".to_string(), DETAIL.to_string())]),
+            ));
+        }
+    }
+
+    let record = state.session(acp_session_id).await.ok_or_else(|| {
+        const DETAIL: &str = "load 成功但进程内表仍没有这条会话";
+        CmdError::keyed_with(
+            50000,
+            "err.session.loadFailed",
+            DETAIL,
+            BTreeMap::from([("detail".to_string(), DETAIL.to_string())]),
+        )
+    })?;
+
+    tracing::info!(
+        target: "sincearc::ipc",
+        profile = %pid,
+        session = %acp_session_id,
+        ui = %ui,
+        "session auto-loaded before prompt"
+    );
+    Ok(record)
+}
+
 #[tauri::command]
 pub async fn profiles_load(state: State<'_, AppState>) -> Result<Vec<ProfileDto>, CmdError> {
     state
@@ -4856,17 +5028,8 @@ pub async fn session_prompt(
         return Err(CmdError::keyed(50300, "err.session.emptyMessage", "消息为空"));
     }
 
-    let mut record = state
-        .session(&session_id)
-        .await
-        .ok_or_else(|| {
-            CmdError::keyed_with(
-                50300,
-                "err.session.notFound",
-                format!("未知会话：{session_id}"),
-                BTreeMap::from([("sessionId".to_string(), session_id.clone())]),
-            )
-        })?;
+    let mut record =
+        ensure_live_session(state.inner(), &session_id, ui_session_id.as_deref()).await?;
 
     // 归属以「这一次是谁发的」为准：同一个成员会话可能被不同的群 @ 过，
     // 事件必须投给当前这次提问所在的群，而不是它上一次被绑的地方。
@@ -5126,14 +5289,7 @@ pub async fn session_steer(
         ));
     }
 
-    let record = state.session(&session_id).await.ok_or_else(|| {
-        CmdError::keyed_with(
-            50300,
-            "err.session.notFoundNotConnected",
-            format!("未知会话（不属于任何已连接 agent）：{session_id}"),
-            BTreeMap::from([("sessionId".to_string(), session_id.clone())]),
-        )
-    })?;
+    let record = ensure_live_session(state.inner(), &session_id, Some(&ui_session_id)).await?;
     let handle = state.get(&record.profile_id).await.ok_or_else(|| {
         CmdError::keyed_with(
             50400,
@@ -6679,6 +6835,117 @@ mod resume_decision_tests {
         assert_eq!(resumed_note(Some(""), "codex"), "");
         let n = resumed_note(Some("hermes"), "codex");
         assert!(n.contains("hermes") && n.contains("codex") && n.contains("不等价"), "{n}");
+    }
+}
+
+#[cfg(test)]
+mod live_resume_precheck_tests {
+    use super::*;
+
+    fn handle(acp_session_id: &str, agent: Option<&str>) -> db::ResumeHandle {
+        db::ResumeHandle {
+            acp_session_id: acp_session_id.into(),
+            cwd: "/w".into(),
+            agent_name: agent.map(str::to_string),
+            last_event_seq: Some(9),
+            bound_at: 1,
+        }
+    }
+
+    #[test]
+    fn matching_credential_with_load_support_is_ok() {
+        let credential = handle("acp-1", Some("hermes"));
+        assert!(
+            live_resume_precheck(
+                Some("ui-1"),
+                Some("profile-1"),
+                Some(&credential),
+                "acp-1",
+                true,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn credential_for_another_session_is_not_found() {
+        let credential = handle("acp-1", Some("hermes"));
+        let err = live_resume_precheck(
+            Some("ui-1"),
+            Some("profile-1"),
+            Some(&credential),
+            "acp-2",
+            true,
+        )
+        .expect_err("凭证不属于要发的会话时必须报未知会话");
+        assert_eq!(err.code, 50300);
+        assert_eq!(err.key.as_deref(), Some("err.session.notFound"));
+        assert_eq!(
+            err.params
+                .as_ref()
+                .and_then(|params| params.get("sessionId"))
+                .map(String::as_str),
+            Some("acp-2")
+        );
+    }
+
+    #[test]
+    fn agent_without_load_support_is_resume_unsupported() {
+        let credential = handle("acp-1", Some("hermes"));
+        let err = live_resume_precheck(
+            Some("ui-1"),
+            Some("profile-1"),
+            Some(&credential),
+            "acp-1",
+            false,
+        )
+        .expect_err("没报 loadSession 的 agent 不能恢复");
+        assert_eq!(err.code, 50300);
+        assert_eq!(err.key.as_deref(), Some("err.session.resumeUnsupported"));
+        assert_eq!(
+            err.params
+                .as_ref()
+                .and_then(|params| params.get("agent"))
+                .map(String::as_str),
+            Some("hermes")
+        );
+    }
+
+    #[test]
+    fn missing_ui_session_is_not_found() {
+        let credential = handle("acp-1", Some("hermes"));
+        let err = live_resume_precheck(
+            None,
+            Some("profile-1"),
+            Some(&credential),
+            "acp-1",
+            true,
+        )
+        .expect_err("没有界面会话就问不出凭证");
+        assert_eq!(err.code, 50300);
+        assert_eq!(err.key.as_deref(), Some("err.session.notFound"));
+        assert_eq!(
+            err.params
+                .as_ref()
+                .and_then(|params| params.get("sessionId"))
+                .map(String::as_str),
+            Some("acp-1")
+        );
+    }
+
+    #[test]
+    fn missing_profile_is_not_found() {
+        let credential = handle("acp-1", Some("hermes"));
+        let err = live_resume_precheck(
+            Some("ui-1"),
+            None,
+            Some(&credential),
+            "acp-1",
+            true,
+        )
+        .expect_err("不知道归属连接就不能恢复");
+        assert_eq!(err.code, 50300);
+        assert_eq!(err.key.as_deref(), Some("err.session.notFound"));
     }
 }
 

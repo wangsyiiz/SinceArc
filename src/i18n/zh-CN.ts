@@ -674,6 +674,8 @@ export const zhCN = {
   "err.session.forkMissingSessionId": "session/fork 没有返回 sessionId，实际返回：{{result}}",
   "err.session.profileDisconnected": "会话所属的 profile 已断开：{{profileId}}",
   "err.session.notFoundNotConnected": "未知会话（不属于任何已连接 agent）：{{sessionId}}",
+  "err.session.resumeUnsupported": "这个 agent 不支持恢复会话，接不上这条：{{agent}}",
+  "err.session.resumeUnavailable": "会话续不上：{{reason}}",
   "err.trace.writeReplayTraceFailed": "写入补录轨迹失败：{{detail}}",
   "err.trace.queryReplayTurnFailed": "查询补录轮失败：{{detail}}",
   "err.trace.recordReplayTurnFailed": "记录补录轮失败：{{detail}}",

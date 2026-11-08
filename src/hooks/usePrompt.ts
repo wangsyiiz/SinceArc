@@ -13,6 +13,7 @@ import { pushSystemNotice } from "@/lib/notices";
 import { clog } from "@/lib/log";
 import { newId } from "@/lib/ids";
 import { replaceTurnId } from "@/lib/turn-id";
+import { dropOptimisticTurn } from "@/lib/turn-act";
 import { i18nText } from "@/lib/i18n-text";
 import type { AgentProfile, Message } from "@/types";
 import type { EnsureResult } from "./useAgentConnect";
@@ -344,6 +345,16 @@ export function usePrompt({
             }
             if (acp.sendTraces.current[acpSid] === trace) {
               delete acp.sendTraces.current[acpSid];
+            }
+            // 后端没开轮就不会有 promptResult；占位留着就永远停在「思考中」。
+            // 撤占位与写 notice 必须在同一个 catch 里同步完成（§21.9）。
+            patchSession(sid, (s) => {
+              const next = dropOptimisticTurn(s.acts, s.turns, actId, turnId);
+              if (next.acts === s.acts && next.turns === s.turns) return s;
+              return { ...s, acts: [...next.acts], turns: [...next.turns] };
+            });
+            if (acpToTurn.current[acpSid] === turnId) {
+              delete acpToTurn.current[acpSid];
             }
             pushSystemNotice(
               patchSession,

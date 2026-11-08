@@ -1,4 +1,4 @@
-import type { Activity } from "../types.ts";
+import type { Activity, TraceTurn } from "../types.ts";
 
 /**
  * 聊天区那行「思考中」= `acts` 里 `status === "running"` 的活动行。
@@ -50,4 +50,20 @@ export function shouldIgnoreAgentResult(origin: string | null, result: unknown):
     typeof result === "object" &&
     (result as { synthHandover?: unknown }).synthHandover === true
   );
+}
+
+/** 发送被拒时撤掉这一轮的本地占位：轮没开，占位就不该留在界面上（docs/desktop-ux.md §21.9）。 */
+export function dropOptimisticTurn(
+  acts: readonly Activity[],
+  turns: readonly TraceTurn[],
+  actId: string,
+  turnId: string,
+): { acts: readonly Activity[]; turns: readonly TraceTurn[] } {
+  const nextActs = acts.filter((act) => act.id !== actId);
+  const nextTurns = turns.filter((turn) => turn.id !== turnId);
+  // 没命中时保留原引用：调用方据此判断「什么都没变」，也避免无谓的重渲染。
+  return {
+    acts: nextActs.length === acts.length ? acts : nextActs,
+    turns: nextTurns.length === turns.length ? turns : nextTurns,
+  };
 }

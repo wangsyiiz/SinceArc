@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Activity } from "../types.ts";
-import { ensureRunningAct, shouldIgnoreAgentResult, streamActId } from "./turn-act.ts";
+import type { Activity, TraceTurn } from "../types.ts";
+import {
+  dropOptimisticTurn,
+  ensureRunningAct,
+  shouldIgnoreAgentResult,
+  streamActId,
+} from "./turn-act.ts";
 
 const act = (over: Partial<Activity> = {}): Activity => ({
   id: streamActId("acp-1"),
@@ -14,6 +19,19 @@ const act = (over: Partial<Activity> = {}): Activity => ({
 });
 
 const input = { id: streamActId("acp-1"), playerId: "player-1", title: "思考中", at: "2026-10-30T00:00:09Z" };
+
+const turn = (over: Partial<TraceTurn> = {}): TraceTurn => ({
+  id: "turn-live-1",
+  at: "2026-10-30T00:00:00Z",
+  branches: [
+    {
+      playerId: "player-1",
+      activityIds: [streamActId("acp-1")],
+      status: "running",
+    },
+  ],
+  ...over,
+});
 
 test("没有任何行时插入一行 running", () => {
   const next = ensureRunningAct([], input);
@@ -66,4 +84,45 @@ test("真实轮终态（origin=null）：不忽略", () => {
 test("空 origin / 无 result：不忽略", () => {
   assert.equal(shouldIgnoreAgentResult("", { synthHandover: true }), false);
   assert.equal(shouldIgnoreAgentResult("agent", undefined), false);
+});
+
+test("发送失败时撤掉匹配的活动行与轮", () => {
+  const acts = [act()];
+  const turns = [turn()];
+
+  const next = dropOptimisticTurn(acts, turns, streamActId("acp-1"), "turn-live-1");
+
+  assert.equal(next.acts.length, 0);
+  assert.equal(next.turns.length, 0);
+});
+
+test("只撤匹配的行与轮，别的成员/轮次还在", () => {
+  const otherAct = act({ id: streamActId("acp-2"), playerId: "player-2" });
+  const otherTurn = turn({ id: "turn-live-2" });
+
+  const next = dropOptimisticTurn(
+    [act(), otherAct],
+    [turn(), otherTurn],
+    streamActId("acp-1"),
+    "turn-live-1",
+  );
+
+  assert.deepEqual(
+    next.acts.map((a) => a.id),
+    [streamActId("acp-2")],
+  );
+  assert.deepEqual(
+    next.turns.map((t) => t.id),
+    ["turn-live-2"],
+  );
+});
+
+test("目标不存在时原样返回（引用不变）", () => {
+  const acts = [act()];
+  const turns = [turn()];
+
+  const next = dropOptimisticTurn(acts, turns, "act-missing", "turn-missing");
+
+  assert.equal(next.acts, acts);
+  assert.equal(next.turns, turns);
 });
