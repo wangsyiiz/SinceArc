@@ -4,6 +4,12 @@ User-facing notes for each release. `release.yml` takes the `## v<version>` sect
 alongside the Chinese one in `CHANGELOG.md` and ships both in the same update payload
 (docs/distribution.md §11). Earlier versions were Chinese-only and are not back-translated.
 
+## v0.0.22
+
+- **Old sessions can be messaged again after a restart.** Sending in a session created before the app restarted used to fail with "send failed 50300 unknown session", even though the session was perfectly alive on the agent's side. The message is now delivered after the session is reattached (its history is pulled back into the running agent first). The first send in such a session takes a little longer; everything after that is normal.
+- **A failed send no longer leaves a spinning "thinking" row behind.** When delivery was rejected, the thinking row had nothing to close it, so the failure notice and a still-running thinking row showed up together. Failures now close the row, and the reason stays in the message stream.
+- **"Cannot reattach" says why.** A session that no longer exists and an agent that cannot resume sessions are now reported separately, with the agent's own wording instead of a blanket "unknown session".
+
 ## v0.0.21
 
 - **The title-bar avatar is now a menu you click open.** Hovering used to open a panel that collapsed the moment the pointer moved, so nothing in the list could be clicked. Click now expands it: your name on top, your open PRs below (up to eight), and it closes on Esc or a click outside.
