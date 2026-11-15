@@ -701,232 +701,35 @@ pub fn spawn_event_pump(ctx: PumpCtx) {
     } = ctx;
     let proc_for_task = proc.clone();
 
+    // 循环体交给内层 task：内层 panic 只炸内层（JoinHandle 接住），外层仍能
+    // 发 conn.exited 并回收进程树 —— 否则一条坏消息会拖垮整条连接、前端无感知、
+    // 远端进程残留。
+    let bus_cleanup = bus.clone();
+    let routes_cleanup = routes.clone();
+    let agent_turns_cleanup = agent_turns_for_task.clone();
+    let turn_approvals_cleanup = turn_approvals_for_task.clone();
+    let proc_cleanup = proc_for_task.clone();
+    let profile_cleanup = profile_for_task.clone();
+
     tokio::spawn(async move {
-        // 正文合批（docs/ipc-contract.md §4）：chunk 是逐段来的，一条一个事件会让
-        // webview 每秒处理几百次 IPC + 几百次 React 更新。在这里按 30ms / 4KB 合并，
-        // 前端就只管渲染（以前是前端自己攒 40ms，等于让 UI 线程承担流控）。
-        let mut text = crate::coalesce::TextCoalescer::default();
-        let mut ticker = tokio::time::interval(Duration::from_millis(30));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let pump = tokio::spawn(async move {
+            // 正文合批（docs/ipc-contract.md §4）：chunk 是逐段来的，一条一个事件会让
+            // webview 每秒处理几百次 IPC + 几百次 React 更新。在这里按 30ms / 4KB 合并，
+            // 前端就只管渲染（以前是前端自己攒 40ms，等于让 UI 线程承担流控）。
+            let mut text = crate::coalesce::TextCoalescer::default();
+            let mut ticker = tokio::time::interval(Duration::from_millis(30));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        loop {
-            let msg = tokio::select! {
-                maybe = incoming.recv() => match maybe {
-                    Some(m) => m,
-                    None => break,
-                },
-                // 没有新消息时把攒着的正文发出去：否则一段说完就停住，界面像卡了
-                _ = ticker.tick() => {
-                    emit_text(
-                        text.flush(),
-                        &bus,
-                        &agent_turns_for_task,
-                        &replay_for_trace,
-                        &db_for_trace,
-                        &profile_for_task,
-                    );
-                    continue;
-                }
-            };
-
-            // 正文以外的任何事件都先把缓冲冲掉，保证顺序（工具调用不能跑到它前面的文字之前）。
-            // `notice` 也走这里：它不是正文，先冲掉旧缓冲，再作为普通通知原样转发给前端。
-            let is_text = matches!(
-                &msg,
-                transport::Incoming::Notification { method, params }
-                    if method == "session/update"
-                        && params
-                            .get("update")
-                            .and_then(|u| u.get("sessionUpdate"))
-                            .and_then(serde_json::Value::as_str)
-                            == Some("agent_message_chunk")
-            );
-            if !is_text {
-                emit_text(
-                    text.flush(),
-                    &bus,
-                    &agent_turns_for_task,
-                    &replay_for_trace,
-                    &db_for_trace,
-                    &profile_for_task,
-                );
-            }
-
-            // 先冲正文缓冲、再落轨迹、再 emit。这里只记录 delegate 子会话的正文；
-            // 父会话自己的正文仍走原来的合批路径。
-            if is_text {
-                if let transport::Incoming::Notification { params, .. } = &msg {
-                    if let (Some(child_sid), Some(chunk)) = (
-                        params.get("sessionId").and_then(serde_json::Value::as_str),
-                        params
-                            .get("update")
-                            .and_then(|update| update.get("content"))
-                            .and_then(|content| content.get("text"))
-                            .and_then(serde_json::Value::as_str),
-                    ) {
-                        if let Some(handle_id) = delegates.by_child_acp(child_sid).await {
-                            delegates.append_text(&handle_id, chunk).await;
-                        }
-                    }
-                }
-            }
-
-            let payload = match msg {
-                transport::Incoming::Notification { method, params } => {
-                    tracing::debug!(target: "sincearc::acp", %method, "notification");
-                    let commands_captured = crate::trace::parse(&method, &params)
-                        .filter(|captured| captured.kind == "commands");
-                    if commands_captured.is_none() {
-                        record_trace(
-                            &db_for_trace,
-                            &routes,
-                            &turns_for_trace,
-                            &replay_for_trace,
-                            &method,
-                            &params,
-                        )
-                        .await;
-                    }
-                    let (session_id, ui_session_id, author_id) = routes.resolve(&params).await;
-                    // usage 是计量而不是轨迹动作：照样落 session_events（供重启后恢复），
-                    // 同时单独推一条可丢的 acp.usage，下一帧会补上。
-                    if let Some((used, size)) = crate::trace::parse(&method, &params)
-                        .filter(|captured| captured.kind == "usage")
-                        .and_then(|captured| crate::trace::usage_of(&captured.payload))
-                    {
-                        let dto = UsageDto::from_raw(
-                            ui_session_id.clone(),
-                            author_id.clone(),
-                            used,
-                            size,
-                        );
-                        let usage_meta = Meta {
-                            profile_id: Some(profile_for_task.clone()),
-                            session_id: session_id.clone(),
-                            ui_session_id: ui_session_id.clone(),
-                            author_id: author_id.clone(),
-                        };
-                        bus.emit_json("acp.usage", false, usage_meta, &dto);
-                    }
-                    // 命令列表只存在内存里，键是 ACP 会话 id；到得再早也不影响归属。
-                    // 连接退出时不清理，断开重连会覆盖；session/new / session/load 会再推。
-                    if let Some(captured) = commands_captured {
-                        if let Some(acp_sid) = session_id.as_deref() {
-                            let commands = commands_from_payload(&captured.payload);
-                            let count = commands.len();
-                            commands_for_task
-                                .put_commands(acp_sid, commands.clone())
-                                .await;
-                            let payload = serde_json::json!({
-                                "acpSessionId": acp_sid,
-                                "commands": commands,
-                            });
-                            let meta = Meta {
-                                profile_id: Some(profile_for_task.clone()),
-                                session_id: Some(acp_sid.to_string()),
-                                ..Default::default()
-                            };
-                            bus.emit_json("acp.commands", false, meta, &payload);
-                            tracing::debug!(
-                                target: "sincearc::trace", profile = %profile_for_task,
-                                acp_session = %acp_sid, count, "commands updated in memory"
-                            );
-                        } else {
-                            tracing::debug!(
-                                target: "sincearc::trace", profile = %profile_for_task,
-                                "commands dropped: notification has no acp session id"
-                            );
-                        }
-                    }
-                    // 只认「我们自己发起的一轮」里的写操作：`session/load` 会把上一轮
-                    // 的 tool_call 重放一遍，那不是正在写，不能把提示条点亮。
-                    let in_active_turn = match session_id.as_deref() {
-                        Some(acp_sid) => turns_for_trace.current(acp_sid).await.is_some(),
-                        None => false,
-                    };
-                    if let (Some(acp_sid), true) = (session_id.as_deref(), in_active_turn) {
-                        // author 属于会话归属，不在 ACP 的 update 里；补进锁解析参数，
-                        // 让群聊里显示「谁在写」而不是只有主 agent。
-                        let mut lock_params = params.clone();
-                        if let (Some(author), Some(object)) =
-                            (author_id.as_deref(), lock_params.as_object_mut())
-                        {
-                            object.insert(
-                                "authorId".to_string(),
-                                serde_json::Value::String(author.to_string()),
-                            );
-                        }
-                        if let Some(lock_state) = locks.update(acp_sid, &lock_params) {
-                            let dto = SessionLockDto::from_state(
-                                &lock_state,
-                                acp_sid.to_string(),
-                                ui_session_id.clone(),
-                            );
-                            let lock_meta = Meta::for_session(
-                                profile_for_task.clone(),
-                                acp_sid.to_string(),
-                                ui_session_id.clone(),
-                                author_id.clone(),
-                            );
-                            bus.emit_json("session.lock", false, lock_meta, &dto);
-                        }
-                    }
-                    if is_text {
-                        // 攒起来；够 4KB 就先发一段（长回答开头不必等满 30ms）
-                        let message_id = params
-                            .get("update")
-                            .and_then(|u| crate::trace::refs_of(u).get("messageId").cloned());
-                        let chunk = params
-                            .get("update")
-                            .and_then(|u| u.get("content"))
-                            .and_then(|c| c.get("text"))
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("")
-                            .to_string();
-                        if let Some(acp_sid) = session_id.as_deref() {
-                            if message_id.is_none() {
-                                if let Some(aside_ui) = asides_for_task.pending_ui(acp_sid).await {
-                                    // 回执与正文不能混在同一个合批里：先冲正文，再单独发 aside。
-                                    emit_text(
-                                        text.flush(),
-                                        &bus,
-                                        &agent_turns_for_task,
-                                        &replay_for_trace,
-                                        &db_for_trace,
-                                        &profile_for_task,
-                                    );
-                                    if !chunk.is_empty() {
-                                        let aside = AsideEvent {
-                                            session_id: acp_sid.to_string(),
-                                            ui_session_id: aside_ui.or(ui_session_id.clone()),
-                                            text: chunk,
-                                        };
-                                        bus.emit_json(
-                                            "acp.aside",
-                                            true,
-                                            Meta::for_session(
-                                                profile_for_task.clone(),
-                                                acp_sid.to_string(),
-                                                aside.ui_session_id.clone(),
-                                                author_id.clone(),
-                                            ),
-                                            &aside,
-                                        );
-                                    }
-                                    // 认领即结算：否则窗口内后续的无 id chunk 也会被当成回执。
-                                    asides_for_task.settle(acp_sid).await;
-                                    continue;
-                                }
-                            }
-                        }
+            loop {
+                let msg = tokio::select! {
+                    maybe = incoming.recv() => match maybe {
+                        Some(m) => m,
+                        None => break,
+                    },
+                    // 没有新消息时把攒着的正文发出去：否则一段说完就停住，界面像卡了
+                    _ = ticker.tick() => {
                         emit_text(
-                            text.push(
-                                session_id.clone(),
-                                ui_session_id.clone(),
-                                author_id.clone(),
-                                message_id,
-                                &chunk,
-                            ),
+                            text.flush(),
                             &bus,
                             &agent_turns_for_task,
                             &replay_for_trace,
@@ -935,366 +738,578 @@ pub fn spawn_event_pump(ctx: PumpCtx) {
                         );
                         continue;
                     }
-                    AcpEvent::Notification {
-                        method,
-                        params,
-                        session_id,
-                        ui_session_id,
-                        author_id,
+                };
+
+                // 正文以外的任何事件都先把缓冲冲掉，保证顺序（工具调用不能跑到它前面的文字之前）。
+                // `notice` 也走这里：它不是正文，先冲掉旧缓冲，再作为普通通知原样转发给前端。
+                let is_text = matches!(
+                    &msg,
+                    transport::Incoming::Notification { method, params }
+                        if method == "session/update"
+                            && params
+                                .get("update")
+                                .and_then(|u| u.get("sessionUpdate"))
+                                .and_then(serde_json::Value::as_str)
+                                == Some("agent_message_chunk")
+                );
+                if !is_text {
+                    emit_text(
+                        text.flush(),
+                        &bus,
+                        &agent_turns_for_task,
+                        &replay_for_trace,
+                        &db_for_trace,
+                        &profile_for_task,
+                    );
+                }
+
+                // 先冲正文缓冲、再落轨迹、再 emit。这里只记录 delegate 子会话的正文；
+                // 父会话自己的正文仍走原来的合批路径。
+                if is_text {
+                    if let transport::Incoming::Notification { params, .. } = &msg {
+                        if let (Some(child_sid), Some(chunk)) = (
+                            params.get("sessionId").and_then(serde_json::Value::as_str),
+                            params
+                                .get("update")
+                                .and_then(|update| update.get("content"))
+                                .and_then(|content| content.get("text"))
+                                .and_then(serde_json::Value::as_str),
+                        ) {
+                            if let Some(handle_id) = delegates.by_child_acp(child_sid).await {
+                                delegates.append_text(&handle_id, chunk).await;
+                            }
+                        }
                     }
                 }
-                transport::Incoming::Request { id, method, params } => {
-                    tracing::debug!(target: "sincearc::acp", id, %method, "agent request");
-                    if method == "fs/read_text_file" {
-                        let acp_session_id =
-                            params.get("sessionId").and_then(serde_json::Value::as_str);
-                        let result = match acp_session_id {
-                            Some(session_id) => match routes.get(session_id).await {
-                                Some(record) => {
-                                    let cwd = PathBuf::from(record.cwd);
-                                    crate::acp::fs::handle_read_request(&params, &cwd)
-                                }
-                                None => Err(serde_json::json!({
-                                    "code": -32602,
-                                    "message": "未知会话",
-                                })),
-                            },
-                            // 没有 sessionId 就连 cwd 都定位不到；交给纯函数统一报「缺少参数」。
-                            None => crate::acp::fs::handle_read_request(
+
+                let payload = match msg {
+                    transport::Incoming::Notification { method, params } => {
+                        tracing::debug!(target: "sincearc::acp", %method, "notification");
+                        let commands_captured = crate::trace::parse(&method, &params)
+                            .filter(|captured| captured.kind == "commands");
+                        if commands_captured.is_none() {
+                            record_trace(
+                                &db_for_trace,
+                                &routes,
+                                &turns_for_trace,
+                                &replay_for_trace,
+                                &method,
                                 &params,
-                                std::path::Path::new(""),
-                            ),
-                        };
-                        match &result {
-                            Ok(_) => {
-                                tracing::info!(target: "sincearc::acp", id, "fs/read_text_file ok")
-                            }
-                            Err(e) => tracing::warn!(
-                                target: "sincearc::acp", id, error = %e,
-                                "fs/read_text_file rejected"
-                            ),
-                        }
-                        if let Err(e) = proc_for_task.respond(id, result).await {
-                            tracing::warn!(
-                                target: "sincearc::acp", id, error = %e,
-                                "fs/read_text_file response failed"
-                            );
-                        }
-                        continue;
-                    }
-                    if method != "session/request_permission" {
-                        // 没实现的方法必须当场拒答。JSON-RPC 里一个不回的请求会让 agent
-                        // 一直等（hermes 默认 300s 才自拒），而界面上什么都不显示 ——
-                        // 用户看到的是「卡死」。回 -32601 至少让它立刻走错误分支。
-                        tracing::warn!(
-                            target: "sincearc::acp", id, %method,
-                            "unimplemented client method -> -32601"
-                        );
-                        let _ = proc_for_task
-                            .respond(
-                                id,
-                                Err(serde_json::json!({
-                                    "code": -32601,
-                                    "message": format!("method not found: {method}"),
-                                })),
                             )
                             .await;
-                        continue;
-                    }
-                    // 权限请求本身也是轨迹的一部分（用户要能事后查到「当时授权了什么」；
-                    // 聊天正文里已不再写「权限决定」这类系统消息）
-                    // JSON-RPC 的请求 id 不在 params 里；先补进去，trace::parse 才能把它
-                    // 落成 refs.requestId（和之后的 permission_decision 对上同一块）。
-                    let mut trace_params = params.clone();
-                    if let Some(object) = trace_params.as_object_mut() {
-                        object.insert(
-                            "requestId".to_string(),
-                            serde_json::Value::String(id.to_string()),
-                        );
-                    }
-                    record_trace(
-                        &db_for_trace,
-                        &routes,
-                        &turns_for_trace,
-                        &replay_for_trace,
-                        &method,
-                        &trace_params,
-                    )
-                    .await;
-                    // 权限请求意味着这一轮在等用户。只有当前确实有活动轮时才改状态：
-                    // 两轮之间收到的权限请求不能凭空造出一轮，也不能落到别的轮上。
-                    let waiting_turn =
-                        match params.get("sessionId").and_then(serde_json::Value::as_str) {
-                            Some(acp_sid) => turns_for_trace.current(acp_sid).await,
-                            None => None,
-                        };
-                    if let Some(turn_id) = waiting_turn.as_deref() {
-                        if let Err(e) = db_for_trace.mark_turn_waiting_approval(turn_id) {
-                            tracing::warn!(
-                                target: "sincearc::trace", error = %e, turn = %turn_id,
-                                "权限等待状态落库失败"
-                            );
                         }
-                    }
-                    // 只有登记过的 id 才允许被回答（见 agent_respond_request）
-                    pending
-                        .mark_with_turn(&profile_for_task, id, waiting_turn.clone())
-                        .await;
-                    let (session_id, ui_session_id, mut author_id) = routes.resolve(&params).await;
-                    // 归属表通常已带作者；万一没有，再用这一轮的 author_id 补。
-                    // 仍然拿不到就保持 None —— 不许拿会话成员列表里的第一个人顶替。
-                    if author_id.is_none() {
-                        if let Some(turn_id) = waiting_turn.as_deref() {
-                            author_id = db_for_trace
-                                .turn_context(turn_id)
-                                .ok()
-                                .flatten()
-                                .and_then(|(_, author)| author);
-                        }
-                    }
-                    // 合成轮的 idle 判定要能看见「还在等授权」：请求本身也是活动，
-                    // 会重置 8 秒定时器；回答后再重置一次。
-                    if let Some(acp_sid) = session_id.as_deref() {
-                        if let Some(generation) = agent_turns_for_task.permission_requested(
-                            &profile_for_task,
-                            acp_sid,
-                            id,
-                        ) {
-                            spawn_agent_turn_timer(
-                                bus.clone(),
-                                agent_turns_for_task.clone(),
-                                db_for_trace.clone(),
-                                SynthTarget {
-                                    profile_id: profile_for_task.clone(),
-                                    session_id: acp_sid.to_string(),
-                                    ui_session_id: ui_session_id.clone(),
-                                    author_id: author_id.clone(),
-                                },
-                                generation,
-                            );
-                        }
-                    }
-                    let request_kind = params
-                        .get("toolCall")
-                        .and_then(|tool| tool.get("kind"))
-                        .and_then(serde_json::Value::as_str);
-                    if let (Some(acp_sid), Some(turn_id), Some(_ui_sid), Some(kind)) = (
-                        session_id.as_deref(),
-                        waiting_turn.as_deref(),
-                        ui_session_id.as_deref(),
-                        request_kind,
-                    ) {
-                        if is_known_permission_kind(kind)
-                            && turn_approvals_for_task.covers(acp_sid, turn_id, kind).await
+                        let (session_id, ui_session_id, author_id) = routes.resolve(&params).await;
+                        // usage 是计量而不是轨迹动作：照样落 session_events（供重启后恢复），
+                        // 同时单独推一条可丢的 acp.usage，下一帧会补上。
+                        if let Some((used, size)) = crate::trace::parse(&method, &params)
+                            .filter(|captured| captured.kind == "usage")
+                            .and_then(|captured| crate::trace::usage_of(&captured.payload))
                         {
-                            match pick_allow_option(&params) {
-                                Some(allow) => {
-                                    // 先摘登记再写回：自动路径也必须一条请求只答一次。
-                                    let (known, pending_turn) =
-                                        pending.take_with_turn(&profile_for_task, id).await;
-                                    if !known {
-                                        tracing::warn!(
-                                            target: "sincearc::acp", id, acp_session = %acp_sid,
-                                            turn = %turn_id, %kind,
-                                            "turn-policy matched but request was no longer pending; falling back to dialog"
-                                        );
-                                    } else {
-                                        let reply = PermissionReply {
-                                            turn_id: Some(turn_id.to_string()),
-                                            decision: turn_policy_decision(
-                                                &allow,
-                                                author_id.clone(),
-                                            ),
-                                        };
-                                        match respond_permission(
+                            let dto = UsageDto::from_raw(
+                                ui_session_id.clone(),
+                                author_id.clone(),
+                                used,
+                                size,
+                            );
+                            let usage_meta = Meta {
+                                profile_id: Some(profile_for_task.clone()),
+                                session_id: session_id.clone(),
+                                ui_session_id: ui_session_id.clone(),
+                                author_id: author_id.clone(),
+                            };
+                            bus.emit_json("acp.usage", false, usage_meta, &dto);
+                        }
+                        // 命令列表只存在内存里，键是 ACP 会话 id；到得再早也不影响归属。
+                        // 连接退出时不清理，断开重连会覆盖；session/new / session/load 会再推。
+                        if let Some(captured) = commands_captured {
+                            if let Some(acp_sid) = session_id.as_deref() {
+                                let commands = commands_from_payload(&captured.payload);
+                                let count = commands.len();
+                                commands_for_task
+                                    .put_commands(acp_sid, commands.clone())
+                                    .await;
+                                let payload = serde_json::json!({
+                                    "acpSessionId": acp_sid,
+                                    "commands": commands,
+                                });
+                                let meta = Meta {
+                                    profile_id: Some(profile_for_task.clone()),
+                                    session_id: Some(acp_sid.to_string()),
+                                    ..Default::default()
+                                };
+                                bus.emit_json("acp.commands", false, meta, &payload);
+                                tracing::debug!(
+                                    target: "sincearc::trace", profile = %profile_for_task,
+                                    acp_session = %acp_sid, count, "commands updated in memory"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    target: "sincearc::trace", profile = %profile_for_task,
+                                    "commands dropped: notification has no acp session id"
+                                );
+                            }
+                        }
+                        // 只认「我们自己发起的一轮」里的写操作：`session/load` 会把上一轮
+                        // 的 tool_call 重放一遍，那不是正在写，不能把提示条点亮。
+                        let in_active_turn = match session_id.as_deref() {
+                            Some(acp_sid) => turns_for_trace.current(acp_sid).await.is_some(),
+                            None => false,
+                        };
+                        if let (Some(acp_sid), true) = (session_id.as_deref(), in_active_turn) {
+                            // author 属于会话归属，不在 ACP 的 update 里；补进锁解析参数，
+                            // 让群聊里显示「谁在写」而不是只有主 agent。
+                            let mut lock_params = params.clone();
+                            if let (Some(author), Some(object)) =
+                                (author_id.as_deref(), lock_params.as_object_mut())
+                            {
+                                object.insert(
+                                    "authorId".to_string(),
+                                    serde_json::Value::String(author.to_string()),
+                                );
+                            }
+                            if let Some(lock_state) = locks.update(acp_sid, &lock_params) {
+                                let dto = SessionLockDto::from_state(
+                                    &lock_state,
+                                    acp_sid.to_string(),
+                                    ui_session_id.clone(),
+                                );
+                                let lock_meta = Meta::for_session(
+                                    profile_for_task.clone(),
+                                    acp_sid.to_string(),
+                                    ui_session_id.clone(),
+                                    author_id.clone(),
+                                );
+                                bus.emit_json("session.lock", false, lock_meta, &dto);
+                            }
+                        }
+                        if is_text {
+                            // 攒起来；够 4KB 就先发一段（长回答开头不必等满 30ms）
+                            let message_id = params
+                                .get("update")
+                                .and_then(|u| crate::trace::refs_of(u).get("messageId").cloned());
+                            let chunk = params
+                                .get("update")
+                                .and_then(|u| u.get("content"))
+                                .and_then(|c| c.get("text"))
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+                            if let Some(acp_sid) = session_id.as_deref() {
+                                if message_id.is_none() {
+                                    if let Some(aside_ui) = asides_for_task.pending_ui(acp_sid).await {
+                                        // 回执与正文不能混在同一个合批里：先冲正文，再单独发 aside。
+                                        emit_text(
+                                            text.flush(),
+                                            &bus,
+                                            &agent_turns_for_task,
+                                            &replay_for_trace,
                                             &db_for_trace,
                                             &profile_for_task,
-                                            &proc_for_task,
-                                            id,
-                                            serde_json::json!({
-                                                "outcome": "selected",
-                                                "optionId": allow.id,
-                                            }),
-                                            reply,
-                                        )
-                                        .await
-                                        {
-                                            Ok(()) => {
-                                                tracing::info!(
-                                                    target: "sincearc::acp", id, acp_session = %acp_sid,
-                                                    turn = %turn_id, %kind,
-                                                    "permission auto-answered by turn policy"
-                                                );
-                                                if let Some((answered_sid, generation)) =
-                                                    agent_turns_for_task
-                                                        .permission_answered(&profile_for_task, id)
-                                                {
-                                                    spawn_agent_turn_timer(
-                                                        bus.clone(),
-                                                        agent_turns_for_task.clone(),
-                                                        db_for_trace.clone(),
-                                                        SynthTarget {
-                                                            profile_id: profile_for_task.clone(),
-                                                            session_id: answered_sid,
-                                                            ui_session_id: ui_session_id.clone(),
-                                                            author_id: author_id.clone(),
-                                                        },
-                                                        generation,
+                                        );
+                                        if !chunk.is_empty() {
+                                            let aside = AsideEvent {
+                                                session_id: acp_sid.to_string(),
+                                                ui_session_id: aside_ui.or(ui_session_id.clone()),
+                                                text: chunk,
+                                            };
+                                            bus.emit_json(
+                                                "acp.aside",
+                                                true,
+                                                Meta::for_session(
+                                                    profile_for_task.clone(),
+                                                    acp_sid.to_string(),
+                                                    aside.ui_session_id.clone(),
+                                                    author_id.clone(),
+                                                ),
+                                                &aside,
+                                            );
+                                        }
+                                        // 认领即结算：否则窗口内后续的无 id chunk 也会被当成回执。
+                                        asides_for_task.settle(acp_sid).await;
+                                        continue;
+                                    }
+                                }
+                            }
+                            emit_text(
+                                text.push(
+                                    session_id.clone(),
+                                    ui_session_id.clone(),
+                                    author_id.clone(),
+                                    message_id,
+                                    &chunk,
+                                ),
+                                &bus,
+                                &agent_turns_for_task,
+                                &replay_for_trace,
+                                &db_for_trace,
+                                &profile_for_task,
+                            );
+                            continue;
+                        }
+                        AcpEvent::Notification {
+                            method,
+                            params,
+                            session_id,
+                            ui_session_id,
+                            author_id,
+                        }
+                    }
+                    transport::Incoming::Request { id, method, params } => {
+                        tracing::debug!(target: "sincearc::acp", id, %method, "agent request");
+                        if method == "fs/read_text_file" {
+                            let acp_session_id =
+                                params.get("sessionId").and_then(serde_json::Value::as_str);
+                            let result = match acp_session_id {
+                                Some(session_id) => match routes.get(session_id).await {
+                                    Some(record) => {
+                                        let cwd = PathBuf::from(record.cwd);
+                                        crate::acp::fs::handle_read_request(&params, &cwd)
+                                    }
+                                    None => Err(serde_json::json!({
+                                        "code": -32602,
+                                        "message": "未知会话",
+                                    })),
+                                },
+                                // 没有 sessionId 就连 cwd 都定位不到；交给纯函数统一报「缺少参数」。
+                                None => crate::acp::fs::handle_read_request(
+                                    &params,
+                                    std::path::Path::new(""),
+                                ),
+                            };
+                            match &result {
+                                Ok(_) => {
+                                    tracing::info!(target: "sincearc::acp", id, "fs/read_text_file ok")
+                                }
+                                Err(e) => tracing::warn!(
+                                    target: "sincearc::acp", id, error = %e,
+                                    "fs/read_text_file rejected"
+                                ),
+                            }
+                            if let Err(e) = proc_for_task.respond(id, result).await {
+                                tracing::warn!(
+                                    target: "sincearc::acp", id, error = %e,
+                                    "fs/read_text_file response failed"
+                                );
+                            }
+                            continue;
+                        }
+                        if method != "session/request_permission" {
+                            // 没实现的方法必须当场拒答。JSON-RPC 里一个不回的请求会让 agent
+                            // 一直等（hermes 默认 300s 才自拒），而界面上什么都不显示 ——
+                            // 用户看到的是「卡死」。回 -32601 至少让它立刻走错误分支。
+                            tracing::warn!(
+                                target: "sincearc::acp", id, %method,
+                                "unimplemented client method -> -32601"
+                            );
+                            let _ = proc_for_task
+                                .respond(
+                                    id,
+                                    Err(serde_json::json!({
+                                        "code": -32601,
+                                        "message": format!("method not found: {method}"),
+                                    })),
+                                )
+                                .await;
+                            continue;
+                        }
+                        // 权限请求本身也是轨迹的一部分（用户要能事后查到「当时授权了什么」；
+                        // 聊天正文里已不再写「权限决定」这类系统消息）
+                        // JSON-RPC 的请求 id 不在 params 里；先补进去，trace::parse 才能把它
+                        // 落成 refs.requestId（和之后的 permission_decision 对上同一块）。
+                        let mut trace_params = params.clone();
+                        if let Some(object) = trace_params.as_object_mut() {
+                            object.insert(
+                                "requestId".to_string(),
+                                serde_json::Value::String(id.to_string()),
+                            );
+                        }
+                        record_trace(
+                            &db_for_trace,
+                            &routes,
+                            &turns_for_trace,
+                            &replay_for_trace,
+                            &method,
+                            &trace_params,
+                        )
+                        .await;
+                        // 权限请求意味着这一轮在等用户。只有当前确实有活动轮时才改状态：
+                        // 两轮之间收到的权限请求不能凭空造出一轮，也不能落到别的轮上。
+                        let waiting_turn =
+                            match params.get("sessionId").and_then(serde_json::Value::as_str) {
+                                Some(acp_sid) => turns_for_trace.current(acp_sid).await,
+                                None => None,
+                            };
+                        if let Some(turn_id) = waiting_turn.as_deref() {
+                            if let Err(e) = db_for_trace.mark_turn_waiting_approval(turn_id) {
+                                tracing::warn!(
+                                    target: "sincearc::trace", error = %e, turn = %turn_id,
+                                    "权限等待状态落库失败"
+                                );
+                            }
+                        }
+                        // 只有登记过的 id 才允许被回答（见 agent_respond_request）
+                        pending
+                            .mark_with_turn(&profile_for_task, id, waiting_turn.clone())
+                            .await;
+                        let (session_id, ui_session_id, mut author_id) = routes.resolve(&params).await;
+                        // 归属表通常已带作者；万一没有，再用这一轮的 author_id 补。
+                        // 仍然拿不到就保持 None —— 不许拿会话成员列表里的第一个人顶替。
+                        if author_id.is_none() {
+                            if let Some(turn_id) = waiting_turn.as_deref() {
+                                author_id = db_for_trace
+                                    .turn_context(turn_id)
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|(_, author)| author);
+                            }
+                        }
+                        // 合成轮的 idle 判定要能看见「还在等授权」：请求本身也是活动，
+                        // 会重置 8 秒定时器；回答后再重置一次。
+                        if let Some(acp_sid) = session_id.as_deref() {
+                            if let Some(generation) = agent_turns_for_task.permission_requested(
+                                &profile_for_task,
+                                acp_sid,
+                                id,
+                            ) {
+                                spawn_agent_turn_timer(
+                                    bus.clone(),
+                                    agent_turns_for_task.clone(),
+                                    db_for_trace.clone(),
+                                    SynthTarget {
+                                        profile_id: profile_for_task.clone(),
+                                        session_id: acp_sid.to_string(),
+                                        ui_session_id: ui_session_id.clone(),
+                                        author_id: author_id.clone(),
+                                    },
+                                    generation,
+                                );
+                            }
+                        }
+                        let request_kind = params
+                            .get("toolCall")
+                            .and_then(|tool| tool.get("kind"))
+                            .and_then(serde_json::Value::as_str);
+                        if let (Some(acp_sid), Some(turn_id), Some(_ui_sid), Some(kind)) = (
+                            session_id.as_deref(),
+                            waiting_turn.as_deref(),
+                            ui_session_id.as_deref(),
+                            request_kind,
+                        ) {
+                            if is_known_permission_kind(kind)
+                                && turn_approvals_for_task.covers(acp_sid, turn_id, kind).await
+                            {
+                                match pick_allow_option(&params) {
+                                    Some(allow) => {
+                                        // 先摘登记再写回：自动路径也必须一条请求只答一次。
+                                        let (known, pending_turn) =
+                                            pending.take_with_turn(&profile_for_task, id).await;
+                                        if !known {
+                                            tracing::warn!(
+                                                target: "sincearc::acp", id, acp_session = %acp_sid,
+                                                turn = %turn_id, %kind,
+                                                "turn-policy matched but request was no longer pending; falling back to dialog"
+                                            );
+                                        } else {
+                                            let reply = PermissionReply {
+                                                turn_id: Some(turn_id.to_string()),
+                                                decision: turn_policy_decision(
+                                                    &allow,
+                                                    author_id.clone(),
+                                                ),
+                                            };
+                                            match respond_permission(
+                                                &db_for_trace,
+                                                &profile_for_task,
+                                                &proc_for_task,
+                                                id,
+                                                serde_json::json!({
+                                                    "outcome": "selected",
+                                                    "optionId": allow.id,
+                                                }),
+                                                reply,
+                                            )
+                                            .await
+                                            {
+                                                Ok(()) => {
+                                                    tracing::info!(
+                                                        target: "sincearc::acp", id, acp_session = %acp_sid,
+                                                        turn = %turn_id, %kind,
+                                                        "permission auto-answered by turn policy"
+                                                    );
+                                                    if let Some((answered_sid, generation)) =
+                                                        agent_turns_for_task
+                                                            .permission_answered(&profile_for_task, id)
+                                                    {
+                                                        spawn_agent_turn_timer(
+                                                            bus.clone(),
+                                                            agent_turns_for_task.clone(),
+                                                            db_for_trace.clone(),
+                                                            SynthTarget {
+                                                                profile_id: profile_for_task.clone(),
+                                                                session_id: answered_sid,
+                                                                ui_session_id: ui_session_id.clone(),
+                                                                author_id: author_id.clone(),
+                                                            },
+                                                            generation,
+                                                        );
+                                                    }
+                                                    continue;
+                                                }
+                                                Err(e) => {
+                                                    // 写不进去就把登记还回去，让用户能在弹窗里重试。
+                                                    pending
+                                                        .mark_with_turn(
+                                                            &profile_for_task,
+                                                            id,
+                                                            pending_turn,
+                                                        )
+                                                        .await;
+                                                    tracing::warn!(
+                                                        target: "sincearc::acp", id, acp_session = %acp_sid,
+                                                        turn = %turn_id, %kind, error = %e.msg,
+                                                        "turn-policy respond failed; falling back to dialog"
                                                     );
                                                 }
-                                                continue;
-                                            }
-                                            Err(e) => {
-                                                // 写不进去就把登记还回去，让用户能在弹窗里重试。
-                                                pending
-                                                    .mark_with_turn(
-                                                        &profile_for_task,
-                                                        id,
-                                                        pending_turn,
-                                                    )
-                                                    .await;
-                                                tracing::warn!(
-                                                    target: "sincearc::acp", id, acp_session = %acp_sid,
-                                                    turn = %turn_id, %kind, error = %e.msg,
-                                                    "turn-policy respond failed; falling back to dialog"
-                                                );
                                             }
                                         }
                                     }
+                                    None => tracing::warn!(
+                                        target: "sincearc::acp", id, acp_session = %acp_sid,
+                                        turn = %turn_id, %kind,
+                                        "turn-policy matched but request has no allow option; falling back to dialog"
+                                    ),
                                 }
-                                None => tracing::warn!(
-                                    target: "sincearc::acp", id, acp_session = %acp_sid,
-                                    turn = %turn_id, %kind,
-                                    "turn-policy matched but request has no allow option; falling back to dialog"
-                                ),
                             }
                         }
+                        AcpEvent::Request {
+                            id,
+                            method,
+                            params,
+                            session_id,
+                            ui_session_id,
+                            author_id,
+                        }
                     }
-                    AcpEvent::Request {
-                        id,
-                        method,
-                        params,
+                };
+                tracing::info!(
+                    target: "sincearc::ipc",
+                    kind = %match &payload {
+                        AcpEvent::Notification { method, .. } => format!("notification:{method}"),
+                        AcpEvent::Request { method, .. } => format!("request:{method}"),
+                        AcpEvent::Hello => "hello".to_string(),
+                        AcpEvent::Exited => "exited".to_string(),
+                        AcpEvent::PromptStarted { .. } => "promptStarted".to_string(),
+                        AcpEvent::PromptResult { .. } => "promptResult".to_string(),
+                        AcpEvent::PromptFailed { .. } => "promptFailed".to_string(),
+                    },
+                    "forward -> webview"
+                );
+                // 两个 `session/update` choke point 都收敛到这里：正文合批走 emit_text，
+                // 工具调用等其余 update 走这条通用分支。
+                if let AcpEvent::Notification {
+                    method,
+                    params,
+                    session_id,
+                    ui_session_id,
+                    author_id,
+                } = &payload
+                {
+                    if method == "session/update" {
+                        forward_session_update(
+                            &UpdateRoute {
+                                bus: &bus,
+                                agent_turns: &agent_turns_for_task,
+                                replay: &replay_for_trace,
+                                db: &db_for_trace,
+                                profile_id: &profile_for_task,
+                            },
+                            session_id.clone(),
+                            ui_session_id.clone(),
+                            author_id.clone(),
+                            params.clone(),
+                        );
+                        continue;
+                    }
+                }
+                // 终态事件一律无损：丢了就等于「回答消失」。
+                let (topic, lossless) = match &payload {
+                    AcpEvent::Notification { .. } => ("acp.notification", true),
+                    AcpEvent::Request { .. } => ("acp.request", true),
+                    AcpEvent::Hello => ("conn.hello", true),
+                    AcpEvent::Exited => ("conn.exited", true),
+                    AcpEvent::PromptStarted { .. } => ("acp.prompt.started", true),
+                    AcpEvent::PromptResult { .. } => ("acp.prompt.result", true),
+                    AcpEvent::PromptFailed { .. } => ("acp.prompt.failed", true),
+                };
+                // notification/request 的 sessionId 可能缺失；prompt* 事件一定有。
+                // 两种情况都要归一成 Option，否则 or-pattern 类型对不上。
+                let (sid, ui, author) = match &payload {
+                    AcpEvent::Notification {
                         session_id,
                         ui_session_id,
                         author_id,
+                        ..
                     }
-                }
-            };
-            tracing::info!(
-                target: "sincearc::ipc",
-                kind = %match &payload {
-                    AcpEvent::Notification { method, .. } => format!("notification:{method}"),
-                    AcpEvent::Request { method, .. } => format!("request:{method}"),
-                    AcpEvent::Hello => "hello".to_string(),
-                    AcpEvent::Exited => "exited".to_string(),
-                    AcpEvent::PromptStarted { .. } => "promptStarted".to_string(),
-                    AcpEvent::PromptResult { .. } => "promptResult".to_string(),
-                    AcpEvent::PromptFailed { .. } => "promptFailed".to_string(),
-                },
-                "forward -> webview"
-            );
-            // 两个 `session/update` choke point 都收敛到这里：正文合批走 emit_text，
-            // 工具调用等其余 update 走这条通用分支。
-            if let AcpEvent::Notification {
-                method,
-                params,
-                session_id,
-                ui_session_id,
-                author_id,
-            } = &payload
-            {
-                if method == "session/update" {
-                    forward_session_update(
-                        &UpdateRoute {
-                            bus: &bus,
-                            agent_turns: &agent_turns_for_task,
-                            replay: &replay_for_trace,
-                            db: &db_for_trace,
-                            profile_id: &profile_for_task,
-                        },
-                        session_id.clone(),
+                    | AcpEvent::Request {
+                        session_id,
+                        ui_session_id,
+                        author_id,
+                        ..
+                    } => (session_id.clone(), ui_session_id.clone(), author_id.clone()),
+                    AcpEvent::PromptStarted {
+                        session_id,
+                        ui_session_id,
+                        author_id,
+                        ..
+                    }
+                    | AcpEvent::PromptResult {
+                        session_id,
+                        ui_session_id,
+                        author_id,
+                        ..
+                    }
+                    | AcpEvent::PromptFailed {
+                        session_id,
+                        ui_session_id,
+                        author_id,
+                        ..
+                    } => (
+                        Some(session_id.clone()),
                         ui_session_id.clone(),
                         author_id.clone(),
-                        params.clone(),
-                    );
-                    continue;
-                }
+                    ),
+                    AcpEvent::Hello | AcpEvent::Exited => (None, None, None),
+                };
+                let meta = Meta {
+                    profile_id: Some(profile_for_task.clone()),
+                    session_id: sid,
+                    ui_session_id: ui,
+                    author_id: author,
+                };
+                bus.emit_json(topic, lossless, meta, &payload);
             }
-            // 终态事件一律无损：丢了就等于「回答消失」。
-            let (topic, lossless) = match &payload {
-                AcpEvent::Notification { .. } => ("acp.notification", true),
-                AcpEvent::Request { .. } => ("acp.request", true),
-                AcpEvent::Hello => ("conn.hello", true),
-                AcpEvent::Exited => ("conn.exited", true),
-                AcpEvent::PromptStarted { .. } => ("acp.prompt.started", true),
-                AcpEvent::PromptResult { .. } => ("acp.prompt.result", true),
-                AcpEvent::PromptFailed { .. } => ("acp.prompt.failed", true),
-            };
-            // notification/request 的 sessionId 可能缺失；prompt* 事件一定有。
-            // 两种情况都要归一成 Option，否则 or-pattern 类型对不上。
-            let (sid, ui, author) = match &payload {
-                AcpEvent::Notification {
-                    session_id,
-                    ui_session_id,
-                    author_id,
-                    ..
-                }
-                | AcpEvent::Request {
-                    session_id,
-                    ui_session_id,
-                    author_id,
-                    ..
-                } => (session_id.clone(), ui_session_id.clone(), author_id.clone()),
-                AcpEvent::PromptStarted {
-                    session_id,
-                    ui_session_id,
-                    author_id,
-                    ..
-                }
-                | AcpEvent::PromptResult {
-                    session_id,
-                    ui_session_id,
-                    author_id,
-                    ..
-                }
-                | AcpEvent::PromptFailed {
-                    session_id,
-                    ui_session_id,
-                    author_id,
-                    ..
-                } => (
-                    Some(session_id.clone()),
-                    ui_session_id.clone(),
-                    author_id.clone(),
-                ),
-                AcpEvent::Hello | AcpEvent::Exited => (None, None, None),
-            };
-            let meta = Meta {
-                profile_id: Some(profile_for_task.clone()),
-                session_id: sid,
-                ui_session_id: ui,
-                author_id: author,
-            };
-            bus.emit_json(topic, lossless, meta, &payload);
-        }
-        emit_text(
-            text.flush(),
-            &bus,
-            &agent_turns_for_task,
-            &replay_for_trace,
-            &db_for_trace,
-            &profile_for_task,
-        );
+            emit_text(
+                text.flush(),
+                &bus,
+                &agent_turns_for_task,
+                &replay_for_trace,
+                &db_for_trace,
+                &profile_for_task,
+            );
+        });
+
+        let pump_result = pump.await;
+
         // 连接已经没了：这条连接名下所有 ACP 会话的本轮策略一并作废。
-        for acp_sid in routes.acp_session_ids_of(&profile_for_task).await {
-            agent_turns_for_task.clear_session(&acp_sid);
-            turn_approvals_for_task.clear_session(&acp_sid).await;
+        for acp_sid in routes_cleanup.acp_session_ids_of(&profile_cleanup).await {
+            agent_turns_cleanup.clear_session(&acp_sid);
+            turn_approvals_cleanup.clear_session(&acp_sid).await;
         }
-        bus.emit_json(
+        bus_cleanup.emit_json(
             "conn.exited",
             true,
             Meta {
-                profile_id: Some(profile_for_task.clone()),
+                profile_id: Some(profile_cleanup.clone()),
                 ..Default::default()
             },
             &AcpEvent::Exited,
@@ -1302,6 +1317,17 @@ pub fn spawn_event_pump(ctx: PumpCtx) {
         // 输出流结束不等于整棵树结束：主进程可能先退出，而 cargo / tsc / node
         // 这类子孙还挂在同一进程组里。这里再走一次同侧回收；若调用方已经
         // kill 过，kill_tree 的幂等分支会立即返回。
-        let _ = proc_for_task.kill_tree("exit").await;
+        let _ = proc_cleanup.kill_tree("exit").await;
+
+        // 内层 panic（而非正常走到输出流结束）时，进程树已经按上面回收，
+        // 这里只留一条 error 说明「这轮是被异常打断的」。
+        if let Err(join_err) = pump_result {
+            if join_err.is_panic() {
+                tracing::error!(
+                    target: "sincearc::ipc", profile = %profile_cleanup,
+                    "事件泵 panic，连接已异常退出并回收"
+                );
+            }
+        }
     });
 }
