@@ -4,6 +4,12 @@ User-facing notes for each release. `release.yml` takes the `## v<version>` sect
 alongside the Chinese one in `CHANGELOG.md` and ships both in the same update payload
 (docs/distribution.md §11). Earlier versions were Chinese-only and are not back-translated.
 
+## v0.0.23
+
+- **The message-stream plumbing was rebuilt underneath, with no visible change.** The ACP event wiring (text coalescing, trace persistence, permission replies, the synthetic-turn state machine, event forwarding) was extracted from the 7000-line `commands.rs` into its own `event_pump` module; route resolution became a unit-testable method, and the state↔commands circular dependency is gone. Tests are all green and the frontend types are unchanged.
+- **A failed terminal-event delivery is no longer silent.** When the "turn finished / failed" event cannot reach the UI, an error is now logged instead of being dropped quietly.
+- **A crashed event loop no longer kills the whole connection.** If the loop panics, it now emits "connection exited", reclaims the process tree and logs the error, instead of leaving the UI stuck and orphan processes behind.
+
 ## v0.0.22
 
 - **Old sessions can be messaged again after a restart.** Sending in a session created before the app restarted used to fail with "send failed 50300 unknown session", even though the session was perfectly alive on the agent's side. The message is now delivered after the session is reattached (its history is pulled back into the running agent first). The first send in such a session takes a little longer; everything after that is normal.
