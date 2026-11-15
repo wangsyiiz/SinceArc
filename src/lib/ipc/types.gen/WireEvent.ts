@@ -2,7 +2,9 @@
 
 export type WireEvent = { v: number, seq: number, ts: number, topic: string, profileId?: string | null, sessionId?: string | null, uiSessionId?: string | null, authorId?: string | null, 
 /**
- * 拥塞时是否可以丢弃。终态事件（prompt result/failed）必须为 true。
+ * 投递失败时是否按「终态未送达」记 error（区别于普通事件的 debug）。
+ * 终态事件（prompt result/failed）标 true。不是背压控制 —— Tauri Channel
+ * 无拥塞队列，send 失败只发生在 webview 关闭时。
  */
 lossless: boolean, 
 /**

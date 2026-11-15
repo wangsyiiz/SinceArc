@@ -66,7 +66,9 @@ pub struct WireEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub author_id: Option<String>,
-    /// 拥塞时是否可以丢弃。终态事件（prompt result/failed）必须为 true。
+    /// 投递失败时是否按「终态未送达」记 error（区别于普通事件的 debug）。
+    /// 终态事件（prompt result/failed）标 true。不是背压控制 —— Tauri Channel
+    /// 无拥塞队列，send 失败只发生在 webview 关闭时。
     pub lossless: bool,
     /// 前端按 topic 各自解释；这里只能给 unknown，具体形状由各 topic 自己的生成类型约束。
     #[ts(type = "unknown")]
@@ -124,7 +126,26 @@ impl EventBus {
             lossless,
             payload,
         };
-        channel.send(event).is_ok()
+        // Tauri Channel 的 send 是即时推给 webview（无背压队列），失败只发生在
+        // webview 关闭/不可达时。终态事件（lossless）丢了意味着「有一轮没正常收尾」，
+        // 记 error 而非静默 —— 这类丢只发生在 webview 关闭时，重启后靠库全量恢复。
+        match channel.send(event) {
+            Ok(()) => true,
+            Err(e) => {
+                if lossless {
+                    tracing::error!(
+                        target: "sincearc::ipc", topic, seq, error = %e,
+                        "lossless 事件投递失败（webview 已关闭），该轮终态未送达"
+                    );
+                } else {
+                    tracing::debug!(
+                        target: "sincearc::ipc", topic, seq, error = %e,
+                        "事件投递失败（webview 已关闭），已丢弃"
+                    );
+                }
+                false
+            }
+        }
     }
 
     /// 便捷版：任意可序列化的载荷。

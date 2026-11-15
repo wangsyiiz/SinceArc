@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 
 use crate::acp::launch::AgentProfile;
 use crate::acp::{transport, InitializeOutcome, SessionModes};
-use crate::commands::CommandDto;
+use crate::event_pump::CommandDto;
 use crate::lock::WriteLocks;
 
 pub struct AgentHandle {
@@ -991,6 +991,28 @@ impl Routes {
             .filter(|(_, record)| record.profile_id == profile_id)
             .map(|(acp_session_id, _)| acp_session_id.clone())
             .collect()
+    }
+
+    /// 事件归属：从一条 ACP 消息里取 `sessionId`，再按归属表补上界面会话与作者。
+    ///
+    /// 返回 `(acp_session_id, ui_session_id, author_id)`。消息没有 `sessionId` 时三者都是
+    /// `None`；有 `sessionId` 但归属表没有这条记录时只回 ACP 会话 id（事件仍转发，只是
+    /// 不落任何界面会话，由前端丢弃并留痕）。事件泵与命令层共用这一处，前端不猜归属。
+    pub async fn resolve(
+        &self,
+        params: &serde_json::Value,
+    ) -> (Option<String>, Option<String>, Option<String>) {
+        let acp = params
+            .get("sessionId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        match acp {
+            Some(sid) => match self.get(&sid).await {
+                Some(record) => (Some(sid), record.ui_session_id, record.author_id),
+                None => (Some(sid), None, None),
+            },
+            None => (None, None, None),
+        }
     }
 }
 

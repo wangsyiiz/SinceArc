@@ -2,6 +2,7 @@ pub mod acp;
 pub mod coalesce;
 pub mod commands;
 pub mod db;
+pub mod event_pump;
 pub mod gh;
 pub mod lock;
 pub mod mcp;
